@@ -3,7 +3,6 @@
 #include "../../AnimationCore/VansAnimationNode.h"
 #include "../../AnimationCore/VansAnimationController.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
-#include "../../GameplayActionCore/VansGameplayRuntime.h"
 #include "../../SceneRuntime/VansRuntimeWorld.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../../Util/VansLog.h"
@@ -30,8 +29,10 @@ const VansActionServiceCapability& VansAnimationEventActionCapability()
     return capability;
 }
 
-VansAnimationEventActionService::VansAnimationEventActionService(VansRuntimeWorld& world, VansGameplayRuntime& gameplay)
-    : m_World(world), m_Gameplay(gameplay) {}
+VansAnimationEventActionService::VansAnimationEventActionService(
+    VansRuntimeWorld& world,
+    IVansGameplayServiceRuntime& runtime)
+    : m_World(world), m_Runtime(runtime) {}
 
 const VansActionServiceCapability& VansAnimationEventActionService::Capability() const
 {
@@ -60,8 +61,8 @@ VansActionCommandResult VansAnimationEventActionService::Execute(const VansActio
             return { VansActionError::Rejected, {}, {}, "Select an animationComponent when the owner has multiple Animation components" };
         subscription.animation = component;
     }
-    auto* storage = static_cast<VansComponentStorage<VansRuntimeAnimationComponent>*>(
-        m_World.FindStorage(VansRuntimeComponentType_Animation));
+    auto* storage = m_World.FindStorage<VansRuntimeAnimationComponent>(
+        VansRuntimeComponentType_Animation);
     const auto* animation = storage ? storage->Get(subscription.animation) : nullptr;
     const auto* controller = animation && animation->animationNode
         ? animation->animationNode->GetCharacterMotionController() : nullptr;
@@ -79,14 +80,14 @@ bool VansAnimationEventActionService::Release(VansGenerationHandle resource, std
 
 void VansAnimationEventActionService::PublishEvaluatedEvents()
 {
-    auto* storage = static_cast<VansComponentStorage<VansRuntimeAnimationComponent>*>(
-        m_World.FindStorage(VansRuntimeComponentType_Animation));
+    auto* storage = m_World.FindStorage<VansRuntimeAnimationComponent>(
+        VansRuntimeComponentType_Animation);
     if (!storage) return;
     m_Subscriptions.ForEach([&](VansGenerationHandle, Subscription& subscription)
     {
         const auto* animation = storage->Get(subscription.animation);
-        const auto host = m_Gameplay.FindHost(subscription.owner);
-        if (!animation || !animation->animationNode || !host || !host->Query(subscription.action)
+        if (!animation || !animation->animationNode ||
+            !m_Runtime.IsActionActive(subscription.owner, subscription.action)
             || !m_World.IsComponentEffectivelyEnabled(subscription.animation)) return;
         const auto* controller = animation->animationNode->GetCharacterMotionController();
         const auto* clip = controller ? controller->GetClip(subscription.clip) : nullptr;
@@ -126,7 +127,8 @@ void VansAnimationEventActionService::PublishEvaluatedEvents()
                 { "value", std::move(value) }
             });
             std::string error;
-            if (!host->EnqueueEvent(subscription.action, std::move(event), error))
+            if (!m_Runtime.EnqueueActionEvent(
+                subscription.owner, subscription.action, std::move(event), error))
                 VANS_LOG_WARN("[AnimationEvents] " << error);
         }
     });

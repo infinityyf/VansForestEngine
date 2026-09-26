@@ -34,6 +34,7 @@ namespace VansGraphics
 		case VansUpscalerFallbackReason::NotCompiled: return "NotCompiled";
 		case VansUpscalerFallbackReason::RuntimeUnavailable: return "RuntimeUnavailable";
 		case VansUpscalerFallbackReason::UnsupportedDevice: return "UnsupportedDevice";
+		case VansUpscalerFallbackReason::UnsupportedQuality: return "UnsupportedQuality";
 		case VansUpscalerFallbackReason::DriverOutOfDate: return "DriverOutOfDate";
 		case VansUpscalerFallbackReason::MissingRuntimeBinary: return "MissingRuntimeBinary";
 		case VansUpscalerFallbackReason::RuntimeIntegrityRejected: return "RuntimeIntegrityRejected";

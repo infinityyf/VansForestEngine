@@ -1,5 +1,6 @@
 #include "VansGBufferWindow.h"
 #include "../VansEditorWindow.h"
+#include "../../EngineAPILayer/Public/IRenderEditorAPI.h"
 #include "imgui.h"
 
 #include <vector>
@@ -39,28 +40,29 @@ namespace
 
 void VansGraphics::VansGBufferWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-	if (!VansGraphics::VansEditorWindow::m_GBufferWindowOpen &&
-		!VansGraphics::VansEditorWindow::m_WaterGBufferWindowOpen)
+	Vans::EditorAPI::IRenderEditorAPI& renderAPI = editorAPI;
+	if (!VansGraphics::VansEditorWindow::IsWindowOpen(VansGraphics::VansEditorWindowId::GBuffer) &&
+		!VansGraphics::VansEditorWindow::IsWindowOpen(VansGraphics::VansEditorWindowId::WaterGBuffer))
 	{
 		return;
 	}
 
-	if (VansGraphics::VansEditorWindow::m_GBufferWindowOpen)
+	if (VansGraphics::VansEditorWindow::IsWindowOpen(VansGraphics::VansEditorWindowId::GBuffer))
 	{
 		ImGui::Begin("GBuffer Visualization");
 		Vans::EditorAPI::RenderTextureFilter filter;
 		filter.category = "gbuffer";
-		DrawPreviewTable("GBufferTable", editorAPI.QueryRenderTexturePreviews(filter));
+		DrawPreviewTable("GBufferTable", renderAPI.QueryRenderTexturePreviews(filter));
 		ImGui::End();
 	}
 
-	if (!VansGraphics::VansEditorWindow::m_WaterGBufferWindowOpen)
+	if (!VansGraphics::VansEditorWindow::IsWindowOpen(VansGraphics::VansEditorWindowId::WaterGBuffer))
 		return;
 
 	ImGui::Begin("Water GBuffer Visualization");
 	ImGui::TextWrapped("Water-specific GBuffer outputs used to confirm water pixels are isolated from the scene GBuffer.");
 	Vans::EditorAPI::RenderTextureFilter filter;
 	filter.category = "water_gbuffer";
-	DrawPreviewTable("WaterGBufferTable", editorAPI.QueryRenderTexturePreviews(filter));
+	DrawPreviewTable("WaterGBufferTable", renderAPI.QueryRenderTexturePreviews(filter));
 	ImGui::End();
 }

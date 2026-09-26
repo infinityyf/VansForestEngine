@@ -7,14 +7,19 @@
 
 namespace Vans
 {
+struct VansTimelinePreAnimatedStoreResult
+{
+	bool accepted = false;
+	VansTimelineWriterHandle overlappingWriter;
+};
+
 class VansTimelinePreAnimatedState
 {
 public:
 	void BindAppliers(const VansTimelineApplierRegistry* appliers) { m_Appliers = appliers; }
-	bool Store(VansTimelineRestoreToken token);
+	VansTimelinePreAnimatedStoreResult Store(VansTimelineRestoreToken token);
 	bool ReleaseWriter(VansTimelineWriterHandle writer, bool restore);
 	void RestoreAll();
-	std::size_t TokenCount() const { return m_Tokens.size(); }
 
 private:
 	struct TokenKey

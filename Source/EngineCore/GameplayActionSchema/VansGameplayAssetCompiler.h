@@ -2,7 +2,7 @@
 
 #include "VansGameplayAssetStorage.h"
 
-#include "../EventCore/VansPayloadSchemaRegistry.h"
+#include "../TimelineCore/VansTimelinePayloadSchemaRegistry.h"
 #include "../GameplayActionCore/VansActionDefinition.h"
 #include "../GameplayActionCore/VansActionHost.h"
 #include "../GameplayActionExecution/VansActionExecutionGraph.h"
@@ -12,6 +12,7 @@
 
 #include <memory>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -25,7 +26,16 @@ struct VansCompiledGameplayCueDefinition
 	std::string name;
 	VansGameplayCueScope scope = VansGameplayCueScope::Target;
 	std::string payloadSchemaAsset;
-	std::vector<VansGameplayCueAdapterMapping> adapterMappings;
+	std::optional<VansGameplayCueBinding> binding;
+};
+
+struct VansCompiledEffectAsset
+{
+	std::shared_ptr<const VansEffectDefinition> definition;
+	std::vector<std::string> executeCueAssets;
+	std::vector<std::string> persistentCueAssets;
+	std::vector<std::string> periodicCueAssets;
+	std::vector<std::string> removeCueAssets;
 };
 
 struct VansCompiledAttributeSetDefinition
@@ -62,12 +72,12 @@ using VansCompiledGameplayAssetData = std::variant<
 	std::monostate,
 	std::shared_ptr<const VansCompiledActionDefinition>,
 	VansActionSetDefinition,
-	std::shared_ptr<const VansEffectDefinition>,
+	VansCompiledEffectAsset,
 	VansCompiledGameplayCueDefinition,
 	VansCompiledAttributeSetDefinition,
 	VansTargetingPolicy,
 	VansCompiledGameplayTagTreeDefinition,
-	VansPayloadSchema,
+	VansTimelinePayloadSchema,
 	std::shared_ptr<const VansCompiledActionGraph>,
 	VansCompiledGameplayExtensionAsset>;
 

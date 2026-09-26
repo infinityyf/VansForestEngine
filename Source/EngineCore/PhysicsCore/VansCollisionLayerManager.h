@@ -26,8 +26,7 @@ namespace VansEngine
 		void ApplyConfig(const VansCollisionLayerConfig& config);
 
 		// ── 查询接口 ──────────────────────────────────────────────────
-		// 根据名称获取 layer 索引，找不到返回 0 (Default)
-		int GetLayerIndex(const std::string& name) const;
+		// 根据名称查询 layer 索引；未知名称必须由调用方显式失败。
 		bool TryGetLayerIndex(const std::string& name, int& index) const;
 
 		// 获取 layer 名称

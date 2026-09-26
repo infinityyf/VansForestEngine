@@ -173,7 +173,17 @@ namespace Vans
 			m_FilteredReferenceYaw, intent.movementReferenceYaw,
 			settings.facingHalfLife, settings.maxFacingYawRate, dt);
 
-		if (intent.hasFacing)
+		if (intent.hasFacing && intent.immediateFacing)
+		{
+			// This is an already evaluated heading, not a target for another
+			// steering filter. Do not extrapolate its sampled angular velocity:
+			// that would predict rotation past the end of the authored motion.
+			m_PlannedFacingYaw = intent.desiredFacingYaw;
+			m_DesiredFacingYawRate = 0.0f;
+			m_PreviousDesiredFacingYaw = intent.desiredFacingYaw;
+			m_HasPreviousDesiredFacing = false;
+		}
+		else if (intent.hasFacing)
 		{
 			if (m_HasPreviousDesiredFacing && dt > kEpsilon)
 			{
@@ -303,10 +313,13 @@ namespace Vans
 				sample.time = targetTime;
 				sample.positionWorld = predictedPosition;
 				sample.velocityWorld = predictedVelocity;
-				sample.facingYaw = intent.hasFacing
-					? PredictFacingYaw(m_PlannedFacingYaw, intent.desiredFacingYaw,
-						m_DesiredFacingYawRate, targetTime, settings.facingHalfLife)
-					: currentFacingYaw;
+				sample.facingYaw = currentFacingYaw;
+				if (intent.hasFacing)
+				{
+					sample.facingYaw = intent.immediateFacing ? m_PlannedFacingYaw
+						: PredictFacingYaw(m_PlannedFacingYaw, intent.desiredFacingYaw,
+							m_DesiredFacingYawRate, targetTime, settings.facingHalfLife);
+				}
 				++outputIndex;
 			}
 		}

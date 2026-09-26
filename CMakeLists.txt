@@ -72,6 +72,7 @@ target_link_libraries(ForestEditorCore
 )
 add_executable(ForestEditor
     Source/Application/ForestEngineEntry.cpp
+    Source/Application/VansEditorRuntimeHost.cpp
 )
 
 forest_apply_common_settings(ForestEditor)
@@ -161,8 +162,8 @@ target_link_libraries(ForestContractTests
 if(MSVC)
     target_compile_options(ForestContractTests PRIVATE /bigobj)
 endif()
-add_test(NAME ForestContractTests COMMAND ForestContractTests)
-add_test(NAME ForestEditorSceneInteraction COMMAND ForestContractTests --editor-scene-interaction)
+include(cmake/ForestCTestRegistry.cmake)
+forest_register_contract_tests(ForestContractTests)
 
 add_custom_target(ForestGamePackageBinaries
     DEPENDS

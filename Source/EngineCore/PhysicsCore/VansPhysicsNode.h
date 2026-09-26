@@ -1,22 +1,24 @@
 #pragma once
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
-#include <PxPhysicsAPI.h>
 #include <string>
 #include <memory>
-#include "../ScriptCore/VansTransform.h"
+#include <glm/glm.hpp>
 #include "../VansNode.h"
-#include "VansPhysics.h"
 
-using namespace physx;
+namespace physx
+{
+    class PxRigidActor;
+    class PxMaterial;
+    class PxShape;
+    class PxTriangleMesh;
+    class PxConvexMesh;
+}
 
 // Forward declaration from VansGraphics namespace
 namespace VansGraphics
 {
     class VansMesh;
+    class VansScene;
 }
 
 namespace VansEngine
@@ -51,7 +53,7 @@ namespace VansEngine
         PhysicsMaterialCombineMode restitutionCombine = PhysicsMaterialCombineMode::Average;
     };
 
-    // Physics node properties loaded from JSON
+    // Physics node creation properties assembled by scene or gameplay adapters.
     struct PhysicsNodeProperties
     {
         bool enabled = false;
@@ -69,9 +71,14 @@ namespace VansEngine
         float capsuleRadius = 0.5f;
         float capsuleHalfHeight = 1.0f;
 
+        // Initial dynamic-body state. Runtime gameplay requests populate these
+        // before actor publication so no caller needs mutable PhysX access.
+        bool enableSpeculativeCcd = false;
+        glm::vec3 initialLinearVelocity = glm::vec3(0.0f);
+        glm::vec3 initialAngularVelocity = glm::vec3(0.0f);
+
         // ── 碰撞 Layer ──────────────────────────────────────────────
         std::string layerName = "Default";  // 配置在 JSON 中的 layer 名称
-        int layerIndex = 0;                 // 运行时解析的 layer 索引
 
         // ── Trigger 模式 ────────────────────────────────────────────
         bool isTrigger = false;             // 为 true 时作为触发器，不产生物理碰撞响应
@@ -89,11 +96,8 @@ namespace VansEngine
         void Initialize(const PhysicsNodeProperties& properties, uint32_t transformID, VansGraphics::VansMesh* mesh = nullptr);
         void Shutdown();
 
-        // Update transform from physics simulation
-        bool UpdateTransformFromPhysics();
-        
-        // Update physics from transform (for kinematic objects)
-        void UpdatePhysicsFromTransform();
+        // Synchronize an authored transform through the node-owned lock.
+        void SyncActorFromTransform();
 
         // Physics control
         // [迁移到 VansNode] SetEnabled/IsEnabled 由基类提供
@@ -108,20 +112,14 @@ namespace VansEngine
         bool ApplyImpulseAtPosition(const glm::vec3& impulse, const glm::vec3& worldPoint, float maxAngularDelta);
         bool ResetMotion(const glm::vec3& position, const glm::vec3& rotationDegrees,
             const glm::vec3& linearVelocity, const glm::vec3& angularVelocity);
-        void AddForce(const glm::vec3& force, PxForceMode::Enum mode = PxForceMode::eFORCE);
-        void AddTorque(const glm::vec3& torque, PxForceMode::Enum mode = PxForceMode::eFORCE);
-        void SetLinearVelocity(const glm::vec3& velocity);
-        void SetAngularVelocity(const glm::vec3& velocity);
         glm::vec3 GetLinearVelocity() const;
         glm::vec3 GetAngularVelocity() const;
 
-        // Collision queries
-        void SetCollisionEnabled(bool enabled);
-        bool IsCollisionEnabled() const;
-
         // Properties access
         const PhysicsNodeProperties& GetProperties() const { return m_Properties; }
-        PxRigidActor* GetActor() const { return m_Actor; }
+        bool HasActor() const;
+        bool IsInScene() const;
+        const void* GetActorIdentity() const { return m_Actor; }
         uint32_t GetTransformID() const { return m_TransformID; }
 
         // Name
@@ -129,17 +127,26 @@ namespace VansEngine
         const std::string& GetName() const { return m_Name; }
 
     private:
+        friend class VansGraphics::VansScene;
+
+        // Scene batches already hold VansPhysicsSystem::GetSimulationMutex().
+        // These methods make that precondition explicit and avoid recursive locking.
+        void InitializeLocked(const PhysicsNodeProperties& properties, uint32_t transformID, VansGraphics::VansMesh* mesh);
+        void ShutdownLocked();
+        void SyncActorFromTransformLocked();
+        bool SyncTransformFromActorLocked();
+
         // Helper methods
         void CreatePhysicsActor();
         void CreateCollisionShape();
-        void ApplyFilterData();
+        bool ApplyFilterData();
         void UpdateShapeGeometryFromTransformScale();
-        PxShape* CreateBoxShape();
-        PxShape* CreateSphereShape();
-        PxShape* CreateCapsuleShape();
-        PxShape* CreateMeshShape();
-        PxShape* CreateConvexMeshShape();
-        PxMaterial* CreatePhysicsMaterial();
+        physx::PxShape* CreateBoxShape();
+        physx::PxShape* CreateSphereShape();
+        physx::PxShape* CreateCapsuleShape();
+        physx::PxShape* CreateMeshShape();
+        physx::PxShape* CreateConvexMeshShape();
+        physx::PxMaterial* CreatePhysicsMaterial();
 
         // Data
         std::string m_Name;
@@ -147,13 +154,13 @@ namespace VansEngine
         uint32_t m_TransformID = 0;
         VansGraphics::VansMesh* m_Mesh = nullptr;
         // PhysX objects
-        PxRigidActor* m_Actor = nullptr;
-        PxMaterial* m_Material = nullptr;
-        PxShape* m_Shape = nullptr;
+        physx::PxRigidActor* m_Actor = nullptr;
+        physx::PxMaterial* m_Material = nullptr;
+        physx::PxShape* m_Shape = nullptr;
         glm::vec3 m_AppliedShapeScale = glm::vec3(1.0f);
         
         // Cooked mesh data (owned by this node)
-        PxTriangleMesh* m_TriangleMesh = nullptr;
-        PxConvexMesh* m_ConvexMesh = nullptr;
+        physx::PxTriangleMesh* m_TriangleMesh = nullptr;
+        physx::PxConvexMesh* m_ConvexMesh = nullptr;
     };
 }

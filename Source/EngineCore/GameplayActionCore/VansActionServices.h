@@ -102,6 +102,11 @@ public:
 	bool ValidateRequired(const std::vector<VansActionServiceId>& required, std::string& error) const;
 	const VansActionCommandSchema* ResolveCommandSchema(
 		VansActionServiceId service, VansActionFieldId command) const;
+	bool ValidatePayload(
+		VansActionServiceId service,
+		VansActionFieldId command,
+		const VansSerializedValue& payload,
+		std::string& error) const;
 	VansActionCommandResult Execute(const VansActionCommand& command) const;
 	void Tick(double deltaSeconds) const;
 	bool IsSealed() const { return m_Sealed; }

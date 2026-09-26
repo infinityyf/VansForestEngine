@@ -5,7 +5,6 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
-#include <stdexcept>
 
 namespace VansGraphics
 {
@@ -89,28 +88,40 @@ namespace VansGraphics
         }
     }
 
-    void VansTriangleGeometryQuery::Build(std::vector<VansGeometryTriangle> triangles)
+    bool VansTriangleGeometryQuery::Build(
+        std::vector<VansGeometryTriangle> triangles, std::string& error)
     {
-        m_Triangles.clear(); m_Order.clear(); m_Nodes.clear(); m_DiscardedTriangles = 0;
+        error.clear();
+        VansTriangleGeometryQuery pending;
         for (const auto& triangle : triangles)
             if (!Finite(triangle.a) || !Finite(triangle.b) || !Finite(triangle.c) || !Finite(triangle.normal))
-                throw std::invalid_argument("Geometry query requires finite triangle data");
+            {
+                error = "Geometry query requires finite triangle data";
+                return false;
+            }
         triangles.erase(std::remove_if(triangles.begin(), triangles.end(), [&](auto& triangle)
         {
             const auto cross = glm::cross(glm::dvec3(triangle.b) - glm::dvec3(triangle.a),
                 glm::dvec3(triangle.c) - glm::dvec3(triangle.a));
-            if (glm::dot(cross, cross) <= 1e-24) { ++m_DiscardedTriangles; return true; }
+            if (glm::dot(cross, cross) <= 1e-24) return true;
             auto normal = glm::normalize(cross);
             // 材质顶点法线决定正面，负缩放和导入 winding 不应把实体内外颠倒。
             if (glm::dot(normal, glm::dvec3(triangle.normal)) < 0.0) normal = -normal;
             triangle.normal = glm::vec3(normal);
             return false;
         }), triangles.end());
-        m_Triangles = std::move(triangles);
-        if (m_Triangles.size() > UINT32_MAX / 2u) throw std::length_error("Geometry query exceeds index capacity");
-        m_Order.resize(m_Triangles.size());
-        std::iota(m_Order.begin(), m_Order.end(), 0u);
-        if (!m_Triangles.empty()) BuildNode(0, static_cast<uint32_t>(m_Triangles.size()));
+        if (triangles.size() > UINT32_MAX / 2u)
+        {
+            error = "Geometry query exceeds index capacity";
+            return false;
+        }
+        pending.m_Triangles = std::move(triangles);
+        pending.m_Order.resize(pending.m_Triangles.size());
+        std::iota(pending.m_Order.begin(), pending.m_Order.end(), 0u);
+        if (!pending.m_Triangles.empty())
+            pending.BuildNode(0, static_cast<uint32_t>(pending.m_Triangles.size()));
+        *this = std::move(pending);
+        return true;
     }
 
     uint32_t VansTriangleGeometryQuery::BuildNode(uint32_t first, uint32_t count)
@@ -194,7 +205,8 @@ namespace VansGraphics
     }
 
     bool VansTriangleGeometryQuery::Raycast(const glm::vec3& origin, const glm::vec3& direction,
-        float maxDistance, VansGeometryHit& hit, float minDistance) const
+        float maxDistance, VansGeometryHit& hit, float minDistance,
+        const VansGeometryQueryOptions& options) const
     {
         hit = {};
         if (Empty() || !Finite(origin) || !Finite(direction) || !std::isfinite(maxDistance)
@@ -229,6 +241,13 @@ namespace VansGraphics
         }
         if (best == UINT32_MAX) return false;
         FillHit(best, o + d * bestDistance, bestDistance, d, hit);
+        if (options.twoSidedOverride) hit.twoSided = *options.twoSidedOverride;
+        if (options.backfaces == VansGeometryBackfacePolicy::RejectOneSided &&
+            hit.backface && !hit.twoSided)
+        {
+            hit = {};
+            return false;
+        }
         return true;
     }
 

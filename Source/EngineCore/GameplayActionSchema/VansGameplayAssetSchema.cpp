@@ -2,6 +2,8 @@
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AssetCore/VansAssetGuid.h"
+#include "../GameplayEffects/VansGameplayEffects.h"
+#include "../GameplayTargeting/VansGameplayTargeting.h"
 
 #include <algorithm>
 #include <cmath>
@@ -366,13 +368,13 @@ void CollectSchemaReferences(
 VansGameplayAssetSchemaDescriptor Base(
 	VansAssetType type,
 	std::string kind,
-	std::string extension,
 	bool editorOnly = false)
 {
 	VansGameplayAssetSchemaDescriptor descriptor;
 	descriptor.assetType = type;
 	descriptor.assetKind = std::move(kind);
-	descriptor.extension = std::move(extension);
+	if (const VansAssetTypeDescriptor* assetType = VansAssetDatabase::Describe(type))
+		descriptor.extension = assetType->canonicalExtension;
 	descriptor.editorOnly = editorOnly;
 	descriptor.fields.push_back(Field("/assetKind", "Asset Kind", "Identity",
 		VansGameplayPropertyKind::String, VansSerializedValue::String(descriptor.assetKind), true));
@@ -407,8 +409,9 @@ bool VansGameplayAssetSchemaRegistry::Register(
 		error = "Gameplay Asset Schema registry is sealed";
 		return false;
 	}
-	if (descriptor.assetType == VansAssetType::Unknown || descriptor.assetKind.empty() ||
-		descriptor.extension.empty() || descriptor.fields.empty())
+	const VansAssetTypeDescriptor* assetType = VansAssetDatabase::Describe(descriptor.assetType);
+	if (!assetType || assetType->canonicalExtension.empty() || descriptor.assetKind.empty() ||
+		descriptor.extension != assetType->canonicalExtension || descriptor.fields.empty())
 	{
 		error = "Gameplay Asset Schema descriptor is invalid";
 		return false;
@@ -533,6 +536,44 @@ VansGameplayDiagnostics VansGameplayAssetSchemaRegistry::Validate(
 	}
 	if (type == VansAssetType::GameplayEffect)
 	{
+		const VansSerializedValue* duration = FindSerializedPointer(root, "/duration");
+		const std::string durationPolicy = duration
+			? ReadSerializedStringField(*duration, "policy", "Instant") : "Instant";
+		VansEffectDefinition policy;
+		if (durationPolicy == "Duration") policy.durationPolicy = VansEffectDurationPolicy::Duration;
+		else if (durationPolicy == "Infinite") policy.durationPolicy = VansEffectDurationPolicy::Infinite;
+		const VansSerializedValue* durationSeconds = duration ?
+			FindObjectField(*duration, "seconds") : nullptr;
+		const VansSerializedValue* periodSeconds = duration ?
+			FindObjectField(*duration, "period") : nullptr;
+		policy.durationSeconds = durationSeconds ? ReadSerializedNumber(*durationSeconds) : 0.0;
+		policy.periodSeconds = periodSeconds ? ReadSerializedNumber(*periodSeconds) : 0.0;
+		policy.executePeriodicOnApply = duration &&
+			ReadSerializedBoolField(*duration, "executePeriodicOnApply");
+		const VansSerializedValue* stackingValue = FindSerializedPointer(root, "/stacking");
+		if (stackingValue && stackingValue->kind == VansSerializedValue::Kind::Object)
+		{
+			const std::string stacking = ReadSerializedStringField(*stackingValue, "policy", "None");
+			if (stacking == "AggregateBySource")
+				policy.stackingPolicy = VansEffectStackingPolicy::AggregateBySource;
+			else if (stacking == "AggregateByTarget")
+				policy.stackingPolicy = VansEffectStackingPolicy::AggregateByTarget;
+			const std::string overflow = ReadSerializedStringField(*stackingValue, "overflow", "Reject");
+			if (overflow == "RefreshOnly")
+				policy.overflowPolicy = VansEffectOverflowPolicy::RefreshOnly;
+			else if (overflow == "ReplaceOldest")
+				policy.overflowPolicy = VansEffectOverflowPolicy::ReplaceOldest;
+			policy.maximumStacks = static_cast<std::uint32_t>((std::max<std::int64_t>)(
+				0, ReadSerializedIntField(*stackingValue, "maximumStacks", 1)));
+			policy.refreshDurationOnStack =
+				ReadSerializedBoolField(*stackingValue, "refreshDuration", false);
+			policy.resetPeriodOnStack = ReadSerializedBoolField(*stackingValue, "resetPeriod");
+		}
+		const bool instant = durationPolicy == "Instant";
+		const VansSerializedValue* grantedTags = FindSerializedPointer(root, "/grantedTags");
+		if (grantedTags && grantedTags->kind == VansSerializedValue::Kind::Array &&
+			!grantedTags->arrayItems.empty())
+			policy.grantedTags.push_back(VansGameplayTagId{ 1 });
 		const VansSerializedValue* stacks = FindSerializedPointer(root, "/stacking/maximumStacks");
 		if (stacks && stacks->kind == VansSerializedValue::Kind::Int && stacks->intValue <= 0)
 			diagnostics.push_back({ VansGameplayDiagnosticSeverity::Error, "GAF-EFFECT-STACK",
@@ -542,15 +583,38 @@ VansGameplayDiagnostics VansGameplayAssetSchemaRegistry::Validate(
 			for (std::size_t index = 0; index < extensions->arrayItems.size(); ++index)
 			{
 				const VansSerializedValue& record = extensions->arrayItems[index];
-				if (record.kind != VansSerializedValue::Kind::Object ||
-					ReadSerializedStringField(record, "type") !=
-						"Gameplay.Effect.AttributeModifier") continue;
-				const VansSerializedValue* modifier = FindObjectField(record, "inputs");
+				if (record.kind != VansSerializedValue::Kind::Object) continue;
+				const std::string recordType = ReadSerializedStringField(record, "type");
+				const VansSerializedValue* inputs = FindObjectField(record, "inputs");
+				if (recordType == "Gameplay.Effect.CueBinding" && inputs)
+				{
+					const std::string phase = ReadSerializedStringField(*inputs, "phase", "Execute");
+					if (phase == "Persistent") policy.persistentCues.push_back(VansCueId{ 1 });
+					else if (phase == "Periodic") policy.periodicCues.push_back(VansCueId{ 1 });
+					else if (phase == "Remove") policy.removeCues.push_back(VansCueId{ 1 });
+					continue;
+				}
+				if (recordType != "Gameplay.Effect.AttributeModifier") continue;
+				const VansSerializedValue* modifier = inputs;
 				if (!modifier || modifier->kind != VansSerializedValue::Kind::Object) continue;
 				const std::string path = "/extensions/" + std::to_string(index) + "/inputs";
+				const std::string application = ReadSerializedStringField(*modifier, "application");
+				const VansSerializedValue* priority = FindObjectField(*modifier, "priority");
+				if ((instant && application == "Persistent") ||
+					(!instant && policy.periodSeconds <= 0.0 && application == "Base"))
+					diagnostics.push_back({ VansGameplayDiagnosticSeverity::Error,
+						"GAF-EFFECT-MODIFIER-LIFETIME",
+						"Effect modifier application is incompatible with its duration and period",
+						{}, path + "/application" });
+				if (application == "Base" && priority &&
+					priority->kind == VansSerializedValue::Kind::Int && priority->intValue != 0)
+					diagnostics.push_back({ VansGameplayDiagnosticSeverity::Error,
+						"GAF-EFFECT-MODIFIER-PRIORITY",
+						"Base modifier cannot declare a priority", {}, path + "/priority" });
 				const std::string source = ReadSerializedStringField(
 					*modifier, "magnitudeSource", "Fixed");
-				bool validSource = true;
+				bool validSource = source == "Fixed" || source == "TargetData" ||
+					source == "RandomRange";
 				if (source == "SetByCaller")
 					validSource = !ReadSerializedStringField(*modifier, "setByCaller").empty();
 				else if (source == "CapturedAttribute")
@@ -578,6 +642,10 @@ VansGameplayDiagnostics VansGameplayAssetSchemaRegistry::Validate(
 						"GAF-EFFECT-RANDOM-RANGE", "Effect random range minimum exceeds maximum",
 						{}, path + "/randomMinimum" });
 			}
+		for (const VansEffectPolicyIssue& issue : VansValidateEffectPolicy(policy))
+			diagnostics.push_back({ VansGameplayDiagnosticSeverity::Error,
+				"GAF-EFFECT-FIELD-INAPPLICABLE", std::string(issue.message), {},
+				std::string(VansEffectPolicyFieldPath(issue.field)) });
 	}
 	if (type == VansAssetType::ActionGraph)
 	{
@@ -642,7 +710,7 @@ bool RegisterGameplayAssetSchemas(
 
 	if (includeCore)
 	{
-		auto action = Base(VansAssetType::ActionDefinition, "ActionDefinition", ".vaction");
+		auto action = Base(VansAssetType::ActionDefinition, "ActionDefinition");
 		action.fields.push_back(Field("/actionId", "Action Id", "Identity",
 			VansGameplayPropertyKind::String, VansSerializedValue::String(""), true));
 		action.fields.push_back(Field("/metadata", "Metadata", "Identity",
@@ -733,7 +801,7 @@ bool RegisterGameplayAssetSchemas(
 		addTypedRecords(action, "/extensions", "Extensions", "Extension", true);
 		value.Register(std::move(action), error);
 
-		auto actionSet = Base(VansAssetType::ActionSet, "ActionSet", ".vactionset");
+		auto actionSet = Base(VansAssetType::ActionSet, "ActionSet");
 		AddIdentity(actionSet, "/actionSetId");
 		actionSet.fields.push_back(Field("/grants", "Action Grants", "Grants",
 			VansGameplayPropertyKind::Array, VansSerializedValue::Array({}), true));
@@ -761,7 +829,7 @@ bool RegisterGameplayAssetSchemas(
 
 	if (includeGameplayPrimitives)
 	{
-		auto effect = Base(VansAssetType::GameplayEffect, "GameplayEffect", ".veffect");
+		auto effect = Base(VansAssetType::GameplayEffect, "GameplayEffect");
 		AddIdentity(effect, "/effectId");
 		effect.fields.push_back(Field("/duration/policy", "Duration Policy", "Duration",
 			VansGameplayPropertyKind::Enum, VansSerializedValue::String("Instant"), true));
@@ -772,14 +840,13 @@ bool RegisterGameplayAssetSchemas(
 		effect.fields.push_back(Field("/duration/period", "Period", "Duration",
 			VansGameplayPropertyKind::Float, VansSerializedValue::Float(0.0)));
 		effect.fields.back().minimum = 0.0; effect.fields.back().hasMinimum = true;
+		effect.fields.back().description =
+			"Zero disables periodic execution; positive values must meet the project minimum Effect period budget.";
 		effect.fields.push_back(Field("/duration/executePeriodicOnApply", "Execute On Apply", "Duration",
 			VansGameplayPropertyKind::Bool, VansSerializedValue::Bool(false)));
 		effect.fields.push_back(Field("/requirements", "Application Requirements", "Requirements",
 			VansGameplayPropertyKind::TagQuery, VansSerializedValue::Object({})));
 		effect.fields.back().children = TagQueryChildren("/requirements");
-		effect.fields.push_back(Field("/effectTags", "Effect Tags", "Tags",
-			VansGameplayPropertyKind::Array, VansSerializedValue::Array({})));
-		StringArrayElement(effect.fields.back());
 		effect.fields.push_back(Field("/grantedTags", "Granted Tags", "Tags",
 			VansGameplayPropertyKind::Array, VansSerializedValue::Array({})));
 		StringArrayElement(effect.fields.back());
@@ -795,7 +862,7 @@ bool RegisterGameplayAssetSchemas(
 			VansGameplayPropertyKind::Int, VansSerializedValue::Int(1)));
 		effect.fields.back().minimum = 1.0; effect.fields.back().hasMinimum = true;
 		effect.fields.push_back(Field("/stacking/refreshDuration", "Refresh Duration", "Stacking",
-			VansGameplayPropertyKind::Bool, VansSerializedValue::Bool(true)));
+			VansGameplayPropertyKind::Bool, VansSerializedValue::Bool(false)));
 		effect.fields.push_back(Field("/stacking/resetPeriod", "Reset Period", "Stacking",
 			VansGameplayPropertyKind::Bool, VansSerializedValue::Bool(false)));
 		effect.fields.push_back(Field("/immunity", "Immunity", "Requirements",
@@ -804,7 +871,7 @@ bool RegisterGameplayAssetSchemas(
 		addTypedRecords(effect, "/extensions", "Effect Records", "Effect", true);
 		value.Register(std::move(effect), error);
 
-		auto cue = Base(VansAssetType::GameplayCue, "GameplayCue", ".vcue");
+		auto cue = Base(VansAssetType::GameplayCue, "GameplayCue");
 		AddIdentity(cue, "/cueId");
 		cue.fields.push_back(Field("/scope", "Scope", "Cue",
 			VansGameplayPropertyKind::Enum, VansSerializedValue::String("Target"), true));
@@ -815,7 +882,7 @@ bool RegisterGameplayAssetSchemas(
 		addTypedRecords(cue, "/bindings", "Invoke Bindings", "Cue", true);
 		value.Register(std::move(cue), error);
 
-		auto attributes = Base(VansAssetType::AttributeSet, "AttributeSet", ".vattributeset");
+		auto attributes = Base(VansAssetType::AttributeSet, "AttributeSet");
 		AddIdentity(attributes, "/attributeSetId");
 		attributes.fields.push_back(Field("/attributes", "Attributes", "Attributes",
 			VansGameplayPropertyKind::Array, VansSerializedValue::Array({}), true));
@@ -839,22 +906,27 @@ bool RegisterGameplayAssetSchemas(
 		});
 		value.Register(std::move(attributes), error);
 
-		auto targeting = Base(VansAssetType::TargetingPolicy, "TargetingPolicy", ".vtargeting");
+		auto targeting = Base(VansAssetType::TargetingPolicy, "TargetingPolicy");
 		AddIdentity(targeting, "/targetingId");
+		VansTargetingHandlerRegistry targetingHandlers;
+		if (!VansBuildBuiltInTargetingHandlerRegistry(targetingHandlers, error)) return false;
+		std::vector<std::string> targetingTypes;
+		for (const VansTargetingStepDescriptor& descriptor : targetingHandlers.Snapshot())
+			targetingTypes.push_back(descriptor.stableName);
 		targeting.fields.push_back(Field("/steps", "Pipeline", "Targeting",
 			VansGameplayPropertyKind::Array, VansSerializedValue::Array({}), true));
 		ObjectArrayElement(targeting.fields.back(), VansSerializedValue::Object({
 			{ "type", VansSerializedValue::String("Targeting.Acquire.Owner") },
 			{ "inputs", VansSerializedValue::Object({}) }
 		}), {
-			Child("/steps/*/type", "type", "Operation Type",
-				VansGameplayPropertyKind::String, VansSerializedValue::String("Targeting.Acquire.Owner"), true),
+			EnumChild("/steps/*/type", "type", "Operation Type",
+				"Targeting.Acquire.Owner", std::move(targetingTypes), true),
 			Child("/steps/*/inputs", "inputs", "Inputs",
 				VansGameplayPropertyKind::Payload, VansSerializedValue::Object({}))
 		});
 		value.Register(std::move(targeting), error);
 
-		auto tags = Base(VansAssetType::GameplayTagTree, "GameplayTagTree", ".vtagtree");
+		auto tags = Base(VansAssetType::GameplayTagTree, "GameplayTagTree");
 		AddIdentity(tags, "/tagTreeId");
 		tags.fields.push_back(Field("/tags", "Tags", "Tags",
 			VansGameplayPropertyKind::Array, VansSerializedValue::Array({}), true));
@@ -879,13 +951,11 @@ bool RegisterGameplayAssetSchemas(
 
 	if (includeCore)
 	{
-		auto payload = Base(VansAssetType::PayloadSchema, "PayloadSchema", ".vpayloadschema");
+		auto payload = Base(VansAssetType::PayloadSchema, "PayloadSchema");
 		AddIdentity(payload, "/payloadTypeId");
 		payload.fields.push_back(Field("/maximumBytes", "Maximum Bytes", "Payload",
 			VansGameplayPropertyKind::Int, VansSerializedValue::Int(4096), true));
 		payload.fields.back().minimum = 1.0; payload.fields.back().hasMinimum = true;
-		payload.fields.push_back(Field("/editorSafe", "Editor Safe", "Payload",
-			VansGameplayPropertyKind::Bool, VansSerializedValue::Bool(false)));
 		payload.fields.push_back(Field("/allowAdditionalFields", "Allow Additional Fields", "Payload",
 			VansGameplayPropertyKind::Bool, VansSerializedValue::Bool(false)));
 		payload.fields.push_back(Field("/fields", "Fields", "Payload",
@@ -893,8 +963,7 @@ bool RegisterGameplayAssetSchemas(
 		ObjectArrayElement(payload.fields.back(), VansSerializedValue::Object({
 			{ "name", VansSerializedValue::String("") },
 			{ "type", VansSerializedValue::String("String") },
-			{ "required", VansSerializedValue::Bool(false) },
-			{ "sensitive", VansSerializedValue::Bool(false) }
+			{ "required", VansSerializedValue::Bool(false) }
 		}), {
 			Child("/fields/*/name", "name", "Field Name",
 				VansGameplayPropertyKind::String, VansSerializedValue::String(""), true),
@@ -903,13 +972,11 @@ bool RegisterGameplayAssetSchemas(
 					"Vec3", "Vec4", "Quaternion", "ColorLinear", "ColorSrgb",
 					"ObjectReference", "Struct" }, true),
 			Child("/fields/*/required", "required", "Required",
-				VansGameplayPropertyKind::Bool, VansSerializedValue::Bool(false)),
-			Child("/fields/*/sensitive", "sensitive", "Sensitive",
 				VansGameplayPropertyKind::Bool, VansSerializedValue::Bool(false))
 		});
 		value.Register(std::move(payload), error);
 
-		auto graph = Base(VansAssetType::ActionGraph, "ActionGraph", ".vactiongraph");
+		auto graph = Base(VansAssetType::ActionGraph, "ActionGraph");
 		AddIdentity(graph, "/graphId");
 		graph.fields.push_back(Field("/entryNode", "Entry Node", "Graph",
 			VansGameplayPropertyKind::String, VansSerializedValue::String(""), true));
@@ -979,7 +1046,7 @@ bool RegisterGameplayAssetSchemas(
 		});
 		value.Register(std::move(graph), error);
 
-		auto layout = Base(VansAssetType::GAFEditorLayout, "GAFEditorLayout", ".gafeditorlayout", true);
+		auto layout = Base(VansAssetType::GAFEditorLayout, "GAFEditorLayout", true);
 		layout.fields.push_back(Field("/assetGuid", "Asset Guid", "Identity",
 			VansGameplayPropertyKind::String, VansSerializedValue::String("")));
 		layout.fields.push_back(Field("/panels", "Panels", "Layout",

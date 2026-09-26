@@ -46,7 +46,6 @@ void VansProjectConfig::SetDefaults(const std::string& name)
 	defaultScene = "Scenes/MainScene.json";
 	assetsRoot = "Assets";
 	importedArtifactRoot = "Library/Artifacts";
-	metaExtension = ".meta";
 	runtimeAssetBindings.clear();
 
 	assetDirectories = {
@@ -59,6 +58,7 @@ void VansProjectConfig::SetDefaults(const std::string& name)
 	scriptSearchPaths = { "Scripts" };
 	renderSettings = "ProjectSettings/RenderSettings.json";
 	physicsSettings = "ProjectSettings/PhysicsSettings.json";
+	navigationSettings = "ProjectSettings/NavigationSettings.json";
 	audioSettings = "ProjectSettings/AudioMix.json";
 	collisionLayerSettings = "ProjectSettings/PhysicsLayers.json";
 }

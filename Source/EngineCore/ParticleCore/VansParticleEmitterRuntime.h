@@ -9,10 +9,11 @@ class VansParticleEmitterRuntime
 public:
     explicit VansParticleEmitterRuntime(const VansParticleEmitter& definition);
     const VansParticleEmitter& Definition() const { return m_Definition; }
-    bool m_Enabled = true;
-    VansParticlePool m_ParticlePool;
-    uint64_t m_DroppedSpawns = 0;
-    uint64_t m_BreakCount = 0;
+    bool IsEnabled() const { return m_Enabled; }
+    const VansParticlePool& ParticlePool() const { return m_ParticlePool; }
+    uint32_t AliveCount() const { return m_ParticlePool.m_AliveCount; }
+    uint64_t DroppedSpawns() const { return m_DroppedSpawns; }
+    uint64_t BreakCount() const { return m_BreakCount; }
     void ResetSimulation();
     void ResetEmission();
     void SetRandomSeed(uint32_t seed);
@@ -29,11 +30,16 @@ public:
     void FillVolumetricInstanceData(std::vector<VansVolumetricParticleInstanceData>& outBuffer) const;
     void FillRibbonData(std::vector<VansParticleRibbonStrip>& strips) const;
 private:
+    friend class VansParticleRuntime;
     uint32_t SpawnParticles(uint32_t count, const glm::mat4& transform, float remainingTime, bool detachedRoot = false);
     void DetachRoot();
     uint32_t NextRandomSeed();
     bool IsRibbon() const { return m_Definition.m_RendererConfig.m_Type == VansParticleRendererType::Ribbon; }
     const VansParticleEmitter& m_Definition;
+    bool m_Enabled = true;
+    VansParticlePool m_ParticlePool;
+    uint64_t m_DroppedSpawns = 0;
+    uint64_t m_BreakCount = 0;
     double m_SpawnAccum = 0;
     double m_EmissionTime = 0;
     struct BurstState { uint64_t cyclesDone = 0; };

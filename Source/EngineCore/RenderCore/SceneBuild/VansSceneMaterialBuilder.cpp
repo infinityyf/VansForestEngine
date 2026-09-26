@@ -341,15 +341,6 @@ VansTexture* VansSceneMaterialBuilder::ResolveMaterialTexture(
     return nullptr;
 }
 
-VansTexture* VansSceneMaterialBuilder::ResolveMaterialTextureWithFallback(
-    VansScene& scene,
-    const Vans::VansSceneMaterialConfig& sceneMaterial,
-    const char* key,
-    const char* fallback)
-{
-    return scene.ResolveTextureAssetOrDefault(ResolveMaterialTexture(scene, sceneMaterial, key), fallback);
-}
-
 VansTexture* VansSceneMaterialBuilder::ResolveMaterialTextureOrDefault(
     VansScene& scene,
     const Vans::VansSceneMaterialConfig& sceneMaterial,
@@ -560,10 +551,10 @@ void VansSceneMaterialBuilder::PopulateMaterial(
     case VansMaterialType::VAN_CLOTH:
     {
         auto* cloth = static_cast<VansClothMaterial*>(material);
-        cloth->m_BaseColorTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
-        cloth->m_NormalTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "normal_texture", "defaultNormal");
-        cloth->m_RoughnessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
-        cloth->m_AoTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "ao_texture", "defaultAo");
+        cloth->m_BaseColorTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        cloth->m_NormalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
+        cloth->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
+        cloth->m_AoTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "ao_texture", "defaultAo");
         cloth->m_SheenRoughness = std::clamp(ReadMaterialFloatField(sceneMaterial, "sheenRoughness", 0.5f), 0.045f, 1.0f);
         glm::vec3 clothColor = ReadMaterialVec3Field(sceneMaterial, "color", glm::vec3(1.0f));
         clothColor = ReadMaterialVec3Field(sceneMaterial, "basecolor", clothColor);
@@ -626,9 +617,9 @@ void VansSceneMaterialBuilder::PopulateMaterial(
                 << "': unknown skinProfile '" << skinProfile << "', keeping neutral profile.");
         }
 
-        skin->m_BaseColorTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
-        skin->m_NormalTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "normal_texture", "defaultNormal");
-        skin->m_RoughnessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
+        skin->m_BaseColorTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        skin->m_NormalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
+        skin->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
         skin->m_CavityTexture = ResolveMaterialTexture(scene, sceneMaterial, "cavity_texture");
         if (!skin->m_CavityTexture)
             skin->m_CavityTexture = ResolveMaterialTexture(scene, sceneMaterial, "ao_texture");
@@ -742,13 +733,13 @@ void VansSceneMaterialBuilder::PopulateMaterial(
 		if (hair->m_AlbedoTexture == nullptr)
 			hair->m_AlbedoTexture = ResolveMaterialTexture(scene, sceneMaterial, "basecolor_texture");
 		hair->m_AlbedoTexture = scene.ResolveTextureAssetOrDefault(hair->m_AlbedoTexture, "defaultAlbedo");
-        hair->m_AlphaTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "alpha_texture", "defaultAlbedo");
-        hair->m_NormalTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "normal_texture", "defaultNormal");
-        hair->m_RoughnessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
-        hair->m_AOTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "ao_texture", "defaultAo");
-        hair->m_ShiftTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "shift_texture", "defaultRoughness");
-        hair->m_FlowTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "flow_texture", "defaultAlbedo");
-        hair->m_IDTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "id_texture", "defaultAlbedo");
+        hair->m_AlphaTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "alpha_texture", "defaultAlbedo");
+        hair->m_NormalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
+        hair->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
+        hair->m_AOTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "ao_texture", "defaultAo");
+        hair->m_ShiftTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "shift_texture", "defaultRoughness");
+        hair->m_FlowTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "flow_texture", "defaultAlbedo");
+        hair->m_IDTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "id_texture", "defaultAlbedo");
 		if (const Vans::VansSerializedValue* params = FindDirectMaterialField(sceneMaterial, "params");
 			params && params->kind == Vans::VansSerializedValue::Kind::Object)
 		{
@@ -772,10 +763,10 @@ void VansSceneMaterialBuilder::PopulateMaterial(
     case VansMaterialType::VAN_SUBSURFACE:
     {
         auto* sss = static_cast<VansSubsurfaceMaterial*>(material);
-        sss->m_BaseColorTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
-        sss->m_NormalTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "normal_texture", "defaultNormal");
-        sss->m_ThicknessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "thickness_texture", "defaultAo");
-        sss->m_RoughnessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
+        sss->m_BaseColorTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        sss->m_NormalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
+        sss->m_ThicknessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "thickness_texture", "defaultAo");
+        sss->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
         sss->m_SubsurfacePower = std::max(
             ReadMaterialFloatField(sceneMaterial, "scatteringDistance",
                 ReadMaterialFloatField(sceneMaterial, "subsurfacePower", 12.0f)), 0.01f);
@@ -839,10 +830,10 @@ void VansSceneMaterialBuilder::PopulateMaterial(
     case VansMaterialType::VAN_PBR_TRANSMISSION:
     {
         auto* glass = static_cast<VansTransmissionMaterial*>(material);
-        glass->m_BaseColorTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
-        glass->m_NormalTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "normal_texture", "defaultNormal");
-        glass->m_RoughnessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
-        glass->m_ThicknessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "thickness_texture", "defaultAo");
+        glass->m_BaseColorTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        glass->m_NormalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
+        glass->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
+        glass->m_ThicknessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "thickness_texture", "defaultAo");
         glass->m_ReflectionTexture = ResolveMaterialTexture(scene, sceneMaterial, "reflection_texture");
         if (glass->m_ReflectionTexture == nullptr)
             glass->m_ReflectionTexture = ResolveMaterialTexture(scene, sceneMaterial, "reflectionTexture");
@@ -892,11 +883,11 @@ void VansSceneMaterialBuilder::PopulateMaterial(
     case VansMaterialType::VAN_GRASS:
     {
         auto* grass = static_cast<VansGrassMaterial*>(material);
-        grass->m_AlbedoTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
-        grass->m_NormalTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "normal_texture", "defaultNormal");
-        grass->m_RoughnessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
-        grass->m_TranslucencyTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "translucency_texture", "defaultAo");
-        grass->m_AOTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "ao_texture", "defaultAo");
+        grass->m_AlbedoTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        grass->m_NormalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
+        grass->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
+        grass->m_TranslucencyTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "translucency_texture", "defaultAo");
+        grass->m_AOTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "ao_texture", "defaultAo");
         grass->m_GrassParams.aoStrength = std::clamp(
             ReadMaterialFloatField(sceneMaterial, "aoStrength", grass->m_GrassParams.aoStrength), 0.0f, 1.0f);
         grass->m_GrassParams.normalStrength = std::clamp(

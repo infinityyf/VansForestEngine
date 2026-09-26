@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VansAudioBus.h"
+#include "VansAudioDeviceConfig.h"
 
 #include <filesystem>
 #include <string>
@@ -9,7 +10,7 @@
 
 namespace VansEngine
 {
-    struct AudioMixBusConfig
+    struct VansAudioMixBusConfig
     {
         std::string busName = "SFX";
         float gain = 1.0f;
@@ -18,10 +19,11 @@ namespace VansEngine
         float lowpassHighFrequencyGain = 1.0f;
     };
 
-    struct AudioMixConfig
+    struct VansAudioMixConfig
     {
         std::string displayName;
-        std::vector<AudioMixBusConfig> buses;
+        VansAudioDeviceConfig device;
+        std::vector<VansAudioMixBusConfig> buses;
         std::unordered_map<std::string, AudioBusSnapshot> snapshots;
         std::string defaultSnapshot;
         std::vector<AudioDuckingRule> duckingRules;
@@ -32,11 +34,11 @@ namespace VansEngine
     public:
         static bool Load(
             const std::filesystem::path& path,
-            AudioMixConfig& config,
+            VansAudioMixConfig& config,
             std::string& error);
 		static bool SaveAtomic(
 			const std::filesystem::path& path,
-			const AudioMixConfig& config,
+			const VansAudioMixConfig& config,
 			std::string& error);
     };
 }

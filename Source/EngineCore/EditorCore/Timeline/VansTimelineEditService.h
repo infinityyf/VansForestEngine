@@ -11,6 +11,7 @@
 namespace Vans
 {
 struct VansOpenAssetDocument;
+class VansTimelineTrackExtensionRegistry;
 namespace EditorAPI { class IEngineEditorAPI; }
 
 struct TimelineEditResult
@@ -83,11 +84,12 @@ public:
 	bool IsDirty() const;
 	bool CanUndo() const;
 	bool CanRedo() const;
+	const VansTimelineTrackExtensionRegistry& TrackExtensions() const { return *m_TrackExtensions; }
 
-	static VansSerializedValue DefaultExtensionData(VansTimelineTrackTypeId type);
 	static VansTimelineId NewStableId();
 
 private:
+	VansSerializedValue DefaultExtensionData(VansTimelineTrackTypeId type) const;
 	TimelineEditResult ValidateWorkingCopy();
 	TimelineEditResult CommitWorkingCopy();
 	TimelineEditResult FinishMutation(VansTimelineId objectId = {});
@@ -99,5 +101,6 @@ private:
 	VansTimelineAsset m_Asset;
 	VansTimelineDiagnostics m_Diagnostics;
 	std::optional<VansTimelineAsset> m_InteractionSnapshot;
+	const VansTimelineTrackExtensionRegistry* m_TrackExtensions = nullptr;
 };
 }

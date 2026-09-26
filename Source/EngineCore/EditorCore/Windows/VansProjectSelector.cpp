@@ -1,5 +1,5 @@
 #include "VansProjectSelector.h"
-#include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../../EngineAPILayer/Public/IProjectEditorAPI.h"
 #include "../../Util/VansLog.h"
 
 #include "imgui.h"
@@ -34,9 +34,9 @@ VansProjectSelector::VansProjectSelector()
 {
 }
 
-void VansProjectSelector::RefreshRecentProjects(EditorAPI::IEngineEditorAPI& editorAPI)
+void VansProjectSelector::RefreshRecentProjects(EditorAPI::IProjectEditorAPI& projectAPI)
 {
-	m_RecentProjects = editorAPI.GetRecentProjects();
+	m_RecentProjects = projectAPI.GetRecentProjects();
 	// 刷新后按路径恢复选择，避免删除前面的条目后误开另一个项目。
 	m_SelectedRecentIndex = -1;
 	for (size_t i = 0; i < m_RecentProjects.size(); ++i)
@@ -49,12 +49,12 @@ void VansProjectSelector::RefreshRecentProjects(EditorAPI::IEngineEditorAPI& edi
 // -----------------------------------------------------------------------
 // Main full-screen overlay – called each frame while no project is loaded
 // -----------------------------------------------------------------------
-ProjectSelectorResult VansProjectSelector::Render(EditorAPI::IEngineEditorAPI& editorAPI)
+ProjectSelectorResult VansProjectSelector::Render(EditorAPI::IProjectEditorAPI& projectAPI)
 {
 	m_Result = ProjectSelectorResult::None;
 	if (!m_RecentProjectsLoaded ||
 		std::chrono::steady_clock::now() - m_LastRecentRefresh >= std::chrono::seconds(1))
-		RefreshRecentProjects(editorAPI);
+		RefreshRecentProjects(projectAPI);
 
 	// Full viewport overlay
 	ImGuiViewport* viewport = ImGui::GetMainViewport();

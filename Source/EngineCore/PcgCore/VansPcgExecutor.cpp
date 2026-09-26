@@ -1,4 +1,5 @@
 #include "VansPcgExecutor.h"
+#include "VansPcgDeterminism.h"
 #include "VansPcgSplineField.h"
 #include "../AssetCore/VansAssetObjectRepository.h"
 
@@ -40,19 +41,12 @@ VansPcgExecutionResult VansPcgExecutor::Generate(const VansPcgRecipeAsset& recip
 			const auto plantErrors = ValidatePlantTypeAsset(*output.plant, true);
 			if (!plantErrors.empty()) return fail(label + plantErrors.front());
 			if (output.plant->category != layer.category) return fail(label + "plant category does not match the layer panel");
-			const auto density = repository.ResolveLatest<VansPcgMaskAsset>(layer.densityMask);
-			const auto exclusion = layer.exclusionMask.IsValid() ? repository.ResolveLatest<VansPcgMaskAsset>(layer.exclusionMask) : nullptr;
-			if (!density || (layer.exclusionMask.IsValid() && !exclusion)) return fail(label + "Mask asset is not available in memory");
-			for (const auto* mask : { density.get(), exclusion.get() })
-			{
-				if (!mask) continue;
-				const auto maskErrors = ValidatePcgMaskAsset(*mask, true);
-				if (!maskErrors.empty()) return fail(label + maskErrors.front());
-				if (mask->mask.target.regionId != region.id || mask->mask.target.layerId != layer.id ||
-					mask->mask.target.maskId != (mask == density.get() ? layer.densityMask : layer.exclusionMask).ToString())
-					return fail(label + "Mask ownership does not match the selected region/layer");
-				if (!pixelOwners.insert(mask->pixelAsset).second) return fail(label + "writable Mask pixel textures are shared");
-			}
+			VansPcgMaskBinding masks;
+			std::string maskError;
+			if (!ResolvePcgMaskBinding(region, layer, repository, true, pixelOwners, masks, maskError))
+				return fail(label + maskError);
+			const auto& density = masks.density;
+			const auto& exclusion = masks.exclusion;
 			VansPcgDistributionSettings settings;
 			static_cast<VansPcgPlacementSettings&>(settings) = layer.placement;
 			settings.regionId = region.id;
@@ -89,7 +83,6 @@ VansPcgExecutionResult VansPcgExecutor::Generate(const VansPcgRecipeAsset& recip
 			output.variantIds = std::move(generated.variantIds);
 			output.points = std::move(generated.points);
 			output.stats = generated.stats;
-			output.requiresWholeRegionUpdate = layer.source != VansPcgSourceMode::Density || !layer.overrides.empty() || !layer.addedInstances.empty();
 			const auto addAuthored = [&](const std::vector<VansPcgAuthoredInstance>& instances) {
 				for (const auto& instance : instances)
 				{
@@ -167,8 +160,7 @@ VansPcgExecutionResult VansPcgExecutor::Generate(const VansPcgRecipeAsset& recip
                 if (splineField && splineField->hasVegetationExclusion && region.surface.terrain==splineField->terrainGuid)
                 {
                     const float exclusion=splineField->SampleVegetationExclusion(point.position[0],point.position[2]);
-                    auto hash=point.id ^ 0x93a9dc78ab1ce745ull;
-                    hash=(hash^(hash>>30))*0xbf58476d1ce4e5b9ull;hash=(hash^(hash>>27))*0x94d049bb133111ebull;hash^=hash>>31;
+					const auto hash=PcgMix64(point.id ^ 0x93a9dc78ab1ce745ull);
                     if (double(hash>>11)*(1.0/9007199254740992.0)<exclusion) {++output.stats.maskRejected;return true;}
                 }
                 return false;

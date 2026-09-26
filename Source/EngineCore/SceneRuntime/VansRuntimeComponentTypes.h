@@ -1,5 +1,5 @@
 #pragma once
-#include "../RuntimeCore/VansStableIdentity.h"
+#include "../SceneCore/VansComponentTypeCatalog.h"
 
 #include "VansRuntimeHandle.h"
 
@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <typeinfo>
 #include <unordered_map>
 #include <vector>
 
@@ -41,33 +42,9 @@ namespace Vans
 {
 class VansActionHost;
 
-enum VansRuntimeComponentTypeId : std::uint16_t
-{
-	VansRuntimeComponentType_Render = 1,
-	VansRuntimeComponentType_Physics = 2,
-	VansRuntimeComponentType_Cloth = 3,
-	VansRuntimeComponentType_CharacterController = 4,
-	VansRuntimeComponentType_DirectionalLight = 5,
-	VansRuntimeComponentType_PointLight = 6,
-	VansRuntimeComponentType_SpotLight = 7,
-	VansRuntimeComponentType_RectLight = 8,
-	VansRuntimeComponentType_Camera = 9,
-	VansRuntimeComponentType_Audio = 10,
-	VansRuntimeComponentType_AudioReverbZone = 11,
-	VansRuntimeComponentType_AudioVolume = 12,
-	VansRuntimeComponentType_Video = 13,
-	VansRuntimeComponentType_Particle = 14,
-	VansRuntimeComponentType_Animation = 15,
-	VansRuntimeComponentType_Ragdoll = 16,
-	VansRuntimeComponentType_Vehicle = 17,
-	VansRuntimeComponentType_UI = 18,
-	VansRuntimeComponentType_Script = 19,
-	VansRuntimeComponentType_Transform = 20,
-	VansRuntimeComponentType_Timeline = 21,
-	VansRuntimeComponentType_ActionHost = 22,
-	VansRuntimeComponentType_NavigationAgent = 23,
-	VansRuntimeComponentType_AIAgent = 24,
-};
+bool VansRuntimeComponentTypeMatches(
+	std::uint16_t typeId,
+	const std::type_info& valueType);
 
 struct VansRuntimeTransformComponent
 {
@@ -122,7 +99,7 @@ struct VansRuntimeAudioComponent
 {
 	VansEngine::VansAudioNode* audioNode = nullptr;
 	VansEngine::VansAudioSourceBinding* sourceBinding = nullptr;
-	std::string sourceName;
+	std::string assetGuid;
 	VansEngine::AudioConeSettings coneSettings;
 	bool dopplerEnabled = false;
 	bool hasLastAudioPosition = false;
@@ -147,6 +124,12 @@ struct VansRuntimeAudioReverbZoneComponent
 	float fadeDistance = 2.0f;
 	float wetGain = 0.6f;
 	int priority = 0;
+};
+
+enum class VansRuntimeAudioEnvironmentKind : std::uint8_t
+{
+	ReverbZone,
+	Volume
 };
 
 struct VansRuntimeUIComponent
@@ -199,6 +182,7 @@ struct VansRuntimeScriptComponent
 
 struct VansRuntimeVideoComponent
 {
+	std::string assetGuid;
 	VansGraphics::VansVideoTexture* videoTexture = nullptr;
 	VansGraphics::VansVideoManager* videoManager = nullptr;
 	int bindlessFirstSlot = -1;
@@ -206,6 +190,7 @@ struct VansRuntimeVideoComponent
 
 struct VansRuntimeParticleComponent
 {
+	std::string assetGuid;
 	VansGenerationHandle instance;
 	bool playOnAwake = false;
 	bool hasWorldPositionOverride = false;
@@ -239,34 +224,4 @@ struct VansRuntimeLightComponent
 	VansRuntimeLightKind kind = VansRuntimeLightKind::Directional;
 };
 
-inline std::uint16_t VansRuntimeComponentTypeIdForKey(const std::string& key)
-{
-	if (key == "render") return VansRuntimeComponentType_Render;
-	if (key == "physics") return VansRuntimeComponentType_Physics;
-	if (key == "cloth") return VansRuntimeComponentType_Cloth;
-	if (key == "charController") return VansRuntimeComponentType_CharacterController;
-	if (key == "directional_light") return VansRuntimeComponentType_DirectionalLight;
-	if (key == "point_light") return VansRuntimeComponentType_PointLight;
-	if (key == "spot_light") return VansRuntimeComponentType_SpotLight;
-	if (key == "rect_light") return VansRuntimeComponentType_RectLight;
-	if (key == "camera") return VansRuntimeComponentType_Camera;
-	if (key == "audio") return VansRuntimeComponentType_Audio;
-	if (key == "audio_reverb_zone") return VansRuntimeComponentType_AudioReverbZone;
-	if (key == "audio_volume") return VansRuntimeComponentType_AudioVolume;
-	if (key == "video") return VansRuntimeComponentType_Video;
-	if (key == "particle") return VansRuntimeComponentType_Particle;
-	if (key == "animation") return VansRuntimeComponentType_Animation;
-	if (key == "ragdoll") return VansRuntimeComponentType_Ragdoll;
-	if (key == "vehicle") return VansRuntimeComponentType_Vehicle;
-	if (key == "uicontroller") return VansRuntimeComponentType_UI;
-	if (key == "ui") return VansRuntimeComponentType_UI;
-	if (key == "luascript") return VansRuntimeComponentType_Script;
-	if (key == "script") return VansRuntimeComponentType_Script;
-	if (key == "transform") return VansRuntimeComponentType_Transform;
-	if (key == "timeline") return VansRuntimeComponentType_Timeline;
-	if (key == "action_host" || key == "gaf") return VansRuntimeComponentType_ActionHost;
-	if (key == "navigation_agent") return VansRuntimeComponentType_NavigationAgent;
-	if (key == "ai_agent") return VansRuntimeComponentType_AIAgent;
-	return VansInvalidComponentTypeId;
-}
 }

@@ -3,9 +3,13 @@
 #include "../Animation/VansAnimationRigSaveService.h"
 #include "../VansEditorWindow.h"
 #include "../VansSceneEditService.h"
-#include "../VansAssetDocumentEditService.h"
-#include "../VansAssetDocumentRegistry.h"
+#include "../../AuthoringCore/VansAssetDocumentEditService.h"
+#include "../../AuthoringCore/VansAssetDocumentRegistry.h"
 #include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
+#include "../../EngineAPILayer/Public/IAnimationEditorAPI.h"
+#include "../../EngineAPILayer/Public/IAnimationPreviewEditorAPI.h"
+#include "../../EngineAPILayer/Public/IAssetEditorAPI.h"
+#include "../../EngineAPILayer/Public/IRuntimeSceneEditorAPI.h"
 #include "../../RenderCore/VansCamera.h"
 
 #include <imgui.h>
@@ -112,7 +116,7 @@ namespace VansGraphics
 	}
 
 	bool VansSceneAnimationPreviewWindow::DrawSceneEntityCombo(
-		Vans::EditorAPI::IEngineEditorAPI& api, const char* label,
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI, const char* label,
 		std::string& selectedGuid, NamePrefixFilter& filter)
 	{
 		const auto selected = std::find_if(m_SceneEntities.begin(), m_SceneEntities.end(),
@@ -123,7 +127,7 @@ namespace VansGraphics
 		const bool opened = ImGui::IsWindowAppearing();
 		if (opened)
 		{
-			m_SceneEntities = api.QueryAnimationPreviewSceneEntities(m_SessionId);
+			m_SceneEntities = previewAPI.QueryAnimationPreviewSceneEntities(m_SessionId);
 			ImGui::SetKeyboardFocusHere();
 		}
 		const bool filterChanged = filter.Draw();
@@ -163,11 +167,13 @@ namespace VansGraphics
 
 	void VansSceneAnimationPreviewWindow::StopPreview()
 	{
-		if (m_SessionId != 0 && m_ActiveAPI)
+		if (m_SessionId != 0 && m_ActivePreviewAPI)
 		{
-			ReloadSceneTargetEdits(*m_ActiveAPI);
-			m_ActiveAPI->AdoptAnimationPreviewSceneChanges({m_SessionId,m_AppliedTargetTransforms});
-			m_ActiveAPI->DestroyAnimationPreview(m_SessionId);
+			ReloadSceneTargetEdits(*m_ActivePreviewAPI);
+			m_ActivePreviewAPI->AdoptAnimationPreviewSceneChanges({
+				m_SessionId, m_RigSnapshot.attachmentRevision,
+				m_AppliedTargetTransforms });
+			m_ActivePreviewAPI->DestroyAnimationPreview(m_SessionId);
 		}
 		m_SessionId = 0;
 		m_LimitDraft = {}; m_RotationDraft = {};
@@ -187,7 +193,9 @@ namespace VansGraphics
 	bool VansSceneAnimationPreviewWindow::LoadAnimatorDocument(
 		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	{
-		const auto resolved = editorAPI.ResolveAssetGuid(m_SelectedAnimatorGuid);
+		Vans::EditorAPI::IAnimationEditorAPI& animationAPI = editorAPI;
+		Vans::EditorAPI::IAssetEditorAPI& assetAPI = editorAPI;
+		const auto resolved = assetAPI.ResolveAssetGuid(m_SelectedAnimatorGuid);
 		if (!resolved.found || resolved.sourcePath.empty())
 		{
 			m_Message = "Selected Animator asset could not be resolved";
@@ -203,7 +211,7 @@ namespace VansGraphics
 		}
 		const nlohmann::json root = Vans::EncodeSerializedValueJson<nlohmann::json>(
 			document->sourceDocument.SerializedRootSnapshot());
-		auto decoded = editorAPI.DecodeAnimatorDocument(root.dump());
+		auto decoded = animationAPI.DecodeAnimatorDocument(root.dump());
 		if (!decoded.success || !decoded.document)
 		{
 			m_Message = decoded.message;
@@ -249,8 +257,10 @@ namespace VansGraphics
 	void VansSceneAnimationPreviewWindow::StartPreview(
 		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	{
+		Vans::EditorAPI::IAnimationEditorAPI& animationAPI = editorAPI;
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI = editorAPI;
 		StopPreview();
-		m_ActiveAPI = &editorAPI;
+		m_ActivePreviewAPI = &previewAPI;
 		if (m_SelectedAnimatorGuid.empty() || m_SelectedEntityGuid.empty()
 			|| m_SelectedAnimationComponentGuid.empty())
 		{
@@ -265,14 +275,14 @@ namespace VansGraphics
 		request.animatorAssetGuid = m_SelectedAnimatorGuid;
 		request.entityGuid = m_SelectedEntityGuid;
 		request.animationComponentGuid = m_SelectedAnimationComponentGuid;
-		const auto created = editorAPI.CreateAnimationPreview(request);
+		const auto created = previewAPI.CreateAnimationPreview(request);
 		if (!created.success)
 		{
 			m_Message = created.message;
 			return;
 		}
 		m_SessionId = created.sessionId;
-		RefreshRigSnapshot(editorAPI);
+		RefreshRigSnapshot(previewAPI);
 		m_TargetBindings = m_RigSnapshot.targetBindings;
 		m_AppliedTargetTransforms.clear();
 		// 预览始终从共享文档读取 Rig，保存后重开也能使用新增骨链。
@@ -282,10 +292,10 @@ namespace VansGraphics
 			auto rig = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(m_RigSnapshot.rigAssetPath);
 			if (!rig) { m_Message = "Target Rig document is unavailable"; StopPreview(); return; }
 			m_RigDocumentStateId = rig->sourceDocument.CurrentStateId();
-			const auto rigDefinition = editorAPI.DecodeAnimationRigDocument(
+			const auto rigDefinition = animationAPI.DecodeAnimationRigDocument(
 				Vans::EncodeSerializedValueJson<nlohmann::json>(rig->sourceDocument.SerializedRootSnapshot()).dump());
 			if (!rigDefinition.success) { m_Message = rigDefinition.message; StopPreview(); return; }
-			const auto rigApplied = editorAPI.SetAnimationPreviewRigDefinition(
+			const auto rigApplied = previewAPI.SetAnimationPreviewRigDefinition(
 				{m_SessionId, m_RigSnapshot.rigRevision, rigDefinition.document});
 			if (!rigApplied.success) { m_Message = rigApplied.message; StopPreview(); return; }
 		}
@@ -293,35 +303,35 @@ namespace VansGraphics
 		m_Playing = true;
 		m_Speed = 1.0f;
 		m_Message = created.message;
-		RefreshRigSnapshot(editorAPI);
-		m_SceneEntities = editorAPI.QueryAnimationPreviewSceneEntities(m_SessionId);
+		RefreshRigSnapshot(previewAPI);
+		m_SceneEntities = previewAPI.QueryAnimationPreviewSceneEntities(m_SessionId);
 		m_TargetBindings = m_RigSnapshot.targetBindings;
 	}
 
 	void VansSceneAnimationPreviewWindow::RefreshRigSnapshot(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI)
 	{
 		if (m_SessionId != 0)
-			m_RigSnapshot = editorAPI.GetAnimationPreviewRigSnapshot(m_SessionId);
+			m_RigSnapshot = previewAPI.GetAnimationPreviewRigSnapshot(m_SessionId);
 	}
 
 	void VansSceneAnimationPreviewWindow::DrawSessionControls(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI)
 	{
 		if (ImGui::Button(m_Playing ? "Pause" : "Play"))
 		{
 			m_Playing = !m_Playing;
-			editorAPI.SetAnimationPreviewPlayback(
+			previewAPI.SetAnimationPreviewPlayback(
 				{ m_SessionId, m_Playing, m_Speed, false, 0.0f });
 		}
 		ImGui::SameLine();
 		if (ImGui::Button("Step"))
 		{
-			editorAPI.SetAnimationPreviewPlayback(
+			previewAPI.SetAnimationPreviewPlayback(
 				{ m_SessionId, true, m_Speed, false, 0.0f });
-			editorAPI.TickAnimationPreview(m_SessionId, 1.0f / 60.0f);
+			previewAPI.TickAnimationPreview(m_SessionId, 1.0f / 60.0f);
 			m_Playing = false;
-			editorAPI.SetAnimationPreviewPlayback(
+			previewAPI.SetAnimationPreviewPlayback(
 				{ m_SessionId, false, m_Speed, false, 0.0f });
 		}
 		ImGui::SameLine();
@@ -331,7 +341,7 @@ namespace VansGraphics
 			return;
 		}
 		if (ImGui::SliderFloat("Speed", &m_Speed, 0.0f, 3.0f, "%.2f"))
-			editorAPI.SetAnimationPreviewPlayback(
+			previewAPI.SetAnimationPreviewPlayback(
 				{ m_SessionId, m_Playing, m_Speed, false, 0.0f });
 
 		if (m_Snapshot.duration > 0.0f)
@@ -348,7 +358,7 @@ namespace VansGraphics
 				request.speed = m_Speed;
 				request.seek = true;
 				request.seekSeconds = time;
-				editorAPI.SetAnimationPreviewPlayback(request);
+				previewAPI.SetAnimationPreviewPlayback(request);
 			}
 			ImGui::EndDisabled();
 			if (!m_Snapshot.seekSupported)
@@ -357,7 +367,7 @@ namespace VansGraphics
 	}
 
 	void VansSceneAnimationPreviewWindow::DrawParameters(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI)
 	{
 		if (!m_AnimatorDocument || !ImGui::CollapsingHeader("Parameters",
 			ImGuiTreeNodeFlags_DefaultOpen))
@@ -414,14 +424,14 @@ namespace VansGraphics
 				break;
 			}
 			}
-			if (changed && !editorAPI.SetAnimationPreviewParameter(value))
+			if (changed && !previewAPI.SetAnimationPreviewParameter(value))
 				m_Message = "Animator parameter update was rejected: " + parameter.name;
 			ImGui::PopID();
 		}
 	}
 
 	void VansSceneAnimationPreviewWindow::DrawGraphSetsAndSlots(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI)
 	{
 		if (!m_AnimatorDocument)
 			return;
@@ -439,7 +449,7 @@ namespace VansGraphics
 					if (ImGui::Selectable(item.name.c_str(), item.id == m_SelectedGraphSetId))
 					{
 						m_SelectedGraphSetId = item.id;
-						if (!editorAPI.SwitchAnimationPreviewGraphSet(
+						if (!previewAPI.SwitchAnimationPreviewGraphSet(
 							{ m_SessionId, item.id }))
 							m_Message = "Graph Set switch was rejected";
 					}
@@ -473,7 +483,7 @@ namespace VansGraphics
 			}
 			const bool canTrigger = !m_SelectedSlotId.empty() && !m_SelectedClipName.empty();
 			ImGui::BeginDisabled(!canTrigger);
-			if (ImGui::Button("Trigger Slot") && !editorAPI.TriggerAnimationPreviewSlot(
+			if (ImGui::Button("Trigger Slot") && !previewAPI.TriggerAnimationPreviewSlot(
 				{ m_SessionId, m_SelectedSlotId, m_SelectedClipName, 1.0f, 1, 0 }))
 				m_Message = "Slot request was rejected";
 			ImGui::EndDisabled();
@@ -481,7 +491,7 @@ namespace VansGraphics
 	}
 
 	void VansSceneAnimationPreviewWindow::DrawSocketTransform(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI)
 	{
 		const auto found = std::find_if(m_RigSnapshot.sockets.begin(),
 			m_RigSnapshot.sockets.end(),
@@ -505,15 +515,15 @@ namespace VansGraphics
 			request.socketGuid = found->guid;
 			request.space = m_SocketEditSpace;
 			request.transform = transform;
-			const auto edited = editorAPI.SetAnimationPreviewRigSocketTransform(request);
+			const auto edited = previewAPI.SetAnimationPreviewRigSocketTransform(request);
 			m_Message = edited.message;
-			RefreshRigSnapshot(editorAPI);
+			RefreshRigSnapshot(previewAPI);
 		}
 		ImGui::TextDisabled("The Scene viewport handle edits the same selected Socket.");
 	}
 
 	bool VansSceneAnimationPreviewWindow::DrawAttachmentPoseEditor(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI)
 	{
 		const auto found = std::find_if(m_RigSnapshot.attachments.begin(),
 			m_RigSnapshot.attachments.end(),
@@ -538,11 +548,11 @@ namespace VansGraphics
 			request.entityGuid = attachment.entityGuid;
 			request.space = m_AttachmentEditSpace;
 			request.transform = transform;
-			const auto edited = editorAPI.SetAnimationPreviewAttachmentTransform(request);
+			const auto edited = previewAPI.SetAnimationPreviewAttachmentTransform(request);
 			m_Message = edited.message;
 			if (edited.success)
 				attachment.localTransform = edited.localTransform;
-			RefreshRigSnapshot(editorAPI);
+			RefreshRigSnapshot(previewAPI);
 		}
 		DrawSceneHandleControls();
 		ImGui::TextWrapped("Position and rotation update the preview immediately, including while paused. Ctrl+click a value to enter it directly.");
@@ -583,10 +593,11 @@ namespace VansGraphics
 	void VansSceneAnimationPreviewWindow::DrawAttachmentTransform(
 		Vans::EditorAPI::IEngineEditorAPI& editorAPI, bool showPose)
 	{
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI = editorAPI;
 		if (showPose)
 		{
 			ImGui::SeparatorText("Preview Object Transform");
-			if (!DrawAttachmentPoseEditor(editorAPI)) return;
+			if (!DrawAttachmentPoseEditor(previewAPI)) return;
 		}
 		const auto found = std::find_if(m_RigSnapshot.attachments.begin(), m_RigSnapshot.attachments.end(),
 			[&](const auto& item) { return item.entityGuid == m_SelectedAttachmentGuid; });
@@ -616,11 +627,11 @@ namespace VansGraphics
 			request.parentKind = attachment.parent.kind;
 			request.anchorGuid = attachment.parent.anchorGuid;
 			request.localTransform = attachment.localTransform;
-			const auto edited = editorAPI.SetAnimationPreviewRigAttachmentProfile(request);
+			const auto edited = previewAPI.SetAnimationPreviewRigAttachmentProfile(request);
 			m_Message = edited.message;
 			if (edited.success)
 			{
-				RefreshRigSnapshot(editorAPI);
+				RefreshRigSnapshot(previewAPI);
 				SaveRigChanges(editorAPI, "Attachment offset saved to Animation Rig");
 			}
 		}
@@ -639,11 +650,11 @@ namespace VansGraphics
 				request.parentKind = attachment.parent.kind;
 				request.anchorGuid = attachment.parent.anchorGuid;
 				request.remove = true;
-				const auto edited = editorAPI.SetAnimationPreviewRigAttachmentProfile(request);
+				const auto edited = previewAPI.SetAnimationPreviewRigAttachmentProfile(request);
 				m_Message = edited.message;
 				if (edited.success)
 				{
-					RefreshRigSnapshot(editorAPI);
+					RefreshRigSnapshot(previewAPI);
 					SaveRigChanges(editorAPI, "Attachment offset removed from Animation Rig");
 				}
 			}
@@ -656,7 +667,7 @@ namespace VansGraphics
 			request.entityGuid = attachment.entityGuid;
 			request.transformPolicy =
 				Vans::EditorAPI::RuntimeReparentTransformPolicy::KeepWorld;
-			m_Message = editorAPI.SetAnimationPreviewAttachmentBinding(request).message;
+			m_Message = previewAPI.SetAnimationPreviewAttachmentBinding(request).message;
 			m_SelectedAttachmentGuid.clear();
 			m_TransformTarget = TransformTarget::None;
 			RefreshRigSnapshot(editorAPI);
@@ -667,13 +678,15 @@ namespace VansGraphics
 		Vans::EditorAPI::IEngineEditorAPI& editorAPI,
 		const char* successMessage)
 	{
-		auto working = editorAPI.GetAnimationPreviewWorkingRigDocument(m_SessionId);
+		Vans::EditorAPI::IAnimationEditorAPI& animationAPI = editorAPI;
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI = editorAPI;
+		auto working = previewAPI.GetAnimationPreviewWorkingRigDocument(m_SessionId);
 		if (!working.success)
 		{
 			m_Message = working.message;
 			return false;
 		}
-		const auto encoded = editorAPI.EncodeAnimationRigDocument(working.document);
+		const auto encoded = animationAPI.EncodeAnimationRigDocument(working.document);
 		if (!encoded.success)
 		{
 			m_Message = encoded.message;
@@ -707,7 +720,7 @@ namespace VansGraphics
 			m_Message = saved.message;
 			return false;
 		}
-		const auto adopted = editorAPI.AdoptAnimationPreviewRig(
+		const auto adopted = previewAPI.AdoptAnimationPreviewRig(
 			{ m_SessionId, m_RigSnapshot.rigRevision });
 		if (!adopted.success)
 		{
@@ -716,13 +729,14 @@ namespace VansGraphics
 			return false;
 		}
 		m_Message = successMessage;
-		RefreshRigSnapshot(editorAPI);
+		RefreshRigSnapshot(previewAPI);
 		return true;
 	}
 
 	void VansSceneAnimationPreviewWindow::DrawSocketAndAttachmentEditor(
 		Vans::EditorAPI::IEngineEditorAPI& editorAPI, bool inlineAnchorVisible)
 	{
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI = editorAPI;
 		if (!m_RigSnapshot.available)
 		{
 			ImGui::TextDisabled("%s", m_RigSnapshot.diagnostic.c_str());
@@ -796,7 +810,7 @@ namespace VansGraphics
 			ImGui::EndTable();
 		}
 
-		DrawSceneEntityCombo(editorAPI, "Scene Object", m_SelectedSceneEntityGuid, m_SceneObjectFilter);
+		DrawSceneEntityCombo(previewAPI, "Scene Object", m_SelectedSceneEntityGuid, m_SceneObjectFilter);
 		if (ImGui::BeginCombo("Attach To", m_SelectedBindAnchorLabel.c_str()))
 		{
 			if (ImGui::BeginMenu("Sockets"))
@@ -855,7 +869,7 @@ namespace VansGraphics
 			if (ImGui::Selectable("Final Pose", m_BindPoseCheckpoint.empty())) m_BindPoseCheckpoint.clear();
 			if (m_AnimatorDocument) for (const auto& graph : m_AnimatorDocument->graphs)
 				if (graph.graph) for (const auto& [id, node] : graph.graph->nodes)
-					if (node->GetType() == Vans::EditorAPI::AnimGraphNodeType::PoseCheckpoint &&
+					if (node->GetType() == VansAnimGraphNodeType::PoseCheckpoint &&
 						ImGui::Selectable(node->m_CheckpointId.c_str(), m_BindPoseCheckpoint == node->m_CheckpointId))
 						m_BindPoseCheckpoint = node->m_CheckpointId;
 			ImGui::EndCombo();
@@ -879,13 +893,13 @@ namespace VansGraphics
 			request.parent.anchorGuid = m_SelectedBindAnchorGuid;
 			request.parent.poseCheckpoint = m_BindPoseCheckpoint;
 			request.transformPolicy = m_BindPolicy;
-			const auto bound = editorAPI.SetAnimationPreviewAttachmentBinding(request);
+			const auto bound = previewAPI.SetAnimationPreviewAttachmentBinding(request);
 			m_Message = bound.message;
 			if (bound.success)
 			{
 				m_SelectedAttachmentGuid = m_SelectedSceneEntityGuid;
 				m_TransformTarget = TransformTarget::Attachment;
-				RefreshRigSnapshot(editorAPI);
+				RefreshRigSnapshot(previewAPI);
 				const auto attachment = std::find_if(m_RigSnapshot.attachments.begin(),
 					m_RigSnapshot.attachments.end(),
 					[&](const auto& item)
@@ -911,12 +925,12 @@ namespace VansGraphics
 						transformRequest.space =
 							Vans::EditorAPI::RuntimeTransformSpace::Local;
 						transformRequest.transform = profile->localTransform;
-						const auto applied = editorAPI.SetAnimationPreviewAttachmentTransform(
+						const auto applied = previewAPI.SetAnimationPreviewAttachmentTransform(
 							transformRequest);
 						m_Message = applied.success
 							? "Preview binding applied the saved Animation Rig attachment offset"
 							: applied.message;
-						RefreshRigSnapshot(editorAPI);
+						RefreshRigSnapshot(previewAPI);
 					}
 				}
 			}
@@ -927,7 +941,7 @@ namespace VansGraphics
 
 		if (m_TransformTarget == TransformTarget::Socket)
 		{
-			DrawSocketTransform(editorAPI);
+			DrawSocketTransform(previewAPI);
 			DrawSceneHandleControls();
 		}
 		else if (m_TransformTarget == TransformTarget::Attachment)
@@ -947,7 +961,11 @@ namespace VansGraphics
 	void VansSceneAnimationPreviewWindow::ShowWindow(
 		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	{
-		m_ActiveAPI = &editorAPI;
+		Vans::EditorAPI::IAnimationEditorAPI& animationAPI = editorAPI;
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI = editorAPI;
+		m_ActivePreviewAPI = &previewAPI;
+		Vans::EditorAPI::IAssetEditorAPI& assetAPI = editorAPI;
+		Vans::EditorAPI::IRuntimeSceneEditorAPI& runtimeSceneAPI = editorAPI;
 		if (!m_IsOpen)
 		{
 			StopPreview();
@@ -965,7 +983,7 @@ namespace VansGraphics
 			ImGui::End();
 			return;
 		}
-		if (!editorAPI.IsRuntimeSceneReady())
+		if (!runtimeSceneAPI.IsRuntimeSceneReady())
 		{
 			StopPreview();
 			ImGui::TextDisabled("Load a Scene in Editor mode first.");
@@ -975,7 +993,7 @@ namespace VansGraphics
 
 		if (ImGui::BeginCombo("Animator", m_SelectedAnimatorLabel.c_str()))
 		{
-			const auto animators = editorAPI.QueryAssets({
+			const auto animators = assetAPI.QueryAssets({
 				Vans::EditorAPI::AssetType::AnimatorController, false,
 				Vans::EditorAPI::AssetQueryCapability::Any });
 			for (const auto& asset : animators)
@@ -992,7 +1010,7 @@ namespace VansGraphics
 		}
 		if (ImGui::BeginCombo("Scene Skeleton", m_SelectedRigLabel.c_str()))
 		{
-			const auto sceneRigs = editorAPI.GetSceneSkeletonHierarchy("");
+			const auto sceneRigs = animationAPI.GetSceneSkeletonHierarchy("");
 			for (const auto& rig : sceneRigs.rigs)
 			{
 				if (rig.entityGuid.empty() || rig.animationComponentGuid.empty())
@@ -1024,8 +1042,8 @@ namespace VansGraphics
 		}
 		else
 		{
-			editorAPI.TickAnimationPreview(m_SessionId, ImGui::GetIO().DeltaTime);
-			m_Snapshot = editorAPI.GetAnimationPreviewSnapshot(m_SessionId);
+			previewAPI.TickAnimationPreview(m_SessionId, ImGui::GetIO().DeltaTime);
+			m_Snapshot = previewAPI.GetAnimationPreviewSnapshot(m_SessionId);
 			if (!m_Snapshot.available)
 			{
 				// Scene load/unload owns the engine-side teardown. Do not leave this
@@ -1048,12 +1066,12 @@ namespace VansGraphics
 			}
 			else
 			{
-				RefreshRigSnapshot(editorAPI);
-				DrawSessionControls(editorAPI);
+				RefreshRigSnapshot(previewAPI);
+				DrawSessionControls(previewAPI);
 				if (m_SessionId != 0)
 				{
-					DrawParameters(editorAPI);
-					DrawGraphSetsAndSlots(editorAPI);
+					DrawParameters(previewAPI);
+					DrawGraphSetsAndSlots(previewAPI);
 					const bool inlineAnchorVisible = DrawTransformIKEditor(editorAPI);
 					DrawSocketAndAttachmentEditor(editorAPI, inlineAnchorVisible);
 				}
@@ -1068,7 +1086,7 @@ namespace VansGraphics
 	}
 
 	bool VansSceneAnimationPreviewWindow::DrawSceneViewportHandle(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+		Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI,
 		VansCamera* camera,
 		const ImVec2& viewportOrigin,
 		const ImVec2& viewportSize)
@@ -1149,7 +1167,7 @@ namespace VansGraphics
 			request.socketGuid = targetGuid;
 			request.space = Vans::EditorAPI::RuntimeTransformSpace::World;
 			request.transform = edited;
-			m_Message = editorAPI.SetAnimationPreviewRigSocketTransform(request).message;
+			m_Message = previewAPI.SetAnimationPreviewRigSocketTransform(request).message;
 		}
 		else
 		{
@@ -1159,9 +1177,9 @@ namespace VansGraphics
 			request.entityGuid = targetGuid;
 			request.space = Vans::EditorAPI::RuntimeTransformSpace::World;
 			request.transform = edited;
-			m_Message = editorAPI.SetAnimationPreviewAttachmentTransform(request).message;
+			m_Message = previewAPI.SetAnimationPreviewAttachmentTransform(request).message;
 		}
-		RefreshRigSnapshot(editorAPI);
+		RefreshRigSnapshot(previewAPI);
 		return true;
 	}
 }

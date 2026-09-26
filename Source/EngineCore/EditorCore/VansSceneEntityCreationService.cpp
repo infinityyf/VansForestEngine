@@ -1,7 +1,6 @@
 #include "VansSceneEntityCreationService.h"
 
 #include "VansSceneEditService.h"
-#include "VansScenePropertyValueAdapter.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../SceneCore/VansSceneDocument.h"
 #include "../SceneCore/VansSceneEntityFactory.h"
@@ -90,7 +89,7 @@ std::string MakeUniqueEntityName(
 }
 
 VansSceneEntityCreationService::Result CommitCreatedEntity(
-    Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+    Vans::EditorAPI::IRuntimeSceneEditorAPI& editorAPI,
     Vans::VansSceneEditService& editService,
     Vans::VansSerializedValue entity,
     const char* subjectName)
@@ -100,8 +99,7 @@ VansSceneEntityCreationService::Result CommitCreatedEntity(
         return { false, false, {}, std::string(subjectName) +
             " factory did not produce an entity id" };
 
-    const Vans::EditorAPI::ScenePropertyValue runtimeEntity =
-        Vans::FromSerializedValue(entity);
+    const Vans::VansSerializedValue runtimeEntity = entity;
     auto createRuntimeEntity = [&editorAPI, runtimeEntity]()
     {
         Vans::EditorAPI::RuntimeSceneEntitiesCreateRequest createRequest;
@@ -138,7 +136,7 @@ VansSceneEntityCreationService::Result CommitCreatedEntity(
 }
 
 VansSceneEntityCreationService::Result VansSceneEntityCreationService::CreateEmptyObject(
-    Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+    Vans::EditorAPI::IRuntimeSceneEditorAPI& editorAPI,
     const Vans::VansSceneDocument& document,
     Vans::VansSceneEditService& editService,
     const EmptyObjectRequest& request)
@@ -171,7 +169,7 @@ VansSceneEntityCreationService::Result VansSceneEntityCreationService::CreateEmp
 
 VansSceneEntityCreationService::Result
 VansSceneEntityCreationService::CreateLocalVolumetricFog(
-    Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+    Vans::EditorAPI::IRuntimeSceneEditorAPI& editorAPI,
     const Vans::VansSceneDocument& document,
     Vans::VansSceneEditService& editService,
     const LocalVolumetricFogRequest& request)

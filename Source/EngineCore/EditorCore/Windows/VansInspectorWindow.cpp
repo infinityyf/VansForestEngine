@@ -1,18 +1,23 @@
 #include "../../AssetCore/Serialization/VansSerializedPathPattern.h"
 #include "VansInspectorWindow.h"
 
-#include "../VansAssetDocumentEditService.h"
-#include "../VansAssetDocumentRegistry.h"
+#include "../../AuthoringCore/VansAssetDocumentEditService.h"
+#include "../../AuthoringCore/VansAssetDocumentRegistry.h"
 #include "../VansEditorAssetSaveService.h"
 #include "../VansEditorMaterialSchemaService.h"
-#include "../VansEditorObjectReference.h"
+#include "../../AuthoringCore/VansEditorObjectReference.h"
 #include "../VansEditorPropertyDescriptorRegistry.h"
-#include "../VansEditorSelection.h"
+#include "../VansEditorSelectionService.h"
 #include "../VansEditorRuntimePreviewProjector.h"
 #include "../VansEditorWindow.h"
+#include "../../EngineAPILayer/Public/IParticleEditorAPI.h"
+#include "../../EngineAPILayer/Public/IAnimationEditorAPI.h"
+#include "../../EngineAPILayer/Public/IAssetAuthoringEditorAPI.h"
+#include "../../EngineAPILayer/Public/IRuntimeSceneEditorAPI.h"
+#include "../../EngineAPILayer/Public/ISceneInteractionEditorAPI.h"
+#include "../../EngineAPILayer/Public/IAssetEditorAPI.h"
 #include "../VansSceneEditService.h"
 #include "../VansSceneObjectReferenceResolver.h"
-#include "../VansScenePropertyValueAdapter.h"
 #include "../../AudioCore/VansAudioPreviewPlayer.h"
 #include "../../AssetCore/VansAssetGuid.h"
 #include "../../AssetCore/VansAssetDatabase.h"
@@ -20,8 +25,9 @@
 #include "../../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../../GameplayActionSchema/VansGameplayActionHostAuthoring.h"
 #include "../../SceneCore/VansSceneDocument.h"
-#include "../../SceneCore/VansSceneEntityFactory.h"
+#include "../../SceneCore/VansSceneLocalVolumetricFogComponentConfig.h"
 #include "../../SceneCore/VansSceneParentReference.h"
+#include "../../SceneCore/VansComponentTypeCatalog.h"
 #include "../../ScriptCore/VansLuaScriptInspectorService.h"
 #include "../../Util/VansLog.h"
 
@@ -92,6 +98,7 @@ const char* AssetTypeName(Vans::EditorAPI::AssetType type)
     {
     case Vans::EditorAPI::AssetType::Model: return "Model";
     case Vans::EditorAPI::AssetType::Texture: return "Texture";
+	case Vans::EditorAPI::AssetType::IESProfile: return "IES Profile";
     case Vans::EditorAPI::AssetType::Material: return "Material";
     case Vans::EditorAPI::AssetType::Shader: return "Shader";
     case Vans::EditorAPI::AssetType::Audio: return "Audio";
@@ -173,8 +180,7 @@ const std::vector<const char*>* EnumOptions(const std::string& key)
     if (field == "colorspace") return &colorSpace;
     if (field == "playmode") return &playMode;
     if (field == "attenuationmode") return &attenuationMode;
-    if (field == "bus" || field == "trigger" || field == "target" ||
-        field == "triggerbus" || field == "targetbus")
+    if (field == "bus" || field == "triggerbus" || field == "targetbus")
         return &audioBus;
     if (field == "assetkind") return &audioControlKind;
     if (field == "preset") return &reverbPreset;
@@ -231,214 +237,6 @@ const std::vector<const char*>* AudioReverbZoneShapeOptions(
     return nullptr;
 }
 
-Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type)
-{
-    using Value = Vans::VansSerializedValue;
-    auto guidReference = []()
-    {
-        return Value::Object({ { "guid", Value::String("") } });
-    };
-    auto vec3 = [](double x, double y, double z)
-    {
-        return Value::Array({ Value::Float(x), Value::Float(y), Value::Float(z) });
-    };
-    auto shadowFields = [](const char* updateMode = "OnChange")
-    {
-        return std::vector<std::pair<std::string, Value>>{
-            { "castShadows", Value::Bool(true) },
-            { "shadowPolicy", Value::String("Auto") },
-            { "shadowPriority", Value::Int(128) },
-            { "shadowResolution", Value::String("Auto") },
-            { "shadowUpdateMode", Value::String(updateMode) },
-            { "shadowFallback", Value::String("ScreenSpace") },
-            { "shadowMaxDistance", Value::Float(30.0) },
-            { "shadowNearPlane", Value::Float(0.0) },
-            { "shadowDepthBiasTexels", Value::Float(1.0) },
-            { "shadowNormalBiasTexels", Value::Float(1.0) },
-            { "shadowSourceRadius", Value::Float(0.02) },
-            { "shadowAffectsFog", Value::Bool(true) },
-            { "shadowAffectsGI", Value::Bool(true) },
-            { "shadowCasterMask", Value::Int(0xffffffff) }
-        };
-    };
-
-    if (type == "ModelRenderer")
-        return Value::Object({
-            { "model", guidReference() },
-            { "castShadows", Value::Bool(true) },
-            { "receiveShadows", Value::Bool(true) },
-            { "rayTracingMode", Value::String("auto") },
-            { "visibilityMask", Value::Int(0xffffffff) },
-            { "shadowCasterMask", Value::Int(0xffffffff) },
-            { "materialOverrides", Value::Object({}) },
-            { "orphanOverrides", Value::Object({}) },
-            { "renderType", Value::String("opaque") }
-        });
-    if (type == "LODGroup")
-        return Value::Object({
-            { "mode", Value::String("autoScreenError") },
-            { "pixelErrorBudget", Value::Float(1.0) },
-            { "qualityBias", Value::Float(1.0) },
-            { "hysteresis", Value::Float(0.1) },
-            { "levels", Value::Array({}) }
-        });
-    if (type == "Physics")
-        return Value::Object({
-            { "name", Value::String("Physics") },
-            { "bodyType", Value::String("static") },
-            { "colliderType", Value::String("box") },
-            { "boxExtents", vec3(0.5, 0.5, 0.5) },
-            { "mass", Value::Float(1.0) },
-            { "layer", Value::String("Default") },
-            { "isTrigger", Value::Bool(false) },
-            { "material", Value::Object({
-                { "staticFriction", Value::Float(0.5) },
-                { "dynamicFriction", Value::Float(0.5) },
-                { "restitution", Value::Float(0.0) }
-            }) }
-        });
-    if (type == "Camera")
-        return Value::Object({
-            { "fov", Value::Float(60.0) },
-            { "nearClip", Value::Float(0.1) },
-            { "farClip", Value::Float(1000.0) }
-        });
-    if (type == "CharacterController")
-        return Value::Object({
-            { "radius", Value::Float(0.5) },
-            { "height", Value::Float(1.8) },
-            { "slopeLimit", Value::Float(0.707) },
-            { "stepOffset", Value::Float(0.3) },
-            { "contactOffset", Value::Float(0.08) },
-            { "climbingMode", Value::String("easy") },
-            { "layer", Value::String("Default") },
-            { "positionOffset", vec3(0.0, 0.9, 0.0) }
-        });
-    const auto lightCookie = []() { return Value::Object({
-        {"enabled", Value::Bool(false)},
-        {"texture", Value::Object({{"domain", Value::String("ProjectAsset")}, {"guid", Value::String("")}, {"assetType", Value::String("texture")}})},
-        {"strength", Value::Float(1)}, {"sizeX", Value::Float(10)}, {"sizeY", Value::Float(10)},
-        {"scaleX", Value::Float(1)}, {"scaleY", Value::Float(1)},
-        {"offsetX", Value::Float(0)}, {"offsetY", Value::Float(0)}, {"rotationDegrees", Value::Float(0)},
-        {"repeat", Value::Bool(false)}, {"useAlpha", Value::Bool(false)}}); };
-    if (type == "DirectionalLight")
-        return Value::Object({
-            {"cookie", lightCookie()},
-            { "color", vec3(1.0, 1.0, 1.0) },
-            { "intensity", Value::Float(1.0) }
-        });
-    if (type == "PointLight" || type == "SpotLight")
-    {
-        std::vector<std::pair<std::string, Value>> fields{
-            {"cookie", lightCookie()},
-            { "color", vec3(1.0, 1.0, 1.0) },
-            { "intensity", Value::Float(1.0) },
-            { "radius", Value::Float(10.0) }
-        };
-        if (type == "SpotLight")
-        {
-            fields.emplace_back("innercutoff", Value::Float(15.0));
-            fields.emplace_back("outerCutoff", Value::Float(30.0));
-        }
-        std::vector<std::pair<std::string, Value>> shadows = shadowFields(
-            type == "PointLight" ? "EveryFrame" : "OnChange");
-        fields.insert(fields.end(), shadows.begin(), shadows.end());
-        return Value::Object(std::move(fields));
-    }
-    if (type == "RectLight")
-    {
-        std::vector<std::pair<std::string, Value>> fields{
-            {"cookie", lightCookie()},
-            { "color", vec3(1.0, 1.0, 1.0) },
-            { "intensity", Value::Float(1.0) },
-            { "width", Value::Float(1.0) },
-            { "height", Value::Float(1.0) },
-            { "range", Value::Float(10.0) },
-            { "two_sided", Value::Bool(false) }
-        };
-        std::vector<std::pair<std::string, Value>> shadows = shadowFields();
-        for (auto& [fieldName, fieldValue] : shadows)
-        {
-            if (fieldName == "castShadows")
-                fieldValue = Value::Bool(false);
-        }
-        fields.insert(fields.end(), shadows.begin(), shadows.end());
-        return Value::Object(std::move(fields));
-    }
-    if (type == "Audio")
-        return Value::Object({
-            { "source", guidReference() },
-            { "occlusionEnabled", Value::Bool(false) },
-            { "occlusionGain", Value::Float(0.45) },
-            { "occlusionHighFrequencyGain", Value::Float(0.35) },
-            { "occlusionMaterial", Value::String("custom") },
-            { "occlusionMaterialThickness", Value::Float(1.0) },
-            { "occlusionAttack", Value::Float(0.08) },
-            { "occlusionRelease", Value::Float(0.18) },
-            { "occlusionQueryInterval", Value::Float(0.12) },
-            { "occlusionMaxDistance", Value::Float(100.0) },
-            { "occlusionMaxQueriesPerFrame", Value::Int(4) },
-            { "coneEnabled", Value::Bool(false) },
-            { "coneInnerAngle", Value::Float(360.0) },
-            { "coneOuterAngle", Value::Float(360.0) },
-            { "coneOuterGain", Value::Float(1.0) },
-            { "dopplerEnabled", Value::Bool(false) }
-        });
-    if (type == "Video")
-        return Value::Object({ { "source", guidReference() } });
-    if (type == "AudioReverbZone" || type == "AudioVolume")
-        return Value::Object({
-            { "shape", Value::String("sphere") },
-            { "preset", Value::String("generic") },
-            { "presetAsset", guidReference() },
-            { "radius", Value::Float(8.0) },
-            { "halfExtents", vec3(4.0, 4.0, 4.0) },
-            { "fadeDistance", Value::Float(2.0) },
-            { "wetGain", Value::Float(0.6) },
-            { "priority", Value::Int(0) },
-            { "overridePresetParameters", Value::Bool(false) },
-            { "density", Value::Float(1.0) },
-            { "diffusion", Value::Float(1.0) },
-            { "gain", Value::Float(0.32) },
-            { "gainHF", Value::Float(0.89) },
-            { "decayTime", Value::Float(1.49) }
-        });
-	if (type == "LocalVolumetricFog")
-		return Vans::VansSceneEntityFactory::BuildLocalVolumetricFogComponentData(
-			Vans::VansSceneLocalVolumetricFogComponentConfig{});
-    if (type == "Particle")
-        return Value::Object({
-            { "asset", Value::Object({ { "guid", Value::String("") } }) },
-            { "play_on_awake", Value::Bool(true) }
-        });
-    if (type == "Script")
-        return Value::Object({
-            { "language", Value::String("lua") },
-            { "path", Value::String("Scripts/") },
-            { "entry", Value::String("") },
-            { "fields", Value::Object({}) }
-        });
-    if (type == "Animation")
-        return Value::Object({
-            { "name", Value::String("Animation") },
-            { "root_motion", Value::Bool(false) },
-            { "animator", Value::String("") }
-        });
-    if (type == "Cloth")
-        return Value::Object({
-			{ "profile", Value::Object({ { "guid", Value::String("") } }) },
-            { "physicsAttachOffsetY", Value::Float(0.0) }
-        });
-    if (type == "Vehicle")
-        return Value::Object({
-            { "bodyObject", Value::String("") },
-            { "tireObjects", Value::Array({}) }
-        });
-	if (type == "ActionHost")
-		return Vans::VansGameplayActionHostAuthoring::CreateDefaultData();
-    return Value::Object({});
-}
-
 Vans::VansSerializedValue MakeSerializedComponent(const std::string& type)
 {
     return Vans::VansSerializedValue::Object({
@@ -446,7 +244,7 @@ Vans::VansSerializedValue MakeSerializedComponent(const std::string& type)
         { "type", Vans::VansSerializedValue::String(type) },
         { "version", Vans::VansSerializedValue::Int(1) },
         { "enabled", Vans::VansSerializedValue::Bool(true) },
-        { "data", DefaultSerializedComponentData(type) }
+        { "data", Vans::VansComponentTypeCatalog::CreateDefaultData(type) }
     });
 }
 
@@ -785,15 +583,14 @@ bool AudioControlAssetScalarLimits(const std::string& label, const std::string& 
     const std::string path = Lower(pointer);
     if (path.find("/rules/") != std::string::npos)
     {
-        if (field == "gain" || field == "targetgain" || field == "target_gain")
+        if (field == "targetgain")
         {
             minValue = 0.0f;
             maxValue = 1.0f;
             speed = 0.01f;
             return true;
         }
-        if (field == "attack" || field == "attackseconds" || field == "attack_seconds" ||
-            field == "release" || field == "releaseseconds" || field == "release_seconds")
+        if (field == "attackseconds" || field == "releaseseconds")
         {
             minValue = 0.0f;
             maxValue = 10.0f;
@@ -808,7 +605,7 @@ bool AudioControlAssetScalarLimits(const std::string& label, const std::string& 
         speed = 0.01f;
         return true;
     }
-    if (field == "fadeseconds" || field == "fade_seconds")
+    if (field == "fadeseconds")
     {
         minValue = 0.0f;
         maxValue = 60.0f;
@@ -857,11 +654,11 @@ std::optional<Vans::VansSerializedValue> DefaultSerializedArrayElement(
     if (field == "rules" || path.find("/rules") != std::string::npos)
     {
         return Value::Object({
-            { "trigger", Value::String("Voice") },
-            { "target", Value::String("Music") },
-            { "gain", Value::Float(0.35) },
-            { "attack", Value::Float(0.08) },
-            { "release", Value::Float(0.35) },
+            { "triggerBus", Value::String("Voice") },
+            { "targetBus", Value::String("Music") },
+            { "targetGain", Value::Float(0.35) },
+            { "attackSeconds", Value::Float(0.08) },
+            { "releaseSeconds", Value::Float(0.35) },
             { "enabled", Value::Bool(true) }
         });
     }
@@ -1231,7 +1028,7 @@ void CopyToImGuiBuffer(char* destination, std::size_t destinationSize, const std
 
 bool MergeLuaScriptFieldDefaults(
     Vans::VansSerializedValue& data,
-    Vans::EditorAPI::IEngineEditorAPI& api,
+    Vans::EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI,
     std::vector<Vans::LuaScriptFieldDescriptor>* descriptors)
 {
     if (data.kind != Vans::VansSerializedValue::Kind::Object)
@@ -1260,7 +1057,8 @@ bool MergeLuaScriptFieldDefaults(
     static std::unordered_map<std::string, LuaFieldSchemaCacheEntry> fieldDefaultsCache;
     static std::unordered_map<std::string, std::chrono::steady_clock::time_point>
         fieldDefaultsRetryAfter;
-    const Vans::EditorAPI::ProjectBrowserRootSnapshot projectRoot = api.GetProjectBrowserRoot();
+    const Vans::EditorAPI::ProjectBrowserRootSnapshot projectRoot =
+		assetAuthoringAPI.GetProjectBrowserRoot();
     std::filesystem::path absoluteScriptPath(scriptPath);
     if (!absoluteScriptPath.is_absolute())
         absoluteScriptPath = std::filesystem::path(projectRoot.rootPath) / scriptPath;
@@ -1381,7 +1179,7 @@ bool TryDrawSerializedLuaNumericField(
 }
 
 bool RebuildRuntimeEntityFromSceneDocument(
-    Vans::EditorAPI::IEngineEditorAPI& api,
+    Vans::EditorAPI::IRuntimeSceneEditorAPI& runtimeSceneAPI,
     const Vans::VansSceneDocument& document,
     const std::string& entityGuid,
     const char* logPrefix)
@@ -1410,16 +1208,16 @@ bool RebuildRuntimeEntityFromSceneDocument(
 
     Vans::EditorAPI::RuntimeEntityDestroyRequest destroyRequest;
     destroyRequest.entityGuid = entityGuid;
-    if (!api.DestroyRuntimeEntity(destroyRequest).destroyed)
+    if (!runtimeSceneAPI.DestroyRuntimeEntity(destroyRequest).destroyed)
     {
         VANS_LOG_WARN(logPrefix << " runtime destroy failed for entity '" << entityGuid << "'");
         return false;
     }
 
     Vans::EditorAPI::RuntimeSceneEntitiesCreateRequest createRequest;
-    createRequest.sceneEntities.push_back(Vans::FromSerializedValue(*entityToRebuild));
+    createRequest.sceneEntities.push_back(*entityToRebuild);
     const Vans::EditorAPI::RuntimeSceneEntitiesCreateResult createResult =
-        api.CreateRuntimeSceneEntities(createRequest);
+        runtimeSceneAPI.CreateRuntimeSceneEntities(createRequest);
     if (!createResult.created)
     {
         if (!createResult.message.empty())
@@ -1439,7 +1237,7 @@ bool RebuildRuntimeEntityFromSceneDocument(
 		reparentRequest.transformPolicy =
 			Vans::EditorAPI::RuntimeReparentTransformPolicy::KeepLocal;
         const Vans::EditorAPI::RuntimeEntityReparentResult reparentResult =
-            api.ReparentRuntimeEntity(reparentRequest);
+            runtimeSceneAPI.ReparentRuntimeEntity(reparentRequest);
         if (!reparentResult.applied && !reparentResult.message.empty())
         {
             VANS_LOG_WARN(logPrefix << " runtime child reparent failed: "
@@ -1590,7 +1388,8 @@ struct LocalFogFieldValidation final
 };
 
 void DrawLocalVolumetricFogDiagnostics(
-	Vans::EditorAPI::IEngineEditorAPI& api,
+	Vans::EditorAPI::IAssetEditorAPI& assetAPI,
+	Vans::EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI,
 	const Vans::VansSerializedValue& data)
 {
 	const ImVec4 errorColor(0.95f, 0.30f, 0.28f, 1.0f);
@@ -1616,7 +1415,7 @@ void DrawLocalVolumetricFogDiagnostics(
 				DrawLocalFogDiagnostic(errorColor, label, "is enabled but has no Texture asset");
 			return validation;
 		}
-		const Vans::EditorAPI::AssetGuidResolution resolved = api.ResolveAssetGuid(assetGuid);
+		const Vans::EditorAPI::AssetGuidResolution resolved = assetAPI.ResolveAssetGuid(assetGuid);
 		if (!resolved.found || resolved.asset.type != Vans::EditorAPI::AssetType::Texture)
 		{
 			DrawLocalFogDiagnostic(errorColor, label, "does not resolve to a Texture asset");
@@ -1668,7 +1467,7 @@ void DrawLocalVolumetricFogDiagnostics(
 		previewRequest.channels = validation.channels;
 		previewRequest.kind = previewKind;
 		const Vans::EditorAPI::LocalFogFieldPreviewSnapshot preview =
-			api.GetLocalFogFieldPreview(previewRequest);
+			assetAuthoringAPI.GetLocalFogFieldPreview(previewRequest);
 		if (preview.available)
 		{
 			DrawLocalFogFieldPreview(label, preview, previewKind);
@@ -1893,7 +1692,8 @@ bool VansInspectorWindow::Impl::DrawSerializedAssetReference(
     bool missing = false;
     if (!guidText.empty())
     {
-        const Vans::EditorAPI::AssetGuidResolution resolved = m_ActiveAPI->ResolveAssetGuid(guidText);
+		const Vans::EditorAPI::AssetGuidResolution resolved =
+			static_cast<Vans::EditorAPI::IAssetEditorAPI&>(*m_ActiveAPI).ResolveAssetGuid(guidText);
         if (resolved.found)
             preview = resolved.asset.name;
         else
@@ -1921,7 +1721,8 @@ bool VansInspectorWindow::Impl::DrawSerializedAssetReference(
         Vans::EditorAPI::AssetTypeFilter assetFilter;
         assetFilter.type = expectedType;
         assetFilter.includeUnknown = expectedType == Vans::EditorAPI::AssetType::Unknown;
-        for (const Vans::EditorAPI::AssetEntry& asset : m_ActiveAPI->QueryAssets(assetFilter))
+		const Vans::EditorAPI::IAssetEditorAPI& assetAPI = *m_ActiveAPI;
+		for (const Vans::EditorAPI::AssetEntry& asset : assetAPI.QueryAssets(assetFilter))
         {
             if (!filter.empty() && Lower(asset.name).find(filter) == std::string::npos)
                 continue;
@@ -2105,7 +1906,7 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
         (componentType == "DirectionalLight" || componentType == "PointLight" || componentType == "SpotLight" || componentType == "RectLight") &&
         !Vans::FindObjectField(value, "cookie") && ImGui::Button("Add Cookie Settings"))
     {
-        const auto defaults = DefaultSerializedComponentData(componentType);
+        const auto defaults = Vans::VansComponentTypeCatalog::CreateDefaultData(componentType);
         if (const auto* cookie = Vans::FindObjectField(defaults, "cookie"))
         {
             value.objectFields.emplace_back("cookie", *cookie);
@@ -2132,7 +1933,8 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
         if (value.kind == Vans::VansSerializedValue::Kind::String)
         {
             const bool isEmptyOrKnownGuid = value.stringValue.empty() ||
-                (m_ActiveAPI && m_ActiveAPI->ResolveAssetGuid(value.stringValue).found);
+				(m_ActiveAPI && static_cast<Vans::EditorAPI::IAssetEditorAPI&>(*m_ActiveAPI)
+					.ResolveAssetGuid(value.stringValue).found);
             if (allowProjectAssetSlot ||
                 (!value.stringValue.empty() && isEmptyOrKnownGuid))
             {
@@ -2645,6 +2447,8 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
     Vans::VansSerializedValue& component,
     const std::string& pointer, bool& removeRequested)
 {
+	Vans::EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI = api;
+	Vans::EditorAPI::IAssetEditorAPI& assetAPI = api;
     if (component.kind != Vans::VansSerializedValue::Kind::Object)
         component = Vans::VansSerializedValue::Object({});
 
@@ -2667,7 +2471,7 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
         Vans::EditorObjectHandle handle;
         handle.domain = Vans::EditorObjectDomain::SceneComponent;
         handle.guid = Vans::ReadSerializedStringField(component, "id");
-        handle.entityGuid = Vans::VansEditorSelection::EntityGuid();
+        handle.entityGuid = Vans::VansEditorSelectionService::Get().EntityGuid();
         handle.componentGuid = handle.guid;
         handle.componentType = type;
         handle.displayName = type;
@@ -2699,7 +2503,7 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
         {
             changed |= MergeLuaScriptFieldDefaults(
                 *data,
-                api,
+                assetAuthoringAPI,
                 &scriptFieldDescriptors);
         }
 
@@ -2713,11 +2517,12 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
 				const Vans::EditorObjectHandle handle = timeline
 					? Vans::ReadObjectReferenceSlotHandle(*timeline, slot) : Vans::EditorObjectHandle{};
 				const auto resolution = handle.guid.empty()
-					? Vans::EditorAPI::AssetGuidResolution{} : api.ResolveAssetGuid(handle.guid);
+					? Vans::EditorAPI::AssetGuidResolution{}
+					: static_cast<Vans::EditorAPI::IAssetEditorAPI&>(api).ResolveAssetGuid(handle.guid);
 				ImGui::BeginDisabled(!resolution.found || resolution.sourcePath.empty());
 				if (ImGui::Button("Open Timeline Instance", ImVec2(-1.0f, 0.0f)))
 					VansEditorWindow::OpenTimelineInstance(
-						resolution.sourcePath, Vans::VansEditorSelection::EntityGuid());
+						resolution.sourcePath, Vans::VansEditorSelectionService::Get().EntityGuid());
 				ImGui::EndDisabled();
 				if (!handle.guid.empty() && !resolution.found)
 					ImGui::TextColored(ImVec4(1.0f, 0.38f, 0.32f, 1.0f), "Timeline asset GUID is missing");
@@ -2805,7 +2610,7 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
 				}
 			}
 			if (type == "LocalVolumetricFog")
-				DrawLocalVolumetricFogDiagnostics(api, *data);
+				DrawLocalVolumetricFogDiagnostics(assetAPI, assetAuthoringAPI, *data);
         }
         ImGui::Unindent(8.0f);
     }
@@ -2829,8 +2634,9 @@ void VansInspectorWindow::Impl::DrawSceneSubObject(
 		? Vans::EditorAPI::SceneSkeletonNodeKind::Socket
 		: Vans::EditorAPI::SceneSkeletonNodeKind::Bone;
 	request.anchorGuid = handle.subObjectGuid;
+	Vans::EditorAPI::IAnimationEditorAPI& animationAPI = api;
 	const Vans::EditorAPI::SceneSkeletonNodePoseSnapshot pose =
-		api.GetSceneSkeletonNodePose(request);
+		animationAPI.GetSceneSkeletonNodePose(request);
 	if (!pose.available)
 	{
 		ImGui::TextDisabled("The selected skeleton node is no longer available.");
@@ -2881,10 +2687,13 @@ void VansInspectorWindow::Impl::DrawSceneSubObject(
 
 void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAPI& api)
 {
+	Vans::EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI = api;
+	Vans::EditorAPI::IRuntimeSceneEditorAPI& runtimeSceneAPI = api;
+	Vans::EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI = api;
     Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
     Vans::VansSceneEditService* editor = VansEditorWindow::GetSceneEditService();
     if (!document || !editor) return;
-    const std::string& selected = Vans::VansEditorSelection::EntityGuid();
+    const std::string& selected = Vans::VansEditorSelectionService::Get().EntityGuid();
     const Vans::VansSerializedValue sceneRoot = document->SerializedRootSnapshot();
     const Vans::VansSerializedValue* entities = Vans::FindObjectField(sceneRoot, "entities");
     if (!entities || entities->kind != Vans::VansSerializedValue::Kind::Array)
@@ -2943,7 +2752,7 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
 				{
 					Vans::EditorAPI::ModelLodBuildRequest request;
 					request.entityGuid = selected;
-					const auto built = api.BuildModelLods(request);
+					const auto built = assetAuthoringAPI.BuildModelLods(request);
 					static std::string lodBuildMessage;
 					lodBuildMessage = built.message;
 					if (built.success)
@@ -2983,14 +2792,12 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
         if (ImGui::Button("Add Component", ImVec2(-1.0f, 0.0f))) ImGui::OpenPopup("AddComponent");
         if (ImGui::BeginPopup("AddComponent"))
         {
-            static const char* types[] = { "ModelRenderer", "LODGroup", "Physics", "Camera", "Animation",
-                "CharacterController", "DirectionalLight", "PointLight", "SpotLight", "RectLight",
-				"Audio", "AudioVolume", "AudioReverbZone", "LocalVolumetricFog", "Video", "Particle", "Cloth", "Vehicle",
-				"ActionHost", "Script" };
-            for (const char* type : types)
+            for (const Vans::VansComponentTypeDescriptor& descriptor : Vans::VansComponentTypeCatalog::All())
             {
-				const bool singleton = std::strcmp(type, "ModelRenderer") == 0 || std::strcmp(type, "LODGroup") == 0 ||
-					std::strcmp(type, "Physics") == 0 || std::strcmp(type, "ActionHost") == 0;
+				if (!descriptor.inspectorAddable)
+					continue;
+				const std::string type(descriptor.authoringType);
+				const bool singleton = descriptor.singleton;
                 bool alreadyPresent = false;
                 if (singleton)
                 {
@@ -3007,7 +2814,7 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
                     }
                 }
                 if (alreadyPresent) ImGui::BeginDisabled();
-                const bool selectedType = ImGui::Selectable(type);
+                const bool selectedType = ImGui::Selectable(type.c_str());
                 if (alreadyPresent) ImGui::EndDisabled();
                 if (!selectedType || alreadyPresent) continue;
                 if (!editedComponents || editedComponents->kind != Vans::VansSerializedValue::Kind::Array)
@@ -3057,7 +2864,7 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
                     m_PendingVehicleRebuild = false;
                     m_PendingVehicleRebuildEntityGuid.clear();
                     if (!RebuildRuntimeEntityFromSceneDocument(
-                        api,
+                        runtimeSceneAPI,
                         *document,
                         selected,
                         "[InspectorComponent]"))
@@ -3070,7 +2877,7 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
                     const Vans::EditorAPI::RuntimeEntityPreviewChange previewChange =
                         Vans::BuildRuntimeEntityPreviewChange(editedEntity);
                     if (!previewChange.Empty() &&
-                        !api.ApplyRuntimeEntityPreviewChange(previewChange))
+                        !sceneInteractionAPI.ApplyRuntimeEntityPreviewChange(previewChange))
                     {
                         VansEditorWindow::ReloadCurrentSceneForEditing();
                     }
@@ -3188,12 +2995,16 @@ void VansInspectorWindow::Impl::DrawAudioAssetPreview(
 
 void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api)
 {
-    const std::filesystem::path& selected = Vans::VansEditorSelection::AssetPath();
+	Vans::EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI = api;
+    const std::filesystem::path selected = Vans::VansEditorSelectionService::Get().AssetPath();
 	const std::string selectedExtension = Lower(selected.extension().string());
+	const Vans::VansAssetType selectedType = Vans::VansAssetDatabase::Classify(selected);
 	const bool gameplayAuthoringAsset = Vans::VansGameplayAssetSchemaRegistry::IsGameplayAssetType(
-		Vans::VansAssetDatabase::Classify(selected));
-	const bool structuredAuthoringAsset = selectedExtension == ".vanimator" ||
-		selectedExtension == ".vbonemask" || selectedExtension == ".vtimeline" ||
+		selectedType);
+	const bool structuredAuthoringAsset =
+		selectedType == Vans::VansAssetType::AnimatorController ||
+		selectedType == Vans::VansAssetType::BoneMask ||
+		selectedType == Vans::VansAssetType::Timeline ||
 		gameplayAuthoringAsset;
     if (selected != m_AssetPath) LoadAssetDocuments(selected);
     ImGui::TextUnformatted(selected.filename().string().c_str());
@@ -3207,9 +3018,11 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
     ImGui::Separator();
 	if (structuredAuthoringAsset)
 	{
-		const char* buttonLabel = selectedExtension == ".vanimator" ? "Open Animation Graph Editor"
-			: selectedExtension == ".vbonemask" ? "Open Bone Mask Editor"
-			: selectedExtension == ".vtimeline" ? "Open Timeline Editor" : "Open GAF Editor";
+		const char* buttonLabel = selectedType == Vans::VansAssetType::AnimatorController
+			? "Open Animation Graph Editor"
+			: selectedType == Vans::VansAssetType::BoneMask ? "Open Bone Mask Editor"
+			: selectedType == Vans::VansAssetType::Timeline
+				? "Open Timeline Editor" : "Open GAF Editor";
 		if (ImGui::Button(buttonLabel, ImVec2(-1.0f, 0.0f)))
 			VansEditorWindow::OpenAssetForAuthoring(selected.string());
 		ImGui::TextDisabled("This structured asset is edited through its validated authoring window.");
@@ -3259,7 +3072,7 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
                 }
 
                 if (editApplied)
-                    api.ApplyRuntimeMaterialPreviewChange(
+                    sceneInteractionAPI.ApplyRuntimeMaterialPreviewChange(
                         Vans::BuildRuntimeMaterialPreviewChange(
                             selected,
                             m_AssetDocuments->sourceDocument.SerializedRootSnapshot(),
@@ -3330,19 +3143,22 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
 
 void VansInspectorWindow::Impl::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api)
 {
+	Vans::EditorAPI::IRuntimeSceneEditorAPI& runtimeSceneAPI = api;
+	Vans::EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI = api;
+	Vans::EditorAPI::IParticleEditorAPI& particleAPI = api;
     m_AudioPreview.Tick();
     ImGui::Begin("Inspector");
     m_ActiveAPI = &api;
-    if (m_ParticleSchema.fields.empty()) m_ParticleSchema = api.GetParticleAuthoringSchema();
-    m_CollisionLayerNames = api.GetRuntimeCollisionLayerNames();
+    if (m_ParticleSchema.fields.empty()) m_ParticleSchema = particleAPI.GetParticleAuthoringSchema();
+    m_CollisionLayerNames = sceneInteractionAPI.GetRuntimeCollisionLayerNames();
     m_PendingObjectReferenceEdit.reset();
 	const Vans::EditorObjectHandle& activeSelection =
 		Vans::VansEditorSelectionService::Get().Snapshot().active;
-    if (Vans::VansEditorSelection::IsSceneSelected()) DrawSceneSettings();
+    if (Vans::VansEditorSelectionService::Get().IsSceneSelected()) DrawSceneSettings();
 	else if (activeSelection.domain == Vans::EditorObjectDomain::SceneSubObject)
 		DrawSceneSubObject(api);
-    else if (!Vans::VansEditorSelection::EntityGuid().empty()) DrawSceneEntity(api);
-    else if (!Vans::VansEditorSelection::AssetPath().empty()) DrawAsset(api);
+    else if (!Vans::VansEditorSelectionService::Get().EntityGuid().empty()) DrawSceneEntity(api);
+    else if (!Vans::VansEditorSelectionService::Get().AssetPath().empty()) DrawAsset(api);
     else ImGui::TextDisabled("Select an entity or project asset");
     ImGui::End();
     m_ActiveAPI = nullptr;
@@ -3355,7 +3171,7 @@ void VansInspectorWindow::Impl::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ap
         const Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
         if (!document ||
             !RebuildRuntimeEntityFromSceneDocument(
-                api,
+                runtimeSceneAPI,
                 *document,
                 entityGuid,
                 "[InspectorVehicle]"))

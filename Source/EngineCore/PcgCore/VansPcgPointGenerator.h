@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VansPcgMask.h"
+#include "VansPcgConfigurationField.h"
 
 #include <functional>
 
@@ -29,6 +30,24 @@ struct VansPcgPlacementSettings
 	float maskThreshold = 0;
 	float maskMultiplier = 1;
 	bool invertMask = false;
+};
+
+inline const std::array<VansPcgConfigurationFieldDescriptor<VansPcgPlacementSettings>, 14> VansPcgPlacementConfigurationFields{
+	VansPcgConfigurationFieldDescriptor<VansPcgPlacementSettings>{ "density", "Density / m2", "", &VansPcgPlacementSettings::density, .01f, 0, 0, true, false, false, 0, 0, 0,
+		VansPcgConfigurationFieldPersistence::Always, VansPcgConfigurationFieldVisibility::DensitySourceOnly },
+	{ "positionJitter", "Position jitter", "", &VansPcgPlacementSettings::positionJitter, .01f, 0, 1, true, true, false, 0, 0, 1 },
+	{ "minimumSpacing", "Minimum spacing (m)", "", &VansPcgPlacementSettings::minimumSpacing, .01f, 0, 0, true, false, false, 0, 0, 2 },
+	{ "yawMinDegrees", "Yaw minimum (degrees)", "", &VansPcgPlacementSettings::yawMinDegrees, .01f, 0, 0, false, false, false, 0, 0, 6 },
+	{ "yawMaxDegrees", "Yaw maximum (degrees)", "", &VansPcgPlacementSettings::yawMaxDegrees, .01f, 0, 0, false, false, false, 0, 0, 7 },
+	{ "normalAlignment", "Normal alignment", "", &VansPcgPlacementSettings::normalAlignment, .01f, 0, 1, true, true, false, 0, 0, 8 },
+	{ "maximumTiltDegrees", "Maximum tilt (degrees)", "", &VansPcgPlacementSettings::maximumTiltDegrees, .01f, 0, 180, true, true, false, 0, 0, 9 },
+	{ "rootOffset", "Root offset (m)", "", &VansPcgPlacementSettings::rootOffset, .01f, -1073741824.f, 1073741824.f, true, true, false, 0, 0, 10 },
+	{ "maskThreshold", "Mask threshold", "", &VansPcgPlacementSettings::maskThreshold, .01f, 0, 1, true, true, false, 0, 0, 11 },
+	{ "maskMultiplier", "Mask multiplier", "", &VansPcgPlacementSettings::maskMultiplier, .01f, 0, 0, true, false, false, 0, 0, 12 },
+	{ "scaleMin", "Scale minimum", "", &VansPcgPlacementSettings::scaleMin, .01f, 0, 0, false, false, false, 0, 0, 4 },
+	{ "scaleMax", "Scale maximum", "", &VansPcgPlacementSettings::scaleMax, .01f, 0, 0, false, false, false, 0, 0, 5 },
+	{ "uniformScale", "Uniform scale", "", &VansPcgPlacementSettings::uniformScale, .01f, 0, 0, false, false, false, 0, 0, 3 },
+	{ "invertMask", "Invert Mask", "", &VansPcgPlacementSettings::invertMask, .01f, 0, 0, false, false, false, 0, 0, 13 }
 };
 
 struct VansPcgDistributionSettings : VansPcgPlacementSettings

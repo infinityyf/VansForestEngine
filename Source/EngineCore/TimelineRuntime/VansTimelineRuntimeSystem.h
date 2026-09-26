@@ -23,21 +23,31 @@ using VansTimelineRuntimeAssetGenerationQuery = std::function<bool(
 class VansTimelineRuntimeSystem
 {
 public:
-	VansTimelineRuntimeSystem();
+	explicit VansTimelineRuntimeSystem(const VansTimelineClockRegistry& clocks);
 	void RegisterWorld(VansRuntimeWorld* world);
 	void SetAssetLoader(VansTimelineRuntimeAssetLoader loader);
 	void SetAssetGenerationQuery(VansTimelineRuntimeAssetGenerationQuery query);
-	void SetApplierRegistry(std::shared_ptr<VansTimelineApplierRegistry> appliers);
-	void SetPayloadSchemaRegistry(std::shared_ptr<VansPayloadSchemaRegistry> payloads);
+	bool SetApplierRegistry(
+		std::shared_ptr<VansTimelineApplierRegistry> appliers,
+		std::uint64_t registryManifestHash,
+		std::string& error);
+	bool SetPayloadSchemaRegistry(
+		std::shared_ptr<const VansTimelinePayloadSchemaRegistry> payloads,
+		std::string& error);
 	bool HasOutputApplier(VansTimelineOutputTypeId type) const;
 	bool HasPayloadSchema(VansTimelinePayloadTypeId type) const;
 	bool ValidatePayload(VansTimelinePayloadTypeId type,
 		const VansSerializedValue& payload, std::string& error) const;
+	std::uint64_t RuntimeRegistryManifestHash() const { return m_RegistryManifestHash; }
 	VansTimelineSessionResult CreateActionSession(
 		std::string assetReference,
 		VansEntityHandle owner,
 		VansTimelineSessionScope scope);
-	bool IsReadyForActionSessions() const { return m_World && static_cast<bool>(m_AssetLoader); }
+	bool IsReadyForActionSessions() const
+	{
+		return m_World && m_RegistryManifestHash != 0 && m_Payloads && m_Payloads->IsSealed() &&
+			static_cast<bool>(m_AssetLoader);
+	}
 	void SyncTimelineComponents();
 	void UpdateRuntimePostScript(double deltaSeconds);
 	void UpdateRuntimeCamera(double deltaSeconds);
@@ -94,9 +104,10 @@ private:
 	VansRuntimeWorld* m_World = nullptr;
 	VansTimelineRuntimeAssetLoader m_AssetLoader;
 	VansTimelineRuntimeAssetGenerationQuery m_AssetGenerationQuery;
-	VansTimelineClockRegistry& m_Clocks;
+	const VansTimelineClockRegistry& m_Clocks;
 	std::shared_ptr<VansTimelineApplierRegistry> m_Appliers;
-	std::shared_ptr<VansPayloadSchemaRegistry> m_Payloads;
+	std::shared_ptr<const VansTimelinePayloadSchemaRegistry> m_Payloads;
+	std::uint64_t m_RegistryManifestHash = 0;
 	std::unique_ptr<VansTimelineSessionService> m_Sessions;
 	std::unordered_map<ComponentKey, ComponentFacade, ComponentKeyHash> m_Components;
 	std::unordered_map<std::string, VansTimelineSessionHandle> m_Previews;

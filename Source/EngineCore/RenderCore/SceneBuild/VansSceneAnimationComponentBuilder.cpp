@@ -1,4 +1,5 @@
 #include "VansSceneAnimationComponentBuilder.h"
+#include "../Animation/VansAnimationGpuBinding.h"
 
 #include "../VulkanCore/VansMesh.h"
 #include "../VulkanCore/VansVKDevice.h"
@@ -203,6 +204,11 @@ namespace VansGraphics
 				[](const VansAnimationLayerDefinition& layer,
 					std::shared_ptr<const VansBoneMaskAsset>& mask, std::string& error)
 				{
+					if (layer.maskGuid.empty() && layer.maskPathHint.empty())
+					{
+						mask.reset();
+						return true;
+					}
 					mask = ResolveConfigAssetObject<VansBoneMaskAsset>(layer.maskGuid,
 						Vans::VansAssetType::BoneMask,
 						"Bone Mask for Layer '" + layer.name + "'", error);
@@ -259,7 +265,7 @@ namespace VansGraphics
 		pendingAnimations.push_back(std::move(pending));
 	}
 
-	VansAnimationNode* VansSceneAnimationComponentBuilder::LoadAnimationComponent(
+	VansAnimationNode* VansSceneAnimationComponentBuilder::BuildAnimationRuntime(
 		VansScene& scene,
 		const Vans::VansSceneAnimationComponentConfig& animConfig,
 		const std::string& objectName,
@@ -329,7 +335,7 @@ namespace VansGraphics
 			return nullptr;
 		}
 
-		VansAnimationController* controller = nullptr;
+		std::unique_ptr<VansAnimationController> controller;
 		if (!animatorGuid.empty())
 		{
 			std::string resolveError;
@@ -377,6 +383,11 @@ namespace VansGraphics
 				[](const VansAnimationLayerDefinition& layer,
 					std::shared_ptr<const VansBoneMaskAsset>& mask, std::string& error)
 				{
+					if (layer.maskGuid.empty() && layer.maskPathHint.empty())
+					{
+						mask.reset();
+						return true;
+					}
 					mask = ResolveConfigAssetObject<VansBoneMaskAsset>(layer.maskGuid,
 						Vans::VansAssetType::BoneMask,
 						"Bone Mask for Layer '" + layer.name + "'", error);
@@ -389,13 +400,13 @@ namespace VansGraphics
 				VANS_LOG_WARN("[LoadAnimComp] Failed to compile Animator runtime definition: " << compileError);
 				return nullptr;
 			}
-			controller = compiledController.release();
+			controller = std::move(compiledController);
 
 			VANS_LOG("[LoadAnimComp] Loaded controller from memory Animator: " << animatorGuid);
 		}
 		else
 		{
-			controller = new VansAnimationController();
+			controller = std::make_unique<VansAnimationController>();
 			controller->SetName(meshGroupName + "_Controller");
 
 			if (!retargetRequested)
@@ -445,7 +456,7 @@ namespace VansGraphics
 
 				auto graph = std::make_unique<VansAnimGraph>();
 				const int smId = graph->AddNode(std::move(smNode));
-				const int outId = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+				const int outId = graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
 				graph->AddLink(smId, 0, outId, 0);
 				VansAnimationLayerSetup baseLayer;
 				baseLayer.definition.id = "layer-base";
@@ -471,7 +482,6 @@ namespace VansGraphics
 					"graph-set-default", {}, {}, layerError))
 				{
 					VANS_LOG_WARN("[LoadAnimComp] Failed to create generated Base Layer: " << layerError);
-					delete controller;
 					return nullptr;
 				}
 
@@ -497,7 +507,6 @@ namespace VansGraphics
 			{
 				VANS_LOG_WARN("[LoadAnimComp] Invalid Motion Matching configuration for '"
 					<< objectName << "': " << motionMatchingError);
-				delete controller;
 				return nullptr;
 			}
 			VANS_LOG("[LoadAnimComp] Motion Matching configured for '" << objectName
@@ -517,14 +526,21 @@ namespace VansGraphics
 			animNode->SetCharacterMotionSettings(*animConfig.motionModel);
 		animNode->SetSkeleton(meshAsset->m_AnimImportResult.skeleton);
 		animNode->SetRenderNodes(group.childNodes);
-		animNode->InitGPUResources(device, 1);
-		animNode->UploadPerSubmeshBoneBuffers(meshAsset->m_SubMeshBoneData);
+		auto gpuBinding = std::make_unique<VansAnimationGpuBinding>();
+		if (!gpuBinding->Initialize(device, 1, animNode->GetBoneSSBO(), nodeName) ||
+			!gpuBinding->UploadSkinWeights(meshAsset->m_SubMeshBoneData, nodeName))
+		{
+			VANS_LOG_WARN("[LoadAnimComp] '" << objectName
+				<< "' failed to create animation GPU binding");
+			delete animNode;
+			return nullptr;
+		}
+		VansAnimationGpuBinding* gpuBindingView = gpuBinding.get();
 		animNode->SetTransformID(group.sharedTransformID);
-		if (!animNode->SetController(controller))
+		if (!animNode->SetController(std::move(controller)))
 		{
 			VANS_LOG_WARN("[LoadAnimComp] '" << objectName
 				<< "' controller Rig is incompatible with the target model Skeleton");
-			delete controller;
 			delete animNode;
 			return nullptr;
 		}
@@ -534,7 +550,6 @@ namespace VansGraphics
 			const Vans::VansSceneAnimationRetargetConfig& retargetConfig = *animConfig.retarget;
 			auto failRetarget = [&]() -> VansAnimationNode*
 			{
-				delete controller;
 				delete animNode;
 				return nullptr;
 			};
@@ -630,7 +645,6 @@ namespace VansGraphics
 			const uint32_t submeshIndex = childNode->m_SubmeshIndex != UINT32_MAX
 				? childNode->m_SubmeshIndex
 				: static_cast<uint32_t>(ci);
-			childNode->m_AnimSubmeshIndex = submeshIndex;
 			const bool hasSubmeshBoneDataSlot =
 				submeshIndex < meshAsset->m_SubMeshBoneData.size();
 			const uint32_t influencedVertexCount = hasSubmeshBoneDataSlot
@@ -648,18 +662,17 @@ namespace VansGraphics
 					<< "' boneVertices=" << influencedVertexCount << "/" << submeshBoneVertexCount
 					<< " animEnabled=" << (hasSubmeshBoneData ? 1 : 0));
 			}
-			if (hasSubmeshBoneData && submeshIndex < animNode->GetSubmeshBufferCount())
+			if (hasSubmeshBoneData && submeshIndex < gpuBindingView->GetSubmeshCount())
 			{
 				childNode->m_HasSkeletonBone = true;
 				childNode->m_AnimationEnabled = true;
-				childNode->m_AnimOwner = animNode;
-				childNode->m_AnimSubmeshIndex = submeshIndex;
-				childNode->m_AnimBoneIDBuffer = &animNode->GetBoneIDBuffer(submeshIndex);
-				childNode->m_AnimBoneWeightBuffer = &animNode->GetBoneWeightBuffer(submeshIndex);
-				childNode->m_VertexDeformationState.skinningOwner = animNode;
+				childNode->m_VertexDeformationState.poseSource = animNode;
+				childNode->m_VertexDeformationState.gpuBinding = gpuBindingView;
 				childNode->m_VertexDeformationState.submeshIndex = submeshIndex;
-				childNode->m_VertexDeformationState.boneIDBuffer = childNode->m_AnimBoneIDBuffer;
-				childNode->m_VertexDeformationState.boneWeightBuffer = childNode->m_AnimBoneWeightBuffer;
+				childNode->m_VertexDeformationState.boneIDBuffer =
+					&gpuBindingView->GetBoneIdBuffer(submeshIndex);
+				childNode->m_VertexDeformationState.boneWeightBuffer =
+					&gpuBindingView->GetBoneWeightBuffer(submeshIndex);
 				childNode->m_VertexDeformationState.featureMask = VANS_VERTEX_FEATURE_SKELETAL_SKINNING;
 				childNode->MarkAnimationDescriptorDirty();
 			}
@@ -667,12 +680,8 @@ namespace VansGraphics
 			{
 				childNode->m_HasSkeletonBone = false;
 				childNode->m_AnimationEnabled = false;
-				childNode->m_AnimOwner = nullptr;
-				childNode->m_AnimSubmeshIndex = submeshIndex;
-				childNode->m_AnimBoneIDBuffer = nullptr;
-				childNode->m_AnimBoneWeightBuffer = nullptr;
 				childNode->m_VertexDeformationState = VansVertexDeformationState{};
-				if (hasSkeleton && submeshIndex >= animNode->GetSubmeshBufferCount())
+				if (hasSkeleton && submeshIndex >= gpuBindingView->GetSubmeshCount())
 				{
 					VANS_LOG_WARN("[LoadAnimComp] submesh index " << submeshIndex
 						<< " has no bone buffer for node '" << childNode->m_NodeName << "'");
@@ -681,21 +690,34 @@ namespace VansGraphics
 		}
 
 		animNode->SetTargetBindings(animConfig.targetBindings);
-		scene.RegisterAnimationRuntime(animNode, controller);
+		if (!scene.RegisterAnimationRuntime(animNode, std::move(gpuBinding)))
+		{
+			for (VansRenderNode* childNode : group.childNodes)
+			{
+				if (!childNode)
+					continue;
+				childNode->m_HasSkeletonBone = false;
+				childNode->m_AnimationEnabled = false;
+				childNode->m_VertexDeformationState = VansVertexDeformationState{};
+				childNode->MarkAnimationDescriptorDirty();
+			}
+			delete animNode;
+			return nullptr;
+		}
 		if (animConfig.autoPlay)
 			animNode->Play(scene.GetLoadMode() == VansSceneLoadMode::Runtime
 				? VansAnimationEvaluationPurpose::Gameplay
 				: VansAnimationEvaluationPurpose::EditorPreview);
 
 		VANS_LOG("[LoadAnimComp] Created animation component '" << nodeName
-			<< "' with " << controller->GetClipNames().size() << " clip(s), "
+			<< "' with " << animNode->GetController()->GetClipNames().size() << " clip(s), "
 			<< meshAsset->m_AnimImportResult.skeleton.bones.size() << " bones, "
 			<< group.childNodes.size() << " render node(s), autoPlay=" << (animConfig.autoPlay ? 1 : 0));
 
 		return animNode;
 	}
 
-	bool VansSceneAnimationComponentBuilder::LoadRagdollComponent(
+	bool VansSceneAnimationComponentBuilder::BuildRagdollRuntime(
 		VansScene& scene,
 		VansScriptObject* obj,
 		VansAnimationNode* animNode,
@@ -761,8 +783,8 @@ namespace VansGraphics
 		if (cctComp && cctComp->m_ControllerNode &&
 			cctComp->m_ControllerNode->HasPendingFollowRagdoll())
 		{
-			cctComp->m_ControllerNode->SetFollowRagdoll(
-				animNode,
+			cctComp->BindFollowRagdoll(
+				ragdollComp,
 				cctComp->m_ControllerNode->GetPendingFollowRagdollBone());
 			cctComp->m_ControllerNode->ConsumePendingFollowRagdoll();
 			VANS_LOG("[LoadRagdollComp] CCT followRagdoll binding completed, objName='" << obj->m_ObjectName
@@ -774,46 +796,58 @@ namespace VansGraphics
 		return true;
 	}
 
-	void VansSceneAnimationComponentBuilder::ResolveAnimations(
+	VansSceneAnimationBuildResult VansSceneAnimationComponentBuilder::BuildAnimations(
 		VansScene& scene,
 		const std::vector<PendingAnimationComponent>& pendingAnimations,
 		const std::string& projectRoot)
 	{
+		VansSceneAnimationBuildResult result;
 		for (const PendingAnimationComponent& pending : pendingAnimations)
 		{
 			if (!pending.component || !pending.animationConfig)
-				continue;
+			{
+				result.error = "Animation placeholder or configuration is unavailable for object '" +
+					pending.objectName + "'";
+				return result;
+			}
 
-			VansAnimationNode* animationNode = LoadAnimationComponent(
+			VansAnimationNode* animationNode = BuildAnimationRuntime(
 				scene,
 				*pending.animationConfig,
 				pending.objectName,
-                pending.obj ? pending.obj->m_EntityGuid : std::string{},
+				pending.obj ? pending.obj->m_EntityGuid : std::string{},
 				projectRoot);
 			pending.component->m_AnimNode = animationNode;
 
-			if (animationNode)
-			{
-				const bool componentEnabled = pending.animationConfig->enabled;
-				if (!componentEnabled)
-					animationNode->SetEnabled(false);
-				pending.component->m_Enabled = componentEnabled;
-			}
-
 			if (!animationNode)
 			{
-				VANS_LOG_WARN("[LoadSceneObjects] Animation component for '"
-					<< pending.objectName << "' could not be created");
+				result.error = "Animation runtime could not be created for object '" +
+					pending.objectName + "'";
+				return result;
 			}
-			else if (pending.obj && pending.animationConfig->ragdoll)
+
+			const bool componentEnabled = pending.animationConfig->enabled;
+			if (!componentEnabled)
+				animationNode->SetEnabled(false);
+			pending.component->m_Enabled = componentEnabled;
+
+			if (pending.animationConfig->ragdoll)
 			{
-				LoadRagdollComponent(
+				if (!pending.obj || !BuildRagdollRuntime(
 					scene,
 					pending.obj,
 					animationNode,
 					*pending.animationConfig->ragdoll,
-					projectRoot);
+					projectRoot))
+				{
+					result.error = "Ragdoll runtime could not be created for object '" +
+						pending.objectName + "'";
+					return result;
+				}
 			}
 		}
+
+		result.success = true;
+		return result;
 	}
 }

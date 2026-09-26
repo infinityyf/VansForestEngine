@@ -10,6 +10,7 @@
 #include "../TimelineCore/VansTimelineSerialization.h"
 #include "../TimelineCore/VansTimelineValidator.h"
 #include "../TimelineCore/VansTimelineTrackExtensionRegistry.h"
+#include "../Timeline/VansEngineTimelineRegistry.h"
 #include "../TerrainCore/Serialization/VansTerrainAssetCodec.h"
 #include "../EngineAPILayer/Public/AnimationAuthoringDocumentAnalysis.h"
 #include "../AICore/Serialization/VansAIBehaviorJsonCodec.h"
@@ -68,8 +69,15 @@ VansAssetDocumentTypeRegistry::VansAssetDocumentTypeRegistry()
 			return result;
 		}
 		VansTimelineValidationContext context;
-		context.runtimeValidation = false;
-		context.extensions = &VansTimelineTrackExtensionRegistry::BuiltIns();
+		context.requireRuntimeCapabilities = false;
+		const VansEngineTimelineCatalog catalog = VansGetEngineTimelineCatalog();
+		if (!catalog)
+		{
+			result.push_back({ VansAssetDocumentDiagnosticSeverity::Error, {},
+				std::string(catalog.error) });
+			return result;
+		}
+		context.extensions = catalog.trackExtensions;
 		for (const VansTimelineDiagnostic& diagnostic : VansTimelineValidator::Validate(asset, context))
 		{
 			VansAssetDocumentDiagnosticSeverity severity = VansAssetDocumentDiagnosticSeverity::Info;
@@ -241,7 +249,7 @@ VansAssetDocumentTypeRegistry::VansAssetDocumentTypeRegistry()
 		VansGraphics::VansPostProcessProfile asset;
 		std::string error;
 		if (!VansGraphics::VansPostProcessProfileJsonCodec::Decode(
-			EncodeSerializedValueJson<nlohmann::json>(root), path, asset, error))
+			root, path, asset, error))
 			result.push_back({ VansAssetDocumentDiagnosticSeverity::Error, {}, std::move(error) });
 		return result;
 	};
@@ -255,7 +263,7 @@ VansAssetDocumentTypeRegistry::VansAssetDocumentTypeRegistry()
 		VansGraphics::VansParticleAsset asset;
 		std::string error;
 		if (!VansGraphics::VansParticleAssetJsonCodec::Decode(
-			EncodeSerializedValueJson<nlohmann::json>(root), path, asset, error))
+			root, path, asset, error))
 			result.push_back({ VansAssetDocumentDiagnosticSeverity::Error, {}, std::move(error) });
 		return result;
 	};

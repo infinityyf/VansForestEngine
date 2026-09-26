@@ -15,13 +15,6 @@ EditorAPI::AssetType AssetPicker(std::string_view kind)
 }
 }
 
-const std::vector<VansTimelineTrackDescriptor>& VansTimelineTrackDescriptorRegistry::All()
-{
-	static const std::vector<VansTimelineTrackDescriptor> descriptors =
-		Build(VansTimelineTrackExtensionRegistry::BuiltIns());
-	return descriptors;
-}
-
 std::vector<VansTimelineTrackDescriptor> VansTimelineTrackDescriptorRegistry::Build(
 	const VansTimelineTrackExtensionRegistry& extensions)
 {
@@ -44,14 +37,18 @@ std::vector<VansTimelineTrackDescriptor> VansTimelineTrackDescriptorRegistry::Bu
 	return descriptors;
 }
 
-const VansTimelineTrackDescriptor* VansTimelineTrackDescriptorRegistry::Find(VansTimelineTrackTypeId typeId)
+const VansTimelineTrackDescriptor* VansTimelineTrackDescriptorRegistry::Find(
+	const std::vector<VansTimelineTrackDescriptor>& descriptors,
+	VansTimelineTrackTypeId typeId)
 {
-	for (const auto& descriptor : All()) if (descriptor.typeId == typeId) return &descriptor;
+	for (const auto& descriptor : descriptors) if (descriptor.typeId == typeId) return &descriptor;
 	return nullptr;
 }
 
-const VansTimelineTrackDescriptor* VansTimelineTrackDescriptorRegistry::Find(const VansTimelineTrackTypeRef& type)
+const VansTimelineTrackDescriptor* VansTimelineTrackDescriptorRegistry::Find(
+	const std::vector<VansTimelineTrackDescriptor>& descriptors,
+	const VansTimelineTrackTypeRef& type)
 {
-	return Find(type.typeId);
+	return Find(descriptors, type.typeId);
 }
 }

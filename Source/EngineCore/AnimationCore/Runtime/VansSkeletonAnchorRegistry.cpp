@@ -1,3 +1,4 @@
+#include "../../SceneRuntime/Transform/VansTransform.h"
 #include "VansSkeletonAnchorRegistry.h"
 
 #include "../VansAnimationController.h"

@@ -1,6 +1,8 @@
 #include "VansSceneTimelineComponentReader.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../AssetCore/VansAssetReference.h"
+#include "VansComponentTypeCatalog.h"
 
 #include <algorithm>
 
@@ -31,31 +33,31 @@ const VansSerializedValue* FindTimelineComponent(const VansSerializedValue& enti
 	return found == components->arrayItems.end() ? nullptr : &*found;
 }
 
-VansTimelinePlayOn ParsePlayOn(const std::string& value)
+bool ParsePlayOn(const std::string& value, VansTimelinePlayOn& out)
 {
-	if (value == "Awake") return VansTimelinePlayOn::Awake;
-	if (value == "Enable") return VansTimelinePlayOn::Enable;
-	if (value == "Signal") return VansTimelinePlayOn::Signal;
-	return VansTimelinePlayOn::Manual;
+	if (value == "Manual") out = VansTimelinePlayOn::Manual;
+	else if (value == "Awake") out = VansTimelinePlayOn::Awake;
+	else if (value == "Enable") out = VansTimelinePlayOn::Enable;
+	else if (value == "Signal") out = VansTimelinePlayOn::Signal;
+	else return false;
+	return true;
 }
 
-VansTimelineUpdateMode ParseUpdateMode(const std::string& value)
+bool ParseBindingRootMode(const std::string& value, VansTimelineBindingRootMode& out)
 {
-	if (value == "UnscaledTime") return VansTimelineUpdateMode::UnscaledTime;
-	if (value == "Manual") return VansTimelineUpdateMode::Manual;
-	return VansTimelineUpdateMode::GameTime;
+	if (value == "OwnerRelative") out = VansTimelineBindingRootMode::OwnerRelative;
+	else if (value == "World") out = VansTimelineBindingRootMode::World;
+	else return false;
+	return true;
 }
 
-VansTimelineBindingRootMode ParseBindingRootMode(const std::string& value)
+bool ParseLoopMode(const std::string& value, VansTimelineLoopMode& out)
 {
-	return value == "World" ? VansTimelineBindingRootMode::World : VansTimelineBindingRootMode::OwnerRelative;
-}
-
-VansTimelineLoopMode ParseLoopMode(const std::string& value)
-{
-	if (value == "Loop") return VansTimelineLoopMode::Loop;
-	if (value == "PingPong") return VansTimelineLoopMode::PingPong;
-	return VansTimelineLoopMode::None;
+	if (value == "None") out = VansTimelineLoopMode::None;
+	else if (value == "Loop") out = VansTimelineLoopMode::Loop;
+	else if (value == "PingPong") out = VansTimelineLoopMode::PingPong;
+	else return false;
+	return true;
 }
 
 VansTimelineKeyValue DecodeParameterValue(const VansSerializedValue& value)
@@ -79,29 +81,57 @@ VansTimelineKeyValue DecodeParameterValue(const VansSerializedValue& value)
 }
 }
 
-std::optional<VansSceneTimelineComponentConfig>
-VansSceneTimelineComponentReader::ReadFromAuthoringEntity(const VansSerializedValue& entity)
+bool VansSceneTimelineComponentReader::ReadFromAuthoringEntity(
+	const VansSerializedValue& entity,
+	std::optional<VansSceneTimelineComponentConfig>& outConfig,
+	std::string& error)
 {
+	outConfig.reset();
 	const VansSerializedValue* component = FindTimelineComponent(entity);
-	if (!component) return std::nullopt;
-	return ReadAuthoringComponent(*component);
+	if (!component) return true;
+	VansSceneTimelineComponentConfig config;
+	if (!ReadAuthoringComponent(*component, config, error)) return false;
+	outConfig = std::move(config);
+	return true;
 }
 
-VansSceneTimelineComponentConfig VansSceneTimelineComponentReader::ReadAuthoringComponent(
-	const VansSerializedValue& component)
+bool VansSceneTimelineComponentReader::ReadAuthoringComponent(
+	const VansSerializedValue& component,
+	VansSceneTimelineComponentConfig& outConfig,
+	std::string& error)
 {
 	VansSceneTimelineComponentConfig config;
 	config.enabled = ReadSerializedBoolField(component, "enabled", true);
 	const VansSerializedValue* data = ObjectField(component, "data");
-	if (!data) return config;
-	const VansSerializedValue* timeline = ObjectField(*data, "timeline");
-	if (!timeline) return config;
-	config.timelineAssetGuid = ReadSerializedStringField(*timeline, "guid");
-	config.timelineAssetPath = ReadSerializedStringField(*timeline, "path");
-	config.instance.playOn = ParsePlayOn(ReadSerializedStringField(*data, "playOn", "Manual"));
-	config.instance.updateMode = ParseUpdateMode(ReadSerializedStringField(*data, "updateMode", "GameTime"));
-	config.instance.bindingRootMode = ParseBindingRootMode(ReadSerializedStringField(*data, "bindingRootMode", "OwnerRelative"));
-	config.instance.loopMode = ParseLoopMode(ReadSerializedStringField(*data, "loopMode", "None"));
+	if (!data) { outConfig = std::move(config); return true; }
+	const VansSerializedValue* timeline = FindObjectField(*data, "timeline");
+	if (!timeline) { outConfig = std::move(config); return true; }
+	std::optional<VansAssetGuid> timelineGuid;
+	if (!TryReadOptionalAssetGuidReference(*timeline, timelineGuid))
+	{
+		error = "Timeline.timeline must be an object containing exactly one guid";
+		return false;
+	}
+	if (timelineGuid)
+		config.timelineAssetGuid = timelineGuid->ToString();
+	const std::string playOn = ReadSerializedStringField(*data, "playOn", "Manual");
+	if (!ParsePlayOn(playOn, config.instance.playOn))
+	{
+		error = "Timeline.playOn has invalid value '" + playOn + "'";
+		return false;
+	}
+	const std::string bindingRootMode = ReadSerializedStringField(*data, "bindingRootMode", "OwnerRelative");
+	if (!ParseBindingRootMode(bindingRootMode, config.instance.bindingRootMode))
+	{
+		error = "Timeline.bindingRootMode has invalid value '" + bindingRootMode + "'";
+		return false;
+	}
+	const std::string loopMode = ReadSerializedStringField(*data, "loopMode", "None");
+	if (!ParseLoopMode(loopMode, config.instance.loopMode))
+	{
+		error = "Timeline.loopMode has invalid value '" + loopMode + "'";
+		return false;
+	}
 	config.instance.loopCount = static_cast<std::int32_t>(ReadSerializedIntField(*data, "loopCount", 1));
 	if (const VansSerializedValue* playbackSpeed = FindObjectField(*data, "playbackSpeed"))
 		config.instance.playbackSpeed = ReadSerializedNumber(*playbackSpeed, 1.0);
@@ -112,6 +142,11 @@ VansSceneTimelineComponentConfig VansSceneTimelineComponentReader::ReadAuthoring
 		for (const auto& source : overrides->arrayItems)
 		{
 			if (source.kind != VansSerializedValue::Kind::Object) continue;
+			if (FindObjectField(source, "targetComponentTypeId"))
+			{
+				error = "Timeline.bindingOverrides uses obsolete integer targetComponentTypeId";
+				return false;
+			}
 			VansTimelineBindingOverride overrideValue;
 			const std::string bindingName = ReadSerializedStringField(source, "bindingId");
 			overrideValue.bindingId = VansMakeStableId<VansTimelineBindingTag>(bindingName);
@@ -119,8 +154,17 @@ VansSceneTimelineComponentConfig VansSceneTimelineComponentReader::ReadAuthoring
 			overrideValue.useOwner = entity == "owner";
 			if (!overrideValue.useOwner) overrideValue.targetEntityGuid = entity;
 			overrideValue.targetComponentGuid = ReadSerializedStringField(source, "targetComponent");
-			overrideValue.targetComponentTypeId = static_cast<std::uint16_t>(
-				ReadSerializedIntField(source, "targetComponentTypeId", 0));
+			const std::string componentType = ReadSerializedStringField(source, "targetComponentType");
+			if (!componentType.empty())
+			{
+				const VansComponentTypeDescriptor* descriptor = VansComponentTypeCatalog::Find(componentType);
+				if (!descriptor || descriptor->runtimeTypeId == VansInvalidComponentTypeId)
+				{
+					error = "Timeline.bindingOverrides has unknown targetComponentType '" + componentType + "'";
+					return false;
+				}
+				overrideValue.targetComponentType = std::string(descriptor->runtimeKey);
+			}
 			if (overrideValue.bindingId) config.instance.bindingOverrides.push_back(std::move(overrideValue));
 		}
 	}
@@ -131,6 +175,7 @@ VansSceneTimelineComponentConfig VansSceneTimelineComponentReader::ReadAuthoring
 				VansMakeStableId<VansTimelineParameterTag>(name), DecodeParameterValue(value) });
 	}
 	config.valid = !config.timelineAssetGuid.empty();
-	return config;
+	outConfig = std::move(config);
+	return true;
 }
 }

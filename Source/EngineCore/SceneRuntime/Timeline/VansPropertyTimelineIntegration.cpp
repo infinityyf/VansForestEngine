@@ -1,4 +1,5 @@
 #include "VansPropertyTimelineIntegration.h"
+#include "VansTransformTimelineAccess.h"
 
 #include "../../TimelineCore/VansTimelineSerialization.h"
 #include "../../TimelineCore/VansTimelineTrackExtensionRegistry.h"
@@ -7,9 +8,12 @@
 #include "../../TimelineRuntime/VansTimelineModuleApplierState.h"
 #include "../../TimelineRuntime/VansTimelinePropertyAccessRegistry.h"
 #include "../../TimelineRuntime/VansTimelineSampleExtension.h"
+#include "../../SceneCore/VansComponentTypeCatalog.h"
 #include "../VansRuntimeComponentTypes.h"
 #include "../VansRuntimeWorld.h"
-#include "../../ScriptCore/VansTransform.h"
+#include "../Transform/VansTransformStore.h"
+
+#include <glm/gtc/quaternion.hpp>
 
 #include <cmath>
 #include <limits>
@@ -29,8 +33,8 @@ struct CompiledPropertyAccess
 std::uint32_t ResolveTransformId(const VansTimelinePropertyAccessContext& context)
 {
 	if (!context.world || !context.world->IsAlive(context.target.entity)) return UINT32_MAX;
-	auto* storage = static_cast<VansComponentStorage<VansRuntimeTransformComponent>*>(
-		context.world->FindStorage(VansRuntimeComponentType_Transform));
+	auto* storage = context.world->FindStorage<VansRuntimeTransformComponent>(
+		VansRuntimeComponentType_Transform);
 	if (!storage) return UINT32_MAX;
 	for (VansComponentHandle component : context.world->CollectComponentsOwnedBy(context.target.entity))
 		if (component.typeId == VansRuntimeComponentType_Transform)
@@ -42,9 +46,9 @@ bool ReadTransformPosition(const VansTimelinePropertyAccessContext& context,
 	VansTimelineValue& value, std::string& error)
 {
 	const std::uint32_t id = ResolveTransformId(context);
-	if (id >= VansGraphics::VansTransformStore::GlobalTransforms.size())
+	if (!Vans::VansTransformStore::IsAllocated(id))
 	{ error = "Transform.Position requires a live Transform binding"; return false; }
-	const auto& position = VansGraphics::VansTransformStore::GetTransform(id).m_Position;
+	const auto& position = Vans::VansTransformStore::Read(id).m_Position;
 	value = VansTimelineVec3{ { position.x, position.y, position.z } }; return true;
 }
 
@@ -52,20 +56,22 @@ bool WriteTransformPosition(const VansTimelinePropertyAccessContext& context,
 	const VansTimelineValue& value, std::string& error)
 {
 	const std::uint32_t id = ResolveTransformId(context); const auto* typed = std::get_if<VansTimelineVec3>(&value);
-	if (id >= VansGraphics::VansTransformStore::GlobalTransforms.size() || !typed)
+	if (!Vans::VansTransformStore::IsAllocated(id) || !typed)
 	{ error = "Transform.Position target or value is invalid"; return false; }
-	VansGraphics::VansTransformStore::GetTransform(id).m_Position = {
+	Vans::VansTransform transform = Vans::VansTransformStore::Read(id);
+	transform.m_Position = {
 		static_cast<float>(typed->value[0]), static_cast<float>(typed->value[1]), static_cast<float>(typed->value[2]) };
-	VansGraphics::VansTransformStore::TransformIDToTransformDirty[id] = true; return true;
+	Vans::VansTransformStore::Write(id, transform);
+	Vans::VansTransformStore::MarkDirty(id); return true;
 }
 
 bool ReadTransformScale(const VansTimelinePropertyAccessContext& context,
 	VansTimelineValue& value, std::string& error)
 {
 	const std::uint32_t id = ResolveTransformId(context);
-	if (id >= VansGraphics::VansTransformStore::GlobalTransforms.size())
+	if (!Vans::VansTransformStore::IsAllocated(id))
 	{ error = "Transform.Scale requires a live Transform binding"; return false; }
-	const auto& scale = VansGraphics::VansTransformStore::GetTransform(id).m_Scale;
+	const auto& scale = Vans::VansTransformStore::Read(id).m_Scale;
 	value = VansTimelineVec3{ { scale.x, scale.y, scale.z } }; return true;
 }
 
@@ -73,20 +79,22 @@ bool WriteTransformScale(const VansTimelinePropertyAccessContext& context,
 	const VansTimelineValue& value, std::string& error)
 {
 	const std::uint32_t id = ResolveTransformId(context); const auto* typed = std::get_if<VansTimelineVec3>(&value);
-	if (id >= VansGraphics::VansTransformStore::GlobalTransforms.size() || !typed)
+	if (!Vans::VansTransformStore::IsAllocated(id) || !typed)
 	{ error = "Transform.Scale target or value is invalid"; return false; }
-	VansGraphics::VansTransformStore::GetTransform(id).m_Scale = {
+	Vans::VansTransform transform = Vans::VansTransformStore::Read(id);
+	transform.m_Scale = {
 		static_cast<float>(typed->value[0]), static_cast<float>(typed->value[1]), static_cast<float>(typed->value[2]) };
-	VansGraphics::VansTransformStore::TransformIDToTransformDirty[id] = true; return true;
+	Vans::VansTransformStore::Write(id, transform);
+	Vans::VansTransformStore::MarkDirty(id); return true;
 }
 
 bool ReadTransformRotation(const VansTimelinePropertyAccessContext& context,
 	VansTimelineValue& value, std::string& error)
 {
 	const std::uint32_t id = ResolveTransformId(context);
-	if (id >= VansGraphics::VansTransformStore::GlobalTransforms.size())
+	if (!Vans::VansTransformStore::IsAllocated(id))
 	{ error = "Transform.Rotation requires a live Transform binding"; return false; }
-	const glm::quat rotation = glm::quat(glm::radians(VansGraphics::VansTransformStore::GetTransform(id).m_Rotation));
+	const glm::quat rotation = glm::quat(glm::radians(Vans::VansTransformStore::Read(id).m_Rotation));
 	value = VansTimelineQuaternion{ { rotation.x, rotation.y, rotation.z, rotation.w } }; return true;
 }
 
@@ -94,13 +102,15 @@ bool WriteTransformRotation(const VansTimelinePropertyAccessContext& context,
 	const VansTimelineValue& value, std::string& error)
 {
 	const std::uint32_t id = ResolveTransformId(context); const auto* typed = std::get_if<VansTimelineQuaternion>(&value);
-	if (id >= VansGraphics::VansTransformStore::GlobalTransforms.size() || !typed)
+	if (!Vans::VansTransformStore::IsAllocated(id) || !typed)
 	{ error = "Transform.Rotation target or value is invalid"; return false; }
 	glm::quat rotation(static_cast<float>(typed->value[3]), static_cast<float>(typed->value[0]),
 		static_cast<float>(typed->value[1]), static_cast<float>(typed->value[2]));
 	if (glm::length(rotation) <= 0.00001f) rotation = glm::quat(1, 0, 0, 0);
-	VansGraphics::VansTransformStore::GetTransform(id).m_Rotation = glm::degrees(glm::eulerAngles(glm::normalize(rotation)));
-	VansGraphics::VansTransformStore::TransformIDToTransformDirty[id] = true; return true;
+	Vans::VansTransform transform = Vans::VansTransformStore::Read(id);
+	transform.m_Rotation = glm::degrees(glm::eulerAngles(glm::normalize(rotation)));
+	Vans::VansTransformStore::Write(id, transform);
+	Vans::VansTransformStore::MarkDirty(id); return true;
 }
 
 void AddError(VansTimelineDiagnostics& diagnostics, const VansTimelineId& id,
@@ -110,20 +120,23 @@ void AddError(VansTimelineDiagnostics& diagnostics, const VansTimelineId& id,
 		"Timeline.PropertyDescriptorInvalid", {}, id, std::move(property), std::move(message) });
 }
 
-void ValidateProperty(const VansTimelineTrack& track, const VansTimelineSourceSchema& schema,
+void ValidateProperty(const VansTimelinePropertyAccessRegistry& accessors,
+	const VansTimelineTrack& track, const VansTimelineSourceSchema& schema,
 	const VansTimelineValidationContext&, VansTimelineDiagnostics& diagnostics)
 {
 	VansValidateTimelineExtensionSchema(track, schema, diagnostics);
 	const VansSerializedValue* descriptorValue = VansTimelineFindSourceField(track.extensionData, "descriptorId");
-	const VansSerializedValue* componentValue = VansTimelineFindSourceField(track.extensionData, "componentTypeId");
+	const VansSerializedValue* componentValue = VansTimelineFindSourceField(track.extensionData, "componentType");
 	const VansSerializedValue* typeValue = VansTimelineFindSourceField(track.extensionData, "valueType");
 	if (!descriptorValue || descriptorValue->kind != VansSerializedValue::Kind::String ||
-		!componentValue || componentValue->kind != VansSerializedValue::Kind::Int ||
+		!componentValue || componentValue->kind != VansSerializedValue::Kind::String ||
 		!typeValue || typeValue->kind != VansSerializedValue::Kind::String) return;
-	const auto* descriptor = VansTimelinePropertyAccessRegistry::BuiltIns().Resolve(descriptorValue->stringValue);
+	const auto* descriptor = accessors.Resolve(descriptorValue->stringValue);
 	VansTimelineValueType type{};
+	const std::uint16_t componentTypeId = VansComponentTypeCatalog::RuntimeTypeId(componentValue->stringValue);
 	if (!descriptor || !VansTimelineSerialization::TryParseValueType(typeValue->stringValue, type) ||
-		descriptor->componentTypeId != componentValue->intValue || descriptor->valueType != type)
+		componentTypeId == VansInvalidComponentTypeId ||
+		descriptor->componentTypeId != componentTypeId || descriptor->valueType != type)
 		AddError(diagnostics, track.id, "descriptorId",
 			"Property descriptor, component type and value type must match one registered accessor");
 }
@@ -137,16 +150,18 @@ bool CompileProperty(const VansTimelineExtensionCompileContext& context,
 	VansTimelineCompiledDataView validated;
 	if (!writer.WriteSchema(schema, track.extensionData, validated, diagnostics, track.id)) return false;
 	const VansSerializedValue* descriptorValue = VansTimelineFindSourceField(track.extensionData, "descriptorId");
-	const VansSerializedValue* componentValue = VansTimelineFindSourceField(track.extensionData, "componentTypeId");
+	const VansSerializedValue* componentValue = VansTimelineFindSourceField(track.extensionData, "componentType");
 	const VansSerializedValue* typeValue = VansTimelineFindSourceField(track.extensionData, "valueType");
 	VansTimelineValueType valueType = VansTimelineValueType::Null;
 	if (!descriptorValue || descriptorValue->kind != VansSerializedValue::Kind::String ||
-		!componentValue || componentValue->kind != VansSerializedValue::Kind::Int ||
+		!componentValue || componentValue->kind != VansSerializedValue::Kind::String ||
 		!typeValue || typeValue->kind != VansSerializedValue::Kind::String ||
 		!VansTimelineSerialization::TryParseValueType(typeValue->stringValue, valueType)) return false;
+	const std::uint16_t componentTypeId = VansComponentTypeCatalog::RuntimeTypeId(componentValue->stringValue);
+	if (componentTypeId == VansInvalidComponentTypeId) return false;
 	const CompiledPropertyAccess compiled{
 		VansMakeStableId<VansTimelinePropertyAccessTag>(descriptorValue->stringValue).value,
-		static_cast<std::uint16_t>(componentValue->intValue), static_cast<std::uint8_t>(valueType) };
+		componentTypeId, static_cast<std::uint8_t>(valueType) };
 	trackData = writer.Write(compiled);
 	sectionData.assign(track.sections.size(), trackData);
 	return true;
@@ -217,8 +232,10 @@ struct PropertyRestoreState
 class PropertyTimelineApplier final : public IVansTimelineOutputApplier
 {
 public:
-	PropertyTimelineApplier(VansRuntimeWorld& world, const VansTimelinePropertyAccessRegistry& accessors)
-		: m_World(world), m_Accessors(accessors) {}
+	PropertyTimelineApplier(VansRuntimeWorld& world,
+		const VansTimelinePropertyAccessRegistry& accessors,
+		std::shared_ptr<IVansTimelineTransformAccess> transformAccess)
+		: m_World(world), m_Accessors(accessors), m_TransformAccess(std::move(transformAccess)) {}
 	VansTimelineOutputTypeId OutputType() const override
 	{ return VansMakeStableId<VansTimelineOutputTypeTag>(std::string(TimelineNames::Property) + ".Output"); }
 	std::string_view StableName() const override { return "Scene.PropertyTimelineApplier"; }
@@ -240,11 +257,9 @@ public:
 		const auto sampled = VansTimelineEvaluator::SampleChannel(context.section->channels.front(), sample->localTick);
 		if (!sampled) return { VansTimelineApplyStatus::Ignored };
 		VansTimelinePropertyAccessContext access{ target, &m_World, {} };
-		access.resource = { VansStableHash64("Scene.Property") ^ descriptor->id.value,
-			target.component.IsValid()
-				? ((static_cast<std::uint64_t>(target.component.generation) << 32) |
-					(static_cast<std::uint64_t>(target.component.typeId) << 16) | target.component.index + 1ull)
-				: ((static_cast<std::uint64_t>(target.entity.generation) << 32) | target.entity.index + 1ull) };
+		std::string error;
+		if (!PrepareWrite(*descriptor, access, error))
+			return { VansTimelineApplyStatus::Failed, {}, error };
 		std::string readError;
 		auto [restore, state] = m_State.Acquire(context.writer, [&]
 		{
@@ -252,26 +267,70 @@ public:
 			descriptor->read(access, created.previous, readError); return created;
 		});
 		if (!readError.empty()) { m_State.Release(restore); return { VansTimelineApplyStatus::Failed, {}, readError }; }
-		VansTimelineValue current; std::string error;
+		VansTimelineValue current;
 		if (!descriptor->read(access, current, error)) return { VansTimelineApplyStatus::Failed, {}, error };
 		VansTimelineValue blended;
 		if (!BlendValue(current, *sampled, context.blendMode, blended, error) ||
 			!descriptor->write(access, blended, error))
 			return { VansTimelineApplyStatus::Failed, {}, error };
+		NotifyWritten(*descriptor, access);
 		return { VansTimelineApplyStatus::Applied, { restore, {}, {}, access.resource } };
 	}
 	bool Restore(VansTimelineRestoreToken token) override
 	{
 		PropertyRestoreState* state = m_State.Resolve(token.handle);
-		if (!state) return false; std::string error;
-		state->descriptor->write(state->access, state->previous, error);
-		return m_State.Release(token.handle);
+		if (!state) return false;
+		std::string error;
+		const bool restored = state->descriptor->write(state->access, state->previous, error);
+		if (restored) NotifyWritten(*state->descriptor, state->access);
+		const bool released = m_State.Release(token.handle);
+		return restored && released;
 	}
 	void ReleaseWriter(VansTimelineWriterHandle writer) override { m_State.ReleaseWriter(writer); }
 	void ReleaseAll() override { m_State.Clear(); }
 private:
+	bool PrepareWrite(const VansTimelinePropertyAccessDescriptor& descriptor,
+		VansTimelinePropertyAccessContext& access, std::string& error) const
+	{
+		if (descriptor.writeDomain == VansTimelinePropertyWriteDomain::Transform)
+		{
+			if (!m_TransformAccess ||
+				!m_TransformAccess->CanWrite(access.target, "RejectDynamicBody", error))
+			{
+				if (error.empty()) error = "Transform Timeline access service is unavailable";
+				return false;
+			}
+			if (!Vans::VansTransformStore::IsAllocated(ResolveTransformId(access)))
+			{
+				error = "Transform property requires a live Transform binding";
+				return false;
+			}
+			access.resource = VansMakeTimelineTransformResource(access.target.entity);
+			return true;
+		}
+		access.resource = { VansStableHash64("Scene.Property") ^ descriptor.id.value,
+			access.target.component.IsValid()
+				? ((static_cast<std::uint64_t>(access.target.component.generation) << 32) |
+					(static_cast<std::uint64_t>(access.target.component.typeId) << 16) |
+					access.target.component.index + 1ull)
+				: ((static_cast<std::uint64_t>(access.target.entity.generation) << 32) |
+					access.target.entity.index + 1ull) };
+		return true;
+	}
+
+	void NotifyWritten(const VansTimelinePropertyAccessDescriptor& descriptor,
+		const VansTimelinePropertyAccessContext& access) const
+	{
+		if (descriptor.writeDomain != VansTimelinePropertyWriteDomain::Transform || !m_TransformAccess)
+			return;
+		const std::uint32_t transformId = ResolveTransformId(access);
+		if (Vans::VansTransformStore::IsAllocated(transformId))
+			m_TransformAccess->NotifyWritten(transformId);
+	}
+
 	VansRuntimeWorld& m_World;
 	const VansTimelinePropertyAccessRegistry& m_Accessors;
+	std::shared_ptr<IVansTimelineTransformAccess> m_TransformAccess;
 	VansTimelineModuleApplierState<PropertyRestoreState> m_State;
 };
 }
@@ -285,7 +344,9 @@ bool VansRegisterSceneTimelinePropertyAccessors(VansTimelinePropertyAccessRegist
 		VansTimelinePropertyAccessDescriptor descriptor;
 		descriptor.id = VansMakeStableId<VansTimelinePropertyAccessTag>(name);
 		descriptor.stableName = std::move(name); descriptor.componentTypeId = VansRuntimeComponentType_Transform;
-		descriptor.valueType = type; descriptor.read = read; descriptor.write = write;
+		descriptor.valueType = type;
+		descriptor.writeDomain = VansTimelinePropertyWriteDomain::Transform;
+		descriptor.read = read; descriptor.write = write;
 		return registry.Register(std::move(descriptor), error);
 	};
 	return add("Transform.Position", VansTimelineValueType::Vec3, ReadTransformPosition, WriteTransformPosition) &&
@@ -294,6 +355,7 @@ bool VansRegisterSceneTimelinePropertyAccessors(VansTimelinePropertyAccessRegist
 }
 
 bool VansRegisterPropertyTimelineExtension(VansTimelineTrackExtensionRegistry& registry,
+	const VansTimelinePropertyAccessRegistry& accessors,
 	std::string& error)
 {
 	using F = VansTimelineValueType;
@@ -301,20 +363,28 @@ bool VansRegisterPropertyTimelineExtension(VansTimelineTrackExtensionRegistry& r
 		TimelineNames::Property, "Property", "Object", VansTimelineEvaluationPhase::PostScript,
 		VansTimelineBindingRequirement::Required, VansTimelineContinuousTrackFlags(),
 		{ { VansMakeTimelineSourceField("descriptorId", F::String, std::string(), true),
-			VansMakeTimelineSourceField("componentTypeId", F::Int32, std::int32_t(0), true),
+			VansMakeTimelineSourceField("componentType", F::String, std::string(), true),
 			VansMakeTimelineSourceField("valueType", F::Enum, std::string("Float"), false,
 				{ "Bool", "Int32", "Int64", "Float", "Double", "String", "Vec2", "Vec3", "Vec4",
 					"Quaternion", "ColorLinear", "ColorSrgb" }) },
 			{ VansMakeTimelineChannelSchema("value", F::Float, true, "valueType") }, false, false });
-	descriptor.validate = ValidateProperty;
+	descriptor.validate = [&accessors](const VansTimelineTrack& track,
+		const VansTimelineSourceSchema& schema,
+		const VansTimelineValidationContext& context,
+		VansTimelineDiagnostics& diagnostics)
+	{
+		ValidateProperty(accessors, track, schema, context, diagnostics);
+	};
 	descriptor.compile = CompileProperty;
 	return registry.Register(std::move(descriptor), error);
 }
 
 bool VansRegisterPropertyTimelineIntegration(VansRuntimeWorld& world,
 	const VansTimelinePropertyAccessRegistry& accessors,
+	std::shared_ptr<IVansTimelineTransformAccess> transformAccess,
 	VansTimelineApplierRegistry& registry, std::string& error)
 {
-	return registry.Register(std::make_shared<PropertyTimelineApplier>(world, accessors), error);
+	return registry.Register(std::make_shared<PropertyTimelineApplier>(
+		world, accessors, std::move(transformAccess)), error);
 }
 }

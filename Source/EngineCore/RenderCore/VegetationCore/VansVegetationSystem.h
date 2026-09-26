@@ -5,13 +5,17 @@
 #include "../VulkanCore/VansShader.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
 #include "../VulkanCore/VansDescriptorSetLayouts.h"
+#include "../../AssetCore/VansModelLod.h"
 #include <glm/glm.hpp>
 #include <vector>
 #include <string>
 #include <cstdint>
 #include <cstddef>
 #include <algorithm>
+#include <cmath>
 #include <functional>
+#include <optional>
+#include <stdexcept>
 
 namespace VansGraphics
 {
@@ -249,7 +253,17 @@ namespace VansGraphics
 			std::vector<TreeInstanceGPU> trees, uint32_t boneCountPerInstance);
 		void SetRenderConfigs(const std::vector<GrassRenderConfig>& configs) { m_RenderConfigs = configs; }
 		void SetTreeParts(const std::vector<TreePartConfig>& parts) { m_TreeParts = parts; }
-        void SetTreeLodSettings(float midDistance,float farDistance,float hysteresis) {m_TreeLodMidDistance=midDistance;m_TreeLodFarDistance=farDistance;m_TreeLodHysteresis=hysteresis;}
+        void SetTreeLodSettings(const std::vector<float>& distances,float hysteresis)
+        {
+            if(distances.size()<Vans::MinimumModelLodLevelCount || distances.size()>Vans::MaximumModelLodLevelCount)
+                throw std::invalid_argument("Tree LOD distance count exceeds the runtime capacity.");
+            if(!std::isfinite(hysteresis) || hysteresis<0 || hysteresis>=1 ||
+                !std::isfinite(distances[0]) || distances[0]<=0 ||
+                (distances.size()>1 && (!std::isfinite(distances[1]) || distances[1]<=distances[0])))
+                throw std::invalid_argument("Tree LOD distances or hysteresis are invalid.");
+            m_TreeLodSettings=TreeLodRuntimeSettings{
+                distances[0],distances.size()>1?distances[1]:distances[0],hysteresis};
+        }
 		void BuildRenderConfigs();
 		void BuildTreeResources();
 		void SetRenderOptions(bool culling, float distance, bool castShadows)
@@ -460,7 +474,13 @@ namespace VansGraphics
 
 		std::vector<TreePartConfig> m_TreeParts;
         uint32_t m_TreeLodCount=1;
-        float m_TreeLodMidDistance=60.f,m_TreeLodFarDistance=180.f,m_TreeLodHysteresis=.1f;
+        struct TreeLodRuntimeSettings
+        {
+            float midDistance;
+            float farDistance;
+            float hysteresis;
+        };
+        std::optional<TreeLodRuntimeSettings> m_TreeLodSettings;
 		bool m_CullEnabled = false;
 		bool m_CastShadows = false;
 		bool m_TreeEnabled = false;

@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <vector>
 
+namespace Vans::EditorAPI { class IAssetEditorAPI; class IGAFEditorAPI; }
+
 namespace VansGraphics
 {
 class VansGameplayActionEditorWindow final : public VansBaseWindowComponent
@@ -19,31 +21,37 @@ public:
 	void ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI) override;
 
 private:
-	void Refresh(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+	void Refresh(Vans::EditorAPI::IGAFEditorAPI& editorAPI);
 	void ApplyOperation(const Vans::EditorAPI::GAFEditorOperationResult& result);
-	void DrawMenuBar(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
-	void DrawToolbar(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+	void DrawMenuBar(Vans::EditorAPI::IGAFEditorAPI& editorAPI);
+	void DrawToolbar(Vans::EditorAPI::IGAFEditorAPI& editorAPI);
 	void DrawOverview();
-	void DrawProperties(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+	void DrawProperties(
+		Vans::EditorAPI::IGAFEditorAPI& editorAPI,
+		Vans::EditorAPI::IAssetEditorAPI& assetAPI);
 	void DrawProperty(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+		Vans::EditorAPI::IGAFEditorAPI& editorAPI,
+		Vans::EditorAPI::IAssetEditorAPI& assetAPI,
 		Vans::EditorAPI::GAFEditorFieldSnapshot field);
 	void DrawStructuredChildren(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+		Vans::EditorAPI::IGAFEditorAPI& editorAPI,
+		Vans::EditorAPI::IAssetEditorAPI& assetAPI,
 		const std::string& tableId,
 		const std::vector<Vans::EditorAPI::GAFEditorFieldSnapshot>& children);
 	void DrawDiagnostics() const;
-	void DrawDiff(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
-	void DrawGraph(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
-	void DrawGraphPropertyEditor(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+	void DrawDiff(Vans::EditorAPI::IGAFEditorAPI& editorAPI);
+	void DrawGraph(
+		Vans::EditorAPI::IGAFEditorAPI& editorAPI,
+		Vans::EditorAPI::IAssetEditorAPI& assetAPI);
+	void DrawGraphPropertyEditor(Vans::EditorAPI::IGAFEditorAPI& editorAPI);
 	void ApplyGraphOperation(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+		Vans::EditorAPI::IGAFEditorAPI& editorAPI,
 		Vans::EditorAPI::GAFGraphEditRequest request);
 	void OpenStructuredEditor(const Vans::EditorAPI::GAFEditorFieldSnapshot& field);
-	void DrawStructuredEditor(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
-	void DrawCloseConfirmation(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+	void DrawStructuredEditor(Vans::EditorAPI::IGAFEditorAPI& editorAPI);
+	void DrawCloseConfirmation(Vans::EditorAPI::IGAFEditorAPI& editorAPI);
 	void SetField(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+		Vans::EditorAPI::IGAFEditorAPI& editorAPI,
 		const std::string& path,
 		Vans::EditorAPI::GAFEditorValue value);
 

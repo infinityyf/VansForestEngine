@@ -10,7 +10,7 @@
 #include "../VulkanCore/VansVKCommandBuffer.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
 #include "../VulkanCore/VansVKDevice.h"
-#include "../../Configration/VansConfigration.h"
+#include "../../ProjectSystem/VansProjectManager.h"
 #include "../../Util/VansLog.h"
 
 #include <vector>
@@ -92,7 +92,8 @@ bool VansVolumetricCloudSystem::CreateViewResources()
 
 bool VansVolumetricCloudSystem::LoadNoiseResources()
 {
-	const std::string projectRoot = VansConfigration::GetInstance()->GetProjectRootPath();
+	const std::string& projectRoot =
+		Vans::VansProjectManager::Get().GetPathResolver().GetEngineRoot();
 	VansVKCommandBuffer& commandBuffer = m_Device->GetImmediateGraphicsCommandBuffer();
 	m_MainNoise = new VansTexture();
 	if (!m_MainNoise->LoadTexture3DFromSlices(commandBuffer,

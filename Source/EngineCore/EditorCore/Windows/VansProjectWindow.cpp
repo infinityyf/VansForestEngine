@@ -1,11 +1,13 @@
 #include "VansProjectWindow.h"
 #include "../VansEditorWindow.h"
-#include "../VansEditorObjectReference.h"
+#include "../../AuthoringCore/VansEditorObjectReference.h"
 #include "../../SceneCore/VansSceneDocumentLoader.h"
 #include "../../AssetCore/VansAssetDatabase.h"
 #include "../../GameplayActionSchema/VansGameplayAssetSchema.h"
+#include "../../EngineAPILayer/Public/IAssetAuthoringEditorAPI.h"
+#include "../../EngineAPILayer/Public/IAssetEditorAPI.h"
 #include "../../Util/VansLog.h"
-#include "../VansEditorSelection.h"
+#include "../VansEditorSelectionService.h"
 #include "imgui.h"
 #include <filesystem>
 #include <functional>
@@ -47,7 +49,9 @@ void VansGraphics::VansProjectWindow::RequestAssetCreation(
 
 void VansGraphics::VansProjectWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-    DrawProjectContents(editorAPI);
+	Vans::EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI = editorAPI;
+	Vans::EditorAPI::IAssetEditorAPI& assetAPI = editorAPI;
+    DrawProjectContents(assetAuthoringAPI, assetAPI);
 }
 
 std::filesystem::path VansGraphics::VansProjectWindow::ResolveAssetCreationDirectory(
@@ -65,7 +69,7 @@ std::filesystem::path VansGraphics::VansProjectWindow::ResolveAssetCreationDirec
 }
 
 void VansGraphics::VansProjectWindow::ProcessAssetCreation(
-    Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+    Vans::EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI,
     const Vans::EditorAPI::ProjectBrowserRootSnapshot& root)
 {
     if (!m_HasPendingAssetCreation)
@@ -92,7 +96,7 @@ void VansGraphics::VansProjectWindow::ProcessAssetCreation(
     createRequest.directoryPath = targetDirectory.string();
     createRequest.kind = request;
     const Vans::EditorAPI::ProjectAssetCreateResult creation =
-        editorAPI.CreateProjectAsset(createRequest);
+        assetAuthoringAPI.CreateProjectAsset(createRequest);
     if (!creation.success)
     {
         VANS_LOG_ERROR("[Asset] " << (creation.message.empty()
@@ -102,7 +106,7 @@ void VansGraphics::VansProjectWindow::ProcessAssetCreation(
 
     const std::filesystem::path createdPath(creation.assetPath);
     const Vans::EditorAPI::AssetRefreshResult refresh =
-        editorAPI.RefreshProjectAsset(createdPath.string(), true);
+        assetAuthoringAPI.RefreshProjectAsset(createdPath.string(), true);
     if (!refresh.success)
     {
         VANS_LOG_ERROR("[Asset] Created " << createdPath.string()
@@ -110,7 +114,7 @@ void VansGraphics::VansProjectWindow::ProcessAssetCreation(
         return;
     }
 
-    Vans::VansEditorSelection::SelectAsset(createdPath);
+    Vans::VansEditorSelectionService::Get().SelectAsset(createdPath, "ProjectWindow");
     if (request == Vans::EditorAPI::ProjectAssetCreationKind::AnimatorController ||
         request == Vans::EditorAPI::ProjectAssetCreationKind::BoneMask)
         VansEditorWindow::OpenAnimationAsset(createdPath.string());
@@ -121,7 +125,7 @@ void VansGraphics::VansProjectWindow::ProcessAssetCreation(
 }
 
 void VansGraphics::VansProjectWindow::DrawTimelineCreationPopup(
-    Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+    Vans::EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI)
 {
     if (m_OpenTimelineCreationPopup)
     {
@@ -150,7 +154,7 @@ void VansGraphics::VansProjectWindow::DrawTimelineCreationPopup(
             createRequest.kind = Vans::EditorAPI::ProjectAssetCreationKind::Timeline;
             createRequest.name = timelineName;
             const Vans::EditorAPI::ProjectAssetCreateResult creation =
-                editorAPI.CreateProjectAsset(createRequest);
+                assetAuthoringAPI.CreateProjectAsset(createRequest);
             if (!creation.success)
                 m_TimelineAssetCreateStatus = creation.message.empty()
                     ? "Timeline creation failed" : creation.message;
@@ -158,12 +162,12 @@ void VansGraphics::VansProjectWindow::DrawTimelineCreationPopup(
             {
                 const std::filesystem::path createdPath(creation.assetPath);
                 const Vans::EditorAPI::AssetRefreshResult refresh =
-                    editorAPI.RefreshProjectAsset(createdPath.string(), true);
+                    assetAuthoringAPI.RefreshProjectAsset(createdPath.string(), true);
                 if (!refresh.success)
                     m_TimelineAssetCreateStatus = refresh.message;
                 else
                 {
-                    Vans::VansEditorSelection::SelectAsset(createdPath);
+                    Vans::VansEditorSelectionService::Get().SelectAsset(createdPath, "ProjectWindow");
                     VansEditorWindow::OpenAssetForAuthoring(createdPath.string());
                     VANS_LOG("[Asset] Created " << createdPath.string());
                     ImGui::CloseCurrentPopup();
@@ -177,7 +181,9 @@ void VansGraphics::VansProjectWindow::DrawTimelineCreationPopup(
     ImGui::EndPopup();
 }
 
-void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+void VansGraphics::VansProjectWindow::DrawProjectContents(
+	Vans::EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI,
+	Vans::EditorAPI::IAssetEditorAPI& assetAPI)
 {
     // -------------------------------------------------------------------------
     // Project 窗口 (资源浏览器)
@@ -187,7 +193,7 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
 
         // Determine the browsing root: project directory when loaded,
         // otherwise fall back to the engine's EngineAssets directory.
-        const Vans::EditorAPI::ProjectBrowserRootSnapshot root = editorAPI.GetProjectBrowserRoot();
+        const Vans::EditorAPI::ProjectBrowserRootSnapshot root = assetAuthoringAPI.GetProjectBrowserRoot();
         const std::string& rootPath = root.rootPath;
         const std::string& rootLabel = root.rootLabel;
 
@@ -247,8 +253,8 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
         // Right Panel: File List
         ImGui::BeginChild("RightPanel", ImVec2(0, 0), true);
 
-        ProcessAssetCreation(editorAPI, root);
-        DrawTimelineCreationPopup(editorAPI);
+        ProcessAssetCreation(assetAuthoringAPI, root);
+        DrawTimelineCreationPopup(assetAuthoringAPI);
 
         static float padding = 10.0f;
         static float thumbnailSize = 64.0f;
@@ -269,13 +275,13 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
 
                         std::string filename = entry.path().filename().string();
                         if (ImGui::Button(filename.c_str(), ImVec2(thumbnailSize, thumbnailSize))) {
-                            Vans::VansEditorSelection::SelectAsset(entry.path());
+                            Vans::VansEditorSelectionService::Get().SelectAsset(entry.path(), "ProjectWindow");
                         }
 
                         if (root.projectLoaded && ImGui::BeginDragDropSource())
                         {
                             const Vans::EditorAPI::AssetDragPayload payload =
-                                editorAPI.CreateAssetDragPayload(entry.path().string());
+                                assetAPI.CreateAssetDragPayload(entry.path().string());
                             if (payload.available)
                             {
                                 Vans::EditorObjectHandle handle;
@@ -301,11 +307,14 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
 
                         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
                         {
-							const std::string extension = entry.path().extension().string();
+							const Vans::VansAssetType assetType =
+								Vans::VansAssetDatabase::Classify(entry.path());
 							const bool gameplayAsset = Vans::VansGameplayAssetSchemaRegistry::IsGameplayAssetType(
-								Vans::VansAssetDatabase::Classify(entry.path()));
-							if (extension == ".vanimator" || extension == ".vbonemask" ||
-								extension == ".vtimeline" || extension == ".vprefab" || gameplayAsset)
+								assetType);
+							if (assetType == Vans::VansAssetType::AnimatorController ||
+								assetType == Vans::VansAssetType::BoneMask ||
+								assetType == Vans::VansAssetType::Timeline ||
+								assetType == Vans::VansAssetType::Prefab || gameplayAsset)
 							{
 								VansEditorWindow::OpenAssetForAuthoring(entry.path().string());
 							}
@@ -316,7 +325,7 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
 							{
 								std::string scenePath = entry.path().string();
 								VANS_LOG("[Project] Deferring Scene load: " << scenePath);
-								VansEditorWindow::m_PendingScenePath = scenePath;
+								VansEditorWindow::RequestSceneLoad(scenePath);
 							}
 							}
                         }

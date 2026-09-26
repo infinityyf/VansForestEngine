@@ -1,10 +1,12 @@
 #include "VansPrefabEditService.h"
-#include "VansScenePropertyValueAdapter.h"
 #include "VansEditorAssetSaveService.h"
-#include "VansAssetDocumentRegistry.h"
+#include "../AuthoringCore/VansAssetDocumentRegistry.h"
 #include "../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../EngineAPILayer/Public/IAssetAuthoringEditorAPI.h"
+#include "../EngineAPILayer/Public/IAssetEditorAPI.h"
 #include "../SceneCore/VansSceneDocument.h"
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
+#include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AssetCore/Serialization/VansAssetMetaJsonCodec.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -15,27 +17,29 @@ namespace
 {
 using Json = nlohmann::ordered_json;
 Json JsonOf(const VansSerializedValue& value) { return EncodeSerializedValueJson<Json>(value); }
-int InstanceIndex(const VansSceneDocument& document, const std::string& root)
+int InstanceIndex(const VansSceneDocument& document, const std::string& root,
+    const VansSerializedValue& authoringRoot)
 {
-    const auto scene = JsonOf(document.AuthoringRootSnapshot());
-    if (!scene.contains("prefabInstances")) return -1;
-    const auto& instances = scene.at("prefabInstances");
-    for (std::size_t i = 0; i < instances.size(); ++i)
+    if (root.empty()) return -1;
+    const auto* instances = FindObjectField(authoringRoot, "prefabInstances");
+    if (!instances || instances->kind != VansSerializedValue::Kind::Array) return -1;
+    for (std::size_t i = 0; i < instances->arrayItems.size(); ++i)
     {
-        const auto asset = document.PrefabLookup()(instances[i].at("asset"));
-        if (asset && VansPrefabResolver::InstanceObjectGuid(DecodeSerializedValueJson(instances[i]), asset->rootEntity, false) == root)
+        const auto& instance = instances->arrayItems[i];
+        const auto asset = document.PrefabLookup()(ReadSerializedStringField(instance, "asset"));
+        if (asset && VansPrefabResolver::InstanceObjectGuid(instance, asset->rootEntity, false) == root)
             return static_cast<int>(i);
     }
     return -1;
 }
 }
 
-VansPrefabLookup VansPrefabEditService::Lookup(EditorAPI::IEngineEditorAPI& api)
+VansPrefabLookup VansPrefabEditService::Lookup(EditorAPI::IAssetAuthoringEditorAPI& api)
 {
     return [&api](const std::string& guid) -> std::shared_ptr<const VansPrefabAsset>
     {
         auto asset = std::make_shared<VansPrefabAsset>(); std::string error;
-        if (!VansPrefabCodec::Decode(ToSerializedValue(api.QueryPrefabAsset(guid)), *asset, error)) return {};
+        if (!VansPrefabCodec::Decode(api.QueryPrefabAsset(guid), *asset, error)) return {};
         return asset;
     };
 }
@@ -46,7 +50,8 @@ SceneEditResult VansPrefabEditService::Create(EditorAPI::IEngineEditorAPI& api, 
 {
     try
     {
-        const auto browser = api.GetProjectBrowserRoot();
+		EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI = api;
+        const auto browser = assetAuthoringAPI.GetProjectBrowserRoot();
         if (!browser.projectLoaded) return {false, "Open a project before creating a prefab"};
         const auto assets = std::filesystem::weakly_canonical(std::filesystem::path(browser.assetsRootPath));
         const auto target = std::filesystem::weakly_canonical(directory);
@@ -76,10 +81,10 @@ SceneEditResult VansPrefabEditService::Create(EditorAPI::IEngineEditorAPI& api, 
         auto candidate = std::make_shared<VansOpenAssetDocument>();
         candidate->sourcePath = path; candidate->metaPath = VansAssetMeta::MetaPathFor(path);
         VansAssetMeta meta; meta.guid = guid; meta.importer = "PrefabImporter";
-        Json metadata;
+        VansSerializedValue metadata;
         if (!VansAssetMetaJsonCodec::Encode(meta, metadata, error) ||
             !candidate->sourceDocument.InitializeNew(path, VansPrefabCodec::Encode(extraction.asset), error) ||
-            !candidate->metaDocument.InitializeNew(candidate->metaPath, DecodeSerializedValueJson(metadata), error))
+            !candidate->metaDocument.InitializeNew(candidate->metaPath, std::move(metadata), error))
             return {false, error};
         const auto originalLookup = document.PrefabLookup();
         const auto temporaryLookup = [originalLookup, guid, asset = std::make_shared<const VansPrefabAsset>(extraction.asset)](const std::string& key)
@@ -116,14 +121,19 @@ SceneEditResult VansPrefabEditService::Place(VansSceneDocument& document, VansSc
 
 std::string VansPrefabEditService::SourceAsset(const VansSceneDocument& document, const std::string& root)
 {
-    const int index = InstanceIndex(document, root);
-    return index < 0 ? std::string{} : JsonOf(document.AuthoringRootSnapshot())["prefabInstances"][index]["asset"].get<std::string>();
+    const auto snapshot = document.CreateSnapshot();
+    const auto& authoringRoot = *snapshot.authoringRoot;
+    const int index = InstanceIndex(document, root, authoringRoot);
+    if (index < 0) return {};
+    const auto* instances = FindObjectField(authoringRoot, "prefabInstances");
+    return ReadSerializedStringField(instances->arrayItems[static_cast<std::size_t>(index)], "asset");
 }
 
-SceneEditResult VansPrefabEditService::Apply(EditorAPI::IEngineEditorAPI& api, VansSceneDocument& document,
+SceneEditResult VansPrefabEditService::Apply(EditorAPI::IAssetEditorAPI& assetAPI, VansSceneDocument& document,
     VansSceneEditService& edits, const std::string& root)
 {
-    const int index = InstanceIndex(document, root);
+    const auto snapshot = document.CreateSnapshot();
+    const int index = InstanceIndex(document, root, *snapshot.authoringRoot);
     if (index < 0) return {false, "Select a prefab instance root"};
     auto scene = JsonOf(document.AuthoringRootSnapshot());
     const auto guid = scene["prefabInstances"][index]["asset"].get<std::string>();
@@ -133,7 +143,7 @@ SceneEditResult VansPrefabEditService::Apply(EditorAPI::IEngineEditorAPI& api, V
     if (!VansPrefabResolver::Apply(*asset, DecodeSerializedValueJson(scene["prefabInstances"][index]), updated, instance, error))
         return {false, error};
     scene["prefabInstances"][index] = JsonOf(instance);
-    for (const auto& entry : api.QueryAssets({EditorAPI::AssetType::Prefab}))
+    for (const auto& entry : assetAPI.QueryAssets({EditorAPI::AssetType::Prefab}))
     {
         if (entry.guid != guid) continue;
         auto source = VansAssetDocumentRegistry::Get().GetOrOpen(entry.relativePath);
@@ -147,7 +157,8 @@ SceneEditResult VansPrefabEditService::Apply(EditorAPI::IEngineEditorAPI& api, V
 
 SceneEditResult VansPrefabEditService::Unpack(VansSceneDocument& document, VansSceneEditService& edits, const std::string& root)
 {
-    const int index = InstanceIndex(document, root);
+    const auto snapshot = document.CreateSnapshot();
+    const int index = InstanceIndex(document, root, *snapshot.authoringRoot);
     if (index < 0) return {false, "Select a prefab instance root"};
     auto scene = JsonOf(document.SerializedRootSnapshot());
     scene["prefabInstances"].erase(index);
@@ -157,7 +168,8 @@ SceneEditResult VansPrefabEditService::Unpack(VansSceneDocument& document, VansS
 SceneEditResult VansPrefabEditService::Revert(VansSceneDocument& document, VansSceneEditService& edits,
     const std::string& root, SceneEditLifecycleHooks hooks)
 {
-    const int index = InstanceIndex(document, root);
+    const auto snapshot = document.CreateSnapshot();
+    const int index = InstanceIndex(document, root, *snapshot.authoringRoot);
     if (index < 0) return {false, "Select a prefab instance root"};
     auto scene = JsonOf(document.AuthoringRootSnapshot());
     scene["prefabInstances"][index]["overrides"] = Json::array();

@@ -107,12 +107,15 @@ void VansTimelineEditorWindow::Open(const std::string& timelinePath, std::string
 	m_InstanceOwnerGuid = std::move(ownerEntityGuid);
 	const Vans::TimelineEditResult result = m_Edit.Open(m_Path);
 	m_IsOpen = result.success;
+	if (m_IsOpen)
+		m_TrackDescriptors = Vans::VansTimelineTrackDescriptorRegistry::Build(m_Edit.TrackExtensions());
 	m_Selection = {};
 	m_CanvasDrag = {};
 	m_Playhead = 0;
 	m_ViewStart = 0;
 	m_VerticalScroll = 0.0f;
 	m_CollapsedTracks.clear();
+	m_TrackDescriptors.clear();
 	if (m_IsOpen)
 	{
 		const auto duration = std::max<Vans::VansTimelineTick>(1, m_Edit.Asset().durationTicks);
@@ -127,6 +130,7 @@ void VansTimelineEditorWindow::Close()
 	m_Edit.CancelInteraction();
 	m_IsOpen = false;
 	m_ActiveAPI = nullptr;
+	m_PlayModeAPI = nullptr;
 	m_Path.clear();
 	m_CollapsedTracks.clear();
 	m_TrackClipboard.reset();
@@ -138,7 +142,8 @@ void VansTimelineEditorWindow::SetError(std::string message) { m_LastError = std
 
 void VansTimelineEditorWindow::EnsurePreview()
 {
-	if (!m_ActiveAPI || m_ActiveAPI->GetPlayState() != Vans::EditorAPI::EnginePlayState::Edit ||
+	if (!m_ActiveAPI || !m_PlayModeAPI ||
+		m_PlayModeAPI->GetPlayState() != Vans::EditorAPI::EnginePlayState::Edit ||
 		m_Preview.State() != Vans::VansTimelinePreviewState::Detached) return;
 	std::string error;
 	if (!m_Preview.Attach(*m_ActiveAPI, m_Edit.Asset(), m_Path, m_InstanceOwnerGuid,
@@ -274,7 +279,7 @@ Vans::VansTimelineTick VansTimelineEditorWindow::SnapTick(Vans::VansTimelineTick
 
 void VansTimelineEditorWindow::DrawToolbar()
 {
-	if (m_ActiveAPI && m_ActiveAPI->GetPlayState() != Vans::EditorAPI::EnginePlayState::Edit &&
+	if (m_PlayModeAPI && m_PlayModeAPI->GetPlayState() != Vans::EditorAPI::EnginePlayState::Edit &&
 		m_Preview.State() != Vans::VansTimelinePreviewState::Detached)
 	{
 		m_Preview.RestoreAndDetach();
@@ -336,7 +341,7 @@ void VansTimelineEditorWindow::DrawToolbar()
 void VansTimelineEditorWindow::DrawAddTrackMenu()
 {
 	if (!ImGui::BeginPopup("Timeline.AddTrack")) return;
-	for (const Vans::VansTimelineTrackDescriptor& descriptor : Vans::VansTimelineTrackDescriptorRegistry::All())
+	for (const Vans::VansTimelineTrackDescriptor& descriptor : m_TrackDescriptors)
 	{
 		if (descriptor.bindingRequired)
 		{
@@ -856,7 +861,8 @@ void VansTimelineEditorWindow::DrawInspector()
 	{
 		Vans::VansTimelineTrack* track = FindTrack(asset);
 		if (!track) return;
-		const auto* descriptor = Vans::VansTimelineTrackDescriptorRegistry::Find(track->type);
+		const auto* descriptor = Vans::VansTimelineTrackDescriptorRegistry::Find(
+			m_TrackDescriptors, track->type);
 		ImGui::Text("%s", descriptor ? descriptor->displayName.c_str() : track->type.stableName.c_str());
 		std::array<char, 256> name{}; CopyText(name.data(), name.size(), track->name);
 		if (ImGui::InputText("Name", name.data(), name.size())) { track->name = name.data(); changed = true; }
@@ -1022,6 +1028,7 @@ void VansTimelineEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& edi
 {
 	if (!m_IsOpen) return;
 	m_ActiveAPI = &editorAPI;
+	m_PlayModeAPI = &static_cast<Vans::EditorAPI::IPlayModeEditorAPI&>(editorAPI);
 	m_Preview.Poll();
 	if (m_Preview.State() == Vans::VansTimelinePreviewState::Playing)
 		m_Playhead = m_Preview.CurrentTick();

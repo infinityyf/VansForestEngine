@@ -1,4 +1,5 @@
 #include "VansAudioSystem.h"
+#include "VansAudioVoice.h"
 #include "../Util/VansLog.h"
 
 // OpenAL-Soft 头文件仅在此 .cpp 中引入，不暴露到其他模块
@@ -77,21 +78,20 @@ void ClearAlErrors()
 
 void ResetSourceDefaults(ALuint source)
 {
+    const VansAudioProperties properties;
+    const AudioConeSettings cone;
     alSourceStop(source);
     alSourcei(source, AL_BUFFER, 0);
-    alSourcef(source, AL_GAIN, 1.0f);
-    alSourcef(source, AL_PITCH, 1.0f);
-    alSourcei(source, AL_LOOPING, AL_FALSE);
-    alSourcei(source, AL_SOURCE_RELATIVE, AL_FALSE);
-    alSource3f(source, AL_POSITION, 0.0f, 0.0f, 0.0f);
+    alSourcef(source, AL_GAIN, properties.m_Volume);
+    alSourcef(source, AL_PITCH, properties.m_Pitch);
+    alSourcei(source, AL_LOOPING, properties.m_Loop ? AL_TRUE : AL_FALSE);
+    alSourcei(source, AL_SOURCE_RELATIVE, properties.m_Spatial ? AL_FALSE : AL_TRUE);
+    alSource3f(source, AL_POSITION, properties.m_StereoPan, 0.0f, 0.0f);
     alSource3f(source, AL_VELOCITY, 0.0f, 0.0f, 0.0f);
     alSource3f(source, AL_DIRECTION, 0.0f, 0.0f, 1.0f);
-    alSourcef(source, AL_REFERENCE_DISTANCE, 1.0f);
-    alSourcef(source, AL_MAX_DISTANCE, 100.0f);
-    alSourcef(source, AL_ROLLOFF_FACTOR, 1.0f);
-    alSourcef(source, AL_CONE_INNER_ANGLE, 360.0f);
-    alSourcef(source, AL_CONE_OUTER_ANGLE, 360.0f);
-    alSourcef(source, AL_CONE_OUTER_GAIN, 1.0f);
+    alSourcef(source, AL_CONE_INNER_ANGLE, cone.innerAngleDegrees);
+    alSourcef(source, AL_CONE_OUTER_ANGLE, cone.outerAngleDegrees);
+    alSourcef(source, AL_CONE_OUTER_GAIN, cone.outerGain);
 }
 
 const char* HrtfStatusName(ALCint status)
@@ -107,6 +107,31 @@ const char* HrtfStatusName(ALCint status)
     default: return "unknown";
     }
 }
+
+bool IsHrtfActive(ALCint status)
+{
+    return status == ALC_HRTF_ENABLED_SOFT ||
+        status == ALC_HRTF_REQUIRED_SOFT ||
+        status == ALC_HRTF_HEADPHONES_DETECTED_SOFT;
+}
+
+bool UsesSameContext(const VansAudioDeviceConfig& first, const VansAudioDeviceConfig& second)
+{
+    return first.m_HrtfMode == second.m_HrtfMode &&
+        first.m_OutputDevice == second.m_OutputDevice;
+}
+}
+
+const char* VansAudioSourceAcquireStatusName(VansAudioSourceAcquireStatus status)
+{
+    switch (status)
+    {
+    case VansAudioSourceAcquireStatus::Acquired: return "acquired";
+    case VansAudioSourceAcquireStatus::NotInitialized: return "not_initialized";
+    case VansAudioSourceAcquireStatus::LimitReached: return "limit_reached";
+    case VansAudioSourceAcquireStatus::BackendFailure: return "backend_failure";
+    default: return "unknown";
+    }
 }
 
 // ===========================================================================
@@ -121,31 +146,56 @@ VansAudioSystem& VansAudioSystem::GetInstance()
 // ===========================================================================
 // Initialize — 打开默认设备，创建并激活上下文
 // ===========================================================================
-bool VansAudioSystem::Initialize()
+bool VansAudioSystem::Initialize(const VansAudioDeviceConfig& config)
 {
     if (m_Initialized)
     {
-        VANS_LOG_WARN("[VansAudioSystem] Initialize: 已经初始化，跳过");
-        return true;
+        std::string error;
+        const bool applied = ApplyDeviceConfig(config, error);
+        if (!applied)
+            VANS_LOG_ERROR("[VansAudioSystem] " << error);
+        return applied;
     }
 
-    ALCdevice* device = alcOpenDevice(nullptr); // nullptr = 系统默认设备
+    const VansAudioDeviceConfig candidate = NormalizeAudioDeviceConfig(config);
+    const char* requestedDevice = candidate.m_OutputDevice.empty()
+        ? nullptr
+        : candidate.m_OutputDevice.c_str();
+    ALCdevice* device = alcOpenDevice(requestedDevice);
     if (!device)
     {
-        VANS_LOG_ERROR("[VansAudioSystem] alcOpenDevice 失败：无法打开默认音频设备");
+        VANS_LOG_ERROR("[VansAudioSystem] Cannot open audio device: "
+            << (requestedDevice ? requestedDevice : "(system default)"));
         return false;
     }
 
     const bool hrtfSupported = alcIsExtensionPresent(device, "ALC_SOFT_HRTF") == ALC_TRUE;
     ALCcontext* ctx = nullptr;
+    if (candidate.m_HrtfMode == VansAudioHrtfMode::Required && !hrtfSupported)
+    {
+        VANS_LOG_ERROR("[VansAudioSystem] Required HRTF is not supported by the selected device");
+        alcCloseDevice(device);
+        return false;
+    }
     if (hrtfSupported)
     {
-        ALCint hrtfAttributes[] = { ALC_HRTF_SOFT, ALC_TRUE, 0 };
+        const ALCint hrtfEnabled = candidate.m_HrtfMode == VansAudioHrtfMode::Disabled
+            ? ALC_FALSE
+            : ALC_TRUE;
+        ALCint hrtfAttributes[] = { ALC_HRTF_SOFT, hrtfEnabled, 0 };
         ctx = alcCreateContext(device, hrtfAttributes);
         if (!ctx)
+        {
+            if (candidate.m_HrtfMode != VansAudioHrtfMode::Enabled)
+            {
+                VANS_LOG_ERROR("[VansAudioSystem] Requested HRTF policy could not create a context");
+                alcCloseDevice(device);
+                return false;
+            }
             VANS_LOG_WARN("[VansAudioSystem] OpenAL HRTF request failed; falling back to default context");
+        }
     }
-    else
+    else if (candidate.m_HrtfMode == VansAudioHrtfMode::Enabled)
     {
         VANS_LOG_WARN("[VansAudioSystem] OpenAL Soft HRTF extension is not available");
     }
@@ -167,57 +217,137 @@ bool VansAudioSystem::Initialize()
         return false;
     }
 
-    m_Device      = static_cast<void*>(device);
-    m_Context     = static_cast<void*>(ctx);
+    ALCint hrtfStatus = ALC_HRTF_DISABLED_SOFT;
+    if (hrtfSupported)
+        alcGetIntegerv(device, ALC_HRTF_STATUS_SOFT, 1, &hrtfStatus);
+    if (candidate.m_HrtfMode == VansAudioHrtfMode::Required && !IsHrtfActive(hrtfStatus))
+    {
+        VANS_LOG_ERROR("[VansAudioSystem] Required HRTF was not activated; status="
+            << HrtfStatusName(hrtfStatus));
+        alcMakeContextCurrent(nullptr);
+        alcDestroyContext(ctx);
+        alcCloseDevice(device);
+        return false;
+    }
+    if (candidate.m_HrtfMode == VansAudioHrtfMode::Disabled && IsHrtfActive(hrtfStatus))
+    {
+        VANS_LOG_ERROR("[VansAudioSystem] HRTF remained active after it was disabled");
+        alcMakeContextCurrent(nullptr);
+        alcDestroyContext(ctx);
+        alcCloseDevice(device);
+        return false;
+    }
+
+    m_Device = static_cast<void*>(device);
+    m_Context = static_cast<void*>(ctx);
+    m_DeviceConfig = candidate;
     m_Initialized = true;
+    m_PooledSources.clear();
+    m_ActiveSources.clear();
+    m_SourceLimitRejections = 0;
+    m_SourceBackendFailures = 0;
 
     // 初始化 listener 默认值
     alListener3f(AL_POSITION,    0.0f, 0.0f,  0.0f);
     alListener3f(AL_VELOCITY,    0.0f, 0.0f,  0.0f);
     const float orientation[6] = { 0.0f, 0.0f, -1.0f,  0.0f, 1.0f, 0.0f };
     alListenerfv(AL_ORIENTATION, orientation);
-    alListenerf (AL_GAIN, m_MasterVolume);
+    alListenerf(AL_GAIN, m_DeviceConfig.m_MasterGain);
 
     const ALCchar* devName = alcGetString(device, ALC_DEVICE_SPECIFIER);
-    VANS_LOG("[VansAudioSystem] 初始化成功，设备名: " << (devName ? devName : "(null)"));
+    m_ActiveDeviceName = devName ? devName : "";
+    m_HrtfStatus = hrtfSupported ? HrtfStatusName(hrtfStatus) : "unsupported";
+    VANS_LOG("[VansAudioSystem] Initialized device="
+        << (m_ActiveDeviceName.empty() ? "(unknown)" : m_ActiveDeviceName)
+        << ", hrtfPolicy=" << VansAudioHrtfModeName(m_DeviceConfig.m_HrtfMode)
+        << ", hrtfStatus=" << m_HrtfStatus
+        << ", sourceLimit=" << m_DeviceConfig.m_SourceLimit);
 
-    // 线性衰减模型（由 SyncAudioSourcePositions 手动驱动 gain，此项无副作用保留）
-    if (hrtfSupported)
-    {
-        ALCint hrtfStatus = 0;
-        alcGetIntegerv(device, ALC_HRTF_STATUS_SOFT, 1, &hrtfStatus);
-        VANS_LOG("[VansAudioSystem] OpenAL HRTF status: " << HrtfStatusName(hrtfStatus));
-    }
-
-    // Distance attenuation is authored and applied by VansAudioNode/VansAudioSourceInstance.
+    // Distance attenuation is authored and applied by VansAudioVoice.
     // Keep OpenAL source positions active for panning while avoiding a second attenuation pass.
     alDistanceModel(AL_NONE);
     InitializeEffects();
     return true;
 }
 
-std::uint32_t VansAudioSystem::AcquireSource()
+bool VansAudioSystem::ApplyDeviceConfig(const VansAudioDeviceConfig& config, std::string& error)
 {
+    const VansAudioDeviceConfig candidate = NormalizeAudioDeviceConfig(config);
     if (!m_Initialized)
-        return 0;
+    {
+        if (Initialize(candidate))
+        {
+            error.clear();
+            return true;
+        }
+        error = "Audio device configuration could not be initialized";
+        return false;
+    }
+
+    if (UsesSameContext(m_DeviceConfig, candidate))
+    {
+        SetMasterVolume(candidate.m_MasterGain);
+        SetSourceLimit(candidate.m_SourceLimit);
+        error.clear();
+        return true;
+    }
+    if (!m_ActiveSources.empty())
+    {
+        error = "Audio device configuration cannot change while sources are active";
+        return false;
+    }
+
+    const VansAudioDeviceConfig previous = m_DeviceConfig;
+    Shutdown();
+    if (Initialize(candidate))
+    {
+        error.clear();
+        return true;
+    }
+
+    const bool restored = Initialize(previous);
+    error = restored
+        ? "Audio device configuration failed; the previous configuration was restored"
+        : "Audio device configuration and rollback both failed";
+    return false;
+}
+
+VansAudioSourceAcquireStatus VansAudioSystem::TryAcquireSource(std::uint32_t& sourceId)
+{
+    sourceId = 0;
+    if (!m_Initialized)
+        return VansAudioSourceAcquireStatus::NotInitialized;
+
+    if (m_ActiveSources.size() >= m_DeviceConfig.m_SourceLimit)
+    {
+        ++m_SourceLimitRejections;
+        return VansAudioSourceAcquireStatus::LimitReached;
+    }
 
     if (!m_PooledSources.empty())
     {
-        const std::uint32_t source = m_PooledSources.back();
+        sourceId = m_PooledSources.back();
         m_PooledSources.pop_back();
-        ++m_ActiveSourceLeases;
-        ResetSourceDefaults(static_cast<ALuint>(source));
+        m_ActiveSources.insert(sourceId);
+        ResetSourceDefaults(static_cast<ALuint>(sourceId));
         ClearAlErrors();
-        return source;
+        return VansAudioSourceAcquireStatus::Acquired;
     }
 
     ALuint source = 0;
     ClearAlErrors();
     alGenSources(1, &source);
-    if (alGetError() != AL_NO_ERROR || source == 0)
-        return 0;
-    ++m_ActiveSourceLeases;
-    return source;
+    const ALenum generationError = alGetError();
+    if (generationError != AL_NO_ERROR || source == 0)
+    {
+        if (source != 0)
+            alDeleteSources(1, &source);
+        ++m_SourceBackendFailures;
+        return VansAudioSourceAcquireStatus::BackendFailure;
+    }
+    sourceId = static_cast<std::uint32_t>(source);
+    m_ActiveSources.insert(sourceId);
+    return VansAudioSourceAcquireStatus::Acquired;
 }
 
 void VansAudioSystem::ReleaseSource(std::uint32_t& sourceId)
@@ -231,13 +361,38 @@ void VansAudioSystem::ReleaseSource(std::uint32_t& sourceId)
         return;
     }
 
+    const auto active = m_ActiveSources.find(sourceId);
+    if (active == m_ActiveSources.end())
+    {
+        VANS_LOG_WARN("[VansAudioSystem] Ignored release of unknown source " << sourceId);
+        sourceId = 0;
+        return;
+    }
+
     ALuint source = static_cast<ALuint>(sourceId);
     ResetSourceDefaults(source);
     ClearAlErrors();
-    m_PooledSources.push_back(sourceId);
-    if (m_ActiveSourceLeases > 0)
-        --m_ActiveSourceLeases;
+    m_ActiveSources.erase(active);
+    if (m_ActiveSources.size() + m_PooledSources.size() >= m_DeviceConfig.m_SourceLimit)
+        alDeleteSources(1, &source);
+    else
+        m_PooledSources.push_back(sourceId);
     sourceId = 0;
+}
+
+void VansAudioSystem::SetSourceLimit(std::size_t sourceLimit)
+{
+    m_DeviceConfig.m_SourceLimit = std::clamp<std::size_t>(sourceLimit, 1, 256);
+    if (!m_Initialized)
+        return;
+
+    while (m_ActiveSources.size() + m_PooledSources.size() > m_DeviceConfig.m_SourceLimit &&
+        !m_PooledSources.empty())
+    {
+        ALuint source = static_cast<ALuint>(m_PooledSources.back());
+        m_PooledSources.pop_back();
+        alDeleteSources(1, &source);
+    }
 }
 
 void VansAudioSystem::InitializeEffects()
@@ -519,13 +674,23 @@ void VansAudioSystem::Shutdown()
         return;
 
     ShutdownEffects();
+    if (!m_ActiveSources.empty())
+    {
+        VANS_LOG_WARN("[VansAudioSystem] Shutdown reclaiming "
+            << m_ActiveSources.size() << " active source lease(s)");
+    }
     for (std::uint32_t pooledSource : m_PooledSources)
     {
         ALuint source = static_cast<ALuint>(pooledSource);
         alDeleteSources(1, &source);
     }
     m_PooledSources.clear();
-    m_ActiveSourceLeases = 0;
+    for (std::uint32_t activeSource : m_ActiveSources)
+    {
+        ALuint source = static_cast<ALuint>(activeSource);
+        alDeleteSources(1, &source);
+    }
+    m_ActiveSources.clear();
     alcMakeContextCurrent(nullptr);
 
     if (m_Context)
@@ -540,6 +705,8 @@ void VansAudioSystem::Shutdown()
     }
 
     m_Initialized = false;
+    m_ActiveDeviceName.clear();
+    m_HrtfStatus = "unavailable";
     VANS_LOG("[VansAudioSystem] 已关闭");
 }
 
@@ -562,18 +729,13 @@ void VansAudioSystem::UpdateListener(float px, float py, float pz,
 }
 
 // ===========================================================================
-// SetMasterVolume / GetMasterVolume
+// SetMasterVolume
 // ===========================================================================
 void VansAudioSystem::SetMasterVolume(float gain)
 {
+    m_DeviceConfig.m_MasterGain = std::clamp(gain, 0.0f, 1.0f);
     if (!m_Initialized) return;
-    m_MasterVolume = gain;
-    alListenerf(AL_GAIN, gain);
-}
-
-float VansAudioSystem::GetMasterVolume() const
-{
-    return m_MasterVolume;
+    alListenerf(AL_GAIN, m_DeviceConfig.m_MasterGain);
 }
 
 } // namespace VansEngine

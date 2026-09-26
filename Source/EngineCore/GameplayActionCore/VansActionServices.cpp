@@ -240,6 +240,27 @@ const VansActionCommandSchema* VansActionServiceRegistry::ResolveCommandSchema(
 	return nullptr;
 }
 
+bool VansActionServiceRegistry::ValidatePayload(
+	VansActionServiceId service,
+	VansActionFieldId command,
+	const VansSerializedValue& payload,
+	std::string& error) const
+{
+	error.clear();
+	if (!m_Sealed)
+	{
+		error = "Action Service registry is not sealed";
+		return false;
+	}
+	const VansActionCommandSchema* schema = ResolveCommandSchema(service, command);
+	if (!schema)
+	{
+		error = "Action Service command is not declared by the service";
+		return false;
+	}
+	return ValidateCommandPayload(*schema, payload, error);
+}
+
 std::shared_ptr<IVansActionService> VansActionServiceRegistry::Resolve(VansActionServiceId service) const
 {
 	const auto found = m_Services.find(service);

@@ -261,6 +261,5 @@ namespace VansGraphics
 		                    const Skeleton& skeleton,
 		                    VansCompiledAnimationRig& outRig,
 		                    std::string& error);
-		static std::uint64_t ComputeSkeletonSignature(const Skeleton& skeleton);
 	};
 }

@@ -65,12 +65,20 @@ void VansParticleEmitterRuntime::ResetAnchor(const glm::mat4& transform)
 uint32_t VansParticleEmitterRuntime::SpawnParticles(uint32_t requested, const glm::mat4& transform,
     float remainingTime, bool detachedRoot)
 {
+    if (requested == 0)
+        return 0;
+    auto& pool = m_ParticlePool;
+    if (pool.m_MaxCount == 0)
+    {
+        m_Sequence += requested;
+        m_DroppedSpawns += requested;
+        return 0;
+    }
     const auto firstSequence = m_Sequence + 1;
     m_Sequence += requested;
-    auto& pool = m_ParticlePool;
     const uint32_t reserve = IsRibbon() && !detachedRoot
         && m_Definition.m_RendererConfig.m_Ribbon.rootMode == VansRibbonRootMode::FollowSource ? 1u : 0u;
-    const uint32_t limit = pool.m_MaxCount - reserve;
+    const uint32_t limit = pool.m_MaxCount > reserve ? pool.m_MaxCount - reserve : 0u;
     const uint32_t count = std::min(requested, limit > pool.m_AliveCount ? limit - pool.m_AliveCount : 0u);
     m_DroppedSpawns += requested - count;
     const uint32_t start = pool.m_AliveCount, end = start + count;
@@ -242,10 +250,13 @@ void VansParticleEmitterRuntime::FillInstanceData(std::vector<VansParticleInstan
 {
     std::vector<uint32_t> order(m_ParticlePool.m_AliveCount);
     std::iota(order.begin(), order.end(), 0u);
-    const auto sort = m_Definition.m_RendererConfig.m_SortMode;
-    if (sort == VansParticleSortMode::OldestFirst || sort == VansParticleSortMode::NewestFirst)
+    const auto orderMode = m_Definition.m_RendererConfig.m_SimulationOrder;
+    if (orderMode == VansParticleSimulationOrder::OldestFirst ||
+        orderMode == VansParticleSimulationOrder::NewestFirst)
         std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
-            return sort == VansParticleSortMode::OldestFirst ? m_ParticlePool.m_Age[a] > m_ParticlePool.m_Age[b] : m_ParticlePool.m_Age[a] < m_ParticlePool.m_Age[b];
+            return orderMode == VansParticleSimulationOrder::OldestFirst
+                ? m_ParticlePool.m_Age[a] > m_ParticlePool.m_Age[b]
+                : m_ParticlePool.m_Age[a] < m_ParticlePool.m_Age[b];
         });
     for (const uint32_t i : order)
     {

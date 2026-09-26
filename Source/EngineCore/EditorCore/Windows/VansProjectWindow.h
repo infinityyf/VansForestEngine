@@ -4,6 +4,12 @@
 #include <filesystem>
 #include <string>
 
+namespace Vans::EditorAPI
+{
+	class IAssetAuthoringEditorAPI;
+	class IAssetEditorAPI;
+}
+
 namespace VansGraphics
 {
 	class VansProjectWindow : public VansBaseWindowComponent
@@ -13,10 +19,11 @@ namespace VansGraphics
 		void RequestAssetCreation(Vans::EditorAPI::ProjectAssetCreationKind kind);
 
 	private:
-		void DrawProjectContents(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
-		void ProcessAssetCreation(Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+		void DrawProjectContents(Vans::EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI,
+			Vans::EditorAPI::IAssetEditorAPI& assetAPI);
+		void ProcessAssetCreation(Vans::EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI,
 			const Vans::EditorAPI::ProjectBrowserRootSnapshot& root);
-		void DrawTimelineCreationPopup(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+		void DrawTimelineCreationPopup(Vans::EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI);
 		std::filesystem::path ResolveAssetCreationDirectory(
 			const Vans::EditorAPI::ProjectBrowserRootSnapshot& root) const;
 

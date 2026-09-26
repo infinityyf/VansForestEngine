@@ -151,8 +151,8 @@ namespace VansGraphics
 		glm::mat4                                globalInverseTransform = glm::mat4(1.0f);
 
 		// Bone indices in topological order. Parents are guaranteed to appear before children.
-		// UpdateHierarchy must iterate in this order; otherwise parent indices greater than child
-		// indices can produce incorrect transforms.
+		// Hierarchy propagation must iterate in this order; otherwise parent indices greater than
+		// child indices can produce incorrect transforms.
 		std::vector<int> topologicalOrder;
 
 		// Recompute topological traversal order from bones[].parentIndex and children using BFS.
@@ -229,6 +229,60 @@ namespace VansGraphics
 					boneGuidToIndex.emplace(bone.guid, bone.id);
 			}
 			signature = ComputeSignature();
+		}
+
+		// Resolves an authored bone identity in one place. Stable GUID and canonical
+		// path take precedence; a display name resolves only when it is unique.
+		int FindBoneIndex(const std::string& identity) const
+		{
+			if (identity.empty())
+				return -1;
+			if (const auto found = boneGuidToIndex.find(identity); found != boneGuidToIndex.end())
+				return found->second;
+			if (const auto found = bonePathToIndex.find(identity); found != bonePathToIndex.end())
+				return found->second;
+			if (const auto found = boneNameToIndex.find(identity); found != boneNameToIndex.end())
+				return found->second;
+			return -1;
+		}
+
+		bool ValidateTopology(std::string* reason = nullptr) const
+		{
+			const std::size_t boneCount = bones.size();
+			if (topologicalOrder.size() != boneCount)
+			{
+				if (reason) *reason = "topological order size does not match bone count";
+				return false;
+			}
+
+			std::vector<bool> visited(boneCount, false);
+			for (int boneIndex : topologicalOrder)
+			{
+				if (boneIndex < 0 || boneIndex >= static_cast<int>(boneCount))
+				{
+					if (reason) *reason = "topological order contains an invalid bone index";
+					return false;
+				}
+				const std::size_t index = static_cast<std::size_t>(boneIndex);
+				if (visited[index])
+				{
+					if (reason) *reason = "topological order contains a duplicate bone index";
+					return false;
+				}
+				const int parentIndex = bones[index].parentIndex;
+				if (parentIndex >= static_cast<int>(boneCount))
+				{
+					if (reason) *reason = "bone parent index is outside the skeleton";
+					return false;
+				}
+				if (parentIndex >= 0 && !visited[static_cast<std::size_t>(parentIndex)])
+				{
+					if (reason) *reason = "topological order visits a child before its parent";
+					return false;
+				}
+				visited[index] = true;
+			}
+			return true;
 		}
 
 		std::uint64_t ComputeSignature() const

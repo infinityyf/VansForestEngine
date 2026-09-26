@@ -1,5 +1,8 @@
 #include "VansSceneViewCommands.h"
+#include "../EngineAPILayer/Public/IAnimationEditorAPI.h"
 #include "../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../EngineAPILayer/Public/IPlayModeEditorAPI.h"
+#include "../EngineAPILayer/Public/ISceneInteractionEditorAPI.h"
 #include <algorithm>
 
 namespace Vans
@@ -15,16 +18,19 @@ void VansSceneViewCommands::RequestFrameSelection()
 void VansSceneViewCommands::Clear() { s_FrameSelection.clear(); }
 bool VansSceneViewCommands::ConsumeFrameSelection(EditorAPI::IEngineEditorAPI& api, EditorAPI::EditorSceneBounds& bounds)
 {
+	EditorAPI::IAnimationEditorAPI& animationAPI = api;
+	EditorAPI::IPlayModeEditorAPI& playModeAPI = api;
+	EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI = api;
     auto objects = std::move(s_FrameSelection);
     s_FrameSelection.clear();
     bounds = {};
     if (objects.empty() || s_SelectionRevision != VansEditorSelectionService::Get().Snapshot().revision ||
-        api.GetPlayState() != EditorAPI::EnginePlayState::Edit) return false;
+        playModeAPI.GetPlayState() != EditorAPI::EnginePlayState::Edit) return false;
     std::vector<std::string> entities;
     for (const auto& object : objects)
         if (object.domain == EditorObjectDomain::SceneEntity)
             entities.push_back(object.entityGuid.empty() ? object.guid : object.entityGuid);
-    bounds = api.QueryEditorSceneBounds(entities);
+    bounds = sceneInteractionAPI.QueryEditorSceneBounds(entities);
     for (const auto& object : objects)
     {
         if (object.domain != EditorObjectDomain::SceneSubObject ||
@@ -34,7 +40,7 @@ bool VansSceneViewCommands::ConsumeFrameSelection(EditorAPI::IEngineEditorAPI& a
         request.anchorGuid = object.subObjectGuid;
         request.kind = object.subObjectKind == SceneSubObjectKind::Socket
             ? EditorAPI::SceneSkeletonNodeKind::Socket : EditorAPI::SceneSkeletonNodeKind::Bone;
-        const auto pose = api.GetSceneSkeletonNodePose(request);
+		const auto pose = animationAPI.GetSceneSkeletonNodePose(request);
         if (!pose.available || !pose.worldTransform.available) continue;
         const auto p = pose.worldTransform.position;
         if (!bounds.available) { bounds.available = true; bounds.minimum = bounds.maximum = p; }

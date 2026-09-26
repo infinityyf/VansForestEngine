@@ -4,7 +4,6 @@
 #include "VansSceneProjectResourceBuilder.h"
 #include "VansSceneResourceArtifactPrewarmer.h"
 #include "../VulkanCore/VansVKDevice.h"
-#include "../../Configration/VansConfigration.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../SceneCore/VansSceneResourceLoadContext.h"
 #include "../../SceneCore/VansSceneResourcePlan.h"
@@ -39,10 +38,8 @@ void VansSceneResourceBatchExecutor::FinalizeResourceBatch(VansScene& scene)
 
 bool VansSceneResourceBatchExecutor::Execute(VansScene& scene, const Vans::VansSceneResourceBuildPlan& resourcePlan)
 {
-	auto vansConfigration = VansConfigration::GetInstance();
-	std::string enginePrefix = vansConfigration->GetProjectRootPath();
-
 	auto& projectMgr = Vans::VansProjectManager::Get();
+	const std::string& enginePrefix = projectMgr.GetPathResolver().GetEngineRoot();
 	std::string assetPrefix = projectMgr.IsProjectLoaded()
 		? projectMgr.GetProjectRootPath()
 		: enginePrefix;
@@ -145,12 +142,16 @@ bool VansSceneResourceBatchExecutor::Execute(
 	if (resourcePlan.loadRegisteredShaders || !resourcePlan.shaders.empty())
 	{
 		phaseStart = SceneLoadClock::now();
-		VansSceneProjectResourceBuilder::RegisterShaders(
+		if (!VansSceneProjectResourceBuilder::RegisterShaders(
 			scene,
 			resourcePlan.shaders,
 			loadContext,
 			nativeDevice,
-			resourcePlan.loadRegisteredShaders);
+			resourcePlan.loadRegisteredShaders))
+		{
+			VANS_LOG_ERROR("[SceneResource] Required shader batch failed; resource finalization aborted.");
+			return false;
+		}
 		LogSceneLoadPhase("resource.shaders", phaseStart);
 	}
 

@@ -119,12 +119,7 @@ namespace
 
 	bool ParsePlatform(const std::string& value, Vans::VansGamePackagePlatform& platform)
 	{
-		if (value == "Windows" || value == "windows" || value == "Win64" || value == "win64")
-		{
-			platform = Vans::VansGamePackagePlatform::Windows;
-			return true;
-		}
-		return false;
+		return Vans::ParseGamePackagePlatform(value, platform);
 	}
 
 	bool ParseOptions(int argc, char** argv, PackageToolOptions& options, std::string& error)

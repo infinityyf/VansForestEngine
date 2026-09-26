@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+namespace Vans::EditorAPI { class IGAFEditorAPI; }
+
 namespace VansGraphics
 {
 class VansGAFDebuggerWindow final : public VansBaseWindowComponent
@@ -24,8 +26,10 @@ public:
 	static bool ShowCombatHurtBodies();
 
 private:
-	void DrawRuntimeDebugger(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
-	void DrawSimulator(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+	void DrawRuntimeDebugger(
+		Vans::EditorAPI::IGAFEditorAPI& editorAPI,
+		bool runtimePaused);
+	void DrawSimulator(Vans::EditorAPI::IGAFEditorAPI& editorAPI);
 
 	Vans::EditorAPI::GAFRuntimeDebugSnapshot m_DebugSnapshot;
 	std::array<char, 1024> m_TracePath{};

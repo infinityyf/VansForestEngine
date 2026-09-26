@@ -7,6 +7,7 @@
 #include "../VulkanCore/VansMesh.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
+#include "../../PcgCore/VansPcgRuntimePolicy.h"
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
@@ -139,7 +140,11 @@ std::shared_ptr<VansVegetationSystem> CreateBatch(VansScene& scene,VkDevice devi
     if (variant==batch.plant->variants.end()) throw std::invalid_argument("PCG model variant is unavailable.");
     batch.bladeWidth=variant->bladeWidth;
     ResolveParts(scene,*variant,batch);
+    Vans::VansPlantTreeRuntimeBounds treeBounds;
     if(batch.plant->category==Vans::VansPlantCategory::Tree) {
+        std::string boundsError;
+        if(!Vans::ResolvePlantTreeRuntimeBounds(*variant,treeBounds,boundsError))
+            throw std::invalid_argument("Tree variant "+boundsError+'.');
         for(size_t level=0;level<variant->lod.levels.size();++level) {
             Vans::VansPlantVariant selected=*variant;selected.parts.clear();
             for(const auto& source:variant->lod.levels[level].parts) {
@@ -170,8 +175,8 @@ std::shared_ptr<VansVegetationSystem> CreateBatch(VansScene& scene,VkDevice devi
         {
             TreeInstanceGPU instance;
             instance.modelMatrix=model;instance.randomSeed=seed;
-            const glm::vec3 center=variant->lod.levels.empty()?glm::vec3(0):glm::vec3(variant->lod.centerRadius[0],variant->lod.centerRadius[1],variant->lod.centerRadius[2]);
-            const float radius=variant->lod.levels.empty()?variant->cullingRadius:variant->lod.centerRadius[3];
+            const glm::vec3 center(treeBounds.center[0],treeBounds.center[1],treeBounds.center[2]);
+            const float radius=treeBounds.radius;
             // A^T A 最大绝对行和给出保守伸缩界；均匀缩放时不会额外膨胀 sqrt(3)。
             float maxScaleSquared=0;
             for(int i=0;i<3;++i){float row=0;for(int j=0;j<3;++j)row+=std::abs(glm::dot(glm::vec3(model[i]),glm::vec3(model[j])));maxScaleSquared=std::max(maxScaleSquared,row);}
@@ -186,7 +191,7 @@ std::shared_ptr<VansVegetationSystem> CreateBatch(VansScene& scene,VkDevice devi
     const auto& grass = plant.grass;
     system.SetRenderConfigs(batch.grassParts);
     system.SetTreeParts(batch.treeParts);
-    system.SetTreeLodSettings(plant.render.lodDistances[0],plant.render.lodDistances[1],plant.render.lodHysteresis);
+    system.SetTreeLodSettings(plant.render.lodDistances,plant.render.lodHysteresis);
     system.SetRenderOptions(plant.render.cullingEnabled,plant.render.cullDistance,plant.render.castShadows);
     system.SetBladeHeight(grass.bladeHeight);
     system.SetBladeWidth(batch.bladeWidth);
@@ -380,7 +385,10 @@ bool VansVegetationCollection::UpdateResidency(VansScene& scene,VkDevice device,
             const bool active=batch.source->plant->category==Vans::VansPlantCategory::Tree || !render.cullingEnabled || WithinDistance(batch.roots,cameraX,cameraZ,render.cullDistance);
             if (active && !batch.system) created.emplace_back(&batch,CreateBatch(scene,device,*batch.source));
             // 留一格缓存避免在边界来回移动时反复创建；缓存格不参与模拟、主画面或阴影。
-            if (!active && batch.system && !WithinDistance(batch.roots,cameraX,cameraZ,render.cullDistance+batch.cellSize))
+            float exitDistance=0;
+            if (!Vans::ResolvePcgGrassResidencyExitDistance(render.cullDistance,batch.cellSize,exitDistance))
+                throw std::invalid_argument("Invalid PCG grass residency distance or cell size.");
+            if (!active && batch.system && !WithinDistance(batch.roots,cameraX,cameraZ,exitDistance))
                 evicted.push_back(&batch);
         }
         std::vector<std::shared_ptr<VansVegetationSystem>> retired;

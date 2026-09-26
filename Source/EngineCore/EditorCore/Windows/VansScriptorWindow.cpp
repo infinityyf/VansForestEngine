@@ -1,5 +1,6 @@
 #include "VansScriptorWindow.h"
 #include "../VansEditorWindow.h"
+#include "../../EngineAPILayer/Public/IProjectEditorAPI.h"
 #include "../../AssetCore/Storage/VansFileStorage.h"
 #include "../../Util/VansInputManager.h"
 #include "VansConsole.h"
@@ -46,19 +47,22 @@ void VansGraphics::VansScriptorWindow::RefreshFileList()
 
 void VansGraphics::VansScriptorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-    const std::string projectRootPath = editorAPI.GetProjectRootPath();
+	Vans::EditorAPI::IProjectEditorAPI& projectAPI = editorAPI;
+	Vans::EditorAPI::IScriptLifecycleEditorAPI& scriptLifecycleAPI = editorAPI;
+    const std::string projectRootPath = projectAPI.GetProjectRootPath();
     if (m_ProjectRootPath != projectRootPath)
     {
         m_ProjectRootPath = projectRootPath;
         m_NeedsRefresh = true;
     }
 
-    DrawScriptorContents(editorAPI);
+    DrawScriptorContents(scriptLifecycleAPI);
 }
 
-void VansGraphics::VansScriptorWindow::DrawScriptorContents(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+void VansGraphics::VansScriptorWindow::DrawScriptorContents(
+	Vans::EditorAPI::IScriptLifecycleEditorAPI& scriptLifecycleAPI)
 {
-    if (!VansEditorWindow::m_ScriptorWindowOpen)
+    if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::Scriptor))
         return;
 
     ImGui::Begin("Scripts");
@@ -70,7 +74,7 @@ void VansGraphics::VansScriptorWindow::DrawScriptorContents(Vans::EditorAPI::IEn
     ImGui::SameLine();
     if (ImGui::Button("Reload Lua"))
     {
-        editorAPI.ReloadRuntimeScripts();
+        scriptLifecycleAPI.ReloadRuntimeScripts();
         m_NeedsRefresh = true;
     }
     if (ImGui::IsItemHovered())
@@ -169,7 +173,7 @@ void VansGraphics::VansScriptorWindow::DrawScriptorContents(Vans::EditorAPI::IEn
 
         // Ctrl+S shortcut
         if (m_Dirty && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
-            SaveCurrentFile(editorAPI);
+            SaveCurrentFile(scriptLifecycleAPI);
 
         ImGui::Separator();
 
@@ -194,7 +198,7 @@ void VansGraphics::VansScriptorWindow::DrawScriptorContents(Vans::EditorAPI::IEn
         if (m_Dirty)
         {
             if (ImGui::Button("Save"))
-                SaveCurrentFile(editorAPI);
+                SaveCurrentFile(scriptLifecycleAPI);
             ImGui::SameLine();
             if (ImGui::Button("Revert"))
                 LoadSelectedFile();
@@ -237,7 +241,8 @@ void VansGraphics::VansScriptorWindow::LoadSelectedFile()
     m_EditBuffer.resize(EDIT_BUF_SIZE, '\0');
 }
 
-void VansGraphics::VansScriptorWindow::SaveCurrentFile(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+void VansGraphics::VansScriptorWindow::SaveCurrentFile(
+	Vans::EditorAPI::IScriptLifecycleEditorAPI& scriptLifecycleAPI)
 {
     if (m_LoadedPath.empty()) return;
 
@@ -252,7 +257,7 @@ void VansGraphics::VansScriptorWindow::SaveCurrentFile(Vans::EditorAPI::IEngineE
         VansConsole::Get().LogScript("[Script] Saved " + m_LoadedPath.filename().string());
 
         // Auto-reload the saved script in the Lua runtime
-        editorAPI.ReloadRuntimeScripts();
+        scriptLifecycleAPI.ReloadRuntimeScripts();
     }
     else
     {

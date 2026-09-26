@@ -25,9 +25,8 @@ T* FindOwnedEnabledComponent(
 	std::uint16_t type,
 	VansEntityHandle owner)
 {
-	IVansComponentStorage* raw = world.FindStorage(type);
-	if (!raw) return nullptr;
-	auto* storage = static_cast<VansComponentStorage<T>*>(raw);
+	auto* storage = world.FindStorage<T>(type);
+	if (!storage) return nullptr;
 	const auto& headers = storage->Headers();
 	auto& values = storage->DenseData();
 	for (std::size_t index = 0; index < headers.size() && index < values.size(); ++index)

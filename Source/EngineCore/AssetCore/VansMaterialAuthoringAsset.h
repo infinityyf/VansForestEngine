@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Serialization/VansSerializedValue.h"
-
 #include <string>
 
 namespace Vans

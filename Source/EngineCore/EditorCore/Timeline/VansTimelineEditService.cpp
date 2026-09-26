@@ -5,8 +5,9 @@
 #include "../../TimelineCore/VansTimelineSerialization.h"
 #include "../../TimelineCore/VansTimelineTrackExtensionRegistry.h"
 #include "../../TimelineCore/VansTimelineValidator.h"
-#include "../VansAssetDocumentEditService.h"
-#include "../VansAssetDocumentRegistry.h"
+#include "../../Timeline/VansEngineTimelineRegistry.h"
+#include "../../AuthoringCore/VansAssetDocumentEditService.h"
+#include "../../AuthoringCore/VansAssetDocumentRegistry.h"
 #include "../VansEditorAssetSaveService.h"
 #include "../VansEditorPropertyDescriptorRegistry.h"
 
@@ -42,10 +43,10 @@ VansTimelineId VansTimelineEditService::NewStableId()
 	return VansAssetGuid::New().ToString();
 }
 
-VansSerializedValue VansTimelineEditService::DefaultExtensionData(VansTimelineTrackTypeId type)
+VansSerializedValue VansTimelineEditService::DefaultExtensionData(VansTimelineTrackTypeId type) const
 {
 	const VansTimelineTrackExtensionDescriptor* descriptor =
-		VansTimelineTrackExtensionRegistry::BuiltIns().Resolve(type);
+		m_TrackExtensions ? m_TrackExtensions->Resolve(type) : nullptr;
 	if (!descriptor) return VansSerializedValue::Object({});
 	std::vector<std::pair<std::string, VansSerializedValue>> fields;
 	fields.reserve(descriptor->sourceSchema.fields.size());
@@ -56,6 +57,9 @@ VansSerializedValue VansTimelineEditService::DefaultExtensionData(VansTimelineTr
 
 TimelineEditResult VansTimelineEditService::Open(const std::filesystem::path& sourcePath)
 {
+	const VansEngineTimelineCatalog catalog = VansGetEngineTimelineCatalog();
+	if (!catalog) return Failure(std::string(catalog.error));
+	m_TrackExtensions = catalog.trackExtensions;
 	m_SourcePath = sourcePath;
 	m_Document = VansAssetDocumentRegistry::Get().GetOrOpen(sourcePath);
 	if (!m_Document || !m_Document->sourceDocument.IsLoaded())
@@ -78,8 +82,8 @@ TimelineEditResult VansTimelineEditService::Reload()
 TimelineEditResult VansTimelineEditService::ValidateWorkingCopy()
 {
 	VansTimelineValidationContext context;
-	context.extensions = &VansTimelineTrackExtensionRegistry::BuiltIns();
-	context.runtimeValidation = false;
+	context.extensions = m_TrackExtensions;
+	context.requireRuntimeCapabilities = false;
 	m_Diagnostics = VansTimelineValidator::Validate(m_Asset, context);
 	if (VansTimelineValidator::HasErrors(m_Diagnostics))
 	{
@@ -271,7 +275,7 @@ TimelineEditResult VansTimelineEditService::AddTrack(
 	VansSerializedValue extensionData)
 {
 	const VansTimelineTrackExtensionDescriptor* descriptor =
-		VansTimelineTrackExtensionRegistry::BuiltIns().Resolve(type);
+		m_TrackExtensions ? m_TrackExtensions->Resolve(type) : nullptr;
 	if (!descriptor) return Failure("Timeline track extension is not registered");
 	VansTimelineTrack track;
 	track.id = NewStableId();
@@ -311,7 +315,7 @@ TimelineEditResult VansTimelineEditService::AddSection(VansTimelineId trackId, V
 	if (section.channels.empty())
 	{
 		const VansTimelineTrackExtensionDescriptor* descriptor =
-			VansTimelineTrackExtensionRegistry::BuiltIns().Resolve(track->type.typeId);
+			m_TrackExtensions ? m_TrackExtensions->Resolve(track->type.typeId) : nullptr;
 		if (!descriptor) return Failure("Timeline track extension is not registered");
 		for (const VansTimelineChannelSchema& expected : descriptor->sourceSchema.channels)
 		{

@@ -4,15 +4,9 @@
 #include "VansAnimationTypes.h"
 #include "VansAnimationController.h"
 #include "../RuntimeCore/VansCharacterMotion.h"
+#include "../RuntimeCore/VansRagdollPose.h"
 #include "Retargeting/VansRetargetProcessor.h"
-#include "../ScriptCore/VansTransform.h"
-#include "../RenderCore/VulkanCore/VansVKBuffer.h"
-
-#if defined _WIN32
-#define VK_USE_PLATFORM_WIN32_KHR
-#elif defined __linux
-#endif
-#include "vulkan/vulkan.h"
+#include "../SceneRuntime/Transform/VansTransformStore.h"
 
 #include <cstdint>
 #include <memory>
@@ -43,8 +37,9 @@ namespace VansGraphics
 	};
 
 	// Scene animation entity stored in VansScene::m_AnimationNodes.
-	// A node owns skeleton/GPU state, binds one or more VansRenderNode meshes,
+	// A node owns CPU skeleton/pose state, binds one or more VansRenderNode meshes,
 	// and delegates clip/state-machine playback to VansAnimationController.
+	// RenderCore owns the Vulkan resources that publish this pose to rendering.
 	class VansAnimationNode : public VansNode
 	{
 	public:
@@ -65,8 +60,11 @@ namespace VansGraphics
 		void SetTargetBindings(std::vector<VansAnimationTargetBinding> bindings) { m_TargetBindings = std::move(bindings); }
 
 		// Controller binding
-		bool SetController(VansAnimationController* controller);
-		VansAnimationController* GetController() const { return m_Controller; }
+		bool SetController(std::unique_ptr<VansAnimationController> controller);
+		bool ExchangeController(
+			std::unique_ptr<VansAnimationController> controller,
+			std::unique_ptr<VansAnimationController>& previousController);
+		VansAnimationController* GetController() const { return m_Controller.get(); }
 		void SetCharacterMotionSettings(const Vans::VansCharacterMotionSettings& settings)
 		{
 			m_CharacterMotionSettings = settings;
@@ -91,7 +89,7 @@ namespace VansGraphics
 		{
 			return m_RetargetEnabled && m_SourceController
 				? m_SourceController.get()
-				: m_Controller;
+				: m_Controller.get();
 		}
 		bool ConfigureRetargetSource(const Skeleton& sourceSkeleton,
 		                             std::unique_ptr<VansAnimationController> sourceController,
@@ -127,6 +125,8 @@ namespace VansGraphics
 		float GetDuration() const;
 		float GetNormalizedTime() const;
 		std::string GetCurrentStateName() const;
+		std::string GetActiveStatePath() const;
+		std::string GetPrimaryClipName() const;
 		float GetSpeed() const;
 
 		const VansAnimationFrameVector<VansAnimationEventSample>& GetSampledEvents() const;
@@ -136,6 +136,11 @@ namespace VansGraphics
 		bool IsRootMotionEnabled() const;
 		void SetTransformID(uint32_t transformID);
 		uint32_t GetTransformID() const { return m_TransformID; }
+		Vans::VansRagdollKey GetRagdollKey() const;
+		bool BuildRagdollSkeletonBinding(
+			Vans::VansRagdollSkeletonBinding& binding) const;
+		bool GetRagdollPoseView(Vans::VansRagdollPoseView& pose) const;
+		bool ApplyRagdollPose(const Vans::VansRagdollPose& pose);
 		void SetRootBone(const std::string& boneName);
 		glm::vec3 GetRootMotionDelta() const;
 		glm::quat GetRootRotationDelta() const;
@@ -160,21 +165,6 @@ namespace VansGraphics
 		void PrepareCharacterMotionFrame(
 			float deltaTime, const Vans::VansCharacterTrajectory& trajectory);
 
-		// GPU resources
-		bool InitGPUResources(VkDevice device, uint32_t framesInFlight);
-		void DestroyGPUResources();
-		void UploadBoneMatrices(uint32_t frameIndex);
-		void UploadBoneMatrices(
-			uint32_t frameIndex,
-			const BoneMatricesSSBO& boneMatrices);
-		void UploadPerSubmeshBoneBuffers(const std::vector<std::vector<VertexBoneData>>& perSubmeshBoneData);
-
-		VansVKBuffer& GetBoneBuffer(uint32_t frameIndex) { return m_BoneBuffers[frameIndex]; }
-		VansVKBuffer& GetPreviousBoneBuffer(uint32_t frameIndex) { return m_PreviousBoneBuffers[frameIndex]; }
-		VansVKBuffer& GetBoneIDBuffer(uint32_t submeshIndex) { return m_PerSubmeshBoneIDBuffers[submeshIndex]; }
-		VansVKBuffer& GetBoneWeightBuffer(uint32_t submeshIndex) { return m_PerSubmeshBoneWeightBuffers[submeshIndex]; }
-		uint32_t GetSubmeshBufferCount() const { return static_cast<uint32_t>(m_PerSubmeshBoneIDBuffers.size()); }
-
 		// Accessors
 		std::string GetName() const { return m_Name; }
 		const BoneMatricesSSBO& GetBoneSSBO() const;
@@ -192,8 +182,8 @@ namespace VansGraphics
 		// Target skeleton driven by this node.
 		Skeleton m_Skeleton;
 
-		// Scene-owned target controller plus optional source-proxy controller.
-		VansAnimationController* m_Controller = nullptr;
+		// Target and optional source-proxy controllers share the node lifetime.
+		std::unique_ptr<VansAnimationController> m_Controller;
 		std::optional<Vans::VansCharacterMotionSettings> m_CharacterMotionSettings;
 		Skeleton m_SourceSkeleton;
 		std::unique_ptr<VansAnimationController> m_SourceController;
@@ -229,18 +219,7 @@ namespace VansGraphics
 		// CPU-side fallback bone matrix storage used when no controller exists.
 		BoneMatricesSSBO m_BoneMatricesSSBO;
 
-		// GPU buffers
-		VkDevice m_Device = VK_NULL_HANDLE;
-		std::vector<VansVKBuffer> m_BoneBuffers;
-		std::vector<VansVKBuffer> m_PreviousBoneBuffers;
-		BoneMatricesSSBO m_PreviousBoneMatricesSSBO{};
-		bool m_HasUploadedBoneMatrices = false;
-		uint32_t m_FramesInFlight = 0;
-		std::vector<VansVKBuffer> m_PerSubmeshBoneIDBuffers;
-		std::vector<VansVKBuffer> m_PerSubmeshBoneWeightBuffers;
-
 		// Internal helpers
-		void ApplyBoneOverrides(std::vector<glm::mat4>& localTransforms);
 		void ApplyRootMotionToTransform(const glm::vec3& deltaPos, const glm::quat& deltaRot);
 		void RebuildNodeTransformBindings();
 		void ApplySampledNodeTransforms();

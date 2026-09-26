@@ -10,6 +10,7 @@
 #include <vector>
 
 struct ImVec2;
+namespace Vans::EditorAPI { class IAnimationPreviewEditorAPI; }
 
 namespace VansGraphics
 {
@@ -26,7 +27,7 @@ namespace VansGraphics
 
 		// 返回true时场景视口的普通Entity Gizmo应让位给Socket/Attachment Gizmo。
 		bool DrawSceneViewportHandle(
-			Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+			Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI,
 			VansCamera* camera,
 			const ImVec2& viewportOrigin,
 			const ImVec2& viewportSize);
@@ -40,16 +41,16 @@ namespace VansGraphics
 			bool Draw();
 			bool Matches(std::string_view name) const;
 		};
-		bool DrawSceneEntityCombo(Vans::EditorAPI::IEngineEditorAPI& api,
+		bool DrawSceneEntityCombo(Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI,
 			const char* label, std::string& selectedGuid, NamePrefixFilter& filter);
 
 		void StartPreview(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 		void StopPreview();
 		bool LoadAnimatorDocument(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 		void ResetParameterValues();
-		void DrawSessionControls(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
-		void DrawParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
-		void DrawGraphSetsAndSlots(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+		void DrawSessionControls(Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI);
+		void DrawParameters(Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI);
+		void DrawGraphSetsAndSlots(Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI);
 		bool DrawTransformIKEditor(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 		bool ApplyAnimatorWorkingCopy(Vans::EditorAPI::IEngineEditorAPI& editorAPI, bool recordEdit);
 		bool ApplyRigWorkingCopy(Vans::EditorAPI::IEngineEditorAPI& api,
@@ -58,18 +59,19 @@ namespace VansGraphics
 		void ChangeRigHistory(Vans::EditorAPI::IEngineEditorAPI& api, bool redo);
 		bool DrawBoneNameCombo(const char* label, std::string& name);
 		void AddRotationDistributionNode();
-		bool ApplyTargetBindingsToDocument(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+		bool ApplyTargetBindingsToDocument(
+			Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI);
 		bool SaveAnimationSetup(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
-		void ReloadSceneTargetEdits(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+		void ReloadSceneTargetEdits(Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI);
 		void DrawSocketAndAttachmentEditor(Vans::EditorAPI::IEngineEditorAPI& editorAPI, bool inlineAnchorVisible);
-		void DrawSocketTransform(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
-		bool DrawAttachmentPoseEditor(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+		void DrawSocketTransform(Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI);
+		bool DrawAttachmentPoseEditor(Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI);
 		void DrawAttachmentTransform(Vans::EditorAPI::IEngineEditorAPI& editorAPI, bool showPose);
 		void DrawSceneHandleControls();
 		bool SaveRigChanges(
 			Vans::EditorAPI::IEngineEditorAPI& editorAPI,
 			const char* successMessage);
-		void RefreshRigSnapshot(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+		void RefreshRigSnapshot(Vans::EditorAPI::IAnimationPreviewEditorAPI& previewAPI);
 
 		std::vector<Vans::EditorAPI::AnimationTargetBindingDTO> m_TargetBindings;
 		std::string m_NewChainId;
@@ -88,7 +90,7 @@ namespace VansGraphics
 		std::uint64_t m_AnimatorDocumentStateId = 0;
 		std::uint64_t m_RigDocumentStateId = 0;
 		bool m_IsOpen = false;
-		Vans::EditorAPI::IEngineEditorAPI* m_ActiveAPI = nullptr;
+		Vans::EditorAPI::IAnimationPreviewEditorAPI* m_ActivePreviewAPI = nullptr;
 		Vans::EditorAPI::AnimationPreviewSessionId m_SessionId = 0;
 		std::string m_SelectedAnimatorGuid;
 		std::string m_SelectedAnimatorLabel = "Choose Animator...";

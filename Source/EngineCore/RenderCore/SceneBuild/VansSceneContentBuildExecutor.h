@@ -14,19 +14,42 @@ namespace VansGraphics
 {
 	class VansVKDevice;
 
+	enum class VansSceneContentBuildFailure
+	{
+		None,
+		ProjectionFailed,
+		ObjectBuildFailed,
+		ConfiguredRenderNodeBuildFailed,
+		ProjectCameraSettingsFailed,
+		SplineFieldBuildFailed,
+		TerrainBuildFailed,
+		VegetationBuildFailed,
+		WaterBuildFailed,
+		DeferredNodeBuildFailed,
+		ScreenSpaceNodeBuildFailed
+	};
+
+	struct VansSceneContentBuildResult
+	{
+		bool m_Built = false;
+		VansSceneContentBuildFailure m_Failure = VansSceneContentBuildFailure::None;
+		std::string m_Error;
+	};
+
 	class VansSceneContentBuildExecutor
 	{
 	public:
-		static bool BuildFromDocument(
+		static VansSceneContentBuildResult BuildFromDocument(
 			VansScene& scene,
 			const Vans::VansSerializedValue& sceneDocument,
-			const std::filesystem::path& sceneSourcePath);
+			const std::filesystem::path& sceneSourcePath,
+			VansVKDevice& device);
 
 	private:
-		static bool BuildFromPlan(
+		static VansSceneContentBuildResult BuildFromPlan(
 			VansScene& scene,
 			VkDevice& nativeDevice,
-			VansVKDevice* vkDevice,
+			VansVKDevice& device,
 			const Vans::VansSceneContentBuildPlan& buildPlan,
 			const std::filesystem::path& sceneSourcePath,
 			const std::string& projectRoot);

@@ -1,15 +1,17 @@
 #include "VansHierachyWindow.h"
 #include "../VansPrefabEditService.h"
 
-#include "../VansEditorSelection.h"
+#include "../VansEditorSelectionService.h"
 #include "../VansSceneViewCommands.h"
 #include "../VansEditorWindow.h"
-#include "../VansEditorObjectReference.h"
+#include "../../AuthoringCore/VansEditorObjectReference.h"
+#include "../../EngineAPILayer/Public/IAnimationEditorAPI.h"
+#include "../../EngineAPILayer/Public/IPlayModeEditorAPI.h"
+#include "../../EngineAPILayer/Public/IRuntimeSceneEditorAPI.h"
 #include "../VansSceneHierarchyService.h"
 #include "../VansSceneEditService.h"
 #include "../VansSceneEntityCreationService.h"
 #include "../VansSceneObjectReferenceRemapper.h"
-#include "../VansScenePropertyValueAdapter.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../SceneCore/VansSceneDocument.h"
 #include "../../SceneCore/VansSceneParentReference.h"
@@ -100,7 +102,7 @@ std::optional<Vans::VansSceneParentReference> ParentReferenceFromHandle(
 }
 
 void ReparentDroppedEntity(
-    Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+    Vans::EditorAPI::IRuntimeSceneEditorAPI& runtimeSceneAPI,
     const std::string& childGuid,
     std::optional<Vans::VansSceneParentReference> parent,
     Vans::ReparentTransformPolicy policy = Vans::ReparentTransformPolicy::KeepWorld)
@@ -144,7 +146,7 @@ void ReparentDroppedEntity(
 		}
 	}
 	const Vans::EditorAPI::RuntimeEntityReparentResult runtimeResult =
-		editorAPI.ReparentRuntimeEntity(runtimeRequest);
+		runtimeSceneAPI.ReparentRuntimeEntity(runtimeRequest);
 	if (!runtimeResult.applied)
 	{
 		VANS_LOG_WARN("[Hierarchy] Runtime reparent failed: " << runtimeResult.message);
@@ -167,20 +169,23 @@ void ReparentDroppedEntity(
     }
     if (result.changed)
     {
-        Vans::VansEditorSelection::SelectEntity(childGuid);
+        Vans::VansEditorSelectionService::Get().SelectEntity(childGuid, "Hierarchy");
     }
 }
 }
 
 void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
+	Vans::EditorAPI::IAnimationEditorAPI& animationAPI = editorAPI;
+	Vans::EditorAPI::IPlayModeEditorAPI& playModeAPI = editorAPI;
+	Vans::EditorAPI::IRuntimeSceneEditorAPI& runtimeSceneAPI = editorAPI;
     VANS_PROFILE_SCOPE("Editor::HierarchyWindow", Vans::ProfileCategory::Editor);
     ImGui::Begin("Hierarchy");
     VansEditorWindow::DrawPrefabToolbar();
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
         !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive() &&
         !ImGui::IsMouseDown(ImGuiMouseButton_Right) && ImGui::IsKeyPressed(ImGuiKey_F, false) &&
-        editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit)
+        playModeAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit)
         Vans::VansSceneViewCommands::RequestFrameSelection();
 
     const Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
@@ -220,7 +225,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                 VANS_LOG_WARN("[Hierarchy] " << result.message);
             VansEditorWindow::ReloadCurrentSceneForEditing();
         }
-        Vans::VansEditorSelection::SelectEntity(result.entityGuid);
+        Vans::VansEditorSelectionService::Get().SelectEntity(result.entityGuid, "Hierarchy");
     };
 
     auto createLocalVolumetricFog = [&editorAPI, document]()
@@ -255,7 +260,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                 VANS_LOG_WARN("[Hierarchy] " << result.message);
             VansEditorWindow::ReloadCurrentSceneForEditing();
         }
-        Vans::VansEditorSelection::SelectEntity(result.entityGuid);
+        Vans::VansEditorSelectionService::Get().SelectEntity(result.entityGuid, "Hierarchy");
     };
 
     if (ImGui::Button("+ Create"))
@@ -296,13 +301,13 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
     }
     ImGui::Separator();
 
-    if (ImGui::Selectable("Scene Settings", Vans::VansEditorSelection::IsSceneSelected()))
-        Vans::VansEditorSelection::SelectScene();
+    if (ImGui::Selectable("Scene Settings", Vans::VansEditorSelectionService::Get().IsSceneSelected()))
+        Vans::VansEditorSelectionService::Get().SelectScene("Hierarchy");
     if (ImGui::BeginDragDropTarget())
     {
         std::string droppedEntityGuid;
         if (AcceptSceneEntityDrop(droppedEntityGuid))
-			ReparentDroppedEntity(editorAPI, droppedEntityGuid, std::nullopt, reparentPolicy);
+			ReparentDroppedEntity(runtimeSceneAPI, droppedEntityGuid, std::nullopt, reparentPolicy);
         ImGui::EndDragDropTarget();
     }
     ImGui::Separator();
@@ -354,7 +359,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
         const auto& active = selection.active;
         const auto addRigPaths = [&](const std::string& entity)
         {
-            const auto skeleton = editorAPI.GetSceneSkeletonHierarchy(entity);
+			const auto skeleton = animationAPI.GetSceneSkeletonHierarchy(entity);
             for (const auto& rig : skeleton.rigs)
             {
                 for (const auto& bone : rig.bones)
@@ -462,7 +467,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 					&& Vans::VansAssetGuid::TryParse(rig.animationComponentGuid, parent.animationComponentGuid)
 					&& Vans::VansAssetGuid::TryParse(bone.guid, parent.anchorGuid))
 				{
-					ReparentDroppedEntity(editorAPI, droppedEntityGuid, std::move(parent), reparentPolicy);
+					ReparentDroppedEntity(runtimeSceneAPI, droppedEntityGuid, std::move(parent), reparentPolicy);
 				}
 			}
 			ImGui::EndDragDropTarget();
@@ -514,7 +519,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 						&& Vans::VansAssetGuid::TryParse(rig.animationComponentGuid, parent.animationComponentGuid)
 						&& Vans::VansAssetGuid::TryParse(socket->guid, parent.anchorGuid))
 					{
-						ReparentDroppedEntity(editorAPI, droppedEntityGuid, std::move(parent), reparentPolicy);
+						ReparentDroppedEntity(runtimeSceneAPI, droppedEntityGuid, std::move(parent), reparentPolicy);
 					}
 				}
 				ImGui::EndDragDropTarget();
@@ -588,12 +593,12 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 					Vans::VansSceneParentReference parent;
 					parent.kind = Vans::VansSceneParentKind::Entity;
 					if (Vans::VansAssetGuid::TryParse(id, parent.entityGuid))
-						ReparentDroppedEntity(editorAPI, droppedEntityGuid, std::move(parent), reparentPolicy);
+						ReparentDroppedEntity(runtimeSceneAPI, droppedEntityGuid, std::move(parent), reparentPolicy);
 				}
                 ImGui::EndDragDropTarget();
             }
 
-            auto deleteEntity = [&editorAPI, entities, &id]()
+            auto deleteEntity = [&runtimeSceneAPI, entities, &id]()
             {
                 if (id.empty())
                     return;
@@ -608,8 +613,8 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                         continue;
 
                     Vans::VansSerializedValue removedEntity = entity;
-                    std::vector<Vans::EditorAPI::ScenePropertyValue> runtimeEntities;
-                    runtimeEntities.push_back(Vans::FromSerializedValue(removedEntity));
+                    std::vector<Vans::VansSerializedValue> runtimeEntities;
+                    runtimeEntities.push_back(removedEntity);
 
                     std::vector<std::string> childGuids;
                     for (const Vans::VansSerializedValue& candidateChild : entities->arrayItems)
@@ -621,18 +626,18 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                             childGuids.push_back(Vans::ReadSerializedStringField(candidateChild, "id"));
                     }
 
-                    auto destroyRuntimeEntity = [&editorAPI, entityGuid = id]()
+                    auto destroyRuntimeEntity = [&runtimeSceneAPI, entityGuid = id]()
                     {
                         Vans::EditorAPI::RuntimeEntityDestroyRequest request;
                         request.entityGuid = entityGuid;
-                        return editorAPI.DestroyRuntimeEntity(request).destroyed;
+                        return runtimeSceneAPI.DestroyRuntimeEntity(request).destroyed;
                     };
-                    auto createRuntimeEntity = [&editorAPI, runtimeEntities, childGuids, entityGuid = id]()
+                    auto createRuntimeEntity = [&runtimeSceneAPI, runtimeEntities, childGuids, entityGuid = id]()
                     {
                         Vans::EditorAPI::RuntimeSceneEntitiesCreateRequest request;
                         request.sceneEntities = runtimeEntities;
                         const Vans::EditorAPI::RuntimeSceneEntitiesCreateResult createResult =
-                            editorAPI.CreateRuntimeSceneEntities(request);
+                            runtimeSceneAPI.CreateRuntimeSceneEntities(request);
                         if (!createResult.created)
                         {
                             if (!createResult.message.empty())
@@ -653,7 +658,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 							reparentRequest.transformPolicy =
 								Vans::EditorAPI::RuntimeReparentTransformPolicy::KeepLocal;
                             const Vans::EditorAPI::RuntimeEntityReparentResult reparentResult =
-                                editorAPI.ReparentRuntimeEntity(reparentRequest);
+                                runtimeSceneAPI.ReparentRuntimeEntity(reparentRequest);
                             if (!reparentResult.applied && !reparentResult.message.empty())
                             {
                                 VANS_LOG_WARN("[Hierarchy] Runtime delete undo child reparent failed: "
@@ -685,7 +690,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                 }
             };
 
-            auto duplicateEntity = [&editorAPI, &document, &id]()
+            auto duplicateEntity = [&runtimeSceneAPI, &document, &id]()
             {
                 if (id.empty())
                     return;
@@ -705,21 +710,21 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 
                 const std::string duplicatedRootGuid = duplicate.duplicatedRootGuid;
                 std::vector<std::string> duplicatedEntityGuids;
-                std::vector<Vans::EditorAPI::ScenePropertyValue> runtimeEntities;
+                std::vector<Vans::VansSerializedValue> runtimeEntities;
                 duplicatedEntityGuids.reserve(duplicate.entities.size());
                 runtimeEntities.reserve(duplicate.entities.size());
                 for (const Vans::VansSerializedValue& entity : duplicate.entities)
                 {
                     duplicatedEntityGuids.push_back(Vans::ReadSerializedStringField(entity, "id"));
-                    runtimeEntities.push_back(Vans::FromSerializedValue(entity));
+                    runtimeEntities.push_back(entity);
                 }
 
-                auto createRuntimeEntities = [&editorAPI, runtimeEntities]()
+                auto createRuntimeEntities = [&runtimeSceneAPI, runtimeEntities]()
                 {
                     Vans::EditorAPI::RuntimeSceneEntitiesCreateRequest request;
                     request.sceneEntities = runtimeEntities;
                     const Vans::EditorAPI::RuntimeSceneEntitiesCreateResult result =
-                        editorAPI.CreateRuntimeSceneEntities(request);
+                        runtimeSceneAPI.CreateRuntimeSceneEntities(request);
                     if (!result.created && !result.message.empty())
                         VANS_LOG_WARN("[Hierarchy] Runtime duplicate create failed: " << result.message);
                     return result.created;
@@ -727,7 +732,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 
                 Vans::SceneEditLifecycleHooks hooks;
                 hooks.afterExecute = createRuntimeEntities;
-                hooks.afterUndo = [&editorAPI, duplicatedEntityGuids]()
+                hooks.afterUndo = [&runtimeSceneAPI, duplicatedEntityGuids]()
                 {
                     bool destroyedAll = true;
                     for (auto it = duplicatedEntityGuids.rbegin(); it != duplicatedEntityGuids.rend(); ++it)
@@ -736,7 +741,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                             continue;
                         Vans::EditorAPI::RuntimeEntityDestroyRequest request;
                         request.entityGuid = *it;
-                        destroyedAll = editorAPI.DestroyRuntimeEntity(request).destroyed && destroyedAll;
+                        destroyedAll = runtimeSceneAPI.DestroyRuntimeEntity(request).destroyed && destroyedAll;
                     }
                     return destroyedAll;
                 };
@@ -752,10 +757,10 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                 if (!editResult.runtimeChangeApplied)
                     VansEditorWindow::ReloadCurrentSceneForEditing();
                 if (!duplicatedRootGuid.empty())
-                    Vans::VansEditorSelection::SelectEntity(duplicatedRootGuid);
+                    Vans::VansEditorSelectionService::Get().SelectEntity(duplicatedRootGuid, "Hierarchy");
             };
 
-            const bool isSelected = (Vans::VansEditorSelection::EntityGuid() == id);
+            const bool isSelected = (Vans::VansEditorSelectionService::Get().EntityGuid() == id);
             if (ImGui::BeginPopupContextItem(id.c_str()))
             {
                 if (ImGui::MenuItem("Create Empty Child"))
@@ -801,7 +806,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 				if (hasRig)
 				{
 					const Vans::EditorAPI::SceneSkeletonHierarchySnapshot skeletonHierarchy =
-						editorAPI.GetSceneSkeletonHierarchy(id);
+						animationAPI.GetSceneSkeletonHierarchy(id);
 					for (const auto& rig : skeletonHierarchy.rigs)
 						for (int boneIndex = 0; boneIndex < static_cast<int>(rig.bones.size()); ++boneIndex)
 							if (rig.bones[static_cast<std::size_t>(boneIndex)].parentIndex < 0)

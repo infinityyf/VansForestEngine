@@ -29,8 +29,6 @@ VansEntityHandle VansEntityRegistry::CreateEntity(const VansEntityCreateDesc& de
 
 	if (!desc.stableGuid.empty())
 		m_GuidIndex[desc.stableGuid] = handle;
-	if (!desc.name.empty())
-		m_NameIndex[desc.name] = handle;
 	++m_AliveCount;
 
 	if (desc.parent.IsValid())
@@ -64,7 +62,7 @@ bool VansEntityRegistry::DestroyEntity(VansEntityHandle entity, VansDestroyChild
 	RemoveIndexes(slot->record);
 	slot->record = VansEntityRecord{};
 	slot->alive = false;
-	++slot->generation;
+	slot->generation = NextRuntimeGeneration(slot->generation);
 	m_FreeSlots.push_back(entity.index);
 	--m_AliveCount;
 	return true;
@@ -83,28 +81,12 @@ VansEntityHandle VansEntityRegistry::FindByGuid(const std::string& guid) const
 	return it != m_GuidIndex.end() && IsAlive(it->second) ? it->second : VansEntityHandle{};
 }
 
-VansEntityHandle VansEntityRegistry::FindByName(const std::string& name) const
-{
-	const auto it = m_NameIndex.find(name);
-	return it != m_NameIndex.end() && IsAlive(it->second) ? it->second : VansEntityHandle{};
-}
-
 bool VansEntityRegistry::SetName(VansEntityHandle entity, const std::string& name)
 {
 	VansEntityRecord* record = Edit(entity);
 	if (!record)
 		return false;
-	if (record->name == name)
-		return true;
-	if (!record->name.empty())
-	{
-		const auto found = m_NameIndex.find(record->name);
-		if (found != m_NameIndex.end() && found->second == entity)
-			m_NameIndex.erase(found);
-	}
 	record->name = name;
-	if (!record->name.empty())
-		m_NameIndex[record->name] = entity;
 	return true;
 }
 
@@ -175,10 +157,18 @@ std::vector<VansEntityHandle> VansEntityRegistry::CollectAliveEntities() const
 
 void VansEntityRegistry::Clear()
 {
-	m_Slots.clear();
-	m_FreeSlots.clear();
 	m_GuidIndex.clear();
-	m_NameIndex.clear();
+	m_FreeSlots.clear();
+	m_FreeSlots.reserve(m_Slots.size());
+	for (std::size_t index = m_Slots.size(); index > 0; --index)
+	{
+		Slot& slot = m_Slots[index - 1];
+		if (slot.alive)
+			slot.generation = NextRuntimeGeneration(slot.generation);
+		slot.record = VansEntityRecord{};
+		slot.alive = false;
+		m_FreeSlots.push_back(static_cast<std::uint32_t>(index - 1));
+	}
 	m_AliveCount = 0;
 }
 
@@ -215,12 +205,6 @@ void VansEntityRegistry::RemoveIndexes(const VansEntityRecord& record)
 		const auto it = m_GuidIndex.find(record.stableGuid);
 		if (it != m_GuidIndex.end())
 			m_GuidIndex.erase(it);
-	}
-	if (!record.name.empty())
-	{
-		const auto it = m_NameIndex.find(record.name);
-		if (it != m_NameIndex.end())
-			m_NameIndex.erase(it);
 	}
 }
 }

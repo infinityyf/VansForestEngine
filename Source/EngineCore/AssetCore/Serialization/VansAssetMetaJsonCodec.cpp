@@ -10,17 +10,17 @@ namespace Vans
 {
 bool VansAssetMetaJsonCodec::Encode(
     const VansAssetMeta& meta,
-    nlohmann::ordered_json& root,
+    VansSerializedValue& serialized,
     std::string& error)
 {
-    root = {};
+    serialized = VansSerializedValue::Object({});
     if (!meta.guid.IsValid() || meta.importer.empty())
     {
         error = "Asset meta requires a guid and importer";
         return false;
     }
 
-    root = {
+    nlohmann::ordered_json root = {
         { "guid", meta.guid.ToString() },
         { "importer", meta.importer },
         { "version", meta.version },
@@ -31,15 +31,18 @@ bool VansAssetMetaJsonCodec::Encode(
     for (const auto& [fingerprint, id] : meta.subAssets)
         subAssetsJson[fingerprint] = id.ToString();
     root["subAssets"] = std::move(subAssetsJson);
+    serialized = DecodeSerializedValueJson(root);
     return true;
 }
 
 bool VansAssetMetaJsonCodec::Decode(
-    const nlohmann::ordered_json& root,
+    const VansSerializedValue& serialized,
     const std::filesystem::path& metaPath,
     VansAssetMeta& result,
     std::string& error)
 {
+    const nlohmann::ordered_json root =
+        EncodeSerializedValueJson<nlohmann::ordered_json>(serialized);
     VansAssetGuid guid;
     if (!root.is_object() || !VansAssetGuid::TryParse(root.value("guid", ""), guid))
     {
@@ -47,11 +50,20 @@ bool VansAssetMetaJsonCodec::Decode(
         return false;
     }
 
+    const auto settings = root.value("settings", nlohmann::ordered_json::object());
+    if (settings.is_object() &&
+        (settings.contains("compress") || settings.contains("generateMip") ||
+            settings.contains("scale")))
+    {
+        error = "Asset meta contains removed settings keys: " + metaPath.string();
+        return false;
+    }
+
     result = {};
     result.guid = guid;
     result.importer = root.value("importer", "");
     result.version = root.value("version", 1u);
-    result.SetSerializedSettings(DecodeSerializedValueJson(root.value("settings", nlohmann::ordered_json::object())));
+    result.SetSerializedSettings(DecodeSerializedValueJson(settings));
     if (const auto it = root.find("subAssets"); it != root.end() && it->is_object())
     {
         for (auto entry = it->begin(); entry != it->end(); ++entry)

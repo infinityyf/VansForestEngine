@@ -1,10 +1,10 @@
+#include "../../SceneRuntime/Transform/VansTransformStore.h"
 #include "../VansScene.h"
 #include "../../AnimationCore/VansAnimationNode.h"
 #include "VansAnimationWorldQueryBatch.h"
 #include "../../SceneRuntime/Animation/VansAnimationTargetResolver.h"
 #include "../../SceneRuntime/VansRuntimeWorld.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
-#include "../../PhysicsCore/VansRagdollSystem.h"
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
@@ -16,8 +16,8 @@ std::uint32_t VansScene::FindAnimationTargetTransform(const std::string& entityG
 	if (!m_RuntimeWorld) return UINT32_MAX;
 	const auto entity = m_RuntimeWorld->Entities().FindByGuid(entityGuid);
 	const auto component = m_RuntimeWorld->FindComponentOwnedBy(entity, Vans::VansRuntimeComponentType_Transform);
-	const auto* storage = static_cast<const Vans::VansComponentStorage<Vans::VansRuntimeTransformComponent>*>(
-		m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Transform));
+	const auto* storage = m_RuntimeWorld->FindStorage<Vans::VansRuntimeTransformComponent>(
+		Vans::VansRuntimeComponentType_Transform);
 	const auto* transform = storage ? storage->Get(component) : nullptr;
 	return transform ? transform->transformStoreId : UINT32_MAX;
 }
@@ -86,7 +86,7 @@ void VansScene::ResolveAnimationTargetBindings(VansAnimationNode& node)
 				std::uint64_t revision = 0;
 				glm::mat4 model(1.0f);
 				if (!m_SkeletonAnchorRegistry.ResolveModelSpaceTransform(link.anchor, model, revision)) return false;
-				anchor.world = VansTransformStore::GetTransform(link.parentTransformId).GetModelMatrix() * model;
+				anchor.world = Vans::VansTransformStore::Read(link.parentTransformId).GetModelMatrix() * model;
 				return true;
 			}, target);
 		input.targets.push_back(std::move(target));
@@ -145,7 +145,7 @@ bool VansScene::EvaluateAnimationBatch(const std::vector<VansAnimationNode*>& no
 				std::vector<VansWorldQueryResult> results;
 				VansAnimationWorldQueryBatch::Execute(node->GetAnimationWorldQueries(), results);
 				node->ResolveAnimationWorldQueries(results);
-				if (gameplay) VansEngine::VansRagdollSystem::GetInstance().PostAnimationUpdate(node);
+				if (gameplay) ApplyRagdollPose(*node);
 			}
 			return false;
 		}
@@ -166,7 +166,7 @@ bool VansScene::EvaluateAnimationBatch(const std::vector<VansAnimationNode*>& no
 		{
 			auto* node = nodes[index];
 			node->ResolveAnimationWorldQueries(m_AnimationWorldQueryResults);
-			if (gameplay) VansEngine::VansRagdollSystem::GetInstance().PostAnimationUpdate(node);
+			if (gameplay) ApplyRagdollPose(*node);
 			completed[index] = true;
 			++completedCount;
 			for (const auto dependent : dependents[index])

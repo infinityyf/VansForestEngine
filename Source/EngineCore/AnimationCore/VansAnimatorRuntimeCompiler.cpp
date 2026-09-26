@@ -1,8 +1,8 @@
 #include "VansAnimatorRuntimeCompiler.h"
 
 #include "VansAnimationClipLoader.h"
+#include "VansAnimatorValidator.h"
 
-#include <nlohmann/json.hpp>
 #include <unordered_map>
 
 namespace VansGraphics
@@ -16,8 +16,7 @@ namespace VansGraphics
 		std::string& error)
 	{
 		error.clear();
-		AnimGraphJson validationRoot;
-		if (!VansAnimatorIO::SerializeToJsonObject(asset, validationRoot, error))
+		if (!VansAnimatorValidator::Validate(asset, error))
 			return nullptr;
 		const std::string rigGuid = options.animationRigGuidOverride.empty()
 			? asset.animationRigGuid : options.animationRigGuidOverride;
@@ -88,9 +87,13 @@ namespace VansGraphics
 						return nullptr;
 					}
 					std::shared_ptr<const VansBoneMaskAsset> mask;
-					if (!maskResolver(definition, mask, error) || !mask)
+					if (!maskResolver(definition, mask, error))
 						return nullptr;
-					setup.mask = *mask;
+					// An overlay with no mask asset is the generic full-body form.
+					// Leave setup.mask empty; VansAnimationController expands it to
+					// a full-body compiled mask for the target skeleton.
+					if (mask)
+						setup.mask = *mask;
 				}
 				layers.push_back(std::move(setup));
 			}
@@ -115,9 +118,7 @@ namespace VansGraphics
 								+ "' references a missing Graph";
 							return nullptr;
 						}
-						AnimGraphJson graphJson;
-						sourceGraph->SerializeToJsonObject(graphJson);
-						binding.graph = VansAnimGraph::DeserializeFromJsonObject(graphJson);
+						binding.graph = sourceGraph->Clone();
 						if (!binding.graph)
 						{
 							error = "Failed to instantiate Graph '" + bindingDefinition.graphId
@@ -141,9 +142,7 @@ namespace VansGraphics
 		{
 			if (const VansAnimGraph* sourcePostProcess = asset.FindTargetPostProcessGraph())
 			{
-				AnimGraphJson graphJson;
-				sourcePostProcess->SerializeToJsonObject(graphJson);
-				auto graph = VansAnimGraph::DeserializeFromJsonObject(graphJson);
+				auto graph = sourcePostProcess->Clone();
 				if (!graph)
 				{
 					error = "Failed to instantiate Target Post Process Graph";

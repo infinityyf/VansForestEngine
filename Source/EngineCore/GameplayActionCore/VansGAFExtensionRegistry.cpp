@@ -1,6 +1,7 @@
 #include "VansGAFExtensionRegistry.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../GameplayTargeting/VansGameplayTargeting.h"
 
 #include <algorithm>
 #include <cmath>
@@ -28,7 +29,17 @@ VansGAFInputFieldDescriptor Input(
 	bool required = false,
 	VansSerializedValue defaultValue = {})
 {
-	return { std::move(name), std::move(valueType), required, std::move(defaultValue) };
+	return { std::move(name), std::move(valueType), required, std::move(defaultValue), {} };
+}
+
+VansGAFInputFieldDescriptor EnumInput(
+	std::string name,
+	bool required,
+	VansSerializedValue defaultValue,
+	std::vector<std::string> enumValues)
+{
+	return { std::move(name), "Core.Value.String", required,
+		std::move(defaultValue), std::move(enumValues) };
 }
 
 VansGAFInputSchemaDescriptor Schema(
@@ -154,12 +165,21 @@ bool VansGAFSchemaRegistry::Register(
 	}
 	std::set<std::string> fields;
 	for (const VansGAFInputFieldDescriptor& field : descriptor.fields)
+	{
+		std::set<std::string> enumValues(field.enumValues.begin(), field.enumValues.end());
+		const bool validEnum = field.enumValues.empty() ||
+			(field.valueType == "Core.Value.String" &&
+				enumValues.size() == field.enumValues.size() &&
+				(field.defaultValue.IsNull() ||
+					(field.defaultValue.kind == VansSerializedValue::Kind::String &&
+						enumValues.count(field.defaultValue.stringValue) == 1)));
 		if (field.name.empty() || !fields.insert(field.name).second ||
-			!m_Types->ResolveValueType(field.valueType))
+			!m_Types->ResolveValueType(field.valueType) || !validEnum)
 		{
 			error = "GAF input Schema contains an invalid field";
 			return false;
 		}
+	}
 	if (!m_Schemas.emplace(descriptor.typeId, std::move(descriptor)).second)
 	{
 		error = "duplicate GAF input Schema TypeId";
@@ -239,6 +259,12 @@ VansGameplayDiagnostics VansGAFSchemaRegistry::Validate(
 				"GAF-INPUT-TYPE", validationError.empty()
 					? "GAF record input has the wrong value type" : validationError,
 				{}, base + "/inputs/" + name });
+		else if (!found->second->enumValues.empty() &&
+			std::find(found->second->enumValues.begin(), found->second->enumValues.end(),
+				value.stringValue) == found->second->enumValues.end())
+			diagnostics.push_back({ VansGameplayDiagnosticSeverity::Error,
+				"GAF-INPUT-ENUM", "GAF record input is not a registered enum option", {},
+				base + "/inputs/" + name });
 	}
 	for (const VansGAFInputFieldDescriptor& field : schema->fields)
 		if (field.required && !FindObjectField(inputs, field.name))
@@ -255,8 +281,12 @@ std::uint64_t VansGAFSchemaRegistry::Fingerprint() const
 	{
 		std::string entry = id;
 		for (const VansGAFInputFieldDescriptor& field : schema.fields)
+		{
 			entry += ":" + field.name + ":" + field.valueType +
 				(field.required ? ":required" : ":optional");
+			for (const std::string& value : field.enumValues)
+				entry += ":enum=" + value;
+		}
 		entries.push_back(std::move(entry));
 	}
 	std::sort(entries.begin(), entries.end());
@@ -335,7 +365,8 @@ bool VansRegisterCoreGAFSchemas(VansGAFSchemaRegistry& registry, std::string& er
 	using F = VansSerializedValue;
 	for (VansGAFInputSchemaDescriptor descriptor : {
 		Schema("Core.Policy.Concurrency", { Input("group", "Core.Value.String"),
-			Input("mode", "Core.Value.String", false, F::String("Allow")),
+			EnumInput("mode", false, F::String("Allow"),
+				{ "Allow", "Reject", "RejectNew", "CancelExisting", "Queue", "QueueNew" }),
 			Input("limit", "Core.Value.Int", false, F::Int(1)),
 			Input("queueTimeout", "Core.Value.Float", false, F::Float(0.0)) }),
 		Schema("Core.Policy.Cancellation", { Input("cancellable", "Core.Value.Bool", false, F::Bool(true)) }),
@@ -389,11 +420,13 @@ bool VansRegisterGameplayPrimitiveGAFTypes(
 	for (const char* typeId : {
 		"Gameplay.Targeting.Resolve", "Gameplay.Attributes.Consume",
 		"Gameplay.Cooldown.Apply", "Gameplay.Tags.Grant",
-		"Gameplay.Effects.Apply", "Gameplay.Cue.Emit",
-		"Targeting.Acquire.Owner", "Targeting.Acquire.PrimaryTarget",
-		"Targeting.Filter.ValidEntity", "Targeting.Limit.Count",
-		"Targeting.Lock.Entity" })
+		"Gameplay.Effects.Apply", "Gameplay.Cue.Emit" })
 		if (!RegisterType(registry, VansGAFExtensionKind::Operation, typeId, error)) return false;
+	VansTargetingHandlerRegistry targetingHandlers;
+	if (!VansBuildBuiltInTargetingHandlerRegistry(targetingHandlers, error)) return false;
+	for (const VansTargetingStepDescriptor& descriptor : targetingHandlers.Snapshot())
+		if (!RegisterType(registry, VansGAFExtensionKind::Operation,
+			descriptor.stableName.c_str(), error)) return false;
 	for (const char* typeId : {
 		"Gameplay.Input.Binding", "Gameplay.Tags.Dynamic", "Gameplay.Charges",
 		"Gameplay.Effects.Initialize", "Gameplay.Attributes.Initialize",
@@ -424,14 +457,9 @@ bool VansRegisterGameplayPrimitiveGAFSchemas(
 			Input("tag", "Core.Value.String", true) }),
 		Schema("Gameplay.Tags.Grant", { Input("tags", "Core.Value.Array", true) }),
 		Schema("Gameplay.Effects.Apply", { Input("asset", "Core.Value.Reference", true),
-			Input("removeOnEnd", "Core.Value.Bool", false, F::Bool(false)) }),
+			Input("removeOnEnd", "Core.Value.Bool", false, F::Bool(false)),
+			Input("setByCaller", "Core.Value.Object", false, F::Object({})) }),
 		Schema("Gameplay.Cue.Emit", { Input("assets", "Core.Value.Array", true) }),
-		Schema("Targeting.Acquire.Owner", {}),
-		Schema("Targeting.Acquire.PrimaryTarget", {}),
-		Schema("Targeting.Filter.ValidEntity", {}),
-		Schema("Targeting.Limit.Count", {
-			Input("count", "Core.Value.Int", false, F::Int(1)) }),
-		Schema("Targeting.Lock.Entity", {}),
 		Schema("Gameplay.Input.Binding", {
 			Input("binding", "Core.Value.String", true) }),
 		Schema("Gameplay.Tags.Dynamic", {
@@ -440,37 +468,47 @@ bool VansRegisterGameplayPrimitiveGAFSchemas(
 			Input("count", "Core.Value.Int", true) }),
 		Schema("Gameplay.Effects.Initialize", {
 			Input("asset", "Core.Value.Reference", true),
-			Input("releasePolicy", "Core.Value.String", false, F::String("OnRevoke")) }),
+			Input("releasePolicy", "Core.Value.String", false, F::String("OnRevoke")),
+			Input("setByCaller", "Core.Value.Object", false, F::Object({})) }),
 		Schema("Gameplay.Attributes.Initialize", {
 			Input("attribute", "Core.Value.String", true),
 			Input("value", "Core.Value.Float", true),
 			Input("releasePolicy", "Core.Value.String", false, F::String("OnRevoke")) }),
 		Schema("Gameplay.Effect.AttributeModifier", {
 			Input("attribute", "Core.Value.String", true),
-			Input("operation", "Core.Value.String", false, F::String("Additive")),
-			Input("magnitudeSource", "Core.Value.String", false, F::String("Fixed")),
+			EnumInput("application", true, {}, { "Base", "Persistent" }),
+			EnumInput("operation", true, {}, { "Add", "Multiply", "Set" }),
+			EnumInput("magnitudeSource", false, F::String("Fixed"),
+				{ "Fixed", "SetByCaller", "CapturedAttribute", "ContextPayload",
+					"TargetData", "RandomRange" }),
 			Input("magnitude", "Core.Value.Float", false, F::Float(0.0)),
 			Input("priority", "Core.Value.Int", false, F::Int(0)),
 			Input("setByCaller", "Core.Value.String"),
 			Input("capturedAttribute", "Core.Value.String"),
-			Input("capture", "Core.Value.String", false, F::String("Snapshot")),
+			EnumInput("capture", false, F::String("Snapshot"),
+				{ "Snapshot", "Dynamic" }),
 			Input("contextPath", "Core.Value.String"),
-			Input("targetMetric", "Core.Value.String", false, F::String("Count")),
+			EnumInput("targetMetric", false, F::String("Count"),
+				{ "Count", "HitDistance", "RayLength" }),
 			Input("randomMinimum", "Core.Value.Float", false, F::Float(0.0)),
 			Input("randomMaximum", "Core.Value.Float", false, F::Float(1.0)),
 			Input("coefficient", "Core.Value.Float", false, F::Float(1.0)),
 			Input("preAdd", "Core.Value.Float", false, F::Float(0.0)),
 			Input("postAdd", "Core.Value.Float", false, F::Float(0.0)) }),
 		Schema("Gameplay.Effect.CueBinding", {
-			Input("phase", "Core.Value.String", true),
+			EnumInput("phase", true, {},
+				{ "Execute", "Persistent", "Periodic", "Remove" }),
 			Input("assets", "Core.Value.Array", true) }),
 		Schema("Gameplay.Cue.Invoke", {
 			Input("capability", "Core.Value.String", true),
-			Input("invoke", "Core.Value.String", true),
-			Input("update", "Core.Value.String"),
-			Input("release", "Core.Value.String"),
 			Input("asset", "Core.Value.Reference"),
-			Input("parameters", "Core.Value.Object", false, F::Object({})) }),
+			Input("invoke", "Core.Value.Object", true, F::Object({
+				{ "command", F::String({}) },
+				{ "values", F::Object({}) },
+				{ "bindings", F::Object({}) }
+			})),
+			Input("update", "Core.Value.Object"),
+			Input("release", "Core.Value.Object") }),
 		Schema("Core.Transition.Combo", { Input("name", "Core.Value.String", true),
 			Input("input", "Core.Value.String", true), Input("target", "Core.Value.Reference", true),
 			Input("openTime", "Core.Value.Float"), Input("closeTime", "Core.Value.Float"),
@@ -479,6 +517,17 @@ bool VansRegisterGameplayPrimitiveGAFSchemas(
 			Input("requirements", "Core.Value.Object"), Input("contextPatch", "Core.Value.Object") })
 	})
 		if (!registry.Register(std::move(descriptor), error)) return false;
+	VansTargetingHandlerRegistry targetingHandlers;
+	if (!VansBuildBuiltInTargetingHandlerRegistry(targetingHandlers, error)) return false;
+	for (const VansTargetingStepDescriptor& targeting : targetingHandlers.Snapshot())
+	{
+		std::vector<VansGAFInputFieldDescriptor> fields;
+		fields.reserve(targeting.inputFields.size());
+		for (const VansTargetingInputField& input : targeting.inputFields)
+			fields.push_back({ input.name, input.valueType, input.required,
+				input.defaultValue, {} });
+		if (!registry.Register({ targeting.stableName, std::move(fields) }, error)) return false;
+	}
 	return true;
 }
 

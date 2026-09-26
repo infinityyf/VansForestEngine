@@ -1,3 +1,4 @@
+#include "VansTransformStore.h"
 #include "VansTransformGraph.h"
 
 #include "../../Util/VansLog.h"
@@ -71,8 +72,7 @@ bool VansLocalTransform::TryFromMatrix(
 
 bool VansTransformGraph::ValidateTransformId(std::uint32_t transformId) const
 {
-	return transformId < VansGraphics::VansTransformStore::GlobalTransforms.size()
-		&& VansGraphics::VansTransformStore::IsAllocated(transformId);
+	return Vans::VansTransformStore::IsAllocated(transformId);
 }
 
 bool VansTransformGraph::WouldCreateCycle(
@@ -116,7 +116,7 @@ bool VansTransformGraph::SetParent(
 	{
 		node.link.childTransformId = childTransformId;
 		if (!VansLocalTransform::TryFromMatrix(
-			VansGraphics::VansTransformStore::GetTransform(childTransformId).GetModelMatrix(),
+			Vans::VansTransformStore::Read(childTransformId).GetModelMatrix(),
 			node.local))
 		{
 			m_Nodes.erase(childTransformId);
@@ -158,7 +158,7 @@ bool VansTransformGraph::SetAnchor(
 	{
 		node.link.childTransformId = childTransformId;
 		if (!VansLocalTransform::TryFromMatrix(
-			VansGraphics::VansTransformStore::GetTransform(childTransformId).GetModelMatrix(),
+			Vans::VansTransformStore::Read(childTransformId).GetModelMatrix(),
 			node.local))
 		{
 			m_Nodes.erase(childTransformId);
@@ -296,7 +296,7 @@ bool VansTransformGraph::TryGetLocalTransform(
 		if (!ValidateTransformId(transformId))
 			return false;
 		return VansLocalTransform::TryFromMatrix(
-			VansGraphics::VansTransformStore::GetTransform(transformId).GetModelMatrix(), outTransform);
+			Vans::VansTransformStore::Read(transformId).GetModelMatrix(), outTransform);
 	}
 	outTransform = found->second.local;
 	return true;
@@ -311,7 +311,10 @@ void VansTransformGraph::MarkWorldDirty(std::uint32_t transformId)
 
 bool VansTransformGraph::ResolveParentWorld(const Node& node, glm::mat4& outParentWorld) const
 {
-	outParentWorld = VansGraphics::VansTransformStore::GetTransform(
+	if (!ValidateTransformId(node.link.childTransformId) ||
+		!ValidateTransformId(node.link.parentTransformId))
+		return false;
+	outParentWorld = Vans::VansTransformStore::Read(
 		node.link.parentTransformId).GetModelMatrix();
 	if (!node.link.usesAnchor)
 		return true;
@@ -331,7 +334,7 @@ bool VansTransformGraph::ImportLocalFromCurrentWorld(Node& node)
 	glm::mat4 parentWorld(1.0f);
 	if (!ResolveParentWorld(node, parentWorld))
 		return false;
-	const glm::mat4 childWorld = VansGraphics::VansTransformStore::GetTransform(
+	const glm::mat4 childWorld = Vans::VansTransformStore::Read(
 		node.link.childTransformId).GetModelMatrix();
 	return VansLocalTransform::TryFromMatrix(glm::inverse(parentWorld) * childWorld, node.local);
 }
@@ -340,9 +343,20 @@ bool VansTransformGraph::Resolve()
 {
 	m_LastError.clear();
 	bool allResolved = true;
+	std::vector<std::uint32_t> staleLinks;
 	for (const std::uint32_t transformId : m_TopologicalOrder)
 	{
 		Node& node = m_Nodes.at(transformId);
+		if (!ValidateTransformId(node.link.childTransformId) ||
+			!ValidateTransformId(node.link.parentTransformId))
+		{
+			allResolved = false;
+			m_LastError = "A transform parent link references released Transform storage";
+			VANS_LOG_WARN("[TransformGraph] Removing stale parent link for child="
+				<< node.link.childTransformId << " parent=" << node.link.parentTransformId);
+			staleLinks.push_back(transformId);
+			continue;
+		}
 		glm::mat4 parentWorld(1.0f);
 		if (!ResolveParentWorld(node, parentWorld))
 		{
@@ -371,6 +385,12 @@ bool VansTransformGraph::Resolve()
 			allResolved = false;
 			m_LastError = "A resolved world transform cannot be represented as TRS";
 		}
+	}
+	if (!staleLinks.empty())
+	{
+		for (const std::uint32_t transformId : staleLinks)
+			m_Nodes.erase(transformId);
+		RebuildTopologicalOrder();
 	}
 	return allResolved;
 }
@@ -419,12 +439,13 @@ bool VansTransformGraph::WriteResolvedWorld(
 	VansLocalTransform decomposed;
 	if (!VansLocalTransform::TryFromMatrix(worldTransform, decomposed))
 		return false;
-	VansGraphics::VansTransform& transform =
-		VansGraphics::VansTransformStore::GetTransform(transformId);
+	Vans::VansTransform transform =
+		Vans::VansTransformStore::Read(transformId);
 	transform.m_Position = decomposed.position;
 	transform.m_Rotation = glm::degrees(glm::eulerAngles(decomposed.rotation));
 	transform.m_Scale = decomposed.scale;
-	VansGraphics::VansTransformStore::TransformIDToTransformDirty[transformId] = true;
+	Vans::VansTransformStore::Write(transformId, transform);
+	Vans::VansTransformStore::MarkDirty(transformId);
 	return true;
 }
 }

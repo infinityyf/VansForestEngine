@@ -1,6 +1,7 @@
 #include "VansMotionMatchingDebugWindow.h"
 
 #include "../VansEditorWindow.h"
+#include "../../EngineAPILayer/Public/IMotionMatchingEditorAPI.h"
 
 #include <imgui.h>
 
@@ -25,10 +26,11 @@ namespace VansGraphics
 	void VansMotionMatchingDebugWindow::ShowWindow(
 		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	{
-		if (!VansEditorWindow::m_MotionMatchingDebugWindowOpen)
+		Vans::EditorAPI::IMotionMatchingEditorAPI& motionMatchingAPI = editorAPI;
+		if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::MotionMatchingDebug))
 			return;
 
-		if (!ImGui::Begin("Motion Matching Debug", &VansEditorWindow::m_MotionMatchingDebugWindowOpen))
+		if (!ImGui::Begin("Motion Matching Debug", VansEditorWindow::WindowOpenState(VansEditorWindowId::MotionMatchingDebug)))
 		{
 			ImGui::End();
 			return;
@@ -57,7 +59,7 @@ namespace VansGraphics
 		ImGui::EndDisabled();
 
 		ImGui::Separator();
-		const auto snapshot = editorAPI.GetMotionMatchingDebugSnapshot();
+		const auto snapshot = motionMatchingAPI.GetMotionMatchingDebugSnapshot();
 		if (!snapshot.available)
 		{
 			ImGui::TextDisabled("No active Motion Matching runtime.");

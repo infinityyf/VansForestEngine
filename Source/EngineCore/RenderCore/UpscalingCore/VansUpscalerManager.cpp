@@ -1,6 +1,6 @@
 #include "VansUpscalerManager.h"
+#include "VansUpscaleResolutionPolicy.h"
 
-#include <cmath>
 #include <utility>
 
 namespace VansGraphics
@@ -17,27 +17,6 @@ namespace VansGraphics
 		}
 	}
 
-	bool VansUpscalerManager::ValidateConfig(
-		const VansUpscalerConfig& config,
-		std::string& error)
-	{
-		if (!std::isfinite(config.fsrSharpness) ||
-			config.fsrSharpness < 0.0f ||
-			config.fsrSharpness > 1.0f)
-		{
-			error = "FSR sharpness must be finite and in [0, 1]";
-			return false;
-		}
-		if (config.backend == VansUpscalerBackend::Off &&
-			config.quality != VansUpscaleQualityMode::NativeAA)
-		{
-			error = "Off backend requires NativeAA quality";
-			return false;
-		}
-		error.clear();
-		return true;
-	}
-
 	bool VansUpscalerManager::IsCapabilityUsable(
 		const VansUpscalerCapabilities& capabilities,
 		VansUpscaleQualityMode quality)
@@ -48,12 +27,32 @@ namespace VansGraphics
 			capabilities.Supports(quality);
 	}
 
+	VansUpscalerFallbackReason VansUpscalerManager::ClassifyCapabilityFailure(
+		const VansUpscalerCapabilities& capabilities,
+		VansUpscaleQualityMode quality)
+	{
+		if (!capabilities.compiledIn)
+			return VansUpscalerFallbackReason::NotCompiled;
+		if (capabilities.unavailableReasonCode !=
+			VansUpscalerFallbackReason::None)
+		{
+			return capabilities.unavailableReasonCode;
+		}
+		if (!capabilities.runtimeAvailable)
+			return VansUpscalerFallbackReason::RuntimeUnavailable;
+		if (!capabilities.deviceSupported)
+			return VansUpscalerFallbackReason::UnsupportedDevice;
+		if (!capabilities.Supports(quality))
+			return VansUpscalerFallbackReason::UnsupportedQuality;
+		return VansUpscalerFallbackReason::None;
+	}
+
 	VansUpscalerSelectionChange VansUpscalerManager::RequestConfig(
 		const VansUpscalerConfig& requested,
 		const VansUpscalerCapabilitySet& capabilities)
 	{
 		VansUpscalerSelectionChange change;
-		if (!ValidateConfig(requested, change.error))
+		if (!VansUpscaleResolutionPolicy::ValidateConfig(requested, change.error))
 			return change;
 
 		VansUpscalerConfig effective = requested;
@@ -79,12 +78,8 @@ namespace VansGraphics
 					effective.backend = VansUpscalerBackend::Off;
 					effective.quality = VansUpscaleQualityMode::NativeAA;
 				}
-				if (!requestedCapabilities.compiledIn)
-					fallbackReason = VansUpscalerFallbackReason::NotCompiled;
-				else if (!requestedCapabilities.runtimeAvailable)
-					fallbackReason = VansUpscalerFallbackReason::RuntimeUnavailable;
-				else
-					fallbackReason = VansUpscalerFallbackReason::UnsupportedDevice;
+				fallbackReason = ClassifyCapabilityFailure(
+					requestedCapabilities, requested.quality);
 				fallbackMessage = requestedCapabilities.unavailableReason.empty()
 					? "DLSS is unavailable; using a supported fallback"
 					: requestedCapabilities.unavailableReason;
@@ -102,7 +97,8 @@ namespace VansGraphics
 					effective.backend = VansUpscalerBackend::Off;
 					effective.quality = VansUpscaleQualityMode::NativeAA;
 				}
-				fallbackReason = VansUpscalerFallbackReason::RuntimeUnavailable;
+				fallbackReason = ClassifyCapabilityFailure(
+					requestedCapabilities, requested.quality);
 				fallbackMessage = requestedCapabilities.unavailableReason.empty()
 					? "FSR is unavailable; using native output"
 					: requestedCapabilities.unavailableReason;
@@ -152,9 +148,4 @@ namespace VansGraphics
 		m_FallbackMessage = std::move(message);
 	}
 
-	void VansUpscalerManager::ClearFallback()
-	{
-		m_FallbackReason = VansUpscalerFallbackReason::None;
-		m_FallbackMessage.clear();
-	}
 }

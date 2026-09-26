@@ -51,7 +51,7 @@ void VansGameplayAssetLibrary::Clear()
 	m_Attributes = {};
 	m_Effects = {};
 	m_TargetingPolicies = {};
-	m_PayloadSchemas = {};
+	m_PayloadSchemas = std::make_shared<VansTimelinePayloadSchemaRegistry>();
 	m_ContentManifestHash = 0;
 	m_Loaded = false;
 }
@@ -276,9 +276,9 @@ bool VansGameplayAssetLibrary::BuildRegistries(std::string& error)
 			for (const VansAttributeDefinition& definition : set->attributes)
 				if (!m_Attributes.Register(definition, error)) return false;
 		}
-		else if (const auto* schema = std::get_if<VansPayloadSchema>(&entry.asset.data))
+		else if (const auto* schema = std::get_if<VansTimelinePayloadSchema>(&entry.asset.data))
 		{
-			if (!m_PayloadSchemas.Register(*schema, error)) return false;
+			if (!m_PayloadSchemas->Register(*schema, error)) return false;
 		}
 		else if (const auto* cue = std::get_if<VansCompiledGameplayCueDefinition>(&entry.asset.data))
 		{
@@ -296,7 +296,7 @@ bool VansGameplayAssetLibrary::BuildRegistries(std::string& error)
 			if (!m_TargetingPolicies.Register(*policy, error)) return false;
 		}
 	}
-	return m_Tags.Seal(error) && m_Attributes.Seal(error) && m_PayloadSchemas.Seal(error) &&
+	return m_Tags.Seal(error) && m_Attributes.Seal(error) && m_PayloadSchemas->Seal(true, error) &&
 		(!hasTargetingPolicies || m_TargetingPolicies.Seal(error));
 }
 
@@ -374,27 +374,39 @@ bool VansGameplayAssetLibrary::LinkReferences(std::string& error)
 	bool hasEffects = false;
 	for (Entry& entry : m_Entries)
 	{
-		if (auto* effect = std::get_if<std::shared_ptr<const VansEffectDefinition>>(
-			&entry.asset.data); effect && *effect)
+		if (auto* effect = std::get_if<VansCompiledEffectAsset>(
+			&entry.asset.data); effect && effect->definition)
 		{
 			hasEffects = true;
-			auto definition = std::make_shared<VansEffectDefinition>(**effect);
+			auto definition = std::make_shared<VansEffectDefinition>(*effect->definition);
 			const std::string owner = "Gameplay Effect " + definition->name;
-			if (!resolveCueList(definition->executeCueReferences,
+			if (!resolveCueList(effect->executeCueAssets,
 				definition->executeCues, owner) ||
-				!resolveCueList(definition->persistentCueReferences,
+				!resolveCueList(effect->persistentCueAssets,
 					definition->persistentCues, owner) ||
-				!resolveCueList(definition->periodicCueReferences,
+				!resolveCueList(effect->periodicCueAssets,
 					definition->periodicCues, owner) ||
-				!resolveCueList(definition->removeCueReferences,
+				!resolveCueList(effect->removeCueAssets,
 					definition->removeCues, owner)) return false;
 			for (const VansEffectModifier& modifier : definition->modifiers)
+			{
 				if (!m_Attributes.Resolve(modifier.attribute))
 				{
 					error = "Gameplay Effect references an unknown Attribute: " + definition->name;
 					return false;
 				}
-			*effect = definition;
+				if (modifier.magnitudeSource == VansEffectMagnitudeSource::CapturedAttribute &&
+					!m_Attributes.Resolve(modifier.capturedAttribute))
+				{
+					error = "Gameplay Effect captures an unknown Attribute: " + definition->name;
+					return false;
+				}
+			}
+			effect->definition = definition;
+			effect->executeCueAssets = {};
+			effect->persistentCueAssets = {};
+			effect->periodicCueAssets = {};
+			effect->removeCueAssets = {};
 			if (!m_Effects.Register(std::move(definition), error)) return false;
 		}
 	}
@@ -436,14 +448,14 @@ bool VansGameplayAssetLibrary::LinkReferences(std::string& error)
 			const std::string reference = AssetReference(asset);
 			if (const Entry* target = ResolveEntry(reference))
 			{
-				const auto* definition = std::get_if<std::shared_ptr<const VansEffectDefinition>>(
+				const auto* definition = std::get_if<VansCompiledEffectAsset>(
 					&target->asset.data);
-				if (!definition || !*definition)
+				if (!definition || !definition->definition)
 				{
 					error = "Action Effect reference has the wrong asset type: " + reference;
 					return false;
 				}
-				*asset = VansSerializedValue::String((*definition)->name);
+				*asset = VansSerializedValue::String(definition->definition->name);
 			}
 			else if (!m_Effects.Resolve(VansMakeStableId<VansEffectIdTag>(reference)))
 			{
@@ -579,7 +591,7 @@ bool VansGameplayAssetLibrary::LinkReferences(std::string& error)
 					}
 					for (const VansSerializedValue& tag : tags->arrayItems)
 						if (tag.kind != VansSerializedValue::Kind::String ||
-							!m_Tags.Find(tag.stringValue))
+							!m_Tags.FindId(tag.stringValue))
 						{
 							error = "ActionSet dynamic Tag is unresolved: " +
 								ReadSerializedString(tag);
@@ -596,14 +608,14 @@ bool VansGameplayAssetLibrary::LinkReferences(std::string& error)
 				const std::string reference = AssetReference(asset);
 				if (const Entry* target = ResolveEntry(reference))
 				{
-					const auto* definition = std::get_if<std::shared_ptr<const VansEffectDefinition>>(
+					const auto* definition = std::get_if<VansCompiledEffectAsset>(
 						&target->asset.data);
-					if (!definition || !*definition)
+					if (!definition || !definition->definition)
 					{
 						error = "ActionSet Effect reference has the wrong asset type: " + reference;
 						return false;
 					}
-					*asset = VansSerializedValue::String((*definition)->name);
+					*asset = VansSerializedValue::String(definition->definition->name);
 				}
 				const std::string stableName = AssetReference(asset);
 				if (!m_Effects.Resolve(VansMakeStableId<VansEffectIdTag>(stableName)))
@@ -619,9 +631,10 @@ bool VansGameplayAssetLibrary::LinkReferences(std::string& error)
 				const VansAttributeId attribute =
 					VansMakeStableId<VansAttributeIdTag>(attributeName);
 				const VansSerializedValue* value = FindObjectField(initializer.inputs, "value");
-				if (attributeName.empty() || !value ||
-					!std::isfinite(ReadSerializedNumber(*value)) ||
-					!m_Attributes.Resolve(attribute) ||
+				const VansAttributeDefinition* definition = m_Attributes.Resolve(attribute);
+				const double number = value ? ReadSerializedNumber(*value) : 0.0;
+				if (attributeName.empty() || !value || !definition ||
+					!definition->IsValueInRange(number) ||
 					!initializedAttributes.insert(attribute).second)
 				{
 					error = "ActionSet Attribute initializer is invalid: " + set->name;

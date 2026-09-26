@@ -9,6 +9,7 @@
 #endif
 
 #include <array>
+#include <cstring>
 #include <filesystem>
 #include <sstream>
 #include <vector>
@@ -39,6 +40,28 @@ namespace
 	{
 		if (message == nullptr || *message == '\0')
 			return;
+		const bool isUnusedCommandStateHook =
+			std::strstr(message, "Hook sl.common:Vulkan:CmdBindPipeline is NOT supported") != nullptr ||
+			std::strstr(message, "Hook sl.common:Vulkan:CmdBindDescriptorSets is NOT supported") != nullptr ||
+			std::strstr(message, "Hook sl.common:Vulkan:BeginCommandBuffer is NOT supported") != nullptr;
+		if (isUnusedCommandStateHook)
+		{
+			// ForestEngine uses Streamline's documented manual Vulkan hook path and
+			// disables command-list state tracking. These three sl.common hooks are
+			// therefore intentionally absent; the mandatory presentation/swapchain
+			// hooks still come from the interposer dispatch table.
+			VANS_LOG("[Streamline] Optional command-state hook is disabled by the "
+				"manual Vulkan integration");
+			return;
+		}
+		if (std::strstr(message, "NvLowLatencyVk.dll") != nullptr)
+		{
+			// NvLowLatencyVk is a Reflex dependency. ForestEngine requests DLSS SR
+			// only, so its absence must not be reported as a DLSS runtime failure.
+			VANS_LOG_WARN("[Streamline] Optional Reflex Vulkan runtime is absent; "
+				"DLSS Super Resolution is unaffected");
+			return;
+		}
 		switch (type)
 		{
 		case sl::LogType::eError:
@@ -100,6 +123,8 @@ namespace VansGraphics
 #if defined(VANS_HAS_STREAMLINE)
 		m_Init = Resolve<PFun_slInit>(m_Module, "slInit");
 		m_Shutdown = Resolve<PFun_slShutdown>(m_Module, "slShutdown");
+		m_IsFeatureSupported = Resolve<PFun_slIsFeatureSupported>(
+			m_Module, "slIsFeatureSupported");
 		m_IsFeatureLoaded = Resolve<PFun_slIsFeatureLoaded>(m_Module, "slIsFeatureLoaded");
 		m_GetFeatureFunction = Resolve<PFun_slGetFeatureFunction>(m_Module, "slGetFeatureFunction");
 		m_GetFeatureVersion = Resolve<PFun_slGetFeatureVersion>(m_Module, "slGetFeatureVersion");
@@ -109,7 +134,8 @@ namespace VansGraphics
 		m_GetNewFrameToken = Resolve<PFun_slGetNewFrameToken>(m_Module, "slGetNewFrameToken");
 		m_FreeResources = Resolve<PFun_slFreeResources>(m_Module, "slFreeResources");
 		return m_Init != nullptr && m_Shutdown != nullptr &&
-			m_IsFeatureLoaded != nullptr && m_GetFeatureFunction != nullptr &&
+			m_IsFeatureSupported != nullptr && m_IsFeatureLoaded != nullptr &&
+			m_GetFeatureFunction != nullptr &&
 			m_GetFeatureVersion != nullptr && m_SetTagForFrame != nullptr &&
 			m_SetConstants != nullptr && m_EvaluateFeature != nullptr &&
 			m_GetNewFrameToken != nullptr && m_FreeResources != nullptr;
@@ -145,6 +171,7 @@ namespace VansGraphics
 	HMODULE VansStreamlineRuntime::TryInitializeVulkanLoader()
 	{
 #if !defined(VANS_HAS_STREAMLINE)
+		m_DLSSAvailability = VansStreamlineDLSSAvailability::NotInitialized;
 		m_UnavailableReason = "Streamline SDK is not compiled in";
 		return nullptr;
 #else
@@ -156,6 +183,7 @@ namespace VansGraphics
 			nullptr, executablePath.data(), static_cast<DWORD>(executablePath.size()));
 		if (length == 0 || length >= executablePath.size())
 		{
+			m_DLSSAvailability = VansStreamlineDLSSAvailability::RuntimeUnavailable;
 			m_UnavailableReason = "Cannot resolve executable directory for Streamline";
 			return nullptr;
 		}
@@ -170,6 +198,8 @@ namespace VansGraphics
 			const std::filesystem::path modulePath = runtimeDirectory / moduleName;
 			if (!std::filesystem::is_regular_file(modulePath))
 			{
+				m_DLSSAvailability =
+					VansStreamlineDLSSAvailability::MissingRuntimeBinary;
 				m_UnavailableReason = "Required Streamline runtime binary is missing: " +
 					modulePath.filename().string();
 				return nullptr;
@@ -185,6 +215,8 @@ namespace VansGraphics
 			const std::filesystem::path modulePath = runtimeDirectory / moduleName;
 			if (!sl::security::verifyEmbeddedSignature(modulePath.c_str()))
 			{
+				m_DLSSAvailability =
+					VansStreamlineDLSSAvailability::RuntimeIntegrityRejected;
 				m_UnavailableReason = "Streamline runtime signature verification failed: " +
 					modulePath.filename().string();
 				return nullptr;
@@ -198,6 +230,7 @@ namespace VansGraphics
 			LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
 		if (m_Module == nullptr || !ResolveCoreFunctions())
 		{
+			m_DLSSAvailability = VansStreamlineDLSSAvailability::RuntimeUnavailable;
 			m_UnavailableReason = "Cannot load Streamline core API";
 			if (m_Module != nullptr)
 				FreeLibrary(m_Module);
@@ -213,7 +246,9 @@ namespace VansGraphics
 		preferences.featuresToLoad = features;
 		preferences.numFeaturesToLoad = 1;
 		preferences.flags =
+			sl::PreferenceFlags::eDisableCLStateTracking |
 			sl::PreferenceFlags::eDisableDebugText |
+			sl::PreferenceFlags::eUseManualHooking |
 			sl::PreferenceFlags::eUseFrameBasedResourceTagging;
 		preferences.logLevel = sl::LogLevel::eDefault;
 		preferences.logMessageCallback = StreamlineLogMessage;
@@ -224,6 +259,7 @@ namespace VansGraphics
 		auto* init = reinterpret_cast<PFun_slInit*>(m_Init);
 		if (init(preferences, sl::kSDKVersion) != sl::Result::eOk)
 		{
+			m_DLSSAvailability = VansStreamlineDLSSAvailability::RuntimeUnavailable;
 			m_UnavailableReason = "slInit rejected the Vulkan/DLSS configuration";
 			FreeLibrary(m_Module);
 			m_Module = nullptr;
@@ -231,6 +267,7 @@ namespace VansGraphics
 		}
 
 		m_Initialized = true;
+		m_DLSSAvailability = VansStreamlineDLSSAvailability::CapabilityPending;
 		m_UnavailableReason = "DLSS device capability has not been queried";
 		VANS_LOG("[Streamline] Initialized SDK "
 			<< SL_VERSION_MAJOR << '.' << SL_VERSION_MINOR << '.' << SL_VERSION_PATCH);
@@ -238,22 +275,65 @@ namespace VansGraphics
 #endif
 	}
 
-	void VansStreamlineRuntime::RefreshDeviceCapabilities()
+	void VansStreamlineRuntime::RefreshDeviceCapabilities(
+		VkPhysicalDevice physicalDevice)
 	{
 		m_DLSSAvailable = false;
 #if defined(VANS_HAS_STREAMLINE)
 		if (!m_Initialized)
 			return;
+		if (physicalDevice == VK_NULL_HANDLE)
+		{
+			m_DLSSAvailability = VansStreamlineDLSSAvailability::UnsupportedDevice;
+			m_UnavailableReason =
+				"Streamline DLSS capability query requires an active Vulkan physical device";
+			return;
+		}
+
+		sl::AdapterInfo adapter{};
+		adapter.vkPhysicalDevice = reinterpret_cast<void*>(physicalDevice);
+		auto* isSupported = reinterpret_cast<PFun_slIsFeatureSupported*>(
+			m_IsFeatureSupported);
+		const sl::Result supportResult = isSupported(sl::kFeatureDLSS, adapter);
+		if (supportResult != sl::Result::eOk)
+		{
+			switch (supportResult)
+			{
+			case sl::Result::eErrorDriverOutOfDate:
+				m_DLSSAvailability = VansStreamlineDLSSAvailability::DriverOutOfDate;
+				m_UnavailableReason =
+					"Streamline DLSS requires a newer NVIDIA display driver";
+				break;
+			case sl::Result::eErrorNoSupportedAdapterFound:
+			case sl::Result::eErrorAdapterNotSupported:
+			case sl::Result::eErrorFeatureNotSupported:
+				m_DLSSAvailability = VansStreamlineDLSSAvailability::UnsupportedDevice;
+				m_UnavailableReason =
+					"Streamline DLSS is not supported by the selected Vulkan device";
+				break;
+			default:
+				m_DLSSAvailability = VansStreamlineDLSSAvailability::RuntimeUnavailable;
+				m_UnavailableReason =
+					"Streamline DLSS capability query failed, result=" +
+					std::to_string(static_cast<int>(supportResult));
+				break;
+			}
+			VANS_LOG_WARN("[Streamline] " << m_UnavailableReason);
+			return;
+		}
+
 		bool loaded = false;
 		auto* isLoaded = reinterpret_cast<PFun_slIsFeatureLoaded*>(m_IsFeatureLoaded);
 		if (isLoaded(sl::kFeatureDLSS, loaded) != sl::Result::eOk || !loaded)
 		{
-			m_UnavailableReason = "Streamline DLSS plugin is not supported by the active device/driver";
+			m_DLSSAvailability = VansStreamlineDLSSAvailability::RuntimeUnavailable;
+			m_UnavailableReason = "Streamline DLSS plugin failed to load";
 			VANS_LOG_WARN("[Streamline] " << m_UnavailableReason);
 			return;
 		}
 		if (!ResolveDLSSFunctions())
 		{
+			m_DLSSAvailability = VansStreamlineDLSSAvailability::RuntimeUnavailable;
 			m_UnavailableReason = "Streamline DLSS feature entry points are unavailable";
 			VANS_LOG_WARN("[Streamline] " << m_UnavailableReason);
 			return;
@@ -271,6 +351,7 @@ namespace VansGraphics
 			m_FeatureVersion = "Streamline 2.11.1";
 		}
 		m_DLSSAvailable = true;
+		m_DLSSAvailability = VansStreamlineDLSSAvailability::Available;
 		m_UnavailableReason.clear();
 		VANS_LOG("[Streamline] DLSS available, featureVersion=" << m_FeatureVersion);
 #endif
@@ -457,15 +538,27 @@ namespace VansGraphics
 		if (m_Initialized && m_Shutdown != nullptr)
 		{
 			auto* shutdown = reinterpret_cast<PFun_slShutdown*>(m_Shutdown);
-			shutdown();
+			VANS_LOG("[Streamline] Shutting down before Vulkan device destruction");
+			const sl::Result result = shutdown();
+			if (result != sl::Result::eOk)
+			{
+				VANS_LOG_ERROR("[Streamline] slShutdown failed, result="
+					<< static_cast<int>(result));
+			}
+			else
+			{
+				VANS_LOG("[Streamline] Shutdown complete");
+			}
 		}
 #endif
 		m_Initialized = false;
 		m_DLSSAvailable = false;
+		m_DLSSAvailability = VansStreamlineDLSSAvailability::NotInitialized;
 		m_DLSSGetOptimalSettings = nullptr;
 		m_DLSSSetOptions = nullptr;
 		m_Init = nullptr;
 		m_Shutdown = nullptr;
+		m_IsFeatureSupported = nullptr;
 		m_IsFeatureLoaded = nullptr;
 		m_GetFeatureFunction = nullptr;
 		m_GetFeatureVersion = nullptr;

@@ -94,6 +94,33 @@ std::string ResolveUIPath(
     const Vans::VansProjectManager* projectManager,
     const Vans::VansPathResolver*   pathResolver)
 {
+    static constexpr std::string_view assetScheme = "asset://";
+    static constexpr size_t assetGuidLength = 36;
+    if (uriStr.rfind(assetScheme, 0) == 0 &&
+        uriStr.size() > assetScheme.size() + assetGuidLength)
+    {
+        const std::string assetPath = uriStr.substr(assetScheme.size());
+        Vans::VansAssetGuid ownerGuid;
+        if (Vans::VansAssetGuid::TryParse(assetPath.substr(0, assetGuidLength), ownerGuid))
+        {
+            const std::optional<Vans::VansAssetRecord> owner =
+                projectManager->FindAssetRecord(ownerGuid);
+            if (owner)
+            {
+                std::filesystem::path ownerPath = !owner->sourcePath.empty()
+                    ? owner->sourcePath : owner->artifactPath;
+                if (ownerPath.is_relative())
+                    ownerPath = pathResolver->Resolve(ownerPath.generic_string());
+
+                std::string relative = assetPath.substr(assetGuidLength);
+                while (!relative.empty() && relative.front() == '/')
+                    relative.erase(relative.begin());
+                return (ownerPath.parent_path() / std::filesystem::path(relative))
+                    .lexically_normal().generic_string();
+            }
+        }
+    }
+
     if (Vans::VansPathResolver::IsEngineProtocol(uriStr))
     {
         // engine:// 协议 → EngineAssets/ 相对路径

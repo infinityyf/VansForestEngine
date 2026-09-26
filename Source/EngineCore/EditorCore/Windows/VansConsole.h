@@ -76,8 +76,7 @@ public:
                 OnLog(event.channel, event.level, event.message);
             },
             Vans::VansEventLane::Diagnostics,
-            0,
-            "VansConsole::Log"));
+            0));
     }
 
     void ShutdownEventSubscription()

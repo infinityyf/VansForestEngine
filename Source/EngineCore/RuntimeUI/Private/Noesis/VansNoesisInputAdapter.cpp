@@ -33,8 +33,7 @@ void VansNoesisInputAdapter::Initialize()
             OnKeyEvent(event.key, event.scancode, event.action, event.mods);
         },
         Vans::VansEventLane::Input,
-        0,
-        "VansNoesisInputAdapter::Key"));
+        0));
 
     m_InputConnections.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansMouseMoveEvent>(
         [this](const Vans::VansMouseMoveEvent& event)
@@ -42,8 +41,7 @@ void VansNoesisInputAdapter::Initialize()
             OnMouseMove(event.x, event.y);
         },
         Vans::VansEventLane::Input,
-        0,
-        "VansNoesisInputAdapter::MouseMove"));
+        0));
 
     m_InputConnections.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansMouseButtonEvent>(
         [this](const Vans::VansMouseButtonEvent& event)
@@ -51,8 +49,7 @@ void VansNoesisInputAdapter::Initialize()
             OnMouseClick(event.button, event.action, event.mods);
         },
         Vans::VansEventLane::Input,
-        0,
-        "VansNoesisInputAdapter::MouseButton"));
+        0));
 
     m_InputConnections.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansMouseScrollEvent>(
         [this](const Vans::VansMouseScrollEvent& event)
@@ -61,8 +58,7 @@ void VansNoesisInputAdapter::Initialize()
             m_ScrollAccumY += event.yOffset;
         },
         Vans::VansEventLane::Input,
-        0,
-        "VansNoesisInputAdapter::MouseScroll"));
+        0));
 
     // Cache initial mouse position
     double mx = 0.0, my = 0.0;

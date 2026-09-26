@@ -1,6 +1,8 @@
 #include "VansSceneAnimationPreviewWindow.h"
-#include "../VansAssetDocumentRegistry.h"
-#include "../VansAssetDocumentEditService.h"
+#include "../../EngineAPILayer/Public/IAnimationEditorAPI.h"
+#include "../../EngineAPILayer/Public/IAnimationPreviewEditorAPI.h"
+#include "../../AuthoringCore/VansAssetDocumentRegistry.h"
+#include "../../AuthoringCore/VansAssetDocumentEditService.h"
 #include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include <imgui.h>
 #include <nlohmann/json.hpp>
@@ -25,32 +27,36 @@ bool EditRigText(const char* label, std::string& value)
 bool VansSceneAnimationPreviewWindow::ApplyRigWorkingCopy(IEngineEditorAPI& api,
 	const AnimationRigDocumentDTO& document)
 {
+	IAnimationEditorAPI& animationAPI = api;
+	IAnimationPreviewEditorAPI& previewAPI = api;
 	auto asset = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(m_RigSnapshot.rigAssetPath);
 	if (!asset || asset->sourceDocument.CurrentStateId() != m_RigDocumentStateId)
 	{ m_Message = "Rig was edited elsewhere; restart preview to reload it"; return false; }
-	const auto before = api.GetAnimationPreviewWorkingRigDocument(m_SessionId);
-	const auto encoded = api.EncodeAnimationRigDocument(document);
+	const auto before = previewAPI.GetAnimationPreviewWorkingRigDocument(m_SessionId);
+	const auto encoded = animationAPI.EncodeAnimationRigDocument(document);
 	if (!before.success || !encoded.success)
 	{ m_Message = before.success ? encoded.message : before.message; return false; }
-	const auto applied = api.SetAnimationPreviewRigDefinition({m_SessionId, m_RigSnapshot.rigRevision, document});
+	const auto applied = previewAPI.SetAnimationPreviewRigDefinition({m_SessionId, m_RigSnapshot.rigRevision, document});
 	if (!applied.success) { m_Message = applied.message; return false; }
 	const auto edited = Vans::VansAssetDocumentEditService::ReplaceRoot(asset->sourceDocument,
 		Vans::DecodeSerializedValueJson(nlohmann::json::parse(encoded.canonicalJson)));
 	if (!edited && edited.message != "Asset property is unchanged")
 	{
-		const auto rollback = api.SetAnimationPreviewRigDefinition({m_SessionId, applied.acceptedRevision, before.document});
+		const auto rollback = previewAPI.SetAnimationPreviewRigDefinition({m_SessionId, applied.acceptedRevision, before.document});
 		m_Message = edited.message + (rollback.success ? "" : "; preview rollback failed: " + rollback.message);
-		RefreshRigSnapshot(api);
+		RefreshRigSnapshot(previewAPI);
 		return false;
 	}
 	m_RigDocumentStateId = asset->sourceDocument.CurrentStateId();
-	RefreshRigSnapshot(api);
+	RefreshRigSnapshot(previewAPI);
 	m_Message = "Rig applied to preview and working copy; Save Animation Setup writes the asset";
 	return true;
 }
 
 void VansSceneAnimationPreviewWindow::ChangeRigHistory(IEngineEditorAPI& api, bool redo)
 {
+	IAnimationEditorAPI& animationAPI = api;
+	IAnimationPreviewEditorAPI& previewAPI = api;
 	auto asset = Vans::VansAssetDocumentRegistry::Get().Find(m_RigSnapshot.rigAssetPath);
 	if (!asset || asset->sourceDocument.CurrentStateId() != m_RigDocumentStateId)
 	{ m_Message = "Rig was edited elsewhere; restart preview to reload it"; return; }
@@ -58,11 +64,11 @@ void VansSceneAnimationPreviewWindow::ChangeRigHistory(IEngineEditorAPI& api, bo
 		: Vans::VansAssetDocumentEditService::Undo(asset->sourceDocument);
 	if (!edit) { m_Message = edit.message; return; }
 	const auto json = Vans::EncodeSerializedValueJson<nlohmann::json>(asset->sourceDocument.SerializedRootSnapshot());
-	const auto decoded = api.DecodeAnimationRigDocument(json.dump());
+	const auto decoded = animationAPI.DecodeAnimationRigDocument(json.dump());
 	bool applied = false;
 	if (decoded.success)
 	{
-		const auto result = api.SetAnimationPreviewRigDefinition({m_SessionId, m_RigSnapshot.rigRevision, decoded.document});
+		const auto result = previewAPI.SetAnimationPreviewRigDefinition({m_SessionId, m_RigSnapshot.rigRevision, decoded.document});
 		applied = result.success;
 		m_Message = result.message;
 	}
@@ -80,7 +86,7 @@ void VansSceneAnimationPreviewWindow::ChangeRigHistory(IEngineEditorAPI& api, bo
 		m_LimitDraftDirty = m_RotationDraftDirty = false;
 	}
 	m_RigDocumentStateId = asset->sourceDocument.CurrentStateId();
-	RefreshRigSnapshot(api);
+	RefreshRigSnapshot(previewAPI);
 }
 
 bool VansSceneAnimationPreviewWindow::DrawBoneNameCombo(const char* label, std::string& name)
@@ -99,7 +105,8 @@ bool VansSceneAnimationPreviewWindow::DrawBoneNameCombo(const char* label, std::
 
 void VansSceneAnimationPreviewWindow::DrawRigConstraintEditor(IEngineEditorAPI& api)
 {
-	auto working = api.GetAnimationPreviewWorkingRigDocument(m_SessionId);
+	IAnimationPreviewEditorAPI& previewAPI = api;
+	auto working = previewAPI.GetAnimationPreviewWorkingRigDocument(m_SessionId);
 	if (!working.success) return;
 	if (ImGui::TreeNode("Joint Limits"))
 	{

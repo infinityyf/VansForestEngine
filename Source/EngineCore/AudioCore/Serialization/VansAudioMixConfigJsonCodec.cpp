@@ -1,8 +1,12 @@
 #include "VansAudioMixConfigJsonCodec.h"
+#include "VansAudioMixValueCodec.h"
 
 #include "../VansAudioMixConfig.h"
+#include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 
 namespace VansEngine
@@ -16,7 +20,7 @@ float ClampFloat(float value, float minimum, float maximum)
 	return std::clamp(value, minimum, maximum);
 }
 
-bool DecodeBus(const std::string& name, const Json& root, AudioMixBusConfig& bus, std::string& error)
+bool DecodeBus(const std::string& name, const Json& root, VansAudioMixBusConfig& bus, std::string& error)
 {
 	if (!root.is_object())
 	{
@@ -33,53 +37,60 @@ bool DecodeBus(const std::string& name, const Json& root, AudioMixBusConfig& bus
 	return !bus.busName.empty();
 }
 
-bool DecodeSnapshotEntry(
-	const std::string& name,
-	const Json& root,
-	AudioBusSnapshotEntry& entry,
-	std::string& error)
+bool DecodeDevice(const Json& root, VansAudioDeviceConfig& config, std::string& error)
 {
 	if (!root.is_object())
 	{
-		error = "Audio snapshot bus '" + name + "' must be an object";
+		error = "Audio mix 'device' must be an object";
 		return false;
 	}
-	entry = {};
-	entry.busName = NormalizeAudioBusName(name);
-	entry.gain = ClampFloat(root.value("gain", entry.gain), 0.0f, 4.0f);
-	if (root.contains("muted"))
+	for (const char* key : { "hrtf", "outputDevice", "masterGain", "sourceLimit" })
 	{
-		entry.overrideMuted = true;
-		entry.muted = root.at("muted").get<bool>();
+		if (!root.contains(key))
+		{
+			error = std::string("Audio mix 'device.") + key + "' is required";
+			return false;
+		}
 	}
-	if (root.contains("soloed"))
+	if (!root["hrtf"].is_string() || !root["outputDevice"].is_string() ||
+		!root["masterGain"].is_number() || !root["sourceLimit"].is_number_integer())
 	{
-		entry.overrideSoloed = true;
-		entry.soloed = root.at("soloed").get<bool>();
+		error = "Audio mix device fields have invalid types";
+		return false;
 	}
-	if (root.contains("lowpassHighFrequencyGain"))
+
+	const std::string hrtf = root["hrtf"].get<std::string>();
+	if (hrtf == "disabled") config.m_HrtfMode = VansAudioHrtfMode::Disabled;
+	else if (hrtf == "enabled") config.m_HrtfMode = VansAudioHrtfMode::Enabled;
+	else if (hrtf == "required") config.m_HrtfMode = VansAudioHrtfMode::Required;
+	else
 	{
-		entry.overrideLowpassHighFrequencyGain = true;
-		entry.lowpassHighFrequencyGain = ClampFloat(
-			root.at("lowpassHighFrequencyGain").get<float>(), 0.0f, 1.0f);
+		error = "Audio mix 'device.hrtf' must be disabled, enabled, or required";
+		return false;
 	}
-	return !entry.busName.empty();
+
+	config.m_OutputDevice = root["outputDevice"].get<std::string>();
+	config.m_MasterGain = root["masterGain"].get<float>();
+	const std::int64_t sourceLimit = root["sourceLimit"].get<std::int64_t>();
+	if (!std::isfinite(config.m_MasterGain) || config.m_MasterGain < 0.0f || config.m_MasterGain > 1.0f)
+	{
+		error = "Audio mix 'device.masterGain' must be between 0 and 1";
+		return false;
+	}
+	if (sourceLimit < 1 || sourceLimit > 256)
+	{
+		error = "Audio mix 'device.sourceLimit' must be between 1 and 256";
+		return false;
+	}
+	config.m_SourceLimit = static_cast<std::size_t>(sourceLimit);
+	return true;
 }
 
-Json EncodeSnapshotEntry(const AudioBusSnapshotEntry& entry)
-{
-	Json root = { { "gain", entry.gain } };
-	if (entry.overrideMuted) root["muted"] = entry.muted;
-	if (entry.overrideSoloed) root["soloed"] = entry.soloed;
-	if (entry.overrideLowpassHighFrequencyGain)
-		root["lowpassHighFrequencyGain"] = entry.lowpassHighFrequencyGain;
-	return root;
-}
 }
 
 bool VansAudioMixConfigJsonCodec::Decode(
 	const nlohmann::json& root,
-	AudioMixConfig& config,
+	VansAudioMixConfig& config,
 	std::string& error)
 {
 	config = {};
@@ -93,6 +104,14 @@ bool VansAudioMixConfigJsonCodec::Decode(
 		}
 		config.displayName = root.value("displayName", "");
 		config.defaultSnapshot = root.value("defaultSnapshot", "");
+		const auto device = root.find("device");
+		if (device == root.end())
+		{
+			error = "Audio mix 'device' is required";
+			return false;
+		}
+		if (!DecodeDevice(*device, config.device, error))
+			return false;
 
 		if (const auto buses = root.find("buses"); buses != root.end())
 		{
@@ -103,7 +122,7 @@ bool VansAudioMixConfigJsonCodec::Decode(
 			}
 			for (const auto& item : buses->items())
 			{
-				AudioMixBusConfig bus;
+				VansAudioMixBusConfig bus;
 				if (!DecodeBus(item.key(), item.value(), bus, error)) return false;
 				config.buses.push_back(std::move(bus));
 			}
@@ -118,28 +137,12 @@ bool VansAudioMixConfigJsonCodec::Decode(
 			}
 			for (const auto& item : snapshots->items())
 			{
-				if (!item.value().is_object())
-				{
-					error = "Audio snapshot '" + item.key() + "' must be an object";
-					return false;
-				}
 				AudioBusSnapshot snapshot;
-				snapshot.fadeSeconds = ClampFloat(
-					item.value().value("fadeSeconds", snapshot.fadeSeconds), 0.0f, 10.0f);
-				const auto buses = item.value().find("buses");
-				if (buses != item.value().end())
+				if (!VansAudioMixValueCodec::DecodeSnapshot(
+					Vans::DecodeSerializedValueJson(item.value()), snapshot, error))
 				{
-					if (!buses->is_object())
-					{
-						error = "Audio snapshot '" + item.key() + "' buses must be an object";
-						return false;
-					}
-					for (const auto& busItem : buses->items())
-					{
-						AudioBusSnapshotEntry entry;
-						if (!DecodeSnapshotEntry(busItem.key(), busItem.value(), entry, error)) return false;
-						snapshot.buses.push_back(std::move(entry));
-					}
+					error = "Audio snapshot '" + item.key() + "': " + error;
+					return false;
 				}
 				config.snapshots.emplace(item.key(), std::move(snapshot));
 			}
@@ -154,24 +157,12 @@ bool VansAudioMixConfigJsonCodec::Decode(
 			}
 			for (const Json& item : *ducking)
 			{
-				if (!item.is_object())
-				{
-					error = "Audio ducking rule must be an object";
-					return false;
-				}
 				AudioDuckingRule rule;
-				rule.triggerBusName = item.value("triggerBus", "");
-				rule.targetBusName = item.value("targetBus", "");
-				rule.targetGain = item.value("targetGain", rule.targetGain);
-				rule.attackSeconds = item.value("attackSeconds", rule.attackSeconds);
-				rule.releaseSeconds = item.value("releaseSeconds", rule.releaseSeconds);
-				rule.enabled = item.value("enabled", rule.enabled);
-				if (rule.triggerBusName.empty() || rule.targetBusName.empty())
+				if (!VansAudioMixValueCodec::DecodeDuckingRule(
+					Vans::DecodeSerializedValueJson(item), rule, error))
 				{
-					error = "Audio ducking rule requires triggerBus and targetBus";
 					return false;
 				}
-				rule.Normalize();
 				config.duckingRules.push_back(std::move(rule));
 			}
 		}
@@ -185,10 +176,10 @@ bool VansAudioMixConfigJsonCodec::Decode(
 	}
 }
 
-nlohmann::json VansAudioMixConfigJsonCodec::Encode(const AudioMixConfig& config)
+nlohmann::json VansAudioMixConfigJsonCodec::Encode(const VansAudioMixConfig& config)
 {
 	Json buses = Json::object();
-	for (const AudioMixBusConfig& bus : config.buses)
+	for (const VansAudioMixBusConfig& bus : config.buses)
 	{
 		buses[bus.busName] = {
 			{ "gain", bus.gain },
@@ -200,31 +191,22 @@ nlohmann::json VansAudioMixConfigJsonCodec::Encode(const AudioMixConfig& config)
 
 	Json snapshots = Json::object();
 	for (const auto& [name, snapshot] : config.snapshots)
-	{
-		Json snapshotBuses = Json::object();
-		for (const AudioBusSnapshotEntry& entry : snapshot.buses)
-			snapshotBuses[entry.busName] = EncodeSnapshotEntry(entry);
-		snapshots[name] = {
-			{ "fadeSeconds", snapshot.fadeSeconds },
-			{ "buses", std::move(snapshotBuses) }
-		};
-	}
+		snapshots[name] = Vans::EncodeSerializedValueJson<Json>(
+			VansAudioMixValueCodec::EncodeSnapshot(snapshot));
 
 	Json ducking = Json::array();
 	for (const AudioDuckingRule& rule : config.duckingRules)
-	{
-		ducking.push_back({
-			{ "triggerBus", rule.triggerBusName },
-			{ "targetBus", rule.targetBusName },
-			{ "targetGain", rule.targetGain },
-			{ "attackSeconds", rule.attackSeconds },
-			{ "releaseSeconds", rule.releaseSeconds },
-			{ "enabled", rule.enabled }
-		});
-	}
+		ducking.push_back(Vans::EncodeSerializedValueJson<Json>(
+			VansAudioMixValueCodec::EncodeDuckingRule(rule)));
 
 	return {
 		{ "displayName", config.displayName },
+		{ "device", {
+			{ "hrtf", VansAudioHrtfModeName(config.device.m_HrtfMode) },
+			{ "outputDevice", config.device.m_OutputDevice },
+			{ "masterGain", config.device.m_MasterGain },
+			{ "sourceLimit", config.device.m_SourceLimit }
+		} },
 		{ "defaultSnapshot", config.defaultSnapshot },
 		{ "buses", std::move(buses) },
 		{ "snapshots", std::move(snapshots) },

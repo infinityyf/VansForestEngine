@@ -1,3 +1,4 @@
+#include "../../SceneRuntime/Transform/VansTransformStore.h"
 #include "VansSceneRenderNodeBuilder.h"
 
 #include "VansSceneMaterialBuilder.h"
@@ -34,22 +35,24 @@ glm::vec3 ToVec3(const std::array<float, 3>& value)
 	return glm::vec3(value[0], value[1], value[2]);
 }
 
-static VansGraphics::RenderNodeType ParseRenderNodeType(const std::string& typeValue, const std::string& nodeName)
+bool TryParseRenderNodeType(
+	const std::string& typeValue,
+	VansGraphics::RenderNodeType& outType,
+	std::string& error)
 {
 	const std::string& s = typeValue;
-	if (s == "opaque")       return VansGraphics::OPAQUE_NODE;
-	if (s == "forward_opaque_pre_atmosphere" || s == "forwardOpaquePreAtmosphere")
-		return VansGraphics::FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE;
-	if (s == "transparent")  return VansGraphics::TRANSPARENT_NODE;
-	if (s == "post_process") return VansGraphics::POSTPROCESS_NODE;
-	if (s == "deferred")     return VansGraphics::DEFERRED_NODE;
-	if (s == "screen_space") return VansGraphics::SCREEN_SPACE_NODE;
-	if (s == "terrain")      return VansGraphics::TERRAIN_NODE;
-	if (s == "vegetation")   return VansGraphics::VEGETATION_NODE;
-	if (s == "decal")        return VansGraphics::DECAL_NODE;
-	if (s == "none" || s.empty()) return VansGraphics::NONE_NODE;
-	VANS_LOG_WARN("[LoadRenderNodes] Node '" << nodeName << "': unknown type string '" << s << "', defaulting to none.");
-    return VansGraphics::NONE_NODE;
+	if (s == "opaque") outType = VansGraphics::OPAQUE_NODE;
+	else if (s == "forward_opaque_pre_atmosphere")
+		outType = VansGraphics::FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE;
+	else if (s == "transparent") outType = VansGraphics::TRANSPARENT_NODE;
+	else if (s == "post_process") outType = VansGraphics::POSTPROCESS_NODE;
+	else if (s == "decal") outType = VansGraphics::DECAL_NODE;
+	else
+	{
+		error = "Unsupported render type '" + s + "'";
+		return false;
+	}
+	return true;
 }
 
 static VansGraphics::RenderNodeType ResolveMaterialRenderNodeType(
@@ -134,21 +137,24 @@ static std::string MakeUniqueMeshName(const VansGraphics::VansScene& scene, cons
 
 }
 
-void VansSceneRenderNodeBuilder::AddDeferredNode(VansScene& scene, VkDevice& device)
+bool VansSceneRenderNodeBuilder::BuildDeferredNode(
+    VansScene& scene,
+    VkDevice& device,
+    std::string& error)
 {
     VansMesh* mesh = static_cast<VansMesh*>(scene.FindMeshAsset("fullScreenQuad"));
 	if (mesh == nullptr)
 	{
-		VANS_LOG_ERROR("[VansScene] Missing engine mesh 'fullScreenQuad'");
-		return;
+		error = "Required engine mesh 'fullScreenQuad' is missing";
+		return false;
 	}
 
     // Build material directly from the already-loaded "Deferred" shader — no JSON material entry needed.
     VansGraphicsShader* deferredShader = static_cast<VansGraphicsShader*>(scene.FindShaderAsset("Deferred"));
     if (deferredShader == nullptr)
     {
-        VANS_LOG_WARN("[VansScene] AddDeferredNode: shader 'Deferred' not found, node skipped.");
-        return;
+        error = "Required shader 'Deferred' is missing";
+        return false;
     }
     VansDeferredMaterial* material = new VansDeferredMaterial();
     material->m_MaterialType = VansMaterialType::VAN_DEFERRED;
@@ -167,15 +173,19 @@ void VansSceneRenderNodeBuilder::AddDeferredNode(VansScene& scene, VkDevice& dev
     renderNode->SetName("DeferredNode");
 
     scene.RegistRenderNode(renderNode, type);
+	return true;
 }
 
-void VansSceneRenderNodeBuilder::AddScreenSpaceFeatureNode(VansScene& scene, VkDevice& device)
+bool VansSceneRenderNodeBuilder::BuildScreenSpaceFeatureNodes(
+    VansScene& scene,
+    VkDevice& device,
+    std::string& error)
 {
     VansMesh* mesh = static_cast<VansMesh*>(scene.FindMeshAsset("fullScreenQuad"));
 	if (mesh == nullptr)
 	{
-		VANS_LOG_ERROR("[VansScene] Missing engine mesh 'fullScreenQuad'");
-		return;
+		error = "Required engine mesh 'fullScreenQuad' is missing";
+		return false;
 	}
 
     // Each entry: { node/material name, shader name, material type }.
@@ -185,19 +195,28 @@ void VansSceneRenderNodeBuilder::AddScreenSpaceFeatureNode(VansScene& scene, VkD
     {
         { "SSAO", "SSAO", VansMaterialType::VAN_SCREEN_SPACE_AO },
     };
+	for (const auto& feature : features)
+	{
+		if (!scene.FindShaderAsset(feature.shaderName))
+		{
+			error = "Required screen-space shader '" + std::string(feature.shaderName) +
+				"' is missing";
+			return false;
+		}
+	}
 
     for (const auto& feature : features)
     {
-        VansGraphicsShader* shader = static_cast<VansGraphicsShader*>(scene.FindShaderAsset(feature.shaderName));
-        if (shader == nullptr)
-        {
-            VANS_LOG_WARN("[VansScene] AddScreenSpaceFeatureNode: shader '" << feature.shaderName << "' not found, node '" << feature.name << "' skipped.");
-            continue;
-        }
-
         VansMaterial* material = VansSceneMaterialBuilder::CreateMaterialForType(feature.matType);
         material->m_MaterialType = feature.matType;
         VansSceneMaterialBuilder::PopulateMaterialPassShaders(scene, material, feature.matType);
+		if (!material->HasPass(VansPass::SCREEN_SPACE))
+		{
+			delete material;
+			error = "Screen-space material '" + std::string(feature.name) +
+				"' has no SCREEN_SPACE shader binding";
+			return false;
+		}
         material->SetName(feature.name);
         scene.AddMaterialAsset(material);
 
@@ -213,20 +232,28 @@ void VansSceneRenderNodeBuilder::AddScreenSpaceFeatureNode(VansScene& scene, VkD
 
         scene.RegistRenderNode(renderNode, type);
     }
+	return true;
 }
 
-VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(
+VansRenderNodeBuildResult VansSceneRenderNodeBuilder::BuildRenderNode(
 	VansScene& scene,
 	VkDevice& device,
 	const Vans::VansSceneRenderNodeConfig& sceneRenderNode)
 {
-    RenderNodeType type = ParseRenderNodeType(
-		sceneRenderNode.type,
-		sceneRenderNode.name.empty() ? "<unnamed>" : sceneRenderNode.name);
+	VansRenderNodeBuildResult result;
+	RenderNodeType type = RenderNodeType::NONE_NODE;
+	if (!TryParseRenderNodeType(sceneRenderNode.type, type, result.error))
+		return result;
     std::string meshName = sceneRenderNode.mesh;
 
     // ── Resolve mesh ──────────────────────────────────────────────────────
     VansMesh* mesh = static_cast<VansMesh*>(scene.FindMeshAsset(meshName));
+	if (!mesh)
+	{
+		result.error = "Render node '" + sceneRenderNode.name + "' could not resolve mesh '" +
+			meshName + "'";
+		return result;
+	}
 	std::string materialName = sceneRenderNode.material;
 	VansMaterial* material = static_cast<VansMaterial*>(scene.FindMaterialAsset(materialName));
     VansMesh* sourceMesh = nullptr;
@@ -239,16 +266,16 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(
         submeshIndex = *sceneRenderNode.submesh;
         if (!sourceMesh || !sourceMesh->m_IsMultiMesh)
         {
-            VANS_LOG_WARN("[LoadSingleRenderNode] Render node '" << sceneRenderNode.name
-                << "' references submesh " << submeshIndex << " but mesh '" << meshName
-                << "' is not a loaded multi-mesh.");
-            return nullptr;
+			result.error = "Render node '" + sceneRenderNode.name + "' references submesh " +
+				std::to_string(submeshIndex) + " but mesh '" + meshName +
+				"' is not a loaded multi-mesh";
+			return result;
         }
         if (submeshIndex >= sourceMesh->m_SubMeshes.size() || sourceMesh->m_SubMeshes[submeshIndex] == nullptr)
         {
-            VANS_LOG_WARN("[LoadSingleRenderNode] Render node '" << sceneRenderNode.name
-                << "' has invalid submesh index " << submeshIndex << " for mesh '" << meshName << "'.");
-            return nullptr;
+			result.error = "Render node '" + sceneRenderNode.name + "' has invalid submesh index " +
+				std::to_string(submeshIndex) + " for mesh '" + meshName + "'";
+			return result;
         }
 
         // 每个子网格都拥有独立的顶点/索引 GPU buffer；它和普通网格一样是
@@ -319,7 +346,8 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(
             }
 
             scene.AddMaterialAsset(material);
-            VANS_LOG("[LoadSingleRenderNode] Auto-created submesh material: " << matKey
+			result.createdMaterials.push_back(material);
+            VANS_LOG("[BuildRenderNode] Auto-created submesh material: " << matKey
                 << " for node '" << sceneRenderNode.name << "'");
         }
 
@@ -331,6 +359,7 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(
         const std::string meshAlias = MakeUniqueMeshName(scene, (sceneRenderNode.name.empty() ? meshName : sceneRenderNode.name) + "_mesh");
         mesh->SetName(meshAlias);
         scene.AddSceneSubMeshAsset(mesh);
+		result.registeredSubMeshes.push_back(mesh);
     }
 
     // ── Multi-mesh auto-expansion ─────────────────────────────────────────
@@ -347,19 +376,17 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(
         uint32_t shadowCasterMask = sceneRenderNode.shadowCasterMask;
         std::string parentName = sceneRenderNode.name.empty() ? "MultiMesh" : sceneRenderNode.name;
 
-		VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(scene,
+		return VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(scene,
 			device, mesh, parentName, sceneRenderNode.entityGuid,
 			position, rotation, scale, supportShadow, shadowCasterMask, material,
 			sceneRenderNode.submeshMaterialOverrides);
-
-        // 不从 m_Meshes 中移除父级 multi-mesh，场景切换时仍需通过名称找到它。
-        // 子网格会在 ExpandMultiMeshToRenderNodes 内部被添加到 m_Meshes，
-        // 并在 UnLoadScene Step 10 中清理。
-
-        // Multi-mesh expansion creates its own render nodes — return nullptr to indicate
-        // that no single render node was created.
-        return nullptr;
-    }
+	}
+	if (!material)
+	{
+		result.error = "Render node '" + sceneRenderNode.name + "' could not resolve material '" +
+			materialName + "'";
+		return result;
+	}
 
     // ── Standard render node creation ─────────────────────────────────────
 	if (material && material->m_MaterialType == VansMaterialType::VAN_HAIR)
@@ -371,54 +398,55 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(
 		type = ResolveMaterialRenderNodeType(material, type);
 	}
 
-    VansRenderNode* renderNode = nullptr;
-    switch (type)
-    {
-    case VansGraphics::NONE_NODE:
-        break;
+	VansRenderNode* renderNode = nullptr;
+	switch (type)
+	{
     case VansGraphics::OPAQUE_NODE:
 	case VansGraphics::HAIR_NODE:
 	case VansGraphics::FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE:
-        renderNode = new VansCommonRenderNode(device, type);
-        if (sceneRenderNode.supportShadow)
-        {
-            auto* node = static_cast<VansCommonRenderNode*>(renderNode);
+		renderNode = new VansCommonRenderNode(device, type);
+		if (sceneRenderNode.supportShadow)
+		{
+			auto* node = static_cast<VansCommonRenderNode*>(renderNode);
             node->m_SupportShadow = sceneRenderNode.supportShadow;
             node->m_ShadowCasterMask = sceneRenderNode.shadowCasterMask;
         }
         break;
     case VansGraphics::TRANSPARENT_NODE:
-        renderNode = new VansTransparentRenderNode(device, type);
+		renderNode = new VansTransparentRenderNode(device, type);
         break;
     case VansGraphics::POSTPROCESS_NODE:
-        renderNode = new VansPostProcessRenderNode(device, type);
+		renderNode = new VansPostProcessRenderNode(device, type);
         break;
     case VansGraphics::DECAL_NODE:
         // 贴花节点：OBB 投影贴花，写入 GBuffer Normal/GBuffer0/GBuffer1
-        renderNode = new VansDecalRenderNode(device);
+		renderNode = new VansDecalRenderNode(device);
         break;
-        break;
-    }
+	default:
+		result.error = "Render node '" + sceneRenderNode.name + "' has unsupported runtime type";
+		return result;
+	}
 
-    if (renderNode == nullptr)
-    {
-        return nullptr;
+	if (renderNode == nullptr)
+	{
+		result.error = "Render node '" + sceneRenderNode.name + "' was not allocated";
+		return result;
     }
 
     if (sceneRenderNode.transform.has_value())
     {
-        glm::vec3 postion = ToVec3(sceneRenderNode.transform->position);
+		glm::vec3 position = ToVec3(sceneRenderNode.transform->position);
         glm::vec3 rotation = ToVec3(sceneRenderNode.transform->rotation);
         glm::vec3 scale = ToVec3(sceneRenderNode.transform->scale);
-        renderNode->SetTransformData(postion, rotation, scale);
-    }
+		renderNode->SetTransformData(position, rotation, scale);
+	}
 
-    renderNode->m_Mesh     = mesh;
-    renderNode->m_SourceMesh = sourceMesh;
-    renderNode->m_SubmeshIndex = submeshIndex;
-    renderNode->m_EntityGuid = sceneRenderNode.entityGuid;
-    renderNode->m_ParentEntityGuid = sceneRenderNode.parentEntityGuid;
-    renderNode->m_Material = material;
+	renderNode->m_Mesh = mesh;
+	renderNode->m_SourceMesh = sourceMesh;
+	renderNode->m_SubmeshIndex = submeshIndex;
+	renderNode->m_EntityGuid = sceneRenderNode.entityGuid;
+	renderNode->m_ParentEntityGuid = sceneRenderNode.parentEntityGuid;
+	renderNode->m_Material = material;
 	if (auto* decal = dynamic_cast<VansDecalRenderNode*>(renderNode))
 		decal->m_ImpactPoolConfig = sceneRenderNode.impactPool;
 	const std::string rayTracingMode = sceneRenderNode.rayTracingMode;
@@ -426,79 +454,38 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(
 		(material->m_MaterialType == VansMaterialType::VAN_TRANSPARENT ||
 		 material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION);
 	renderNode->m_RayTracingEnabled = rayTracingMode != "disabled" && !transparentForGI;
-    renderNode->SetName(sceneRenderNode.name);
+	renderNode->SetName(sceneRenderNode.name);
 
-    scene.RegistRenderNode(renderNode, type);
+	scene.RegistRenderNode(renderNode, type);
 
-    return renderNode;
+	result.success = true;
+	result.nodes.push_back(renderNode);
+	return result;
 }
 
-void VansSceneRenderNodeBuilder::LoadRenderNodes(
+bool VansSceneRenderNodeBuilder::BuildRenderNodes(
 	VansScene& scene,
 	VkDevice& device,
-	const Vans::VansSceneRenderNodeConfigs& renderNodes)
+	const Vans::VansSceneRenderNodeConfigs& renderNodes,
+	std::string& error)
 {
-    for (const Vans::VansSceneRenderNodeConfig& sceneRenderNode : renderNodes)
-    {
-        LoadSingleRenderNode(scene, device, sceneRenderNode);
-    }
+	for (const Vans::VansSceneRenderNodeConfig& sceneRenderNode : renderNodes)
+	{
+		VansRenderNodeBuildResult result = BuildRenderNode(scene, device, sceneRenderNode);
+		if (!result.success)
+		{
+			error = std::move(result.error);
+			return false;
+		}
+	}
 
-    // ── Resolve transform parent links ────────────────────────────────────
-    // Second pass: now that all render nodes are created, resolve "parent" name
-    // references into transform ID links.
-    for (const Vans::VansSceneRenderNodeConfig& sceneRenderNode : renderNodes)
-    {
-        if (sceneRenderNode.parent.empty()) continue;
-
-        std::string childName = sceneRenderNode.name;
-        std::string parentName = sceneRenderNode.parent;
-        if (childName.empty() || parentName.empty()) continue;
-
-        VansRenderNode* childNode  = scene.FindRenderNodeByName(childName);
-        VansRenderNode* parentNode = scene.FindRenderNodeByName(parentName);
-
-        if (childNode && parentNode)
-        {
-            scene.SetTransformParentID(childNode->m_TransformID, parentNode->m_TransformID);
-        }
-        else
-        {
-            VANS_LOG_WARN("[TransformParent] Could not resolve parent link: child='" << childName << "' parent='" << parentName << "'");
-        }
-    }
+	return true;
 }
 
 // ===========================================================================
-// Terrain node
+// Multi-mesh expansion
 
-void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
-    VkDevice& device,
-    VansMesh* multiMesh,
-    const std::string& parentName,
-    const std::string& parentEntityGuid,
-    const glm::vec3& position,
-    const glm::vec3& rotation,
-    const glm::vec3& scale,
-    bool supportShadow,
-    uint32_t shadowCasterMask,
-    VansMaterial* materialOverride)
-{
-    ExpandMultiMeshToRenderNodes(
-        scene,
-        device,
-        multiMesh,
-        parentName,
-        parentEntityGuid,
-        position,
-        rotation,
-        scale,
-        supportShadow,
-        shadowCasterMask,
-        materialOverride,
-        {});
-}
-
-void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
+VansRenderNodeBuildResult VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
     VkDevice& device,
     VansMesh* multiMesh,
     const std::string& parentName,
@@ -511,8 +498,26 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
 	VansMaterial* materialOverride,
 	const std::unordered_map<std::string, std::string>& submeshMaterialOverrides)
 {
+	VansRenderNodeBuildResult result;
     if (!multiMesh || !multiMesh->m_IsMultiMesh)
-        return;
+	{
+		result.error = "Multi-mesh expansion requires a loaded multi-mesh";
+		return result;
+	}
+
+	const auto& subMeshes = multiMesh->m_SubMeshes;
+	const bool hasRenderableSubMesh = std::any_of(
+		subMeshes.begin(),
+		subMeshes.end(),
+		[](VansMesh* subMesh)
+		{
+			return subMesh && subMesh->GetMeshVertexCount() > 0 && subMesh->GetIndexCount() >= 3;
+		});
+	if (!hasRenderableSubMesh)
+	{
+		result.error = "Multi-mesh '" + multiMesh->m_AssetName + "' produced no render nodes";
+		return result;
+	}
 
     const std::string resolvedParentName = parentEntityGuid.empty()
         ? MakeUniqueMultiMeshGroupName(scene, parentName) : parentName;
@@ -534,19 +539,19 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
     const bool hasNodeTransformAnimation = multiMesh->m_HasNodeTransformAnimation;
     if (hasNodeTransformAnimation)
     {
-        group.sharedTransformID = VansTransformStore::AllocateTransform();
+        group.sharedTransformID = Vans::VansTransformStore::Allocate();
         group.ownsSharedTransform = true;
-        VansTransform& rootTransform = VansTransformStore::GetTransform(group.sharedTransformID);
+        Vans::VansTransform rootTransform = Vans::VansTransformStore::Read(group.sharedTransformID);
         rootTransform.m_Position = position;
         rootTransform.m_Rotation = rotation;
         rootTransform.m_Scale = scale;
+        Vans::VansTransformStore::Write(group.sharedTransformID, rootTransform);
     }
     else
     {
         group.ownsSharedTransform = false;
     }
 
-    const auto& subMeshes  = multiMesh->m_SubMeshes;
     const auto& matInfos   = multiMesh->m_SubmeshMaterialInfos;
 
     for (size_t i = 0; i < subMeshes.size(); ++i)
@@ -653,6 +658,7 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
             }
 
             scene.AddMaterialAsset(material);
+			result.createdMaterials.push_back(material);
 
             VANS_LOG("[ExpandMultiMesh] Auto-created material: " << matKey
                      << " (type=" << static_cast<int>(matType) << ")");
@@ -703,7 +709,7 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
             glm::vec3 childRotation(0.0f);
             glm::vec3 childScale(1.0f);
             const glm::mat4 rootWorld =
-                VansTransformStore::GetTransform(group.sharedTransformID).GetModelMatrix();
+                Vans::VansTransformStore::Read(group.sharedTransformID).GetModelMatrix();
             if (DecomposeMatrixToPRS(rootWorld * subMesh->m_SourceNodeBindModelTransform,
                                      childPosition,
                                      childRotation,
@@ -732,9 +738,11 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
         // 子网格对象由父级 multi-mesh 持有，不能混入项目级 m_Meshes 所有权列表。
         subMesh->SetName(meshName);
         scene.AddSceneSubMeshAsset(subMesh);
+		result.registeredSubMeshes.push_back(subMesh);
 
         scene.RegistRenderNode(renderNode, nodeType);
         group.childNodes.push_back(renderNode);
+		result.nodes.push_back(renderNode);
 
         // Shadow nodes are no longer created here — shadow passes now iterate
         // opaque nodes and use material->GetPassShader(VansPass::SHADOW).
@@ -746,7 +754,9 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
 				 << " (type=" << nodeTypeName << ")");
     }
 
-    // ExpandMultiMesh 仅负责几何体 → 渲染节点的展开，动画由 animation component 创建。
+	// ExpandMultiMesh 仅负责几何体到渲染节点的展开，动画由 animation component 创建。
+	result.success = true;
+	return result;
 }
 
 }

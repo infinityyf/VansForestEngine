@@ -1,11 +1,12 @@
 #include "VansRagdollSystem.h"
 
+#include "VansCollisionFilter.h"
 #include "VansCollisionLayerManager.h"
 #include "VansPhysics.h"
+#include "VansPhysicsNativeAccess.h"
 #include <extensions/PxD6Joint.h>
-#include "../AnimationCore/VansAnimationController.h"
-#include "../AnimationCore/VansAnimationNode.h"
-#include "../ScriptCore/VansTransform.h"
+#include "../RuntimeCore/VansFramePhase.h"
+#include "../RuntimeCore/VansThreadContract.h"
 #include "../Util/VansLog.h"
 
 #include <../../GLM/gtc/matrix_transform.hpp>
@@ -21,7 +22,6 @@
 
 using namespace physx;
 using namespace VansEngine;
-using namespace VansGraphics;
 
 namespace
 {
@@ -98,7 +98,7 @@ namespace
 		return ComposeTRS(modelPosition, modelRotation, referenceScale);
 	}
 
-	PxU32 MakeRagdollCollisionGroup(const VansAnimationNode* animNode)
+	PxU32 MakeRagdollCollisionGroup()
 	{
 		static PxU32 nextGroup = 1;
 		const PxU32 group = nextGroup++ & 0xFFFFFFu;
@@ -140,13 +140,14 @@ namespace
 		return glm::dot(initialVelocity, initialVelocity) > 0.0001f;
 	}
 
-	std::vector<glm::mat4> BuildLocalModelTransforms(const Skeleton& skeleton,
-	                                                const std::vector<glm::mat4>& modelTransforms)
+	std::vector<glm::mat4> BuildLocalModelTransforms(
+		const std::vector<int>& parentIndices,
+		const std::vector<glm::mat4>& modelTransforms)
 	{
 		std::vector<glm::mat4> localTransforms(modelTransforms.size(), glm::mat4(1.0f));
 		for (size_t i = 0; i < modelTransforms.size(); ++i)
 		{
-			int parentIndex = skeleton.bones[i].parentIndex;
+			const int parentIndex = i < parentIndices.size() ? parentIndices[i] : -1;
 			if (parentIndex >= 0 && parentIndex < static_cast<int>(modelTransforms.size()))
 				localTransforms[i] = glm::inverse(modelTransforms[parentIndex]) * modelTransforms[i];
 			else
@@ -156,11 +157,11 @@ namespace
 	}
 
 	void PropagateDrivenDescendants(const RagdollInstance& inst,
-	                              const Skeleton& skeleton,
 	                              const std::vector<glm::mat4>& sourceLocalTransforms,
 	                              std::vector<glm::mat4>& modelTransforms)
 	{
-		if (modelTransforms.size() != skeleton.bones.size() || sourceLocalTransforms.size() != skeleton.bones.size())
+		if (modelTransforms.size() != inst.parentIndices.size() ||
+			sourceLocalTransforms.size() != inst.parentIndices.size())
 			return;
 
 		std::vector<bool> driven(modelTransforms.size(), false);
@@ -171,14 +172,14 @@ namespace
 				driven[entry.boneIndex] = true;
 		}
 
-		if (!skeleton.topologicalOrder.empty())
+		if (!inst.topologicalOrder.empty())
 		{
-			for (int boneIndex : skeleton.topologicalOrder)
+			for (int boneIndex : inst.topologicalOrder)
 			{
 				if (boneIndex < 0 || boneIndex >= static_cast<int>(modelTransforms.size()))
 					continue;
 
-				int parentIndex = skeleton.bones[boneIndex].parentIndex;
+				const int parentIndex = inst.parentIndices[boneIndex];
 				bool parentDriven = parentIndex >= 0 && parentIndex < static_cast<int>(inherited.size()) && inherited[parentIndex];
 				if (driven[boneIndex])
 				{
@@ -197,7 +198,7 @@ namespace
 
 		for (size_t boneIndex = 0; boneIndex < modelTransforms.size(); ++boneIndex)
 		{
-			int parentIndex = skeleton.bones[boneIndex].parentIndex;
+			const int parentIndex = inst.parentIndices[boneIndex];
 			bool parentDriven = parentIndex >= 0 && parentIndex < static_cast<int>(inherited.size()) && inherited[parentIndex];
 			if (driven[boneIndex])
 			{
@@ -220,51 +221,67 @@ VansRagdollSystem& VansRagdollSystem::GetInstance()
 	return instance;
 }
 
-void VansRagdollSystem::Initialize()
+void VansRagdollSystem::ShutdownLocked()
 {
-	// 当前系统没有额外全局资源，保留接口便于后续扩展。
-}
-
-void VansRagdollSystem::Shutdown()
-{
+	VANS_ASSERT_MAIN_THREAD();
 	for (auto& inst : m_Instances)
 		ReleaseInstance(inst);
 	m_Instances.clear();
 }
 
-bool VansRagdollSystem::CreateRagdoll(VansAnimationNode* animNode, const RagdollProfile& profile)
+bool VansRagdollSystem::CreateRagdoll(
+	const Vans::VansRagdollKey& key,
+	const RagdollProfile& profile,
+	const Vans::VansRagdollSkeletonBinding& binding,
+	const Vans::VansRagdollPoseView& pose)
 {
-	if (animNode == nullptr || animNode->GetController() == nullptr)
+	VANS_ASSERT_MAIN_THREAD();
+	if (!key.IsValid() || !pose.IsValid() ||
+		binding.boneNames.empty() ||
+		binding.boneNames.size() != binding.parentIndices.size() ||
+		binding.boneNames.size() != pose.modelTransformCount)
 		return false;
 
-	const Skeleton& skeleton = animNode->GetSkeleton();
-	const auto& globalTransforms = animNode->GetController()->GetCachedGlobalTransforms();
-	if (skeleton.bones.empty() || globalTransforms.size() != skeleton.bones.size())
+	std::unordered_map<std::string, int> boneNameToIndex;
+	boneNameToIndex.reserve(binding.boneNames.size());
+	for (std::size_t boneIndex = 0; boneIndex < binding.boneNames.size(); ++boneIndex)
 	{
-		VANS_LOG_WARN("[Ragdoll] 创建失败：动画缓存为空或骨骼数量不匹配 animNode=" << animNode->GetName());
-		return false;
-	}
-
-	uint32_t rootTransformID = animNode->GetTransformID();
-	if (rootTransformID >= VansTransformStore::GlobalTransforms.size())
-	{
-		VANS_LOG_WARN("[Ragdoll] 创建失败：AnimationNode 缺少有效 TransformID animNode=" << animNode->GetName());
-		return false;
+		const int parentIndex = binding.parentIndices[boneIndex];
+		if (binding.boneNames[boneIndex].empty() ||
+			parentIndex >= static_cast<int>(binding.boneNames.size()) ||
+			parentIndex == static_cast<int>(boneIndex) ||
+			!boneNameToIndex.emplace(
+				binding.boneNames[boneIndex], static_cast<int>(boneIndex)).second)
+		{
+			VANS_LOG_WARN("[Ragdoll] 创建失败：骨骼绑定无效 key=" << key.transformId);
+			return false;
+		}
 	}
 
 	VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
-	PxPhysics* physics = physicsSystem.GetPhysics();
-	PxScene* scene = physicsSystem.GetScene();
+	PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
+	PxScene* scene = VansPhysicsNativeAccess::Scene(physicsSystem);
 	if (physics == nullptr || scene == nullptr)
 	{
 		VANS_LOG_WARN("[Ragdoll] 创建失败：PhysX 未初始化");
 		return false;
 	}
+	auto& layerManager = VansCollisionLayerManager::Get();
+	for (const RagdollBodyConfig& bodyConfig : profile.bodies)
+	{
+		int layerIndex = -1;
+		if (!layerManager.TryGetLayerIndex(bodyConfig.layerName, layerIndex))
+		{
+			VANS_LOG_WARN("[Ragdoll] Unknown collision layer '" << bodyConfig.layerName
+				<< "' for bone '" << bodyConfig.boneName << "'");
+			return false;
+		}
+	}
 
 	std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
 
 	auto existingIt = std::find_if(m_Instances.begin(), m_Instances.end(),
-		[animNode](const RagdollInstance& inst) { return inst.animNode == animNode; });
+		[&key](const RagdollInstance& inst) { return inst.key == key; });
 	if (existingIt != m_Instances.end())
 	{
 		ReleaseInstance(*existingIt);
@@ -272,18 +289,20 @@ bool VansRagdollSystem::CreateRagdoll(VansAnimationNode* animNode, const Ragdoll
 	}
 
 	RagdollInstance inst;
-	inst.animNode = animNode;
+	inst.key = key;
 	inst.driveMode = RagdollDriveMode::Animation;
 	inst.blendWeight = 0.0f;
+	inst.parentIndices = binding.parentIndices;
+	inst.topologicalOrder = binding.topologicalOrder;
 
-	glm::mat4 rootWorld = VansTransformStore::GetTransform(rootTransformID).GetModelMatrix();
-	PxU32 ragdollCollisionGroup = MakeRagdollCollisionGroup(animNode);
+	const glm::mat4& rootWorld = pose.rootWorld;
+	PxU32 ragdollCollisionGroup = MakeRagdollCollisionGroup();
 
 	for (size_t bodyIndex = 0; bodyIndex < profile.bodies.size(); ++bodyIndex)
 	{
 		const auto& bodyConfig = profile.bodies[bodyIndex];
-		auto boneIt = skeleton.boneNameToIndex.find(bodyConfig.boneName);
-		if (boneIt == skeleton.boneNameToIndex.end())
+		auto boneIt = boneNameToIndex.find(bodyConfig.boneName);
+		if (boneIt == boneNameToIndex.end())
 		{
 			VANS_LOG_WARN("[Ragdoll] 跳过不存在骨骼: " << bodyConfig.boneName);
 			continue;
@@ -291,7 +310,7 @@ bool VansRagdollSystem::CreateRagdoll(VansAnimationNode* animNode, const Ragdoll
 
 		int boneIndex = boneIt->second;
 		glm::mat4 shapeOffset = MakeTRS(bodyConfig.offsetPosition, bodyConfig.offsetRotation, glm::vec3(1.0f));
-		glm::mat4 bodyWorld = rootWorld * globalTransforms[boneIndex] * shapeOffset;
+		glm::mat4 bodyWorld = rootWorld * pose.modelTransforms[boneIndex] * shapeOffset;
 		if (!IsFiniteMatrix(bodyWorld))
 		{
 			VANS_LOG_WARN("[Ragdoll] 跳过非法初始矩阵 bone=" << bodyConfig.boneName);
@@ -334,15 +353,22 @@ bool VansRagdollSystem::CreateRagdoll(VansAnimationNode* animNode, const Ragdoll
 			continue;
 		}
 
-		auto& layerMgr = VansCollisionLayerManager::Get();
-		int layerIndex = layerMgr.GetLayerIndex(bodyConfig.layerName);
 		PxFilterData filterData;
-		filterData.word0 = static_cast<PxU32>(layerIndex);
+		if (!VansCollisionFilter::Build(
+			bodyConfig.layerName,
+			profile.selfCollision ? VansCollisionFilter::RagdollSelfCollision : VansCollisionFilter::None,
+			ragdollCollisionGroup,
+			filterData))
+		{
+			shape->release();
+			body->release();
+			material->release();
+			ReleaseInstance(inst);
+			return false;
+		}
 		// Animation 模式下保持 shape 在 broadphase 中，但先禁用接触过滤。
 		// 切 Physics 时只更新 filterData，避免动态切换 eSIMULATION_SHAPE 触发 ABP 重新插入崩溃。
 		filterData.word1 = 0u;
-		filterData.word2 = profile.selfCollision ? 2u : 0u;
-		filterData.word3 = ragdollCollisionGroup;
 		shape->setSimulationFilterData(filterData);
 		shape->setQueryFilterData(filterData);
 
@@ -379,7 +405,7 @@ bool VansRagdollSystem::CreateRagdoll(VansAnimationNode* animNode, const Ragdoll
 
 	if (inst.boneEntries.empty())
 	{
-		VANS_LOG_WARN("[Ragdoll] 创建失败：没有有效刚体 animNode=" << animNode->GetName());
+		VANS_LOG_WARN("[Ragdoll] 创建失败：没有有效刚体 key=" << key.transformId);
 		return false;
 	}
 
@@ -391,7 +417,7 @@ bool VansRagdollSystem::CreateRagdoll(VansAnimationNode* animNode, const Ragdoll
 
 		int childEntryIndex = childEntryIt->second;
 		RagdollBoneEntry& childEntry = inst.boneEntries[childEntryIndex];
-		int parentEntryIndex = FindNearestParentEntry(inst, skeleton, childEntry.boneIndex);
+		int parentEntryIndex = FindNearestParentEntry(inst, childEntry.boneIndex);
 		if (parentEntryIndex < 0)
 			continue;
 
@@ -443,20 +469,25 @@ bool VansRagdollSystem::CreateRagdoll(VansAnimationNode* animNode, const Ragdoll
 	}
 
 	m_Instances.push_back(std::move(inst));
-	VANS_LOG("[Ragdoll] 已创建 profile='" << profile.name << "' animNode=" << animNode->GetName());
+	VANS_LOG("[Ragdoll] 已创建 profile='" << profile.name << "' key=" << key.transformId);
 	return true;
 }
 
-void VansRagdollSystem::DestroyRagdoll(VansAnimationNode* animNode)
+void VansRagdollSystem::DestroyRagdoll(const Vans::VansRagdollKey& key)
 {
-	if (animNode == nullptr)
+	VANS_ASSERT_MAIN_THREAD();
+	if (!key.IsValid())
 		return;
 
 	VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
 	std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
+	DestroyRagdollLocked(key);
+}
 
+void VansRagdollSystem::DestroyRagdollLocked(const Vans::VansRagdollKey& key)
+{
 	auto it = std::find_if(m_Instances.begin(), m_Instances.end(),
-		[animNode](const RagdollInstance& inst) { return inst.animNode == animNode; });
+		[&key](const RagdollInstance& inst) { return inst.key == key; });
 	if (it == m_Instances.end())
 		return;
 
@@ -464,32 +495,37 @@ void VansRagdollSystem::DestroyRagdoll(VansAnimationNode* animNode)
 	m_Instances.erase(it);
 }
 
-bool VansRagdollSystem::HasRagdoll(VansAnimationNode* animNode) const
+bool VansRagdollSystem::HasRagdoll(const Vans::VansRagdollKey& key) const
 {
-	return FindInstance(animNode) != nullptr;
+	VANS_ASSERT_MAIN_THREAD();
+	std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+	return FindInstanceLocked(key) != nullptr;
 }
 
-void VansRagdollSystem::SetDriveMode(VansAnimationNode* animNode,
-                                      RagdollDriveMode mode,
-                                      const glm::vec3& initialVelocity)
+bool VansRagdollSystem::SetDriveMode(
+	const Vans::VansRagdollKey& key,
+	RagdollDriveMode mode,
+	const Vans::VansRagdollPoseView& animationPose,
+	const glm::vec3& initialVelocity)
 {
-	RagdollInstance* inst = FindInstance(animNode);
+	VANS_ASSERT_MAIN_THREAD();
+	VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
+	std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
+	RagdollInstance* inst = FindInstanceLocked(key);
 	if (inst == nullptr)
 	{
 		VANS_LOG_WARN("[Ragdoll] SetDriveMode 失败：找不到运行时实例");
-		return;
+		return false;
 	}
 	if (inst->driveMode == mode)
-		return;
-
-	VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
-	std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
+		return true;
 
 	RagdollDriveMode oldMode = inst->driveMode;
 	if (oldMode == RagdollDriveMode::Animation &&
 		(mode == RagdollDriveMode::Physics || mode == RagdollDriveMode::Blend))
 	{
-		WarmStartBodies(*inst, initialVelocity);
+		if (!WarmStartBodies(*inst, animationPose, initialVelocity))
+			return false;
 	}
 	else if ((oldMode == RagdollDriveMode::Physics || oldMode == RagdollDriveMode::Blend) &&
 		mode == RagdollDriveMode::Animation)
@@ -501,37 +537,48 @@ void VansRagdollSystem::SetDriveMode(VansAnimationNode* animNode,
 	VANS_LOG("[Ragdoll] DriveMode 切换完成 old=" << static_cast<int>(oldMode)
 		<< " new=" << static_cast<int>(mode)
 		<< " bodies=" << inst->boneEntries.size());
+	return true;
 }
 
-RagdollDriveMode VansRagdollSystem::GetDriveMode(VansAnimationNode* animNode) const
+RagdollDriveMode VansRagdollSystem::GetDriveMode(const Vans::VansRagdollKey& key) const
 {
-	const RagdollInstance* inst = FindInstance(animNode);
+	VANS_ASSERT_MAIN_THREAD();
+	std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+	const RagdollInstance* inst = FindInstanceLocked(key);
 	return inst ? inst->driveMode : RagdollDriveMode::Animation;
 }
 
-void VansRagdollSystem::SetBlendWeight(VansAnimationNode* animNode, float weight)
+void VansRagdollSystem::SetBlendWeight(const Vans::VansRagdollKey& key, float weight)
 {
-	RagdollInstance* inst = FindInstance(animNode);
+	VANS_ASSERT_MAIN_THREAD();
+	std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+	RagdollInstance* inst = FindInstanceLocked(key);
 	if (inst == nullptr)
 		return;
 	inst->blendWeight = glm::clamp(weight, 0.0f, 1.0f);
 }
 
-float VansRagdollSystem::GetBlendWeight(VansAnimationNode* animNode) const
+float VansRagdollSystem::GetBlendWeight(const Vans::VansRagdollKey& key) const
 {
-	const RagdollInstance* inst = FindInstance(animNode);
+	VANS_ASSERT_MAIN_THREAD();
+	std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+	const RagdollInstance* inst = FindInstanceLocked(key);
 	return inst ? inst->blendWeight : 0.0f;
 }
 
-int VansRagdollSystem::GetBodyCount(VansAnimationNode* animNode) const
+int VansRagdollSystem::GetBodyCount(const Vans::VansRagdollKey& key) const
 {
-	const RagdollInstance* inst = FindInstance(animNode);
+	VANS_ASSERT_MAIN_THREAD();
+	std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+	const RagdollInstance* inst = FindInstanceLocked(key);
 	return inst ? static_cast<int>(inst->boneEntries.size()) : 0;
 }
 
-int VansRagdollSystem::GetJointCount(VansAnimationNode* animNode) const
+int VansRagdollSystem::GetJointCount(const Vans::VansRagdollKey& key) const
 {
-	const RagdollInstance* inst = FindInstance(animNode);
+	VANS_ASSERT_MAIN_THREAD();
+	std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+	const RagdollInstance* inst = FindInstanceLocked(key);
 	if (inst == nullptr)
 		return 0;
 
@@ -544,12 +591,13 @@ int VansRagdollSystem::GetJointCount(VansAnimationNode* animNode) const
 	return jointCount;
 }
 
-RagdollDiagnostics VansRagdollSystem::GetDiagnostics(VansAnimationNode* animNode) const
+RagdollDiagnostics VansRagdollSystem::GetDiagnostics(const Vans::VansRagdollKey& key) const
 {
+	VANS_ASSERT_MAIN_THREAD();
 	RagdollDiagnostics result;
-	const auto* inst = FindInstance(animNode);
-	if (!inst) return result;
 	std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+	const auto* inst = FindInstanceLocked(key);
+	if (!inst) return result;
 	for (size_t i = 0; i < inst->boneEntries.size(); ++i)
 	{
 		const auto& entry = inst->boneEntries[i];
@@ -593,10 +641,12 @@ RagdollDiagnostics VansRagdollSystem::GetDiagnostics(VansAnimationNode* animNode
 	return result;
 }
 
-std::vector<std::string> VansRagdollSystem::GetBodyBoneNames(VansAnimationNode* animNode) const
+std::vector<std::string> VansRagdollSystem::GetBodyBoneNames(const Vans::VansRagdollKey& key) const
 {
+	VANS_ASSERT_MAIN_THREAD();
 	std::vector<std::string> names;
-	const RagdollInstance* inst = FindInstance(animNode);
+	std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+	const RagdollInstance* inst = FindInstanceLocked(key);
 	if (inst == nullptr)
 		return names;
 
@@ -606,12 +656,12 @@ std::vector<std::string> VansRagdollSystem::GetBodyBoneNames(VansAnimationNode* 
 	return names;
 }
 
-bool VansRagdollSystem::GetBoneWorldPosition(VansAnimationNode* animNode,
-                                              const std::string& boneName,
-                                              glm::vec3& outPos) const
+bool VansRagdollSystem::GetFollowBoneWorldPositionLocked(const Vans::VansRagdollKey& key,
+                                                          const std::string& boneName,
+                                                          glm::vec3& outPos) const
 {
-	const RagdollInstance* inst = FindInstance(animNode);
-	if (inst == nullptr)
+	const RagdollInstance* inst = FindInstanceLocked(key);
+	if (inst == nullptr || inst->driveMode == RagdollDriveMode::Animation)
 		return false;
 
 	auto it = inst->boneNameToEntryIndex.find(boneName);
@@ -628,11 +678,14 @@ bool VansRagdollSystem::GetBoneWorldPosition(VansAnimationNode* animNode,
 	return true;
 }
 
-void VansRagdollSystem::ApplyImpulse(VansAnimationNode* animNode,
+void VansRagdollSystem::ApplyImpulse(const Vans::VansRagdollKey& key,
                                       const std::string& boneName,
                                       const glm::vec3& worldImpulse)
 {
-	RagdollInstance* inst = FindInstance(animNode);
+	VANS_ASSERT_MAIN_THREAD();
+	VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
+	std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
+	RagdollInstance* inst = FindInstanceLocked(key);
 	if (inst == nullptr || inst->driveMode == RagdollDriveMode::Animation)
 		return;
 
@@ -644,18 +697,18 @@ void VansRagdollSystem::ApplyImpulse(VansAnimationNode* animNode,
 	if (entry.body == nullptr)
 		return;
 
-	VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
-	std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
 	entry.body->addForce(ToPxVec3(worldImpulse), PxForceMode::eIMPULSE, true);
 }
 
-bool VansRagdollSystem::AddLinearVelocity(VansAnimationNode* animNode, const glm::vec3& velocityDelta)
+bool VansRagdollSystem::AddLinearVelocity(
+	const Vans::VansRagdollKey& key, const glm::vec3& velocityDelta)
 {
+	VANS_ASSERT_MAIN_THREAD();
     const PxVec3 delta = ToPxVec3(velocityDelta);
     if (!delta.isFinite()) return false;
-    auto* inst = FindInstance(animNode);
-    if (!inst || inst->driveMode != RagdollDriveMode::Physics || inst->boneEntries.empty()) return false;
     std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+    auto* inst = FindInstanceLocked(key);
+    if (!inst || inst->driveMode != RagdollDriveMode::Physics || inst->boneEntries.empty()) return false;
     // 先验证整组，再一次性叠加，避免部分节点成功而部分失败。
     for (const auto& entry : inst->boneEntries)
         if (!entry.body || entry.body->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)
@@ -665,22 +718,23 @@ bool VansRagdollSystem::AddLinearVelocity(VansAnimationNode* animNode, const glm
     return true;
 }
 
-bool VansRagdollSystem::AddVelocityAtPosition(VansAnimationNode* animNode,
+bool VansRagdollSystem::AddVelocityAtPosition(const Vans::VansRagdollKey& key,
     const std::string& boneName, const glm::vec3& worldVelocityDelta,
     const glm::vec3& worldPosition, float maxAngularVelocityDelta)
 {
+	VANS_ASSERT_MAIN_THREAD();
 	const PxVec3 delta = ToPxVec3(worldVelocityDelta), point = ToPxVec3(worldPosition);
 	if (!delta.isFinite() || !point.isFinite() || !std::isfinite(maxAngularVelocityDelta)
 		|| maxAngularVelocityDelta < 0.0f)
 		return false;
-	RagdollInstance* inst = FindInstance(animNode);
+	std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+	RagdollInstance* inst = FindInstanceLocked(key);
 	if (!inst || inst->driveMode == RagdollDriveMode::Animation)
 		return false;
 	const auto found = inst->boneNameToEntryIndex.find(boneName);
 	if (found == inst->boneNameToEntryIndex.end())
 		return false;
 	PxRigidDynamic* body = inst->boneEntries[found->second].body;
-	std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
 	if (!body || body->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC))
 		return false;
 	// 按质量换算冲量，使轻手掌和重躯干获得相同的线速度增量。
@@ -703,139 +757,118 @@ bool VansRagdollSystem::AddVelocityAtPosition(VansAnimationNode* animNode,
 	return true;
 }
 
-void VansRagdollSystem::PostAnimationUpdate(VansAnimationNode* animNode)
+bool VansRagdollSystem::ResolvePose(
+	const Vans::VansRagdollKey& key,
+	const Vans::VansRagdollPoseView& animationPose,
+	Vans::VansRagdollPose& outPose)
 {
-	RagdollInstance* inst = FindInstance(animNode);
-	if (inst == nullptr)
-		return;
+	VANS_ASSERT_MAIN_THREAD();
+	VANS_ASSERT_FRAME_PHASE(VansFramePhase::RenderPrep);
+	outPose.modelTransforms.clear();
+	if (!animationPose.IsValid())
+		return false;
 
 	VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
 	std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
+	RagdollInstance* inst = FindInstanceLocked(key);
+	if (inst == nullptr || animationPose.modelTransformCount != inst->parentIndices.size())
+		return false;
 
 	switch (inst->driveMode)
 	{
 	case RagdollDriveMode::Animation:
-		SyncBodiesToAnimPose(*inst);
-		break;
+		SyncBodiesToAnimationPose(*inst, animationPose);
+		return false;
 	case RagdollDriveMode::Physics:
-		SyncAnimToPhysicsPose(*inst);
-		break;
+		return BuildPhysicsPose(*inst, animationPose, outPose.modelTransforms);
 	case RagdollDriveMode::Blend:
-		BlendAndApplyPose(*inst);
-		break;
+		return BuildBlendedPose(*inst, animationPose, outPose.modelTransforms);
 	}
+	return false;
 }
 
-void VansRagdollSystem::SyncBodiesToAnimPose(RagdollInstance& inst)
+void VansRagdollSystem::SyncBodiesToAnimationPose(
+	RagdollInstance& inst, const Vans::VansRagdollPoseView& animationPose)
 {
-	if (inst.animNode == nullptr || inst.animNode->GetController() == nullptr)
-		return;
-
-	const auto& globalTransforms = inst.animNode->GetController()->GetCachedGlobalTransforms();
-	uint32_t rootTransformID = inst.animNode->GetTransformID();
-	if (rootTransformID >= VansTransformStore::GlobalTransforms.size())
-		return;
-
-	glm::mat4 rootWorld = VansTransformStore::GetTransform(rootTransformID).GetModelMatrix();
 	for (auto& entry : inst.boneEntries)
 	{
-		if (entry.body == nullptr || entry.boneIndex < 0 || entry.boneIndex >= static_cast<int>(globalTransforms.size()))
+		if (entry.body == nullptr || entry.boneIndex < 0 ||
+			entry.boneIndex >= static_cast<int>(animationPose.modelTransformCount))
 			continue;
 
-		glm::mat4 bodyWorld = rootWorld * globalTransforms[entry.boneIndex] * entry.shapeOffset;
+		const glm::mat4 bodyWorld = animationPose.rootWorld *
+			animationPose.modelTransforms[entry.boneIndex] * entry.shapeOffset;
 		entry.body->setKinematicTarget(GlmToPx(bodyWorld));
 	}
 }
 
-void VansRagdollSystem::SyncAnimToPhysicsPose(RagdollInstance& inst)
+bool VansRagdollSystem::BuildPhysicsPose(
+	const RagdollInstance& inst,
+	const Vans::VansRagdollPoseView& animationPose,
+	std::vector<glm::mat4>& outModelTransforms) const
 {
-	if (inst.animNode == nullptr || inst.animNode->GetController() == nullptr)
-		return;
+	if (!animationPose.IsValid() ||
+		animationPose.modelTransformCount != inst.parentIndices.size())
+		return false;
 
-	VansAnimationController* controller = inst.animNode->GetController();
-	const Skeleton& skeleton = inst.animNode->GetSkeleton();
-	std::vector<glm::mat4> modelTransforms = controller->GetCachedGlobalTransforms();
-	if (modelTransforms.size() != skeleton.bones.size())
-		return;
-	std::vector<glm::mat4> sourceLocalTransforms = BuildLocalModelTransforms(skeleton, modelTransforms);
-
-	uint32_t rootTransformID = inst.animNode->GetTransformID();
-	if (rootTransformID >= VansTransformStore::GlobalTransforms.size())
-		return;
-
-	glm::mat4 rootWorld = VansTransformStore::GetTransform(rootTransformID).GetModelMatrix();
+	outModelTransforms.assign(
+		animationPose.modelTransforms,
+		animationPose.modelTransforms + animationPose.modelTransformCount);
+	const std::vector<glm::mat4> sourceLocalTransforms =
+		BuildLocalModelTransforms(inst.parentIndices, outModelTransforms);
 
 	for (const auto& entry : inst.boneEntries)
 	{
-		if (entry.body == nullptr || entry.boneIndex < 0 || entry.boneIndex >= static_cast<int>(modelTransforms.size()))
+		if (entry.body == nullptr || entry.boneIndex < 0 ||
+			entry.boneIndex >= static_cast<int>(outModelTransforms.size()))
 			continue;
 
-		glm::mat4 bodyWorld = PxToGlm(entry.body->getGlobalPose());
-		glm::mat4 boneWorld = bodyWorld * entry.shapeOffsetInverse;
-		modelTransforms[entry.boneIndex] = ConvertWorldBoneToModelTransform(boneWorld, rootWorld, modelTransforms[entry.boneIndex]);
+		const glm::mat4 bodyWorld = PxToGlm(entry.body->getGlobalPose());
+		const glm::mat4 boneWorld = bodyWorld * entry.shapeOffsetInverse;
+		outModelTransforms[entry.boneIndex] = ConvertWorldBoneToModelTransform(
+			boneWorld,
+			animationPose.rootWorld,
+			outModelTransforms[entry.boneIndex]);
 	}
-	PropagateDrivenDescendants(inst, skeleton, sourceLocalTransforms, modelTransforms);
-
-	controller->SubmitExternalModelPose(
-		modelTransforms, skeleton, 0.0f,
-		VansGraphics::VansExternalPoseEvaluationMode::DirectFinalPose);
+	PropagateDrivenDescendants(inst, sourceLocalTransforms, outModelTransforms);
+	return true;
 }
 
-void VansRagdollSystem::BlendAndApplyPose(RagdollInstance& inst)
+bool VansRagdollSystem::BuildBlendedPose(
+	const RagdollInstance& inst,
+	const Vans::VansRagdollPoseView& animationPose,
+	std::vector<glm::mat4>& outModelTransforms) const
 {
-	if (inst.animNode == nullptr || inst.animNode->GetController() == nullptr)
-		return;
+	std::vector<glm::mat4> physicsTransforms;
+	if (!BuildPhysicsPose(inst, animationPose, physicsTransforms))
+		return false;
 
-	VansAnimationController* controller = inst.animNode->GetController();
-	const Skeleton& skeleton = inst.animNode->GetSkeleton();
-	std::vector<glm::mat4> animTransforms = controller->GetCachedGlobalTransforms();
-	std::vector<glm::mat4> physTransforms = animTransforms;
-	if (animTransforms.size() != skeleton.bones.size())
-		return;
-	std::vector<glm::mat4> sourceLocalTransforms = BuildLocalModelTransforms(skeleton, animTransforms);
-
-	uint32_t rootTransformID = inst.animNode->GetTransformID();
-	if (rootTransformID >= VansTransformStore::GlobalTransforms.size())
-		return;
-
-	glm::mat4 rootWorld = VansTransformStore::GetTransform(rootTransformID).GetModelMatrix();
-
-	for (const auto& entry : inst.boneEntries)
-	{
-		if (entry.body == nullptr || entry.boneIndex < 0 || entry.boneIndex >= static_cast<int>(physTransforms.size()))
-			continue;
-
-		glm::mat4 bodyWorld = PxToGlm(entry.body->getGlobalPose());
-		glm::mat4 boneWorld = bodyWorld * entry.shapeOffsetInverse;
-		physTransforms[entry.boneIndex] = ConvertWorldBoneToModelTransform(boneWorld, rootWorld, animTransforms[entry.boneIndex]);
-	}
-	PropagateDrivenDescendants(inst, skeleton, sourceLocalTransforms, physTransforms);
-
-	std::vector<glm::mat4> blended;
-	BlendModelTransforms(animTransforms, physTransforms, inst.blendWeight, blended);
-	controller->SubmitExternalModelPose(
-		blended, skeleton, 0.0f,
-		VansGraphics::VansExternalPoseEvaluationMode::DirectFinalPose);
+	const std::vector<glm::mat4> animationTransforms(
+		animationPose.modelTransforms,
+		animationPose.modelTransforms + animationPose.modelTransformCount);
+	BlendModelTransforms(
+		animationTransforms, physicsTransforms, inst.blendWeight, outModelTransforms);
+	return outModelTransforms.size() == animationTransforms.size();
 }
 
-void VansRagdollSystem::WarmStartBodies(RagdollInstance& inst, const glm::vec3& initialVelocity)
+bool VansRagdollSystem::WarmStartBodies(
+	RagdollInstance& inst,
+	const Vans::VansRagdollPoseView& animationPose,
+	const glm::vec3& initialVelocity)
 {
-	if (inst.animNode == nullptr || inst.animNode->GetController() == nullptr)
-		return;
+	if (!animationPose.IsValid() ||
+		animationPose.modelTransformCount != inst.parentIndices.size())
+		return false;
 
-	const auto& globalTransforms = inst.animNode->GetController()->GetCachedGlobalTransforms();
-	uint32_t rootTransformID = inst.animNode->GetTransformID();
-	if (rootTransformID >= VansTransformStore::GlobalTransforms.size())
-		return;
-
-	glm::mat4 rootWorld = VansTransformStore::GetTransform(rootTransformID).GetModelMatrix();
 	bool hasInitialVelocity = HasInitialVelocity(initialVelocity);
 	for (auto& entry : inst.boneEntries)
 	{
-		if (entry.body == nullptr || entry.boneIndex < 0 || entry.boneIndex >= static_cast<int>(globalTransforms.size()))
+		if (entry.body == nullptr || entry.boneIndex < 0 ||
+			entry.boneIndex >= static_cast<int>(animationPose.modelTransformCount))
 			continue;
 
-		glm::mat4 bodyWorld = rootWorld * globalTransforms[entry.boneIndex] * entry.shapeOffset;
+		const glm::mat4 bodyWorld = animationPose.rootWorld *
+			animationPose.modelTransforms[entry.boneIndex] * entry.shapeOffset;
 		entry.body->setGlobalPose(GlmToPx(bodyWorld), true);
 		SetActorRagdollContactsEnabled(entry.body, true);
 		entry.body->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, false);
@@ -848,6 +881,7 @@ void VansRagdollSystem::WarmStartBodies(RagdollInstance& inst, const glm::vec3& 
 			entry.body->addForce(ToPxVec3(entry.stationaryImpulse), PxForceMode::eIMPULSE, true);
 		entry.body->wakeUp();
 	}
+	return true;
 }
 
 void VansRagdollSystem::ReenableKinematic(RagdollInstance& inst)
@@ -865,7 +899,8 @@ void VansRagdollSystem::ReenableKinematic(RagdollInstance& inst)
 
 void VansRagdollSystem::ReleaseInstance(RagdollInstance& inst)
 {
-	PxScene* scene = VansPhysicsSystem::GetInstance().GetScene();
+	auto& physicsSystem = VansPhysicsSystem::GetInstance();
+	PxScene* scene = VansPhysicsNativeAccess::Scene(physicsSystem);
 	for (auto& entry : inst.boneEntries)
 	{
 		if (entry.joint != nullptr)
@@ -895,21 +930,22 @@ void VansRagdollSystem::ReleaseInstance(RagdollInstance& inst)
 	inst.boneNameToEntryIndex.clear();
 }
 
-RagdollInstance* VansRagdollSystem::FindInstance(VansAnimationNode* animNode)
+RagdollInstance* VansRagdollSystem::FindInstanceLocked(const Vans::VansRagdollKey& key)
 {
 	for (auto& inst : m_Instances)
 	{
-		if (inst.animNode == animNode)
+		if (inst.key == key)
 			return &inst;
 	}
 	return nullptr;
 }
 
-const RagdollInstance* VansRagdollSystem::FindInstance(VansAnimationNode* animNode) const
+const RagdollInstance* VansRagdollSystem::FindInstanceLocked(
+	const Vans::VansRagdollKey& key) const
 {
 	for (const auto& inst : m_Instances)
 	{
-		if (inst.animNode == animNode)
+		if (inst.key == key)
 			return &inst;
 	}
 	return nullptr;
@@ -928,21 +964,24 @@ glm::mat4 VansRagdollSystem::MakeTRS(const glm::vec3& pos,
 	return result;
 }
 
-int VansRagdollSystem::FindNearestParentEntry(const RagdollInstance& inst,
-                                               const Skeleton& skeleton,
-                                               int childBoneIndex)
+int VansRagdollSystem::FindNearestParentEntry(
+	const RagdollInstance& inst, int childBoneIndex)
 {
-	if (childBoneIndex < 0 || childBoneIndex >= static_cast<int>(skeleton.bones.size()))
+	if (childBoneIndex < 0 ||
+		childBoneIndex >= static_cast<int>(inst.parentIndices.size()))
 		return -1;
 
-	int parentIndex = skeleton.bones[childBoneIndex].parentIndex;
+	int parentIndex = inst.parentIndices[childBoneIndex];
 	while (parentIndex >= 0)
 	{
-		const BoneInfo& bone = skeleton.bones[parentIndex];
-		auto it = inst.boneNameToEntryIndex.find(bone.name);
-		if (it != inst.boneNameToEntryIndex.end())
-			return it->second;
-		parentIndex = bone.parentIndex;
+		for (std::size_t entryIndex = 0; entryIndex < inst.boneEntries.size(); ++entryIndex)
+		{
+			if (inst.boneEntries[entryIndex].boneIndex == parentIndex)
+				return static_cast<int>(entryIndex);
+		}
+		if (parentIndex >= static_cast<int>(inst.parentIndices.size()))
+			return -1;
+		parentIndex = inst.parentIndices[parentIndex];
 	}
 	return -1;
 }

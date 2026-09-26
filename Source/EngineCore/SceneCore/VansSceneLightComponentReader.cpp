@@ -148,7 +148,7 @@ VansScenePointLightComponentConfig VansSceneLightComponentReader::ReadPointLight
 	config.color = ReadOptionalColorField(lightNode);
 	config.intensity = ReadOptionalFloatField(lightNode, "intensity");
 	config.radius = ReadOptionalFloatField(lightNode, "radius");
-	config.iesProfile = ReadOptionalStringField(lightNode, "ies_profile");
+	config.iesProfileGuid = ReadOptionalStringField(lightNode, "ies_profile_guid");
 	config.shadow = DecodeShadowConfig(lightNode);
 	return config;
 }
@@ -163,7 +163,7 @@ VansSceneSpotLightComponentConfig VansSceneLightComponentReader::ReadSpotLight(
 	config.radius = ReadOptionalFloatField(lightNode, "radius");
 	config.innerCutoffDegrees = ReadOptionalFloatField(lightNode, "innercutoff");
 	config.outerCutoffDegrees = ReadOptionalFloatField(lightNode, "outerCutoff");
-	config.iesProfile = ReadOptionalStringField(lightNode, "ies_profile");
+	config.iesProfileGuid = ReadOptionalStringField(lightNode, "ies_profile_guid");
 	config.iesIntensityScale = ReadOptionalFloatField(lightNode, "ies_intensity_scale");
 	config.shadow = DecodeShadowConfig(lightNode);
 	return config;
@@ -182,8 +182,7 @@ VansSceneRectLightComponentConfig VansSceneLightComponentReader::ReadRectLight(
 	config.twoSided = ReadOptionalBoolField(lightNode, "two_sided");
 	config.attenuationExp = ReadOptionalFloatField(lightNode, "attenuation_exp");
 	config.textureLodBias = ReadOptionalFloatField(lightNode, "texture_lod_bias");
-	config.emissiveTexture = ReadOptionalStringField(lightNode, "emissive_texture");
-	config.emissiveVideo = ReadOptionalStringField(lightNode, "emissive_video");
+	config.emissiveTextureGuid = ReadOptionalStringField(lightNode, "emissive_texture_guid");
 	config.shadow = DecodeShadowConfig(lightNode);
 	return config;
 }

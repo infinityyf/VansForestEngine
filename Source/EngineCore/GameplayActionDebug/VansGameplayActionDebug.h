@@ -10,6 +10,8 @@
 
 namespace Vans
 {
+std::string VansFormatTargetDataValue(const VansTargetDataValue& value);
+
 struct VansActionHostDebugSnapshot
 {
 	VansEntityHandle owner;

@@ -1,4 +1,5 @@
 #include "VansPcgWindow.h"
+#include "../../EngineAPILayer/Public/IPcgEditorAPI.h"
 #include <imgui.h>
 #include <algorithm>
 #include <cmath>
@@ -6,7 +7,7 @@
 
 namespace VansGraphics
 {
-void VansPcgWindow::ShowMaskCanvas(Vans::EditorAPI::IEngineEditorAPI& api,const Vans::EditorAPI::PcgBrushSnapshot& brush)
+void VansPcgWindow::ShowMaskCanvas(Vans::EditorAPI::IPcgEditorAPI& api,const Vans::EditorAPI::PcgBrushSnapshot& brush)
 {
     using namespace Vans::EditorAPI;
     const auto preview=api.GetPcgMaskPreview(brush.target.maskGuid);

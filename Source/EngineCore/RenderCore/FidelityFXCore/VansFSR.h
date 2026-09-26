@@ -7,6 +7,7 @@
 #include <ffx_api/vk/ffx_api_vk.hpp>
 
 #include <memory>
+#include <string>
 
 namespace VansGraphics
 {
@@ -19,6 +20,10 @@ namespace VansGraphics
 		~VansFSR();
 		VansFSR(const VansFSR&) = delete;
 		VansFSR& operator=(const VansFSR&) = delete;
+
+		static bool QueryRuntimeCapability(
+			std::string& featureVersion,
+			std::string& unavailableReason);
 
 		bool InitializeContext(
 			VkDevice device,

@@ -1,6 +1,8 @@
 #include "VansTextureCooker.h"
 
 #include "../Storage/VansFileStorage.h"
+#include "../VansAssetDatabase.h"
+#include "../VansDerivedArtifactLayout.h"
 
 #include <algorithm>
 #include <array>
@@ -427,7 +429,7 @@ bool VansTextureCooker::IsEligible(const std::filesystem::path& sourcePath, cons
     if (precision != "low8" && precision != "8" && precision != "rgba8")
         return false;
     const int importChannel = meta.ReadIntSetting("importChannel", 4);
-    const bool useCompress = meta.ReadBoolSetting("useCompress", "compress", true);
+    const bool useCompress = meta.ReadBoolSetting("useCompress", true);
     return useCompress ? importChannel == 4
         : importChannel == 1 || importChannel == 2 || importChannel == 4;
 }
@@ -442,7 +444,9 @@ VansTextureCookResult VansTextureCooker::CookIfNeeded(
     if (artifactRoot.empty() || !IsEligible(sourcePath, meta))
         return result;
 
-    result.artifactPath = artifactRoot / "Textures" / (meta.guid.ToString() + ".vtex");
+    const VansDerivedArtifactLocation artifact = VansDerivedArtifactLayout::ImportedRuntimeCache(
+        artifactRoot, VansAssetType::Texture, meta.guid);
+    result.artifactPath = artifact.path;
     FileStamp sourceStamp{};
     FileStamp metaStamp{};
     if (!GetFileStamp(sourcePath, sourceStamp, result.error) || !GetFileStamp(metaPath, metaStamp, result.error))
@@ -484,7 +488,7 @@ VansTextureCookResult VansTextureCooker::CookIfNeeded(
     std::vector<std::uint8_t> rgba(loaded, loaded + baseBytes);
     stbi_image_free(loaded);
 
-    const bool useCompress = meta.ReadBoolSetting("useCompress", "compress", true);
+    const bool useCompress = meta.ReadBoolSetting("useCompress", true);
     const int importChannel = meta.ReadIntSetting("importChannel", 4);
     const std::uint32_t cookedFormat = useCompress
         ? kFormatBC3

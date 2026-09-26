@@ -117,6 +117,62 @@ std::optional<std::array<std::array<float, 3>, 4>> ReadOptionalFloat3Array4Field
 	return result;
 }
 
+std::vector<float> ReadFloatArrayField(const VansSerializedValue& object, const char* key)
+{
+	std::vector<float> values;
+	const VansSerializedValue* found = ReadArrayField(object, key);
+	if (!found)
+		return values;
+	values.reserve(found->arrayItems.size());
+	for (const VansSerializedValue& item : found->arrayItems)
+	{
+		if (item.kind != VansSerializedValue::Kind::Float && item.kind != VansSerializedValue::Kind::Int)
+			return {};
+		values.push_back(static_cast<float>(ReadSerializedNumber(item)));
+	}
+	return values;
+}
+
+std::vector<std::array<float, 2>> ReadFloatPairArrayField(
+	const VansSerializedValue& object,
+	const char* key)
+{
+	std::vector<std::array<float, 2>> values;
+	const VansSerializedValue* found = ReadArrayField(object, key);
+	if (!found)
+		return values;
+	values.reserve(found->arrayItems.size());
+	for (const VansSerializedValue& pair : found->arrayItems)
+	{
+		if (pair.kind != VansSerializedValue::Kind::Array || pair.arrayItems.size() != 2)
+			return {};
+		std::array<float, 2> value{};
+		for (std::size_t index = 0; index < value.size(); ++index)
+		{
+			const VansSerializedValue& item = pair.arrayItems[index];
+			if (item.kind != VansSerializedValue::Kind::Float && item.kind != VansSerializedValue::Kind::Int)
+				return {};
+			value[index] = static_cast<float>(ReadSerializedNumber(item));
+		}
+		values.push_back(value);
+	}
+	return values;
+}
+
+template <std::size_t Count>
+std::optional<std::array<std::array<float, 2>, Count>> ReadOptionalFloat2ArrayField(
+	const VansSerializedValue& object,
+	const char* key)
+{
+	const std::vector<std::array<float, 2>> values = ReadFloatPairArrayField(object, key);
+	if (values.size() != Count)
+		return std::nullopt;
+	std::array<std::array<float, 2>, Count> result{};
+	for (std::size_t index = 0; index < Count; ++index)
+		result[index] = values[index];
+	return result;
+}
+
 std::optional<VansSceneVehicleTokenConfig> ReadOptionalTokenField(
 	const VansSerializedValue& object,
 	const char* key)
@@ -236,7 +292,9 @@ VansSceneVehicleTuningConfig DecodeTuning(const VansSerializedValue& vehicleNode
 {
 	VansSceneVehicleTuningConfig config;
 	const VansSerializedValue* tuningObject = ReadObjectField(vehicleNode, "tuning");
-	const VansSerializedValue& tuningNode = tuningObject ? *tuningObject : vehicleNode;
+	if (!tuningObject)
+		return config;
+	const VansSerializedValue& tuningNode = *tuningObject;
 
 	config.bodyMass = ReadOptionalFloatField(tuningNode, "bodyMass");
 	config.bodyMoi = ReadOptionalFloat3Field(tuningNode, "bodyMoi");
@@ -248,7 +306,6 @@ VansSceneVehicleTuningConfig DecodeTuning(const VansSerializedValue& vehicleNode
 	config.bodyGeometryHalfExtentsScale = ReadOptionalFloat3Field(tuningNode, "bodyGeometryHalfExtentsScale");
 	config.bodyGeometryCenterOffset = ReadOptionalFloat3Field(tuningNode, "bodyGeometryCenterOffset");
 	config.longitudinalAxis = ReadOptionalTokenField(tuningNode, "longitudinalAxis");
-	config.forwardAxis = ReadOptionalTokenField(tuningNode, "forwardAxis");
 	config.lateralAxis = ReadOptionalTokenField(tuningNode, "lateralAxis");
 	config.verticalAxis = ReadOptionalTokenField(tuningNode, "verticalAxis");
 
@@ -259,11 +316,8 @@ VansSceneVehicleTuningConfig DecodeTuning(const VansSerializedValue& vehicleNode
 	config.wheelDampingRate = ReadOptionalFloatField(tuningNode, "wheelDampingRate");
 	config.visualWheelRollSign = ReadOptionalFloatField(tuningNode, "visualWheelRollSign");
 	config.wheelVisualGroundClearance = ReadOptionalFloatField(tuningNode, "wheelVisualGroundClearance");
-	config.enableWheelSimulationCollision = ReadOptionalBoolField(tuningNode, "enableWheelSimulationCollision");
 	config.collisionLayer = ReadOptionalStringField(tuningNode, "collisionLayer");
-	config.layer = ReadOptionalStringField(tuningNode, "layer");
 	config.useRoadQueryLayerFilter = ReadOptionalBoolField(tuningNode, "useRoadQueryLayerFilter");
-	config.roadQueryLayerFilter = ReadOptionalBoolField(tuningNode, "roadQueryLayerFilter");
 	config.physxActorUpdateMode = ReadOptionalStringField(tuningNode, "physxActorUpdateMode");
 	config.roadQueryMask = ReadOptionalUIntField(tuningNode, "roadQueryMask");
 	config.roadQueryLayers = ReadStringArrayField(tuningNode, "roadQueryLayers");
@@ -281,22 +335,56 @@ VansSceneVehicleTuningConfig DecodeTuning(const VansSerializedValue& vehicleNode
 
 	config.brakeMaxTorque = ReadOptionalFloatField(tuningNode, "brakeMaxTorque");
 	config.handbrakeMaxTorque = ReadOptionalFloatField(tuningNode, "handbrakeMaxTorque");
-	config.maxSteerAngleDeg = ReadOptionalFloatField(tuningNode, "maxSteerAngleDeg");
-	config.maxSteerAngleRad = ReadOptionalFloatField(tuningNode, "maxSteerAngleRad");
+	config.maxSteerAngleDegrees = ReadOptionalFloatField(tuningNode, "maxSteerAngleDegrees");
 	config.ackermannWheelBase = ReadOptionalFloatField(tuningNode, "ackermannWheelBase");
 	config.ackermannTrackWidth = ReadOptionalFloatField(tuningNode, "ackermannTrackWidth");
 	config.ackermannStrength = ReadOptionalFloatField(tuningNode, "ackermannStrength");
 
 	config.enginePeakTorque = ReadOptionalFloatField(tuningNode, "enginePeakTorque");
 	config.engineMaxOmega = ReadOptionalFloatField(tuningNode, "engineMaxOmega");
+	config.engineMoi = ReadOptionalFloatField(tuningNode, "engineMoi");
+	config.engineIdleOmega = ReadOptionalFloatField(tuningNode, "engineIdleOmega");
+	config.engineDampingFullThrottle = ReadOptionalFloatField(tuningNode, "engineDampingFullThrottle");
+	config.engineDampingZeroThrottleClutchEngaged = ReadOptionalFloatField(tuningNode, "engineDampingZeroThrottleClutchEngaged");
+	config.engineDampingZeroThrottleClutchDisengaged = ReadOptionalFloatField(tuningNode, "engineDampingZeroThrottleClutchDisengaged");
+	config.engineTorqueCurve = ReadFloatPairArrayField(tuningNode, "engineTorqueCurve");
+	config.gearRatios = ReadFloatArrayField(tuningNode, "gearRatios");
+	config.neutralGear = ReadOptionalUIntField(tuningNode, "neutralGear");
 	config.gearboxFinalRatio = ReadOptionalFloatField(tuningNode, "gearboxFinalRatio");
 	config.gearboxSwitchTime = ReadOptionalFloatField(tuningNode, "gearboxSwitchTime");
+	config.autoboxUpRatios = ReadFloatArrayField(tuningNode, "autoboxUpRatios");
+	config.autoboxDownRatios = ReadFloatArrayField(tuningNode, "autoboxDownRatios");
 	config.autoboxLatency = ReadOptionalFloatField(tuningNode, "autoboxLatency");
 	config.clutchStrength = ReadOptionalFloatField(tuningNode, "clutchStrength");
+	config.clutchEstimateIterations = ReadOptionalUIntField(tuningNode, "clutchEstimateIterations");
+
+	config.tireLongitudinalStiffness = ReadOptionalFloatField(tuningNode, "tireLongitudinalStiffness");
+	config.tireLateralStiffnessX = ReadOptionalFloatField(tuningNode, "tireLateralStiffnessX");
+	config.tireLateralStiffnessY = ReadOptionalFloat4Field(tuningNode, "tireLateralStiffnessY");
+	config.tireCamberStiffness = ReadOptionalFloatField(tuningNode, "tireCamberStiffness");
+	config.tireRestLoad = ReadOptionalFloat4Field(tuningNode, "tireRestLoad");
+	config.tireFrictionVsSlip = ReadOptionalFloat2ArrayField<3>(tuningNode, "tireFrictionVsSlip");
+	config.tireLoadFilter = ReadOptionalFloat2ArrayField<2>(tuningNode, "tireLoadFilter");
+
+	config.differentialTorqueRatios = ReadOptionalFloat4Field(tuningNode, "differentialTorqueRatios");
+	config.differentialAverageWheelSpeedRatios = ReadOptionalFloat4Field(tuningNode, "differentialAverageWheelSpeedRatios");
+	config.differentialCenterBias = ReadOptionalFloatField(tuningNode, "differentialCenterBias");
+	config.differentialCenterTarget = ReadOptionalFloatField(tuningNode, "differentialCenterTarget");
+	config.differentialFrontBias = ReadOptionalFloatField(tuningNode, "differentialFrontBias");
+	config.differentialFrontTarget = ReadOptionalFloatField(tuningNode, "differentialFrontTarget");
+	config.differentialRearBias = ReadOptionalFloatField(tuningNode, "differentialRearBias");
+	config.differentialRearTarget = ReadOptionalFloatField(tuningNode, "differentialRearTarget");
+	config.differentialRate = ReadOptionalFloatField(tuningNode, "differentialRate");
+
+	config.materialStaticFriction = ReadOptionalFloatField(tuningNode, "materialStaticFriction");
+	config.materialDynamicFriction = ReadOptionalFloatField(tuningNode, "materialDynamicFriction");
+	config.materialRestitution = ReadOptionalFloatField(tuningNode, "materialRestitution");
+	config.tireFriction = ReadOptionalFloatField(tuningNode, "tireFriction");
+	config.suspensionLimitRestitution = ReadOptionalFloatField(tuningNode, "suspensionLimitRestitution");
+	config.drivetrainSubsteps = ReadOptionalUIntField(tuningNode, "drivetrainSubsteps");
 
 	config.autoWheelGeometry = ReadOptionalBoolField(tuningNode, "autoWheelGeometry");
 	config.bodyGeometryExcludeObjects = ReadStringArrayField(tuningNode, "bodyGeometryExcludeObjects");
-	config.wheelOrder = ReadOptionalWheelOrder(tuningNode);
 	return config;
 }
 

@@ -25,6 +25,16 @@ std::string StringAt(
 		? value->stringValue : std::move(fallback);
 }
 
+bool ParseFollowMode(std::string_view value, VansCameraFollowMode& mode)
+{
+	if (value == "Fixed") mode = VansCameraFollowMode::Fixed;
+	else if (value == "SpringArm") mode = VansCameraFollowMode::SpringArm;
+	else if (value == "Orbit") mode = VansCameraFollowMode::Orbit;
+	else if (value == "Rail") mode = VansCameraFollowMode::Rail;
+	else return false;
+	return true;
+}
+
 double NumberAt(const VansSerializedValue& root, const char* path, double fallback)
 {
 	const VansSerializedValue* value = At(root, path);
@@ -169,13 +179,13 @@ VansGameplayPropertySchema SchemaVector3Child(
 VansGameplayAssetSchemaDescriptor CameraAssetSchema(
 	VansAssetType type,
 	std::string kind,
-	std::string extension,
 	const char* idPath)
 {
 	VansGameplayAssetSchemaDescriptor descriptor;
 	descriptor.assetType = type;
 	descriptor.assetKind = std::move(kind);
-	descriptor.extension = std::move(extension);
+	if (const VansAssetTypeDescriptor* assetType = VansAssetDatabase::Describe(type))
+		descriptor.extension = assetType->canonicalExtension;
 	descriptor.fields.push_back(SchemaField("/assetKind", "Asset Kind", "Identity",
 		VansGameplayPropertyKind::String,
 		VansSerializedValue::String(descriptor.assetKind), true));
@@ -209,7 +219,16 @@ bool CompileCameraProfile(
 		rig->stableName = StringAt(cooked.runtimeDocument, "/cameraRigId");
 		rig->id = VansMakeStableId<VansCameraRigIdTag>(rig->stableName);
 		rig->follow.enabled = true;
-		rig->follow.mode = StringAt(cooked.runtimeDocument, "/follow/mode", "SpringArm");
+		const std::string followMode = StringAt(
+			cooked.runtimeDocument, "/follow/mode", "SpringArm");
+		if (!ParseFollowMode(followMode, rig->follow.mode))
+		{
+			AddDiagnostic(diagnostics, "GAF-CAMERA-FOLLOW-MODE",
+				"Unknown camera follow mode '" + followMode +
+				"'; expected Fixed, SpringArm, Orbit, or Rail",
+				"/follow/mode");
+			return false;
+		}
 		rig->follow.targetBinding = StringAt(
 			cooked.runtimeDocument, "/follow/targetBinding", "Avatar");
 		rig->follow.localOffset = vectorAt("/follow/offset", { 0.0f, 1.6f, -3.0f });
@@ -315,7 +334,7 @@ bool VansRegisterCameraGameplayAssetSchemas(
 	std::string& error)
 {
 	auto rig = CameraAssetSchema(
-		VansAssetType::CameraRigProfile, "CameraRigProfile", ".vcamerarig", "/cameraRigId");
+		VansAssetType::CameraRigProfile, "CameraRigProfile", "/cameraRigId");
 	rig.fields.push_back(SchemaField("/follow", "Follow", "Rig",
 		VansGameplayPropertyKind::Object, VansSerializedValue::Object({
 			{ "mode", VansSerializedValue::String("SpringArm") },
@@ -446,7 +465,7 @@ bool VansRegisterCameraGameplayAssetSchemas(
 	if (!registry.Register(std::move(rig), error)) return false;
 
 	auto shake = CameraAssetSchema(VansAssetType::CameraShakeProfile,
-		"CameraShakeProfile", ".vcamerashake", "/cameraShakeId");
+		"CameraShakeProfile", "/cameraShakeId");
 	shake.fields.push_back(SchemaField("/noise", "Noise", "Shake",
 		VansGameplayPropertyKind::Object, VansSerializedValue::Object({
 			{ "translationAmplitude", VansSerializedValue::Object({

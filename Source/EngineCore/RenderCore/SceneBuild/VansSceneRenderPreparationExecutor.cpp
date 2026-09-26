@@ -17,7 +17,10 @@ bool VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(VansScen
 	device.PrepareInstanceTransformData();
 	scene.CreateGlobalDescriptorSet(device.GetLogicDevice());
 	if (!scene.InitializeEnvironmentRendering(device))
+	{
 		VANS_LOG_ERROR("[SceneRenderPreparation] Atmosphere system initialization failed");
+		return false;
+	}
 
 	if (!scene.PrepareReflectionProbeRuntime(device))
 		return false;

@@ -9,6 +9,8 @@
 
 namespace VansGraphics
 {
+    inline constexpr float DefaultWaterCompatibilityPlaneHalfExtent = 512.0f;
+
     // V2 contract: geometry density and spectral frequency bands are independent.
     enum class VansWaveMode : std::uint32_t
     {

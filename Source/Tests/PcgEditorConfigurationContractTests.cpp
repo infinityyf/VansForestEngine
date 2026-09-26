@@ -1,21 +1,73 @@
 #include "PcgAssetContractTests.h"
 #include "../EngineCore/EngineAPILayer/Private/EngineAPIImpl.h"
 #include "../EngineCore/ProjectSystem/VansProjectManager.h"
-#include "../EngineCore/EditorCore/VansAssetDocumentRegistry.h"
-#include "../EngineCore/EditorCore/VansAssetDocumentEditService.h"
+#include "../EngineCore/AuthoringCore/VansAssetDocumentRegistry.h"
+#include "../EngineCore/AuthoringCore/VansAssetDocumentEditService.h"
+#include "../EngineCore/AuthoringCore/VansAuthoringAssetCreationService.h"
+#include "../EngineCore/AuthoringCore/Pcg/VansPcgSplineAuthoringSession.h"
+#include "../EngineCore/AuthoringCore/Pcg/VansPcgTerrainPreviewScheduler.h"
 #include "../EngineCore/PcgCore/Serialization/VansPlantTypeAssetCodec.h"
+#include "../EngineCore/PcgCore/Serialization/VansPcgSplineAssetCodec.h"
 #include "../EngineCore/PcgCore/VansPcgMaskAsset.h"
 #include "../EngineCore/SceneCore/VansSceneDocumentLoader.h"
 #include "../EngineCore/EditorCore/VansSceneEditService.h"
+#include "../EngineCore/EditorCore/VansEditorAssetSaveService.h"
 #include "../EngineCore/SceneCore/Serialization/VansVegetationConfigCodec.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../EngineCore/AssetCore/Storage/VansJsonFileStorage.h"
 #include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <array>
 #include <filesystem>
-#include <iostream>
 #include <fstream>
+#include <iostream>
+#include <iterator>
+
+namespace
+{
+class ContractAuthoringSaveHost final : public Vans::IVansAuthoringSaveHost
+{
+public:
+    explicit ContractAuthoringSaveHost(Vans::EditorAPI::EngineAPIImpl& api) : m_Api(api) {}
+
+    Vans::VansAuthoringSaveResult SaveAssetDocument(
+        const std::shared_ptr<Vans::VansOpenAssetDocument>& document) override
+    {
+        const Vans::VansAssetSaveResult saved =
+            Vans::VansEditorAssetSaveService::Get().SaveAsset(m_Api, document);
+        return { static_cast<bool>(saved), saved.message };
+    }
+
+private:
+    Vans::EditorAPI::EngineAPIImpl& m_Api;
+};
+
+class ContractSceneAuthoringHost final : public Vans::IVansSceneAuthoringHost
+{
+public:
+    ContractSceneAuthoringHost(
+        Vans::VansSceneDocument& document,
+        Vans::VansSceneEditService& edits)
+        : m_Document(document), m_Edits(edits) {}
+
+    Vans::VansSceneDocument* SceneDocument() const override { return &m_Document; }
+
+    Vans::VansSceneAuthoringResult SetSceneValue(
+        const Vans::DocumentPropertyPath& path,
+        Vans::VansSerializedValue value) override
+    {
+        const Vans::SceneEditResult edited = m_Edits.Set(path, std::move(value));
+        return { edited.success, edited.message };
+    }
+
+private:
+    Vans::VansSceneDocument& m_Document;
+    Vans::VansSceneEditService& m_Edits;
+};
+}
+
 bool RunPcgEditorConfigurationContractTests()
 {
     using namespace Vans;
@@ -25,6 +77,119 @@ bool RunPcgEditorConfigurationContractTests()
         if (!passed) std::cerr<<"[PcgConfiguration] "<<error<<'\n';
         return passed;
     };
+	fs::path testSource=fs::path(__FILE__);
+	if(testSource.is_relative())testSource=fs::absolute(testSource);
+	const auto engineRoot=testSource.parent_path().parent_path().parent_path();
+	const auto readSource=[](const fs::path& path) {
+		std::ifstream input(path,std::ios::binary);
+		return std::string(std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>());
+	};
+	const auto apiPreview=readSource(engineRoot/"Source/EngineCore/EngineAPILayer/Private/EngineAPIImpl.PcgPreview.cpp");
+	const auto renderProjector=readSource(engineRoot/"Source/EngineCore/RenderCore/PcgCore/VansPcgPreviewProjector.cpp");
+	const auto apiSplines=readSource(engineRoot/"Source/EngineCore/EngineAPILayer/Private/EngineAPIImpl.PcgSplines.cpp");
+	const auto authoringSplineSession=readSource(engineRoot/"Source/EngineCore/AuthoringCore/Pcg/VansPcgSplineAuthoringSession.cpp");
+	const auto runtimeSplineSession=readSource(engineRoot/"Source/EngineCore/RenderCore/PcgCore/VansPcgSplinePreviewSession.cpp");
+	const auto engineApi=readSource(engineRoot/"Source/EngineCore/EngineAPILayer/Private/EngineAPIImpl.cpp");
+	const auto terrainPreviewScheduler=readSource(engineRoot/"Source/EngineCore/AuthoringCore/Pcg/VansPcgTerrainPreviewScheduler.h");
+	const auto plantAssetSource=readSource(engineRoot/"Source/EngineCore/PcgCore/VansPlantTypeAsset.cpp");
+	const auto runtimePolicy=readSource(engineRoot/"Source/EngineCore/PcgCore/VansPcgRuntimePolicy.h");
+	const auto vegetationCollection=readSource(engineRoot/"Source/EngineCore/RenderCore/VegetationCore/VansVegetationCollection.cpp");
+	const auto vegetationSystem=readSource(engineRoot/"Source/EngineCore/RenderCore/VegetationCore/VansVegetationSystem.h");
+	const auto environmentBuilder=readSource(engineRoot/"Source/EngineCore/RenderCore/SceneBuild/VansSceneEnvironmentNodeBuilder.cpp");
+	const auto pcgConfigurationWindow=readSource(engineRoot/"Source/EngineCore/EditorCore/Windows/VansPcgWindow.Configuration.cpp");
+	const auto plantCodec=readSource(engineRoot/"Source/EngineCore/PcgCore/Serialization/VansPlantTypeAssetCodec.cpp");
+	const auto recipeCodec=readSource(engineRoot/"Source/EngineCore/PcgCore/Serialization/VansPcgRecipeCodec.cpp");
+	const auto configurationApi=readSource(engineRoot/"Source/EngineCore/EngineAPILayer/Private/EngineAPIImpl.PcgConfiguration.cpp");
+	const std::array<const char*,7> forbiddenApiGpuTokens={
+		"VulkanCore/","VkDevice","VansMesh","VansGrassMaterial","VK_NULL_HANDLE",
+		"VansSceneProjectResourceBuilder","IVansRenderThreadTransaction"};
+	if(!check(apiPreview.find("VansPcgPreviewProjector::Project")!=std::string::npos &&
+		std::none_of(forbiddenApiGpuTokens.begin(),forbiddenApiGpuTokens.end(),
+			[&](const char* token){return apiPreview.find(token)!=std::string::npos;}) &&
+		renderProjector.find("ExecuteRenderThreadTransaction")!=std::string::npos &&
+		renderProjector.find("VansSceneProjectResourceBuilder")!=std::string::npos &&
+		renderProjector.find("VansGrassMaterial")!=std::string::npos,
+		"PCG preview GPU projection escaped its RenderCore owner"))return false;
+	const std::array<const char*,6> forbiddenApiSplineState={
+		"PcgSplineAuthoringState","std::future","VansJobSystem","SplineBuildResult",
+		"PublishSplineField","QueueVegetationUpdate"};
+	if(!check(apiSplines.find("VansPcgSplineAuthoringSession")!=std::string::npos &&
+		apiSplines.find("VansPcgSplinePreviewSession")!=std::string::npos &&
+		std::none_of(forbiddenApiSplineState.begin(),forbiddenApiSplineState.end(),
+			[&](const char* token){return apiSplines.find(token)!=std::string::npos;}) &&
+		authoringSplineSession.find("VansAssetDocumentEditService")!=std::string::npos &&
+		authoringSplineSession.find("VansJobSystem")==std::string::npos &&
+		authoringSplineSession.find("RenderCore")==std::string::npos &&
+		runtimeSplineSession.find("VansJobSystem")!=std::string::npos &&
+		runtimeSplineSession.find("PublishSplineField")!=std::string::npos &&
+		runtimeSplineSession.find("VansAssetDocumentRegistry")==std::string::npos,
+		"PCG spline authoring or async preview state escaped its owning session"))return false;
+	{
+		VansPcgTerrainPreviewScheduler scheduler;
+		const auto start=VansPcgTerrainPreviewScheduler::Clock::time_point{};
+		std::uint32_t consumed=0;
+		for(std::uint32_t notification=0;notification<60;++notification)
+		{
+			const auto now=start+std::chrono::milliseconds(notification*16);
+			scheduler.NotifyHeightChanged(now);
+			if(scheduler.IsRequestDue(false,now))consumed+=scheduler.MarkRequestSubmitted(now);
+		}
+		const auto finalTick=start+std::chrono::seconds(2);
+		if(scheduler.IsRequestDue(false,finalTick))consumed+=scheduler.MarkRequestSubmitted(finalTick);
+		scheduler.NotifyHeightChanged(finalTick+std::chrono::milliseconds(1));
+		VansPcgTerrainPreviewScheduler busyScheduler;
+		for(std::uint32_t notification=0;notification<60;++notification)
+		{
+			const auto now=start+std::chrono::milliseconds(notification*16);
+			busyScheduler.NotifyHeightChanged(now);
+			if(!check(!busyScheduler.IsRequestDue(true,now),
+				"An in-flight terrain preview allowed another rebuild request"))return false;
+		}
+		const auto busyConsumed=busyScheduler.IsRequestDue(false,finalTick)
+			?busyScheduler.MarkRequestSubmitted(finalTick):0;
+		if(!check(consumed==60 && scheduler.PendingHeightChanges()==1 &&
+			scheduler.SubmittedRequests()<=11 &&
+			!scheduler.IsRequestDue(true,finalTick+std::chrono::seconds(1)) &&
+			busyConsumed==60 && busyScheduler.SubmittedRequests()==1 &&
+			engineApi.find("RequestPcgSplinePreview();")==std::string::npos &&
+			engineApi.find("NotifyTerrainHeightChanged")!=std::string::npos &&
+			terrainPreviewScheduler.find("MinimumRequestInterval")!=std::string::npos &&
+			apiSplines.find("RequestPendingTerrainPreview")!=std::string::npos,
+			"Terrain height changes are no longer losslessly coalesced behind the PCG preview throttle"))return false;
+		std::cout<<"[PcgTerrainPreview] 60 notifications -> "<<scheduler.SubmittedRequests()
+			<<" zero-build requests; 60 in-flight notifications -> "
+			<<busyScheduler.SubmittedRequests()<<" follow-up request\n";
+	}
+	if(!check(plantAssetSource.find("ResolvePlantTreeRuntimeBounds")!=std::string::npos &&
+		plantAssetSource.find("requires baked LOD resources")!=std::string::npos &&
+		vegetationCollection.find("ResolvePlantTreeRuntimeBounds")!=std::string::npos &&
+		vegetationCollection.find("variant->lod.levels.empty()?")==std::string::npos &&
+		vegetationCollection.find("?variant->cullingRadius:")==std::string::npos,
+		"Runtime-ready trees regained the cullingRadius fallback instead of requiring baked LOD bounds"))return false;
+	if(!check(plantAssetSource.find("MinimumModelLodLevelCount")!=std::string::npos &&
+		plantAssetSource.find("MaximumModelLodLevelCount")!=std::string::npos &&
+		pcgConfigurationWindow.find("Simplified LOD levels")!=std::string::npos &&
+		pcgConfigurationWindow.find("DragFloat2(\"Triangle ratios\"")==std::string::npos &&
+		pcgConfigurationWindow.find("DragFloat2(\"Tree LOD distances")==std::string::npos,
+		"Tree LOD configuration returned to a fixed two-element editor path"))return false;
+	if(!check(runtimePolicy.find("MaximumExactPcgCellCoordinate")!=std::string::npos &&
+		runtimePolicy.find("PcgGrassResidencyHysteresisCells")!=std::string::npos &&
+		vegetationCollection.find("ResolvePcgGrassResidencyExitDistance")!=std::string::npos &&
+		vegetationCollection.find("render.cullDistance+batch.cellSize")==std::string::npos &&
+		vegetationSystem.find("std::optional<TreeLodRuntimeSettings>")!=std::string::npos &&
+		vegetationSystem.find("m_TreeLodMidDistance=60.f")==std::string::npos &&
+		environmentBuilder.find("effectiveTerrain->settings.terrainSize * 0.5f")!=std::string::npos &&
+		environmentBuilder.find("const float terrainHalfSize = 512.0f")==std::string::npos,
+		"PCG runtime policy returned to numeric literals, duplicate Tree defaults, or fixed water coverage"))return false;
+	if(!check(plantCodec.find("ReadPcgConfigurationFields")!=std::string::npos &&
+		plantCodec.find("WritePcgConfigurationFields")!=std::string::npos &&
+		recipeCodec.find("ReadPcgConfigurationFields")!=std::string::npos &&
+		recipeCodec.find("PlacementFloats")==std::string::npos &&
+		configurationApi.find("ToPublicFields")!=std::string::npos &&
+		configurationApi.find("FromPublicFields")!=std::string::npos &&
+		pcgConfigurationWindow.find("ConfigurationFields(p.grassFields")!=std::string::npos &&
+		pcgConfigurationWindow.find("p.grass.bladeHeight")==std::string::npos,
+		"PCG configuration fields returned to hand-copied Codec, API, DTO, or ImGui paths"))return false;
     const auto directory=fs::temp_directory_path()/("ForestPcgEditor-"+VansAssetGuid::New().ToString());
     struct Cleanup {
         fs::path directory;
@@ -37,8 +202,9 @@ bool RunPcgEditorConfigurationContractTests()
     fs::create_directories(directory/"Assets/Vegetation");fs::create_directories(directory/"Scenes");
     VansProjectConfig project;project.SetDefaults("PCG Configuration Contract");
     std::string error;
-    const auto plantGuid=VansAssetGuid::New(),recipeGuid=VansAssetGuid::New();
+    const auto plantGuid=VansAssetGuid::New(),recipeGuid=VansAssetGuid::New(),splineGuid=VansAssetGuid::New();
     const auto plantPath=directory/"Assets/UserPlant.vplant",recipePath=directory/"Assets/Vegetation/UserVegetation.json";
+    const auto splinePath=directory/"Assets/UserSpline.vpcgspline";
     const auto write=[&](const fs::path& path,VansAssetGuid guid,VansAssetType type,const VansSerializedValue& root) {
         VansAssetMeta meta;meta.guid=guid;meta.importer=VansAssetDatabase::ImporterFor(type);
         return VansJsonFileStorage::WriteAtomic(path,EncodeSerializedValueJson<nlohmann::ordered_json>(root),error) &&
@@ -56,7 +222,8 @@ bool RunPcgEditorConfigurationContractTests()
     VansPcgAuthoredInstance fixed;fixed.id="authored";fixed.variant="oak";fixed.position={2,3,4};layer.fixedInstances={fixed};
     region.layers={layer};layer.id="second";layer.name="Second";layer.densityMask=VansAssetGuid::New();region.layers.push_back(layer);
     recipe.regions={region};
-    VansSerializedValue plantRoot,recipeRoot;
+    VansPcgSplineAsset spline;spline.name="User spline";spline.terrain=VansAssetGuid::New();
+    VansSerializedValue plantRoot,recipeRoot,splineRoot;
     {
         VansScopedIOContext scope(VansIODomain::Authoring,"PcgConfiguration.Fixture",true);
         const auto modelPath=directory/"Assets/Fixture.obj";
@@ -72,13 +239,74 @@ bool RunPcgEditorConfigurationContractTests()
         }
         if (!check(project.SaveToFile((directory/"ForestProject.json").string()) &&
             VansPlantTypeAssetCodec::Encode(plant,plantRoot,error) && VansVegetationConfigCodec::Encode(recipe,recipeRoot,error) &&
+            VansPcgSplineAssetCodec::Encode(spline,splineRoot,error) &&
             write(plantPath,plantGuid,VansAssetType::PlantType,plantRoot) &&
-            write(recipePath,recipeGuid,VansAssetType::VegetationConfig,recipeRoot),error)) return false;
+            write(recipePath,recipeGuid,VansAssetType::VegetationConfig,recipeRoot) &&
+            write(splinePath,splineGuid,VansAssetType::PcgSpline,splineRoot),error)) return false;
     }
     auto& manager=VansProjectManager::Get();manager.CloseProject();
-    VansProjectOpenOptions options;options.updateRecentProjects=false;options.loadProjectSettings=false;
-    if (!check(manager.OpenProject(directory.string(),options),"Cannot open the isolated editor fixture")) return false;
+    VansProjectOpenRequest openRequest;openRequest.m_ProjectRootPath=directory.string();
+    openRequest.m_Options.m_UpdateRecentProjects=false;openRequest.m_Options.m_LoadProjectSettings=false;
+    if (!check(manager.OpenProject(openRequest).m_Opened,"Cannot open the isolated editor fixture")) return false;
+	{
+		VansPcgSplineAuthoringSession session;
+		session.ResetContext(directory.string(),17);
+		if(!check(session.MatchesContext(directory.string(),17) &&
+			session.BindAsset(splineGuid.ToString(),manager.GetAssetDatabase(),manager.GetAssetObjectRepository(),{}) &&
+			session.SynchronizeDocument(manager.GetAssetObjectRepository(),true) &&
+			session.Document() && session.WorkingAsset().name=="User spline",
+			"Spline authoring session could not bind and decode its document"))return false;
+		std::string sessionError;
+		if(!check(session.BeginEdit(sessionError),sessionError))return false;
+		auto draftSpline=session.WorkingAsset();draftSpline.name="Draft spline";
+		if(!check(session.ReplaceDraft(draftSpline,sessionError) && session.Dragging() &&
+			session.WorkingAsset().name=="Draft spline" && !session.Document()->IsDirty(),
+			"Spline drag draft wrote the document or lost its working copy"))return false;
+		session.CancelEdit();
+		if(!check(!session.RequestPreview(manager.GetAssetObjectRepository(),{},sessionError) &&
+			session.WorkingAsset().name=="User spline" && sessionError=="Spline terrain is unavailable.",
+			"Spline cancel did not restore the document snapshot before preview validation"))return false;
+		if(!check(session.BeginEdit(sessionError),sessionError))return false;
+		draftSpline=session.WorkingAsset();draftSpline.name="Committed spline";
+		if(!check(session.CommitAsset(draftSpline,sessionError) && !session.Dragging() &&
+			session.Document()->IsDirty() && !fs::exists(splinePath.string()+".tmp"),
+			"Spline commit did not remain an in-memory authoring transaction"))return false;
+		const auto undone=VansAssetDocumentEditService::Undo(session.Document()->sourceDocument);
+		if(!check(undone && session.SynchronizeDocument(manager.GetAssetObjectRepository(),true) &&
+			session.WorkingAsset().name=="User spline",
+			"Spline session did not follow document undo"))return false;
+	}
+	{
+		const auto rollbackDirectory=directory/"Assets/CreationRollback";
+		const auto rollbackPath=rollbackDirectory/"Plant.vplant";
+		const auto rollbackGuid=VansAssetGuid::New();
+		VansAuthoringAssetCreateItem item;
+		item.sourcePath=rollbackPath;
+		item.guid=rollbackGuid;
+		item.type=VansAssetType::PlantType;
+		item.serializedRoot=plantRoot;
+		const auto rolledBack=VansAuthoringAssetCreationService::CreateBundle(
+			*manager.GetAssetDatabase(),manager.GetAssetObjectRepository(),rollbackDirectory,
+			{std::move(item)},"Pcg.ContractCreationRollback",
+			[](std::string& message){message="forced finalize failure";return false;});
+		const bool sourceRemoved=!fs::exists(rollbackPath);
+		const bool metaRemoved=!fs::exists(VansAssetMeta::MetaPathFor(rollbackPath));
+		const bool directoryRemoved=!fs::exists(rollbackDirectory);
+		const auto tombstone=manager.GetAssetDatabase()->Find(rollbackGuid);
+		const bool indexDetached=!manager.GetAssetDatabase()->Find(rollbackPath)
+			&& tombstone && tombstone->state==VansAssetState::Missing;
+		const bool memoryRemoved=!manager.GetAssetObjectRepository().ResolveLatest<VansPlantTypeAsset>(rollbackGuid);
+		if (!check(!rolledBack && sourceRemoved && metaRemoved && directoryRemoved
+			&& indexDetached && memoryRemoved,
+			"Authoring bundle rollback state source="+std::to_string(sourceRemoved)
+			+" meta="+std::to_string(metaRemoved)
+			+" directory="+std::to_string(directoryRemoved)
+			+" index="+std::to_string(indexDetached)
+			+" memory="+std::to_string(memoryRemoved))) return false;
+	}
     EngineAPIImpl api;
+    ContractAuthoringSaveHost saveHost(api);
+    api.BindAuthoringSaveHost(&saveHost);
     auto& registry=VansAssetDocumentRegistry::Get();registry.Clear();
     registry.SetWorkingCopyPublisher([&](const VansOpenAssetDocument& document,std::string& message) {
         AssetWorkingCopyPublishRequest request;request.sourcePath=document.sourcePath.string();request.sourceLoaded=true;request.metaLoaded=true;
@@ -91,6 +319,17 @@ bool RunPcgEditorConfigurationContractTests()
     auto distribution=api.GetPcgLayerConfiguration(target);
     if (!check(draft.available && distribution.available && draft.variants.size()==1 && draft.variants.front().parts.size()==2,
         "Typed editor snapshot lost models or material parts")) return false;
+    const auto* lodDistances=FindPcgConfigurationField(draft.renderFields,"lodDistances");
+    const auto* shadowDistance=FindPcgConfigurationField(draft.renderFields,"cullDistance");
+    if (!check(draft.grassFields.size()==VansPlantGrassConfigurationFields.size() &&
+        draft.renderFields.size()==VansPlantRenderConfigurationFields.size() &&
+        distribution.placementFields.size()==VansPcgPlacementConfigurationFields.size() &&
+        lodDistances && lodDistances->values==std::vector<float>({60.f,180.f}) &&
+        shadowDistance && shadowDistance->label=="Shadow distance",
+        "Engine configuration descriptors did not produce the complete typed editor field snapshot")) return false;
+    auto malformedDistribution=distribution;malformedDistribution.placementFields.erase(malformedDistribution.placementFields.begin());
+    if (!check(!api.ApplyPcgLayerConfiguration(target,malformedDistribution).success,
+        "A missing descriptor-driven configuration field was silently accepted")) return false;
     const auto stale=draft;
     draft.name="Edited tree";draft.variants[0].weight=2;draft.variants[0].scale={1.1f,1.2f,1.3f};
     VansIOAudit::Reset();
@@ -111,7 +350,9 @@ bool RunPcgEditorConfigurationContractTests()
         api.GetPcgPlantConfiguration(plantGuid.ToString()).name==plant.name &&
         api.EditPcgConfiguration(plantGuid.ToString(),PcgConfigurationAction::Redo).success &&
         api.GetPcgPlantConfiguration(plantGuid.ToString()).name=="Edited tree","Plant undo/redo failed")) return false;
-    distribution.placement.density=2.5f;distribution.seed=71;distribution.name="Edited distribution";
+    auto* distributionDensity=FindPcgConfigurationField(distribution.placementFields,"density");
+    if (!check(distributionDensity && distributionDensity->values.size()==1,"Distribution density field is missing")) return false;
+    distributionDensity->values[0]=2.5f;distribution.seed=71;distribution.name="Edited distribution";
     const auto changed=api.ApplyPcgLayerConfiguration(target,distribution);
     if (!check(changed.success,changed.message)) return false;
     const auto updated=manager.GetAssetObjectRepository().ResolveLatest<VansVegetationConfigAsset>(recipeGuid);
@@ -139,7 +380,8 @@ bool RunPcgEditorConfigurationContractTests()
     if (!check(!api.ApplyPcgLayerConfiguration(created.target,countGrass).success,
         "Grass editor accepted a tree target count")) return false;
     const auto blank=api.GetPcgPlantConfiguration(first.plantGuid);
-    if (!check(first.available && !first.enabled && first.placement.density==0 && blank.variants.empty(),
+    const auto* firstDensity=FindPcgConfigurationField(first.placementFields,"density");
+    if (!check(first.available && !first.enabled && firstDensity && firstDensity->values==std::vector<float>{0} && blank.variants.empty(),
         "New plant creation introduced a preset or enabled density")) return false;
     VansAssetGuid maskId;VansAssetGuid::TryParse(created.target.maskGuid,maskId);
     const auto black=manager.GetAssetObjectRepository().ResolveLatest<VansPcgMaskAsset>(maskId);
@@ -169,7 +411,9 @@ bool RunPcgEditorConfigurationContractTests()
     }
     auto scene=VansSceneDocumentLoader::Load(scenePath);
     if (!check(static_cast<bool>(scene),"Cannot open the scene authoring fixture")) return false;
-    VansSceneEditService edits(*scene.document);api.BindPcgSceneAuthoring(scene.document.get(),&edits);
+    VansSceneEditService edits(*scene.document);
+    ContractSceneAuthoringHost sceneHost(*scene.document,edits);
+    api.BindSceneAuthoring(&sceneHost);
     if (!check(api.BindPcgRecipeToScene(created.target.recipeGuid).success && scene.document->IsDirty(),
         "Binding the new recipe did not edit the scene document")) return false;
     auto surface=api.GetPcgLayerConfiguration(created.target);surface.surface=PcgSurfaceKind::Plane;
@@ -177,6 +421,8 @@ bool RunPcgEditorConfigurationContractTests()
     if (!check(api.SelectPcgBrushTarget(created.target,true).success,"Cannot enable the new scene brush")) return false;
     PcgBrushSettings brush;brush.radius=2;brush.strength=1;brush.hardness=.5f;brush.spacingFraction=.15f;
     if (!check(api.ConfigurePcgBrush(brush).success,"Cannot configure the new brush")) return false;
+	if (!check(!api.GetPcgBrushSnapshot().dirty,
+		"Changing a PCG tool brush dirtied the Mask asset before any pixel edit")) return false;
     PcgBrushInput input;input.target=created.target;input.rayOrigin={0,10,0};input.rayDirection={0,-1,0};input.phase=PcgBrushPhase::Begin;
     const auto painted=api.ApplyPcgBrushInput(input);
     input.phase=PcgBrushPhase::End;
@@ -194,7 +440,7 @@ bool RunPcgEditorConfigurationContractTests()
     if (!check(api.RemovePcgLayer(copied.target).success && !api.GetPcgLayerConfiguration(copied.target).available &&
         api.EditPcgConfiguration(created.target.recipeGuid,PcgConfigurationAction::Undo).success &&
         api.GetPcgLayerConfiguration(copied.target).available,"Layer removal undo lost the independent layer")) return false;
-    api.BindPcgSceneAuthoring(nullptr,nullptr);
+    api.BindSceneAuthoring(nullptr);
     if (!check(api.SelectPcgBrushTarget(created.target,false).success,"Cannot select the canvas Mask")) return false;
     input.target=created.target;input.space=PcgBrushSpace::MaskCanvas;input.maskUV={.25f,.25f};input.phase=PcgBrushPhase::Begin;
     if (!check(api.ApplyPcgBrushInput(input).success && api.GetPcgBrushSnapshot().canvasStrokeActive,

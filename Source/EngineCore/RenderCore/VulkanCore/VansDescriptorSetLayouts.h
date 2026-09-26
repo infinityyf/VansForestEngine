@@ -284,6 +284,26 @@ namespace VansGraphics
 		SCREEN_BINDING_SSAO_OUTPUT   = 5,
 	};
 
+	// --- Atmosphere Compute Pass ---
+	// 该布局由五个大气 Compute Shader 共用；编号必须与 Set 1 的 SPIR-V
+	// 反射一致，禁止由 feature 在运行时重新拼一份匿名 binding 表。
+	enum AtmospherePassBinding : uint32_t
+	{
+		ATMOSPHERE_BINDING_TRANSMITTANCE_LUT = 0,
+		ATMOSPHERE_BINDING_MULTI_SCATTERING_LUT = 1,
+		ATMOSPHERE_BINDING_SKY_VIEW_LUT = 2,
+		ATMOSPHERE_BINDING_AERIAL_SCATTERING = 3,
+		ATMOSPHERE_BINDING_AERIAL_OPTICAL_DEPTH = 4,
+		ATMOSPHERE_BINDING_RAW_OPAQUE_SCENE_COLOR = 5,
+		ATMOSPHERE_BINDING_SCENE_DEPTH = 6,
+		ATMOSPHERE_BINDING_SCENE_COLOR_OUTPUT = 7,
+		ATMOSPHERE_BINDING_WATER_NORMAL = 8,
+		ATMOSPHERE_BINDING_WATER_POSITION_DEPTH = 9,
+		ATMOSPHERE_BINDING_AERIAL_CLEAR_SCATTERING_OUTPUT = 10,
+		ATMOSPHERE_BINDING_AERIAL_CLEAR_SCATTERING_INPUT = 11,
+		ATMOSPHERE_BINDING_COUNT = 12,
+	};
+
 	// --- Post-Process Pass（Final Composite，Subpass 1）---
 	enum PostProcessPassBinding : uint32_t
 	{
@@ -888,6 +908,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_SSGITemporal(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
 		static void CreateAndAllocate_SSGIAtrous(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
 		static void CreateAndAllocate_AmbientSkyCache(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static bool CreateAndAllocate_Atmosphere(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_Trace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_Resolve(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_TemporalAA(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

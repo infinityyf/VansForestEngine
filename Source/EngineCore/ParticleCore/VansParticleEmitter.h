@@ -2,6 +2,7 @@
 #include "../AssetCore/VansAssetGuid.h"
 #include "VansParticleData.h"
 #include "VansParticleInstanceData.h"
+#include "VansParticleSortPolicy.h"
 #include "Modules/VansInitModules.h"
 #include "Modules/VansUpdateModules.h"
 #include <glm/glm.hpp>
@@ -43,7 +44,6 @@ namespace VansGraphics
     // ============================================================
 
     enum class VansParticleRendererType  { None, Billboard, Ribbon };
-    enum class VansParticleSortMode      { None, ByDistance, OldestFirst, NewestFirst };
     enum class VansParticleLightingMode  { UnlitFlipbook, SixWayLit };
 
     enum class VansRibbonRootMode { None, FollowSource };
@@ -101,7 +101,8 @@ namespace VansGraphics
         int      m_SpriteColumns      = 4;
         int      m_SpriteRows         = 4;
 
-        VansParticleSortMode      m_SortMode  = VansParticleSortMode::None;
+        VansParticleSimulationOrder m_SimulationOrder = VansParticleSimulationOrder::Stable;
+        VansParticleRenderSortMode m_RenderSortMode = VansParticleRenderSortMode::None;
         VansParticleLightingMode   m_LightingMode = VansParticleLightingMode::UnlitFlipbook;
         VansParticleSixWayLightingConfig m_SixWayLighting;
         VansParticleVolumetricConfig m_Volumetric;

@@ -73,9 +73,9 @@ namespace VansGraphics
 	public:
 		// 将类型化工作副本编码为唯一现行 JSON；不访问文件系统。
 		static bool SerializeToJsonObject(const AnimatorAssetData& data,
-		                                  AnimGraphJson& outJson,
+		                                  nlohmann::json& outJson,
 		                                  std::string& error);
-		static bool DeserializeFromJsonObject(const AnimGraphJson& json,
+		static bool DeserializeFromJsonObject(const nlohmann::json& json,
 		                                    AnimatorAssetData& outData,
 		                                    std::string& error);
 

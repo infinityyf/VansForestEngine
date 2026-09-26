@@ -14,6 +14,8 @@
 namespace VansEngine
 {
 
+VansAudioNode::VansAudioNode() = default;
+
 // ===========================================================================
 // Return the OpenAL format value for a channel count.
 // ===========================================================================
@@ -35,71 +37,28 @@ VansAudioNode::~VansAudioNode()
 // ===========================================================================
 // Open dispatches to static or streaming setup by play mode.
 // ===========================================================================
-bool VansAudioNode::Open(const AudioNodeProperties& props)
+bool VansAudioNode::Open(const VansAudioProperties& props)
 {
-    m_Properties = props;
-    m_AttenuationModeRuntime = AudioAttenuationModeFromString(m_Properties.m_AttenuationMode);
-
-    AudioAttenuationSettings attenuation;
-    attenuation.mode = m_AttenuationModeRuntime;
-    attenuation.referenceDistance = m_Properties.m_RefDist;
-    attenuation.maxDistance = m_Properties.m_MaxDist;
-    attenuation.rolloff = m_Properties.m_RollOff;
-    attenuation.Normalize();
-    m_Properties.m_RefDist = attenuation.referenceDistance;
-    m_Properties.m_MaxDist = attenuation.maxDistance;
-    m_Properties.m_RollOff = attenuation.rolloff;
-    m_Properties.m_Volume = std::clamp(m_Properties.m_Volume, 0.0f, 4.0f);
-    m_Properties.m_Pitch = std::max(m_Properties.m_Pitch, 0.01f);
-    m_Properties.m_ReverbSend = std::clamp(m_Properties.m_ReverbSend, 0.0f, 1.0f);
-    m_Properties.m_LowpassHighFrequencyGain =
-        std::clamp(m_Properties.m_LowpassHighFrequencyGain, 0.0f, 1.0f);
-    m_Properties.m_BusName = NormalizeAudioBusName(m_Properties.m_BusName);
-    m_DistanceGain = m_Properties.m_Spatial ? m_DistanceGain : 1.0f;
-    m_OcclusionGain = 1.0f;
-    m_OcclusionHighFrequencyGain = 1.0f;
-    m_BusGain = 1.0f;
-    m_BusLowpassHighFrequencyGain = 1.0f;
-    m_VirtualizationGain = 1.0f;
+    InitializeVoice(props);
     m_HardwareVoiceSuspended = false;
     m_LogicalPlaying = false;
     m_LogicalPaused = false;
 
-    // Create an OpenAL source.
-    m_SourceId = VansAudioSystem::GetInstance().AcquireSource();
-    if (m_SourceId == 0)
+    const VansAudioSourceAcquireStatus acquireStatus = AcquireSource();
+    if (acquireStatus != VansAudioSourceAcquireStatus::Acquired)
     {
-        VANS_LOG_ERROR("[VansAudioNode] AcquireSource failed: " << m_Properties.m_Name);
+        VANS_LOG_ERROR("[VansAudioNode] AcquireSource failed: " << m_Properties.m_Name
+            << " status=" << VansAudioSourceAcquireStatusName(acquireStatus));
         return false;
     }
 
-    // Base source properties.
-    alSourcef(m_SourceId, AL_PITCH, m_Properties.m_Pitch);
-    alSourcei(m_SourceId, AL_LOOPING,
-              (m_Properties.m_PlayMode == AudioPlayMode::Static && m_Properties.m_Loop)
-              ? AL_TRUE : AL_FALSE);
-    alSource3f(m_SourceId, AL_VELOCITY, 0.0f, 0.0f, 0.0f);
-    ApplySpatialProperties();
-    ApplyDirectionalProperties();
-    ApplyEffectSends();
-    ApplyDirectLowpass();
-    CommitGain();
-
-    bool ok = m_Properties.m_PlayMode == AudioPlayMode::Static
+    bool ok = m_Properties.m_PlayMode == VansAudioPlayMode::Static
               ? OpenStatic()
               : true;
 
     if (!ok)
     {
-        VansAudioSystem::GetInstance().ApplyDefaultReverbSend(
-            m_SourceId,
-            0.0f,
-            m_ReverbSendFilterId);
-        VansAudioSystem::GetInstance().ApplySourceDirectLowpass(
-            m_SourceId,
-            1.0f,
-            m_DirectLowpassFilterId);
-        VansAudioSystem::GetInstance().ReleaseSource(m_SourceId);
+        ReleaseSource();
         return false;
     }
 
@@ -222,7 +181,7 @@ bool VansAudioNode::OpenStreaming()
 // ===========================================================================
 bool VansAudioNode::EnsureStreamingReady()
 {
-    if (m_Properties.m_PlayMode != AudioPlayMode::Streaming)
+    if (m_Properties.m_PlayMode != VansAudioPlayMode::Streaming)
         return true;
     if (m_StreamingReady)
         return true;
@@ -236,7 +195,7 @@ bool VansAudioNode::EnsureStreamingReady()
 
 void VansAudioNode::SuspendHardwareVoice()
 {
-    if (m_Properties.m_PlayMode != AudioPlayMode::Streaming || !m_StreamingReady)
+    if (m_Properties.m_PlayMode != VansAudioPlayMode::Streaming || !m_StreamingReady)
         return;
 
     std::lock_guard<std::mutex> lk(m_SourceMutex);
@@ -258,16 +217,7 @@ void VansAudioNode::SuspendHardwareVoice()
         alSourceUnqueueBuffers(m_SourceId, 1, &buffer);
     }
 
-    VansAudioSystem::GetInstance().ApplyDefaultReverbSend(
-        m_SourceId,
-        0.0f,
-        m_ReverbSendFilterId);
-    VansAudioSystem::GetInstance().ApplySourceDirectLowpass(
-        m_SourceId,
-        1.0f,
-        m_DirectLowpassFilterId);
-    VansAudioSystem::GetInstance().ReleaseSource(m_SourceId);
-    m_LastCommittedGain = -1.0f;
+    ReleaseSource();
     m_HardwareVoiceSuspended = true;
 }
 
@@ -275,25 +225,20 @@ bool VansAudioNode::ResumeHardwareVoice()
 {
     if (m_SourceId != 0)
         return true;
-    if (m_Properties.m_PlayMode != AudioPlayMode::Streaming || !m_StreamingReady)
+    if (m_Properties.m_PlayMode != VansAudioPlayMode::Streaming || !m_StreamingReady)
         return false;
 
     std::lock_guard<std::mutex> lk(m_SourceMutex);
     if (m_SourceId != 0)
         return true;
 
-    m_SourceId = VansAudioSystem::GetInstance().AcquireSource();
-    if (m_SourceId == 0)
+    const VansAudioSourceAcquireStatus acquireStatus = AcquireSource();
+    if (acquireStatus != VansAudioSourceAcquireStatus::Acquired)
+    {
+        VANS_LOG_WARN("[VansAudioNode] ResumeHardwareVoice failed: " << m_Properties.m_Name
+            << " status=" << VansAudioSourceAcquireStatusName(acquireStatus));
         return false;
-
-    alSourcef(m_SourceId, AL_PITCH, m_Properties.m_Pitch);
-    alSourcei(m_SourceId, AL_LOOPING, AL_FALSE);
-    alSource3f(m_SourceId, AL_VELOCITY, m_VelocityX, m_VelocityY, m_VelocityZ);
-    ApplySpatialProperties();
-    ApplyDirectionalProperties();
-    ApplyEffectSends();
-    ApplyDirectLowpass();
-    CommitGain();
+    }
 
     QueueStreamBuffersFromPCMQueue(STREAM_BUFFER_COUNT);
     if (m_LogicalPlaying && !m_LogicalPaused)
@@ -302,10 +247,7 @@ bool VansAudioNode::ResumeHardwareVoice()
     if (alGetError() != AL_NO_ERROR)
     {
         VANS_LOG_WARN("[VansAudioNode] ResumeHardwareVoice failed: " << m_Properties.m_Name);
-        VansAudioSystem::GetInstance().ApplyDefaultReverbSend(m_SourceId, 0.0f, m_ReverbSendFilterId);
-        VansAudioSystem::GetInstance().ApplySourceDirectLowpass(m_SourceId, 1.0f, m_DirectLowpassFilterId);
-        VansAudioSystem::GetInstance().ReleaseSource(m_SourceId);
-        m_LastCommittedGain = -1.0f;
+        ReleaseSource();
         m_HardwareVoiceSuspended = true;
         return false;
     }
@@ -323,18 +265,10 @@ void VansAudioNode::Close()
     if (m_SourceId != 0)
     {
         alSourceStop(m_SourceId);
-        VansAudioSystem::GetInstance().ApplyDefaultReverbSend(
-            m_SourceId,
-            0.0f,
-            m_ReverbSendFilterId);
-        VansAudioSystem::GetInstance().ApplySourceDirectLowpass(
-            m_SourceId,
-            1.0f,
-            m_DirectLowpassFilterId);
         alSourcei(m_SourceId, AL_BUFFER, 0); // Detach all buffers.
 
         // Drain any buffers still queued by streaming playback.
-        if (m_Properties.m_PlayMode == AudioPlayMode::Streaming)
+        if (m_Properties.m_PlayMode == VansAudioPlayMode::Streaming)
         {
             ALint queued = 0;
             alGetSourcei(m_SourceId, AL_BUFFERS_QUEUED, &queued);
@@ -345,7 +279,7 @@ void VansAudioNode::Close()
             }
         }
 
-        VansAudioSystem::GetInstance().ReleaseSource(m_SourceId);
+        ReleaseSource();
     }
     m_HardwareVoiceSuspended = false;
 
@@ -356,7 +290,7 @@ void VansAudioNode::Close()
     }
 
     // Release streaming buffers.
-    if (m_Properties.m_PlayMode == AudioPlayMode::Streaming)
+    if (m_Properties.m_PlayMode == VansAudioPlayMode::Streaming)
     {
         for (int i = 0; i < STREAM_BUFFER_COUNT; ++i)
         {
@@ -419,7 +353,7 @@ void VansAudioNode::Stop()
     std::lock_guard<std::mutex> lk(m_SourceMutex);
     if (m_SourceId == 0)
     {
-        if (m_Properties.m_PlayMode == AudioPlayMode::Streaming &&
+        if (m_Properties.m_PlayMode == VansAudioPlayMode::Streaming &&
             m_StreamingReady &&
             m_Decoder &&
             m_Decoder->IsOpen())
@@ -443,7 +377,7 @@ void VansAudioNode::Stop()
     if (stopErr != AL_NO_ERROR)
         VANS_LOG_WARN("[VansAudioNode::Stop] '" << m_Properties.m_Name << "' alSourceStop error=" << stopErr);
 
-    if (m_Properties.m_PlayMode == AudioPlayMode::Streaming &&
+    if (m_Properties.m_PlayMode == VansAudioPlayMode::Streaming &&
         m_StreamingReady &&
         m_Decoder &&
         m_Decoder->IsOpen())
@@ -490,18 +424,18 @@ void VansAudioNode::Stop()
     }
 }
 
-bool VansAudioNode::SetPlaybackOffsetSeconds(float seconds)
+bool VansAudioNode::Seek(double seconds)
 {
-	if (m_Properties.m_PlayMode != AudioPlayMode::Static || m_SourceId == 0)
+	if (m_Properties.m_PlayMode != VansAudioPlayMode::Static || m_SourceId == 0)
 		return false;
-	alSourcef(m_SourceId, AL_SEC_OFFSET, std::max(0.0f, seconds));
+	alSourcef(m_SourceId, AL_SEC_OFFSET, static_cast<float>(std::max(0.0, seconds)));
 	return alGetError() == AL_NO_ERROR;
 }
 
-float VansAudioNode::GetPlaybackOffsetSeconds() const
+double VansAudioNode::GetPlaybackOffsetSeconds() const
 {
-	if (m_Properties.m_PlayMode != AudioPlayMode::Static || m_SourceId == 0)
-		return 0.0f;
+	if (m_Properties.m_PlayMode != VansAudioPlayMode::Static || m_SourceId == 0)
+		return 0.0;
 	float offset = 0.0f;
 	alGetSourcef(m_SourceId, AL_SEC_OFFSET, &offset);
 	return offset;
@@ -523,294 +457,18 @@ void VansAudioNode::Resume()
     m_LogicalPlaying = true;
 }
 
-// ===========================================================================
-// Runtime parameter updates.
-// ===========================================================================
-void VansAudioNode::SetVolume(float gain)
+void VansAudioNode::OnVirtualizationChanged()
 {
-    m_Properties.m_Volume = std::clamp(gain, 0.0f, 4.0f);
-    CommitGain();
-}
-
-void VansAudioNode::SetPitch(float pitch)
-{
-    m_Properties.m_Pitch = std::max(pitch, 0.01f);
-    if (m_SourceId) alSourcef(m_SourceId, AL_PITCH, m_Properties.m_Pitch);
-}
-
-void VansAudioNode::SetLoop(bool loop)
-{
-    m_Properties.m_Loop = loop;
-    if (m_SourceId && m_Properties.m_PlayMode == AudioPlayMode::Static)
-        alSourcei(m_SourceId, AL_LOOPING, loop ? AL_TRUE : AL_FALSE);
-    // Streaming loops are handled by Tick() and decoder Reset().
-}
-
-void VansAudioNode::SetPosition(float x, float y, float z)
-{
-    m_PositionX = x;
-    m_PositionY = y;
-    m_PositionZ = z;
-    if (m_SourceId) alSource3f(m_SourceId, AL_POSITION, x, y, z);
-}
-
-void VansAudioNode::UpdateDistanceGain(float listenerX, float listenerY, float listenerZ)
-{
-    if (!m_Properties.m_Spatial)
+    if (m_Properties.m_PlayMode != VansAudioPlayMode::Streaming || !m_StreamingReady)
+        return;
+    if (m_VirtualizationGain <= 0.0005f)
     {
-        SetSpatialGain(1.0f);
+        SuspendHardwareVoice();
         return;
     }
-    const float dx = m_PositionX - listenerX;
-    const float dy = m_PositionY - listenerY;
-    const float dz = m_PositionZ - listenerZ;
-    const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-
-    AudioAttenuationSettings attenuation;
-    attenuation.mode = m_AttenuationModeRuntime;
-    attenuation.referenceDistance = m_Properties.m_RefDist;
-    attenuation.maxDistance = m_Properties.m_MaxDist;
-    attenuation.rolloff = m_Properties.m_RollOff;
-    SetSpatialGain(ComputeDistanceGain(distance, attenuation));
+    if (m_SourceId == 0)
+        ResumeHardwareVoice();
 }
-
-void VansAudioNode::SetSpatialGain(float distanceGain)
-{
-    m_DistanceGain = std::clamp(distanceGain, 0.0f, 1.0f);
-    CommitGain();
-}
-
-void VansAudioNode::SetOcclusion(float gain, float highFrequencyGain)
-{
-    const float clampedGain = std::clamp(gain, 0.0f, 1.0f);
-    const float clampedHighFrequencyGain = std::clamp(highFrequencyGain, 0.0f, 1.0f);
-    const bool gainChanged = std::abs(clampedGain - m_OcclusionGain) >= 0.0005f;
-    const bool highFrequencyChanged =
-        std::abs(clampedHighFrequencyGain - m_OcclusionHighFrequencyGain) >= 0.0005f;
-    if (!gainChanged && !highFrequencyChanged)
-        return;
-
-    m_OcclusionGain = clampedGain;
-    m_OcclusionHighFrequencyGain = clampedHighFrequencyGain;
-    if (m_SourceId && highFrequencyChanged)
-        ApplyDirectLowpass();
-    CommitGain();
-}
-
-void VansAudioNode::SetVelocity(float x, float y, float z)
-{
-    m_VelocityX = x;
-    m_VelocityY = y;
-    m_VelocityZ = z;
-    if (m_SourceId)
-        alSource3f(m_SourceId, AL_VELOCITY, m_VelocityX, m_VelocityY, m_VelocityZ);
-}
-
-void VansAudioNode::SetDirection(float x, float y, float z)
-{
-    const float length = std::sqrt(x * x + y * y + z * z);
-    if (length <= 0.0001f)
-        return;
-    m_DirectionX = x / length;
-    m_DirectionY = y / length;
-    m_DirectionZ = z / length;
-    ApplyDirectionalProperties();
-}
-
-void VansAudioNode::SetCone(AudioConeSettings settings)
-{
-    m_ConeSettings = NormalizeAudioConeSettings(settings);
-    ApplyDirectionalProperties();
-}
-
-int VansAudioNode::GetALSourceRelative() const
-{
-    if (!m_SourceId) return -1;
-    ALint val = 0;
-    alGetSourcei(m_SourceId, AL_SOURCE_RELATIVE, &val);
-    return static_cast<int>(val);
-}
-
-void VansAudioNode::SetSpatial(bool enabled)
-{
-    m_Properties.m_Spatial = enabled;
-    if (!enabled)
-        m_DistanceGain = 1.0f;
-    ApplySpatialProperties();
-    ApplyDirectionalProperties();
-    CommitGain();
-}
-
-void VansAudioNode::SetStereoPan(float pan)
-{
-	m_Properties.m_StereoPan = std::clamp(pan, -1.0f, 1.0f);
-	if (!m_Properties.m_Spatial) ApplySpatialProperties();
-}
-
-void VansAudioNode::ApplySpatialProperties()
-{
-    if (!m_SourceId) return;
-
-    if (m_Properties.m_Spatial)
-    {
-        alSourcei(m_SourceId, AL_SOURCE_RELATIVE, AL_FALSE);
-        alSourcef(m_SourceId, AL_REFERENCE_DISTANCE, m_Properties.m_RefDist);
-        alSourcef(m_SourceId, AL_MAX_DISTANCE,        m_Properties.m_MaxDist);
-        alSourcef(m_SourceId, AL_ROLLOFF_FACTOR,      m_Properties.m_RollOff);
-        alSource3f(m_SourceId, AL_POSITION, m_PositionX, m_PositionY, m_PositionZ);
-    }
-    else
-    {
-        alSourcei(m_SourceId, AL_SOURCE_RELATIVE, AL_TRUE);
-		alSource3f(m_SourceId, AL_POSITION, m_Properties.m_StereoPan, 0.0f, 0.0f);
-        alSourcef(m_SourceId, AL_ROLLOFF_FACTOR, 0.0f);
-    }
-}
-
-void VansAudioNode::ApplyDirectionalProperties()
-{
-    if (!m_SourceId)
-        return;
-
-    AudioConeSettings settings = NormalizeAudioConeSettings(m_ConeSettings);
-    if (!m_Properties.m_Spatial)
-        settings.enabled = false;
-    settings.Normalize();
-
-    alSource3f(m_SourceId, AL_DIRECTION, m_DirectionX, m_DirectionY, m_DirectionZ);
-    alSourcef(m_SourceId, AL_CONE_INNER_ANGLE, settings.innerAngleDegrees);
-    alSourcef(m_SourceId, AL_CONE_OUTER_ANGLE, settings.outerAngleDegrees);
-    alSourcef(m_SourceId, AL_CONE_OUTER_GAIN, settings.outerGain);
-}
-
-void VansAudioNode::SetRefDistance(float d)
-{
-    m_Properties.m_RefDist = std::max(d, 0.01f);
-    if (m_Properties.m_MaxDist <= m_Properties.m_RefDist)
-        m_Properties.m_MaxDist = m_Properties.m_RefDist + 0.01f;
-    if (m_SourceId) alSourcef(m_SourceId, AL_REFERENCE_DISTANCE, m_Properties.m_RefDist);
-}
-
-void VansAudioNode::SetMaxDistance(float d)
-{
-    m_Properties.m_MaxDist = std::max(d, m_Properties.m_RefDist + 0.01f);
-    if (m_SourceId) alSourcef(m_SourceId, AL_MAX_DISTANCE, m_Properties.m_MaxDist);
-}
-
-void VansAudioNode::SetRolloff(float rolloff)
-{
-    m_Properties.m_RollOff = std::max(rolloff, 0.0f);
-    if (m_SourceId) alSourcef(m_SourceId, AL_ROLLOFF_FACTOR, m_Properties.m_Spatial ? m_Properties.m_RollOff : 0.0f);
-}
-
-void VansAudioNode::SetAttenuationMode(AudioAttenuationMode mode)
-{
-    m_AttenuationModeRuntime = mode;
-    m_Properties.m_AttenuationMode = AudioAttenuationModeToString(mode);
-}
-
-void VansAudioNode::SetReverbSend(float send)
-{
-    m_Properties.m_ReverbSend = std::clamp(send, 0.0f, 1.0f);
-    ApplyEffectSends();
-}
-
-void VansAudioNode::SetLowpassHighFrequencyGain(float highFrequencyGain)
-{
-    const float clampedGain = std::clamp(highFrequencyGain, 0.0f, 1.0f);
-    if (std::abs(clampedGain - m_Properties.m_LowpassHighFrequencyGain) < 0.0005f)
-        return;
-    m_Properties.m_LowpassHighFrequencyGain = clampedGain;
-    ApplyDirectLowpass();
-}
-
-void VansAudioNode::SetBusName(const std::string& busName)
-{
-    m_Properties.m_BusName = NormalizeAudioBusName(busName);
-}
-
-void VansAudioNode::SetBusGain(float gain)
-{
-    const float clampedGain = std::clamp(gain, 0.0f, 4.0f);
-    if (std::abs(clampedGain - m_BusGain) < 0.0005f)
-        return;
-    m_BusGain = clampedGain;
-    CommitGain();
-}
-
-void VansAudioNode::SetBusLowpassHighFrequencyGain(float highFrequencyGain)
-{
-    const float clampedGain = std::clamp(highFrequencyGain, 0.0f, 1.0f);
-    if (std::abs(clampedGain - m_BusLowpassHighFrequencyGain) < 0.0005f)
-        return;
-    m_BusLowpassHighFrequencyGain = clampedGain;
-    ApplyDirectLowpass();
-}
-
-void VansAudioNode::SetVirtualizationGain(float gain)
-{
-    const float clampedGain = std::clamp(gain, 0.0f, 1.0f);
-    if (std::abs(clampedGain - m_VirtualizationGain) < 0.0005f)
-        return;
-    m_VirtualizationGain = clampedGain;
-    if (m_Properties.m_PlayMode == AudioPlayMode::Streaming && m_StreamingReady)
-    {
-        if (m_VirtualizationGain <= 0.0005f)
-        {
-            SuspendHardwareVoice();
-            return;
-        }
-        if (m_SourceId == 0)
-            ResumeHardwareVoice();
-    }
-    CommitGain();
-}
-
-void VansAudioNode::ApplyEffectSends()
-{
-    if (!m_SourceId)
-        return;
-    VansAudioSystem::GetInstance().ApplyDefaultReverbSend(
-        m_SourceId,
-        m_Properties.m_ReverbSend,
-        m_ReverbSendFilterId);
-}
-
-void VansAudioNode::ApplyDirectLowpass()
-{
-    if (!m_SourceId)
-        return;
-    const float highFrequencyGain = std::clamp(
-        m_Properties.m_LowpassHighFrequencyGain *
-            m_BusLowpassHighFrequencyGain *
-            m_OcclusionHighFrequencyGain,
-        0.0f,
-        1.0f);
-    VansAudioSystem::GetInstance().ApplySourceDirectLowpass(
-        m_SourceId,
-        highFrequencyGain,
-        m_DirectLowpassFilterId);
-}
-
-void VansAudioNode::CommitGain()
-{
-    if (!m_SourceId) return;
-
-    const float finalGain = std::clamp(
-        m_Properties.m_Volume *
-            m_DistanceGain *
-            m_OcclusionGain *
-            m_BusGain *
-            m_VirtualizationGain,
-        0.0f,
-        4.0f);
-    if (m_LastCommittedGain >= 0.0f && std::abs(finalGain - m_LastCommittedGain) < 0.0005f)
-        return;
-
-    alSourcef(m_SourceId, AL_GAIN, finalGain);
-    m_LastCommittedGain = finalGain;
-}
-
 // ===========================================================================
 // State queries.
 // ===========================================================================
@@ -833,17 +491,16 @@ bool VansAudioNode::IsPaused() const
 // ===========================================================================
 // Main-thread update that refills processed streaming buffers.
 // ===========================================================================
-bool VansAudioNode::CanCreateStaticInstance() const
+bool VansAudioNode::CanCreateStaticVoice() const
 {
-    return m_Properties.m_PlayMode == AudioPlayMode::Static &&
-        m_StaticBufferId != 0 &&
-        m_SourceId != 0;
+    return m_Properties.m_PlayMode == VansAudioPlayMode::Static &&
+        m_StaticBufferId != 0;
 }
 
 void VansAudioNode::Tick()
 {
     if (!m_SourceId) return;
-    if (m_Properties.m_PlayMode != AudioPlayMode::Streaming) return;
+    if (m_Properties.m_PlayMode != VansAudioPlayMode::Streaming) return;
     if (!m_StreamingReady) return;
 
     std::lock_guard<std::mutex> lk(m_SourceMutex);

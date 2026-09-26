@@ -35,7 +35,6 @@ class VansGameplayAssetPackageCooker
 {
 public:
 	static VansGameplayPackageCookResult CookClosure(
-		const std::filesystem::path& projectRoot,
 		VansAssetDatabase& projectDatabase,
 		VansAssetDatabase* builtInDatabase,
 		const std::vector<std::string>& seedAssetGuids,

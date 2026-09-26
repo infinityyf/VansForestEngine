@@ -5,6 +5,7 @@
 
 #include "EngineIds.h"
 #include "../../AssetCore/Serialization/VansSerializedValue.h"
+#include "../../GameplayActionSchema/VansGAFPerformanceBudget.h"
 
 #include <cstdint>
 #include <array>
@@ -19,6 +20,12 @@ namespace Vans::EditorAPI
 	using EditorTextureHandle = void*;
 	using UIDocumentId = std::uint64_t;
 	using UIPreviewId = std::uint64_t;
+
+	struct EditorCommandHistorySnapshot
+	{
+		std::uint64_t undoSequence = 0;
+		std::uint64_t redoSequence = 0;
+	};
 
 	struct UIDocumentOpenResult
 	{
@@ -176,8 +183,7 @@ namespace Vans::EditorAPI
 		bool playing = false;
 		bool paused = false;
 		bool spatial = false;
-		bool usesInstance = false;
-		bool usesPrivateNode = false;
+		std::string voiceKind;
 		bool hardwareVoiceActive = false;
 		bool virtualized = false;
 		bool occlusionEnabled = false;
@@ -219,6 +225,9 @@ namespace Vans::EditorAPI
 		int hardwareVoiceResumedThisFrame = 0;
 		int activeSourceLeaseCount = 0;
 		int pooledSourceCount = 0;
+		int sourceLimit = 128;
+		int sourceLimitRejectionCount = 0;
+		int sourceBackendFailureCount = 0;
 		int maxActiveVoices = 32;
 		int reverbZoneCount = 0;
 		int affectingReverbZoneCount = 0;
@@ -255,14 +264,6 @@ namespace Vans::EditorAPI
 		bool writePosition = true;
 		bool writeRotation = true;
 		bool writeScale = true;
-	};
-
-	struct RuntimeTransformEditResult
-	{
-		bool applied = false;
-		std::string message;
-		RuntimeTransformSnapshot localTransform;
-		RuntimeTransformSnapshot worldTransform;
 	};
 
 	enum class RuntimePreviewLightType
@@ -524,46 +525,12 @@ namespace Vans::EditorAPI
 		bool Empty() const { return assetPath.empty() || (parameters.empty() && textures.empty()); }
 	};
 
-	struct ComponentEntry
-	{
-		ComponentId id = InvalidComponentId;
-		std::string typeName;
-		bool isEnabled = true;
-	};
-
-	struct ComponentDataSnapshot
-	{
-		ComponentId id = InvalidComponentId;
-		std::string typeName;
-		std::vector<PropertyEntry> properties;
-	};
-
-	struct EntityEntry
-	{
-		EntityId id = InvalidEntityId;
-		EntityId parentId = InvalidEntityId;
-		std::string name;
-		bool isActive = true;
-		std::vector<ComponentEntry> components;
-	};
-
-	struct EntityDataSnapshot
-	{
-		EntityEntry entity;
-		std::vector<ComponentDataSnapshot> components;
-	};
-
-	struct SceneDataSnapshot
-	{
-		std::string sceneName;
-		std::vector<EntityEntry> entities;
-	};
-
 	enum class AssetType
 	{
 		Unknown,
 		Model,
 		Texture,
+		IESProfile,
 		Material,
 		Shader,
 		Audio,
@@ -629,15 +596,6 @@ namespace Vans::EditorAPI
 		std::string name;
 		std::string relativePath;
 		AssetType type = AssetType::Unknown;
-	};
-
-	struct AssetMetaSnapshot
-	{
-		AssetId id = InvalidAssetId;
-		AssetType type = AssetType::Unknown;
-		std::string sourcePath;
-		std::string artifactPath;
-		std::vector<PropertyEntry> settings;
 	};
 
     struct EditorViewportCameraState
@@ -783,26 +741,6 @@ namespace Vans::EditorAPI
         bool hasSourceRoot = false;
         std::vector<ParticleRibbonPointSnapshot> points;
     };
-    struct ParticleEffectSnapshot
-    {
-        std::uint32_t index = 0, generation = 0;
-        std::string effectGuid, sourceGuid, state;
-        Vec3 sourcePosition;
-        float playTime = 0;
-        bool detached = false;
-        std::uint64_t alivePoints = 0, droppedSpawns = 0, breaks = 0, substepOverruns = 0;
-        std::vector<ParticleRibbonSnapshot> ribbons;
-    };
-    struct ParticleDiagnosticsSnapshot
-    {
-        bool available = false;
-        std::uint64_t activeInstances = 0, pointCapacity = 0, rejectedInstances = 0;
-        std::uint64_t uploadBytes = 0, allocatedBytes = 0;
-        std::uint32_t drawCount = 0, droppedDraws = 0;
-        double simulationMilliseconds = 0, waitMilliseconds = 0, renderPrepareMilliseconds = 0;
-        std::vector<ParticleEffectSnapshot> effects;
-    };
-
     struct ParticleAuthoringField
     {
         std::string pathPattern;
@@ -1109,11 +1047,7 @@ namespace Vans::EditorAPI
 		bool stripEditorMetadata = true;
 		bool treatCookWarningsAsErrors = false;
 		std::string templateDirectory;
-		std::uint32_t maximumActiveActionsPerHost = 64;
-		std::uint32_t maximumTasksPerAction = 64;
-		std::uint32_t maximumGraphTransitionsPerTick = 1024;
-		std::uint32_t maximumEffectsPerHost = 256;
-		std::uint32_t maximumPayloadBytes = 4096;
+		VansGAFPerformanceBudget performance;
 		std::vector<std::string> allowedNodeTypes;
 		std::vector<std::string> allowedModules;
 		std::vector<std::string> allowedCapabilities;
@@ -1439,7 +1373,6 @@ namespace Vans::EditorAPI
 		std::string defaultScene;
 		std::string assetsRoot;
 		std::string importedArtifactRoot;
-		std::string metaExtension;
 		std::vector<KeyValueString> runtimeAssetBindings;
 		std::vector<KeyValueString> assetDirectories;
 		std::vector<std::string> scriptSearchPaths;
@@ -1454,6 +1387,14 @@ namespace Vans::EditorAPI
 		bool success = false;
 		std::string message;
 		std::vector<ProjectConfigDiagnostic> diagnostics;
+	};
+
+	struct VansProjectPhysicsTiming
+	{
+		float fixedTimeStep = 1.0f / 60.0f;
+		std::uint32_t maximumSubsteps = 8;
+		float clothFrameTime = 0.03f;
+		std::uint32_t clothSubsteps = 8;
 	};
 
 	struct RecentProjectEntry
@@ -1764,6 +1705,7 @@ namespace Vans::EditorAPI
 		bool lastDispatchSucceeded = false;
 		bool lastDispatchReset = false;
 		std::uint32_t pendingResetReasons = 0;
+		std::uint32_t lastConsumedResetReasons = 0;
 		std::uint32_t backendCreateCode = 0;
 		std::uint32_t backendQueryCode = 0;
 		std::uint32_t backendDispatchCode = 0;
@@ -2105,110 +2047,6 @@ namespace Vans::EditorAPI
 		bool shadowCascadeAvailable = false;
 	};
 
-	struct MeshLoadRequest
-	{
-		std::string meshName;
-		std::string sourcePath;
-	};
-
-	struct MeshLoadResult
-	{
-		bool loaded = false;
-		bool available = false;
-	};
-
-	struct ProjectSubmeshInfo
-	{
-		std::string sourceNodeName;
-		std::string materialName;
-		std::string diffuseTexturePath;
-		std::uint32_t vertexCount = 0;
-		std::uint32_t indexCount = 0;
-	};
-
-	struct ProjectMeshInfoSnapshot
-	{
-		bool available = false;
-		bool isMultiMesh = false;
-		std::vector<ProjectSubmeshInfo> submeshes;
-	};
-
-	struct ProjectMeshAliasRequest
-	{
-		std::string aliasName;
-		std::string meshName;
-	};
-
-	struct ScenePropertyValue
-	{
-		enum class Kind
-		{
-			Null,
-			Bool,
-			Int,
-			Float,
-			String,
-			Array,
-			Object
-		};
-
-		Kind kind = Kind::Null;
-		bool boolValue = false;
-		std::int64_t intValue = 0;
-		double floatValue = 0.0;
-		std::string stringValue;
-		std::vector<ScenePropertyValue> arrayItems;
-		std::vector<std::pair<std::string, ScenePropertyValue>> objectFields;
-
-		static ScenePropertyValue Bool(bool value)
-		{
-			ScenePropertyValue result;
-			result.kind = Kind::Bool;
-			result.boolValue = value;
-			return result;
-		}
-
-		static ScenePropertyValue Int(std::int64_t value)
-		{
-			ScenePropertyValue result;
-			result.kind = Kind::Int;
-			result.intValue = value;
-			return result;
-		}
-
-		static ScenePropertyValue Float(double value)
-		{
-			ScenePropertyValue result;
-			result.kind = Kind::Float;
-			result.floatValue = value;
-			return result;
-		}
-
-		static ScenePropertyValue String(std::string value)
-		{
-			ScenePropertyValue result;
-			result.kind = Kind::String;
-			result.stringValue = std::move(value);
-			return result;
-		}
-
-		static ScenePropertyValue Array(std::vector<ScenePropertyValue> items)
-		{
-			ScenePropertyValue result;
-			result.kind = Kind::Array;
-			result.arrayItems = std::move(items);
-			return result;
-		}
-
-		static ScenePropertyValue Object(std::vector<std::pair<std::string, ScenePropertyValue>> fields)
-		{
-			ScenePropertyValue result;
-			result.kind = Kind::Object;
-			result.objectFields = std::move(fields);
-			return result;
-		}
-	};
-
 	struct ModelAssetPlacementRequest
 	{
 		std::string assetGuid;
@@ -2219,7 +2057,7 @@ namespace Vans::EditorAPI
 	{
 		bool prepared = false;
 		std::string message;
-		std::vector<ScenePropertyValue> sceneEntities;
+		std::vector<Vans::VansSerializedValue> sceneEntities;
 		std::string runtimeEntityGuid;
 	};
 
@@ -2354,6 +2192,54 @@ namespace Vans::EditorAPI
 		bool available = false;
 		std::string animatorAssetPath;
 		std::string runtimeNodeName;
+	};
+
+	struct VansAIBlackboardDebugEntry
+	{
+		std::string name;
+		std::string type;
+		std::string value;
+		std::string lastWriter;
+	};
+
+	struct VansAIAgentDebugState
+	{
+		std::string entityGuid;
+		std::string entityName;
+		bool initialized = false;
+		std::string behaviorName;
+		std::string currentState;
+		std::string targetGuid;
+		std::string targetName;
+		bool rawTargetVisible = false;
+		bool targetVisible = false;
+		bool movementBlocked = false;
+		float commandedSpeed = 0.0f;
+		std::string pathStatus;
+		std::string pathFailure;
+		std::string pathDiagnostic;
+		std::string lastPathRequestReason;
+		std::size_t waypointCount = 0;
+		std::size_t waypointIndex = 0;
+		bool hasPatrolDestination = false;
+		Vec3 patrolDestination;
+		bool lineOfSightTested = false;
+		bool lineOfSightBlocked = false;
+		Vec3 lineOfSightOrigin;
+		Vec3 lineOfSightTarget;
+		std::string lineOfSightHit;
+		std::size_t totalBlackboardEntries = 0;
+		bool blackboardTruncated = false;
+		std::vector<VansAIBlackboardDebugEntry> blackboard;
+		std::string diagnostic;
+	};
+
+	struct VansAIDiagnosticsSnapshot
+	{
+		bool available = false;
+		std::size_t totalAgents = 0;
+		bool truncated = false;
+		std::vector<VansAIAgentDebugState> agents;
 	};
 
 	struct SkeletonDebugBoneSnapshot
@@ -2740,17 +2626,6 @@ namespace Vans::EditorAPI
 		std::string graphSetId;
 	};
 
-	struct AnimationPreviewViewportRequest
-	{
-		AnimationPreviewSessionId sessionId = 0;
-		float yaw = 0.0f;
-		float pitch = 0.0f;
-		float zoom = 1.0f;
-		// -1 visualizes the final dominant layer source. A non-negative value
-		// visualizes the selected layer's effective per-bone mask/weight.
-		int visualizedLayerIndex = -1;
-	};
-
 	struct AnimationPreviewLayerSnapshot
 	{
 		std::string id;
@@ -2831,6 +2706,7 @@ namespace Vans::EditorAPI
 	struct AnimationPreviewSceneAdoptRequest
 	{
 		AnimationPreviewSessionId sessionId = 0;
+		std::uint64_t expectedAttachmentRevision = 0;
 		std::vector<std::string> savedTransformEntities;
 	};
 	struct AnimationPreviewRigSnapshot
@@ -3016,7 +2892,7 @@ namespace Vans::EditorAPI
 
 	struct RuntimeSceneEntitiesCreateRequest
 	{
-		std::vector<ScenePropertyValue> sceneEntities;
+		std::vector<Vans::VansSerializedValue> sceneEntities;
 	};
 
 	struct RuntimeSceneEntitiesCreateResult
@@ -3109,6 +2985,8 @@ namespace Vans::EditorAPI
 		bool dirty = false;
 		bool canUndo = false;
 		bool canRedo = false;
+		std::uint64_t undoSequence = 0;
+		std::uint64_t redoSequence = 0;
 		std::string assetGuid;
 		std::string sourcePath;
 		std::uint32_t width = 0;
@@ -3299,7 +3177,7 @@ namespace Vans::EditorAPI
 	struct ScenePropertyEdit
 	{
 		std::string propertyPointer;
-		ScenePropertyValue value;
+		Vans::VansSerializedValue value;
 	};
 
 	struct RayleighSettings
@@ -3461,6 +3339,7 @@ namespace Vans::EditorAPI
 	{
 		std::string programId;
 		std::string sourceFolder;
+		std::string artifactRoot;
 		bool rayTracing = false;
 		std::vector<ShaderStageSourceSnapshot> stages;
 	};

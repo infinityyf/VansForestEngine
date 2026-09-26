@@ -30,12 +30,6 @@ namespace VansGraphics
 			return Finite(value) && glm::dot(value, value) > kAxisEpsilon * kAxisEpsilon;
 		}
 
-		int ResolveBone(const Skeleton& skeleton, const std::string& name)
-		{
-			const auto found = skeleton.boneNameToIndex.find(name);
-			return found == skeleton.boneNameToIndex.end() ? -1 : found->second;
-		}
-
 		bool IsContinuous(const Skeleton& skeleton, const std::vector<int>& bones)
 		{
 			for (std::size_t index = 1; index < bones.size(); ++index)
@@ -132,7 +126,7 @@ namespace VansGraphics
 		}
 		if (skeletonGuid != targetSkeleton.sourceSkeletonGuid
 			|| skeletonSignature == 0
-			|| skeletonSignature != VansAnimationRigCompiler::ComputeSkeletonSignature(targetSkeleton))
+			|| skeletonSignature != targetSkeleton.ComputeSignature())
 		{
 			error = "Animation Rig '" + name
 				+ "' was compiled for a different Skeleton layout or bind pose";
@@ -140,11 +134,6 @@ namespace VansGraphics
 		}
 		skeleton = &targetSkeleton;
 		return true;
-	}
-
-	std::uint64_t VansAnimationRigCompiler::ComputeSkeletonSignature(const Skeleton& skeleton)
-	{
-		return skeleton.ComputeSignature();
 	}
 
 	bool VansAnimationRigCompiler::Compile(
@@ -176,13 +165,13 @@ namespace VansGraphics
 
 		outRig.name = asset.name;
 		outRig.skeletonGuid = asset.skeletonGuid;
-		outRig.skeletonSignature = ComputeSkeletonSignature(skeleton);
+		outRig.skeletonSignature = skeleton.ComputeSignature();
 		outRig.skeleton = &skeleton;
 		outRig.modelForward = forward;
 		outRig.modelUp = up;
 		for (const auto& [semantic, boneName] : asset.semanticBones)
 		{
-			const int boneIndex = ResolveBone(skeleton, boneName);
+			const int boneIndex = skeleton.FindBoneIndex(boneName);
 			if (semantic.empty() || boneIndex < 0)
 			{
 				error = "Animation Rig semantic bone '" + semantic + "' cannot resolve '" + boneName + "'";
@@ -261,7 +250,7 @@ namespace VansGraphics
 
 		for (const VansRigGoalDefinition& source : asset.goals)
 		{
-			const int effector = ResolveBone(skeleton, source.effectorBone);
+			const int effector = skeleton.FindBoneIndex(source.effectorBone);
 			if (source.id.empty() || effector < 0
 				|| outRig.goalIndexById.find(source.id) != outRig.goalIndexById.end())
 			{
@@ -298,7 +287,7 @@ namespace VansGraphics
 			compiled.forwardAxisLocal = source.forwardAxisLocal;
 			compiled.upAxisLocal = source.upAxisLocal;
 			for (const std::string& boneName : source.bones)
-				compiled.boneIndices.push_back(ResolveBone(skeleton, boneName));
+				compiled.boneIndices.push_back(skeleton.FindBoneIndex(boneName));
 			if (compiled.goalIndex < 0
 				|| std::find(compiled.boneIndices.begin(), compiled.boneIndices.end(), -1)
 					!= compiled.boneIndices.end()
@@ -407,7 +396,7 @@ namespace VansGraphics
 		std::unordered_set<int> limitedBones;
 		for (const VansRigJointLimitDefinition& source : asset.jointLimits)
 		{
-			const int boneIndex = ResolveBone(skeleton, source.bone);
+			const int boneIndex = skeleton.FindBoneIndex(source.bone);
 			if ((source.kind != VansJointLimitKind::Hinge
 					&& source.kind != VansJointLimitKind::SwingTwist
 					&& source.kind != VansJointLimitKind::Locked)
@@ -454,7 +443,7 @@ namespace VansGraphics
 			VansCompiledRotationDistribution profile;
 			profile.id = source.id;
 			profile.goalIndex = outRig.FindGoal(source.goal);
-			profile.baseBoneIndex = ResolveBone(skeleton, source.baseBone);
+			profile.baseBoneIndex = skeleton.FindBoneIndex(source.baseBone);
 			profile.baseFraction = source.baseFraction;
 			const auto validFraction = [](float value) { return std::isfinite(value) && value >= 0 && value <= 1; };
 			if (profile.id.empty() || outRig.FindRotationDistribution(profile.id) >= 0 ||
@@ -472,7 +461,7 @@ namespace VansGraphics
 			std::unordered_map<int, int> depths;
 			for (const auto& recipient : source.recipients)
 			{
-				const int index = ResolveBone(skeleton, recipient.bone);
+				const int index = skeleton.FindBoneIndex(recipient.bone);
 				if (index < 0 || index == profile.baseBoneIndex || !recipients.insert(index).second ||
 					!validFraction(recipient.fraction))
 				{ error = "Rotation Distribution has a missing/duplicate recipient or invalid fraction: " + recipient.bone; return false; }
@@ -502,8 +491,8 @@ namespace VansGraphics
 			VansCompiledRigContact contact;
 			contact.id = source.id;
 			contact.chainIndex = outRig.FindChain(source.chain);
-			contact.footBoneIndex = ResolveBone(skeleton, source.footBone);
-			contact.ballBoneIndex = source.ballBone.empty() ? -1 : ResolveBone(skeleton, source.ballBone);
+			contact.footBoneIndex = skeleton.FindBoneIndex(source.footBone);
+			contact.ballBoneIndex = source.ballBone.empty() ? -1 : skeleton.FindBoneIndex(source.ballBone);
 			contact.soleForwardLocal = source.soleForwardLocal;
 			contact.soleNormalLocal = source.soleNormalLocal;
 			contact.soleSamplesLocal = source.soleSamplesLocal;

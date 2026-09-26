@@ -15,6 +15,7 @@
 #include "../GameplayActionCore/VansGameplayRuntime.h"
 #include "../ScriptCore/VansScriptTypes.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -25,6 +26,7 @@ namespace Vans
 struct VansSceneMultiMeshRootConfig
 {
 	std::string modelGuid;
+	std::uint32_t submeshCount = 0;
 };
 
 struct VansSceneObjectBuildConfig
@@ -65,5 +67,12 @@ struct VansSceneObjectBuildConfig
 struct VansSceneObjectBuildPlan
 {
 	std::vector<VansSceneObjectBuildConfig> objects;
+};
+
+struct VansSceneEntityBatchResult
+{
+	bool success = false;
+	std::vector<std::string> entityGuids;
+	std::string error;
 };
 }

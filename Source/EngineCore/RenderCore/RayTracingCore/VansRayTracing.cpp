@@ -10,7 +10,6 @@
 #include "../../RenderCore/BRDFData/VansLight.h"
 #include "../../RenderCore/VansScene.h"
 #include "../../RenderCore/VansRenderNode.h"
-#include "../../Configration/VansConfigration.h"
 #include "../../RenderCore//VansMaterial.h"
 #include "../../RenderCore/VansShaderManager.h"
 #include "../../Util/VansLog.h"
@@ -390,10 +389,10 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
         std::string error;
         if (!VansSceneGeometrySnapshot::Capture(*scene, *device, geometry, error))
             throw std::runtime_error("GI geometry capture failed: " + error);
-        if(m_State->world)m_State->world->AddLayoutQueries(geometry);
         auto fixedRegions = resolvedRegions;
         for (auto& region : fixedRegions) if (region.scrolling) region.enabled = false;
-        if (!m_State->m_ProbeLayout.Build(fixedRegions, gi.placement, geometry, error))
+        if (!m_State->m_ProbeLayout.Build(
+            fixedRegions, gi.placement, geometry, m_State->world.get(), error))
             throw std::runtime_error("GI sparse layout failed: " + error);
         const auto& stats = m_State->m_ProbeLayout.Stats();
         VANS_LOG("[GILayout] leaves=" << m_State->m_ProbeLayout.Leaves().size() << " nodes=" << m_State->m_ProbeLayout.Nodes().size()
@@ -405,8 +404,6 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
     {
         std::string error;
         std::vector<GIProbeWorkRegion> workRegions;
-        VansSceneGeometrySnapshot worldRegularQueries;
-        if(m_State->world)m_State->world->AddLayoutQueries(worldRegularQueries);
         for (uint32_t index = 0; index < resolvedRegions.size(); ++index)
         {
             const auto& resolved = resolvedRegions[index];
@@ -419,13 +416,14 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
             work.probeIndices.reserve(count);
             for (uint32_t probe = 0; probe < count; ++probe)
             {
-                if(resolved.worldOnly && !sparse && worldRegularQueries.additionalPositionValid)
+                if(resolved.worldOnly && !sparse && m_State->world)
                 {
                     const auto dims=resolved.gridDimensions;
                     const glm::uvec3 cell(probe%dims.x,(probe/dims.x)%dims.y,probe/(dims.x*dims.y));
                     const auto position=resolved.scrolling ? scrollingGrids[index].Position(probe) : resolved.volumeMin+(glm::vec3(cell)+.5f)*resolved.probeSpacing;
                     // 规则地址保持不变；地表下和木质内部的位置不进入更新表，也不发布为空间采样。
-                    if(!worldRegularQueries.additionalPositionValid(position,(std::min)(.02f,resolved.probeSpacing*.04f)))continue;
+                    if(!m_State->world->IsPositionValid(
+                        position,(std::min)(.02f,resolved.probeSpacing*.04f)))continue;
                 }
                 work.probeIndices.push_back(probe);
             }
@@ -857,7 +855,6 @@ void VansGraphics::VansRayTracing::SetWorldViewCenter(glm::vec3 center)
     if (recycled)
     {
         scheduler = std::make_unique<VansGIProbeWorkScheduler>(m_State->m_WorkScheduler);
-        VansSceneGeometrySnapshot queries; m_State->world->AddLayoutQueries(queries);
         for (size_t index = 0; index < count; ++index)
         {
             if (entering[index].empty()) continue;
@@ -872,7 +869,7 @@ void VansGraphics::VansRayTracing::SetWorldViewCenter(glm::vec3 center)
                 if (newCursor < entering[index].size() && entering[index][newCursor] == id)
                 {
                     ++newCursor;
-                    valid = !queries.additionalPositionValid || queries.additionalPositionValid(grids[index].Position(id),
+                    valid = m_State->world->IsPositionValid(grids[index].Position(id),
                         (std::min)(.02f, resolved[index].probeSpacing * .04f));
                 }
                 if (valid) placed.push_back(id);
@@ -967,7 +964,6 @@ bool VansGraphics::VansRayTracing::QueueWorldSourceChanges(GIVoxelSourceChanges 
 
 void VansGraphics::VansRayTracing::InvalidateWorldGeometry(const GIWorldDirtyRegions& changed)
 {
-    VansSceneGeometrySnapshot queries;m_State->world->AddLayoutQueries(queries);
     for(uint32_t index=0;index<m_State->m_GIRegions.size();++index)
     {
         auto& region=m_State->m_GIRegions[index];const auto& resolved=region.resolved;
@@ -981,7 +977,7 @@ void VansGraphics::VansRayTracing::InvalidateWorldGeometry(const GIWorldDirtyReg
             const glm::uvec3 cell(probe%dims.x,(probe/dims.x)%dims.y,probe/(dims.x*dims.y));
             const auto position=resolved.scrolling ? region.scrollingGrid.Position(probe) : resolved.volumeMin+(glm::vec3(cell)+.5f)*spacing;
             const bool nearSurface=changed.Intersects({position-glm::vec3(spacing),position+glm::vec3(spacing)});
-            const bool valid=nearSurface?queries.additionalPositionValid(position,std::min(.02f,spacing*.04f)):existed;
+            const bool valid=nearSurface?m_State->world->IsPositionValid(position,std::min(.02f,spacing*.04f)):existed;
             if(valid)placed.push_back(probe);
             if(valid && changed.Intersects({position,position},resolved.maxRayDistance))reset.push_back(probe);
             // 新旧几何附近的 relocation 和发布状态一起清除，远处保留已发布历史。

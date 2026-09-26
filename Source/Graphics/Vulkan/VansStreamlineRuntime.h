@@ -18,6 +18,18 @@ namespace VansGraphics
 		UltraPerformance
 	};
 
+	enum class VansStreamlineDLSSAvailability : std::uint8_t
+	{
+		NotInitialized,
+		RuntimeUnavailable,
+		MissingRuntimeBinary,
+		RuntimeIntegrityRejected,
+		CapabilityPending,
+		UnsupportedDevice,
+		DriverOutOfDate,
+		Available
+	};
+
 	struct VansStreamlineOptimalSettings
 	{
 		std::uint32_t renderWidth = 0;
@@ -74,11 +86,15 @@ namespace VansGraphics
 		// Must run before any Vulkan instance/device creation. On failure the caller
 		// continues with the system Vulkan loader and DLSS remains unavailable.
 		HMODULE TryInitializeVulkanLoader();
-		void RefreshDeviceCapabilities();
+		void RefreshDeviceCapabilities(VkPhysicalDevice physicalDevice);
 		void ShutdownBeforeVulkan();
 
 		bool IsInitialized() const { return m_Initialized; }
 		bool IsDLSSAvailable() const { return m_DLSSAvailable; }
+		VansStreamlineDLSSAvailability GetDLSSAvailability() const
+		{
+			return m_DLSSAvailability;
+		}
 		const std::string& GetUnavailableReason() const { return m_UnavailableReason; }
 		const std::string& GetFeatureVersion() const { return m_FeatureVersion; }
 
@@ -105,11 +121,14 @@ namespace VansGraphics
 		HMODULE m_Module = nullptr;
 		bool m_Initialized = false;
 		bool m_DLSSAvailable = false;
+		VansStreamlineDLSSAvailability m_DLSSAvailability =
+			VansStreamlineDLSSAvailability::NotInitialized;
 		std::string m_UnavailableReason = "Streamline has not been initialized";
 		std::string m_FeatureVersion;
 
 		void* m_Init = nullptr;
 		void* m_Shutdown = nullptr;
+		void* m_IsFeatureSupported = nullptr;
 		void* m_IsFeatureLoaded = nullptr;
 		void* m_GetFeatureFunction = nullptr;
 		void* m_GetFeatureVersion = nullptr;

@@ -17,7 +17,7 @@
 
 namespace Vans::EditorAPI
 {
-class IEngineEditorAPI;
+class IProjectEditorAPI;
 }
 
 namespace Vans {
@@ -38,10 +38,10 @@ public:
 	/// Render the full-screen project selector overlay.
 	/// Call each frame while no project is loaded.
 	/// Returns None while the user is still browsing.
-	ProjectSelectorResult Render(EditorAPI::IEngineEditorAPI& editorAPI);
+	ProjectSelectorResult Render(EditorAPI::IProjectEditorAPI& projectAPI);
 
 	/// Refresh the recent projects list (e.g. after opening a project).
-	void RefreshRecentProjects(EditorAPI::IEngineEditorAPI& editorAPI);
+	void RefreshRecentProjects(EditorAPI::IProjectEditorAPI& projectAPI);
 
 	const std::string& GetSelectedProjectPath() const { return m_SelectedPath; }
 	const std::string& GetNewProjectName()      const { return m_NewProjectName; }

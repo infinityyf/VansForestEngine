@@ -15,7 +15,7 @@ struct VansPackageManifest
     std::string scene;
     std::string resourcePlan;
     std::string resourcePlanReport;
-	std::string shaderArtifacts = "Library/Artifacts/Shaders";
+	std::string shaderArtifacts;
     std::uint64_t copiedFileCount = 0;
 };
 

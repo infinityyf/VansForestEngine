@@ -3,7 +3,7 @@
 #include "../AssetCore/VansMaterialAuthoringAsset.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
-#include "../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../EngineAPILayer/Public/IAssetAuthoringEditorAPI.h"
 
 #include <nlohmann/json.hpp>
 #include <string>
@@ -14,7 +14,7 @@ namespace Vans
 namespace
 {
 VansSerializedValue LoadShaderAuthoringParameters(
-    EditorAPI::IEngineEditorAPI& api,
+    EditorAPI::IAssetAuthoringEditorAPI& api,
     const VansSerializedValue& materialRoot)
 {
     if (materialRoot.kind != VansSerializedValue::Kind::Object ||
@@ -42,7 +42,7 @@ VansSerializedValue LoadShaderAuthoringParameters(
 }
 
 void MergeMaterialAuthoringSchema(
-    EditorAPI::IEngineEditorAPI& api,
+    EditorAPI::IAssetAuthoringEditorAPI& api,
     VansSerializedValue& materialRoot)
 {
     if (materialRoot.kind != VansSerializedValue::Kind::Object)

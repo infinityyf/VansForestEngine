@@ -2,6 +2,7 @@
 
 #include "VansAIBlackboard.h"
 #include "VansAIBehaviorAsset.h"
+#include "VansAIDiagnostics.h"
 #include "VansAIEvents.h"
 #include "VansAIRuntimeComponents.h"
 #include "../AssetCore/VansAssetObjectRepository.h"
@@ -9,29 +10,13 @@
 #include "../NavigationCore/VansNavigationMesh.h"
 
 #include <memory>
-#include <optional>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace Vans
 {
 class VansGameplayRuntime;
 class VansRuntimeWorld;
-
-struct VansAIAgentDebugSnapshot
-{
-	bool initialized = false;
-	std::string currentState;
-	VansEntityHandle target;
-	bool targetVisible = false;
-	VansNavigationPathStatus pathStatus = VansNavigationPathStatus::None;
-	std::size_t waypointCount = 0;
-	std::size_t waypointIndex = 0;
-	bool hasPatrolDestination = false;
-	glm::vec3 patrolDestination{ 0.0f };
-	std::string diagnostic;
-};
 
 class VansAIWorld
 {
@@ -45,7 +30,7 @@ public:
 		std::string& error);
 	void Shutdown();
 	void Update(double deltaSeconds);
-	std::optional<VansAIAgentDebugSnapshot> DebugAgent(VansEntityHandle entity) const;
+	VansAIDiagnostics CaptureDiagnostics() const;
 
 private:
 	struct AgentRuntime
@@ -60,6 +45,8 @@ private:
 		glm::vec3 lastTargetPosition{ 0.0f };
 		glm::vec3 patrolAnchor{ 0.0f };
 		glm::vec3 patrolDestination{ 0.0f };
+		float perceptionRemaining = 0.0f;
+		float decisionRemaining = 0.0f;
 		float repathRemaining = 0.0f;
 		float commandedSpeed = 0.0f;
 		float timeSinceTargetVisible = 0.0f;
@@ -68,16 +55,32 @@ private:
 		bool hasLastTargetPosition = false;
 		bool hasPatrolAnchor = false;
 		bool hasPatrolDestination = false;
+		bool perceptionStarted = false;
+		bool decisionStarted = false;
+		bool repathStarted = false;
+		bool rawTargetVisible = false;
 		bool targetVisible = false;
+		bool movementBlocked = false;
+		bool lineOfSightTested = false;
+		bool lineOfSightBlocked = false;
+		bool deltaClampReported = false;
 		bool initialized = false;
+		glm::vec3 lineOfSightOrigin{ 0.0f };
+		glm::vec3 lineOfSightTarget{ 0.0f };
+		std::string lineOfSightHit;
+		VansAIPathRequestReason lastPathRequestReason = VansAIPathRequestReason::None;
 		std::string diagnostic;
+		std::string lastLoggedError;
 	};
 
 	static std::uint64_t EntityKey(VansEntityHandle entity);
+	static void RecordError(AgentRuntime& runtime,
+		VansEntityHandle entity, const std::string& message);
 	bool InitializeAgent(AgentRuntime& runtime,
 		const VansRuntimeAIAgentComponent& ai,
 		const VansRuntimeNavigationAgentComponent& navigation,
 		std::string& error);
+	bool InitializeExistingAgents(std::string& error);
 	std::shared_ptr<const VansAIBehaviorAsset> ResolveBehavior(
 		const std::string& guid, std::string& error) const;
 	std::shared_ptr<const VansNavigationMesh> ResolveNavigationMesh(
@@ -88,7 +91,7 @@ private:
 	const VansAssetObjectRepository* m_AssetObjects = nullptr;
 	VansScopedEventConnections m_Connections;
 	std::unordered_map<std::uint64_t, AgentRuntime> m_Agents;
-	std::unordered_set<std::uint64_t> m_PendingActivation;
-	std::unordered_set<std::uint64_t> m_PendingGameplayRelease;
+	std::unordered_map<std::uint64_t, std::string> m_PendingActivation;
+	std::unordered_map<std::uint64_t, std::string> m_PendingGameplayRelease;
 };
 }

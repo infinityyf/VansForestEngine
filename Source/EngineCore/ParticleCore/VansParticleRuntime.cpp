@@ -15,14 +15,20 @@ void VansParticleRuntime::SetOwnerWorldTransform(const glm::mat4& owner)
 {
     glm::mat4 next = m_Asset && m_Asset->m_EmissionFrame == VansParticleEmissionFrame::World ? glm::mat4(1) : owner;
     next[3] = owner * glm::vec4(m_EmitterPositionLocal,1);
+    bool changed = !m_OwnerInitialized;
     if (m_OwnerInitialized)
     {
         for (int column=0; column<4; ++column)
-            if (glm::length(next[column]-m_LocalToWorld[column]) > 1.0e-5f) m_HasMovingSource = true;
+            if (glm::length(next[column]-m_LocalToWorld[column]) > 1.0e-5f)
+            {
+                changed = true;
+                m_HasMovingSource = true;
+            }
     }
     else { m_PreviousOwner = next; m_OwnerInitialized = true; }
     m_LocalToWorld = next;
     for (auto& emitter : m_Emitters) if (emitter) emitter->SetAnchor(next);
+    if (changed && !IsFinished()) m_FrameDirty = true;
 }
 void VansParticleRuntime::Play()
 {
@@ -34,29 +40,32 @@ void VansParticleRuntime::Play()
         for (auto& emitter : m_Emitters) if (emitter) emitter->SetAnchor(m_LocalToWorld);
         m_DelayRemaining = m_Asset->m_StartDelay;
         m_State = m_DelayRemaining > 0 ? VansParticlePlaybackState::Delayed : VansParticlePlaybackState::Emitting;
-        if (m_State == VansParticlePlaybackState::Emitting) Prewarm();
+        if (m_State == VansParticlePlaybackState::Emitting) BeginPrewarm();
     }
     m_Paused = false;
+    m_FrameDirty = true;
 }
-void VansParticleRuntime::Prewarm()
+void VansParticleRuntime::BeginPrewarm()
 {
     if (m_Prewarmed) return;
     m_Prewarmed = true;
     if (!m_Asset->m_Prewarm) return;
-    const float step = m_Asset->m_FixedStep > 0 ? m_Asset->m_FixedStep : 1.0f/60.0f;
-    double remaining = m_Asset->m_Duration;
-    while (remaining > 1.0e-8)
-    { const auto dt = float(std::min<double>(step,remaining)); Advance(dt,m_LocalToWorld); remaining -= dt; }
-    Capture(); m_Frames[m_Front] = m_Frames[m_Back];
+    m_ResimulationKind = VansParticleResimulationKind::Prewarm;
+    m_ResimulationRemaining = m_Asset->m_Duration;
+    m_ResimulationStep = m_Asset->m_FixedStep > 0 ? m_Asset->m_FixedStep : 1.0f/60.0f;
 }
 void VansParticleRuntime::Stop()
 {
     m_State = VansParticlePlaybackState::Stopped; m_Paused = false;
     m_Time = m_CycleTime = m_Accumulator = m_DrainTime = m_DelayRemaining = 0;
     m_Prewarmed = m_DeferFirstUpdate = false;
+    m_ResimulationKind = VansParticleResimulationKind::None;
+    m_ResimulationRemaining = 0;
+    m_HasMovingSource = false;
     for (auto& emitter : m_Emitters) if (emitter) emitter->ResetSimulation();
     m_AliveInstanceCount = 0;
     for (auto& frame : m_Frames) frame = {};
+    m_FrameDirty = m_FrameReady = false;
 }
 void VansParticleRuntime::StopEmitting(bool detach)
 {
@@ -64,6 +73,7 @@ void VansParticleRuntime::StopEmitting(bool detach)
     if (m_State != VansParticlePlaybackState::Draining) m_DrainTime = 0;
     m_State = VansParticlePlaybackState::Draining;
     for (auto& emitter : m_Emitters) if (emitter) emitter->StopEmitting(detach);
+    m_FrameDirty = true;
 }
 void VansParticleRuntime::Restart() { Stop(); Play(); }
 bool VansParticleRuntime::RefreshEmission()
@@ -92,7 +102,14 @@ void VansParticleRuntime::Burst(uint32_t count)
     count = std::min(count, 65536u);
     if (IsFinished()) { m_State = VansParticlePlaybackState::Draining; m_DrainTime = 0; }
     for (auto& emitter : m_Emitters) if (emitter && emitter->m_Enabled) emitter->EmitBurst(count,m_LocalToWorld);
-    Capture(); m_Frames[m_Front] = m_Frames[m_Back];
+    Capture(); m_Frames[m_Front] = m_Frames[m_Back]; m_FrameReady = false;
+}
+void VansParticleRuntime::SetEmitterEnabled(std::size_t index, bool enabled)
+{
+    auto* emitter = index < m_Emitters.size() ? m_Emitters[index].get() : nullptr;
+    if (!emitter || emitter->m_Enabled == enabled) return;
+    emitter->m_Enabled = enabled;
+    m_FrameDirty = true;
 }
 bool VansParticleRuntime::Seek(float seconds, float step)
 {
@@ -101,12 +118,29 @@ bool VansParticleRuntime::Seek(float seconds, float step)
     const bool paused = !IsPlaying();
     Stop(); m_Prewarmed = true; m_State = VansParticlePlaybackState::Emitting;
     for (auto& emitter : m_Emitters) if (emitter) emitter->SetAnchor(m_LocalToWorld);
-    const float fixed = m_Asset->m_FixedStep > 0 ? m_Asset->m_FixedStep : std::max(step,1.0f/240.0f);
-    double remaining = seconds;
-    while (remaining > 1.0e-8)
-    { const auto dt = float(std::min<double>(fixed,remaining)); Advance(dt,m_LocalToWorld); remaining -= dt; }
-    m_Paused = paused; Capture(); m_Frames[m_Front] = m_Frames[m_Back];
+    m_Paused = paused;
+    m_ResimulationKind = VansParticleResimulationKind::Seek;
+    m_ResimulationRemaining = seconds;
+    m_ResimulationStep = m_Asset->m_FixedStep > 0 ? m_Asset->m_FixedStep : std::max(step,1.0f/240.0f);
     return true;
+}
+uint32_t VansParticleRuntime::AdvanceResimulation(uint32_t stepBudget)
+{
+    uint32_t used = 0;
+    while (used < stepBudget && m_ResimulationRemaining > 1.0e-8 && !IsFinished())
+    {
+        const auto delta = float(std::min<double>(m_ResimulationStep,m_ResimulationRemaining));
+        Advance(delta,m_LocalToWorld);
+        m_ResimulationRemaining -= delta;
+        ++used;
+    }
+    if (m_ResimulationRemaining <= 1.0e-8 || IsFinished())
+    {
+        m_ResimulationKind = VansParticleResimulationKind::None;
+        m_ResimulationRemaining = 0;
+        Capture();
+    }
+    return used;
 }
 void VansParticleRuntime::Finish()
 {
@@ -152,10 +186,14 @@ void VansParticleRuntime::Advance(float seconds, const glm::mat4& transform, boo
 void VansParticleRuntime::Update(float deltaTime)
 {
     if (!m_Asset) return;
-    if (!std::isfinite(deltaTime) || deltaTime < 0 || !m_EffectiveEnabled || !IsPlaying()) { Capture(); return; }
-    if (m_DeferFirstUpdate) { m_DeferFirstUpdate = false; Capture(); return; }
+    if (HasPendingResimulation()) return;
+    if (!std::isfinite(deltaTime) || deltaTime < 0 || !m_EffectiveEnabled || !IsPlaying())
+    { if (m_FrameDirty) Capture(); return; }
+    if (m_DeferFirstUpdate)
+    { m_DeferFirstUpdate = false; if (m_FrameDirty) Capture(); return; }
     const double scaled = std::min(double(deltaTime)*m_SimulationRate,300.0);
     double dt = scaled;
+    if (dt > 0) m_FrameDirty = true;
     if (m_State == VansParticlePlaybackState::Delayed)
     {
         const double consumed = std::min(m_DelayRemaining,dt);
@@ -164,14 +202,15 @@ void VansParticleRuntime::Update(float deltaTime)
         {
             m_PreviousOwner = m_LocalToWorld;
             for (auto& emitter : m_Emitters) if (emitter) emitter->ResetAnchor(m_LocalToWorld);
-            Capture(); return;
+            if (m_FrameDirty) Capture(); return;
         }
         // 延迟期间的运动不是烟带历史；首个出生从延迟结束的子帧姿态开始。
         glm::mat4 start;
         const float alpha = scaled > 0 ? float(consumed/scaled) : 1.0f;
         for (int column=0; column<4; ++column) start[column] = glm::mix(m_PreviousOwner[column],m_LocalToWorld[column],alpha);
         for (auto& emitter : m_Emitters) if (emitter) emitter->ResetAnchor(start);
-        m_State = VansParticlePlaybackState::Emitting; Prewarm();
+        m_State = VansParticlePlaybackState::Emitting; BeginPrewarm();
+        if (HasPendingResimulation()) return;
     }
     const auto sample = [&](double t) {
         const float alpha = scaled > 0 ? std::clamp(float(t/scaled),0.0f,1.0f) : 1.0f;
@@ -207,7 +246,7 @@ void VansParticleRuntime::Update(float deltaTime)
     if (std::isfinite(root.x) && std::isfinite(root.y) && std::isfinite(root.z))
         for (auto& emitter : m_Emitters) if (emitter) emitter->SetRenderAnchor(root);
     m_PreviousOwner = m_LocalToWorld;
-    Capture();
+    if (m_FrameDirty) Capture();
 }
 void VansParticleRuntime::Capture()
 {
@@ -229,6 +268,7 @@ void VansParticleRuntime::Capture()
         range.mediumFirst = uint32_t(frame.medium.size());
         range.ribbonFirst = uint32_t(frame.ribbons.size());
         const auto& renderer = emitter->Definition().m_RendererConfig;
+        range.renderSortMode = renderer.m_RenderSortMode;
         if (renderer.m_Type != VansParticleRendererType::None)
         {
             if (renderer.m_Type == VansParticleRendererType::Billboard) emitter->FillInstanceData(frame.instances);
@@ -245,8 +285,15 @@ void VansParticleRuntime::Capture()
         frame.emitters.push_back(range);
     }
     m_AliveInstanceCount.store(alive,std::memory_order_release);
+    m_FrameDirty = false;
+    m_FrameReady = true;
 }
-void VansParticleRuntime::SwapBuffers() { std::swap(m_Front,m_Back); }
+void VansParticleRuntime::SwapBuffers()
+{
+    if (!m_FrameReady) return;
+    std::swap(m_Front,m_Back);
+    m_FrameReady = false;
+}
 bool VansParticleRuntime::HasVolumetricInjectionEnabled() const
 {
     return m_EffectiveEnabled && std::any_of(m_Emitters.begin(),m_Emitters.end(),[](const auto& emitter) {
@@ -256,7 +303,8 @@ bool VansParticleRuntime::HasVolumetricInjectionEnabled() const
 bool VansParticleRuntime::HasRibbon() const
 {
     return std::any_of(m_Emitters.begin(),m_Emitters.end(),[](const auto& emitter) {
-        return emitter && emitter->Definition().m_RendererConfig.m_Type == VansParticleRendererType::Ribbon;
+        return emitter && emitter->m_Enabled &&
+            emitter->Definition().m_RendererConfig.m_Type == VansParticleRendererType::Ribbon;
     });
 }
 }

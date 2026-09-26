@@ -1,4 +1,5 @@
 #include "VansTerrainAsset.h"
+#include "../Util/VansFileFingerprint.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,15 +14,6 @@ bool FinitePositive(float value)
 	return std::isfinite(value) && value > 0.0f;
 }
 
-void HashBytes(std::uint64_t& hash, const void* data, std::size_t size)
-{
-	const auto* bytes = static_cast<const std::uint8_t*>(data);
-	for (std::size_t index = 0; index < size; ++index)
-	{
-		hash ^= bytes[index];
-		hash *= 1099511628211ull;
-	}
-}
 }
 
 bool VansTerrainAsset::HasPixelData() const
@@ -98,13 +90,13 @@ std::vector<std::string> ValidateTerrainAsset(const VansTerrainAsset& asset, boo
 
 std::uint64_t HashTerrainAssetContent(const VansTerrainAsset& asset)
 {
-	std::uint64_t hash = 14695981039346656037ull;
-	HashBytes(hash, &asset.width, sizeof(asset.width));
-	HashBytes(hash, &asset.height, sizeof(asset.height));
+	std::uint64_t hash = VANS_FNV1A64_OFFSET_BASIS;
+	hash = ContinueMemoryFnv1a64(hash, &asset.width, sizeof(asset.width));
+	hash = ContinueMemoryFnv1a64(hash, &asset.height, sizeof(asset.height));
 	if (!asset.heights.empty())
-		HashBytes(hash, asset.heights.data(), asset.heights.size() * sizeof(std::uint16_t));
+		hash = ContinueMemoryFnv1a64(hash, asset.heights.data(), asset.heights.size() * sizeof(std::uint16_t));
 	for (const auto& splat : asset.splatPixels)
-		if (!splat.empty()) HashBytes(hash, splat.data(), splat.size());
+		if (!splat.empty()) hash = ContinueMemoryFnv1a64(hash, splat.data(), splat.size());
 	return hash == 0 ? 1 : hash;
 }
 }

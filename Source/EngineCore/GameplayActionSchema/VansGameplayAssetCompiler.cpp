@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <unordered_map>
+#include <utility>
 
 namespace Vans
 {
@@ -28,6 +29,33 @@ bool HasErrors(const VansGameplayDiagnostics& diagnostics)
 		return diagnostic.severity == VansGameplayDiagnosticSeverity::Error ||
 			diagnostic.severity == VansGameplayDiagnosticSeverity::Fatal;
 	});
+}
+
+template <typename Enum, std::size_t Count>
+bool ReadEnumValue(
+	std::string_view value,
+	const std::pair<std::string_view, Enum> (&entries)[Count],
+	Enum& output)
+{
+	for (const auto& entry : entries)
+		if (entry.first == value)
+		{
+			output = entry.second;
+			return true;
+		}
+	return false;
+}
+
+void AddInvalidEnumDiagnostic(
+	VansGameplayDiagnostics& diagnostics,
+	std::string code,
+	std::string_view fieldName,
+	std::string_view value,
+	std::string fieldPath)
+{
+	AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+		std::move(code), "Unknown " + std::string(fieldName) + ": " + std::string(value),
+		std::move(fieldPath));
 }
 
 const VansSerializedValue* At(const VansSerializedValue& root, const char* path)
@@ -111,12 +139,19 @@ VansGameplayTagQuery TagQuery(const VansSerializedValue* value)
 	return result;
 }
 
-VansActionConcurrencyPolicy ConcurrencyPolicy(std::string_view value)
+bool ReadConcurrencyPolicy(
+	std::string_view value,
+	VansActionConcurrencyPolicy& output)
 {
-	if (value == "Reject" || value == "RejectNew") return VansActionConcurrencyPolicy::RejectNew;
-	if (value == "CancelExisting") return VansActionConcurrencyPolicy::CancelExisting;
-	if (value == "Queue" || value == "QueueNew") return VansActionConcurrencyPolicy::QueueNew;
-	return VansActionConcurrencyPolicy::Allow;
+	static constexpr std::pair<std::string_view, VansActionConcurrencyPolicy> kValues[] = {
+		{ "Allow", VansActionConcurrencyPolicy::Allow },
+		{ "Reject", VansActionConcurrencyPolicy::RejectNew },
+		{ "RejectNew", VansActionConcurrencyPolicy::RejectNew },
+		{ "CancelExisting", VansActionConcurrencyPolicy::CancelExisting },
+		{ "Queue", VansActionConcurrencyPolicy::QueueNew },
+		{ "QueueNew", VansActionConcurrencyPolicy::QueueNew }
+	};
+	return ReadEnumValue(value, kValues, output);
 }
 
 bool CompileAction(
@@ -187,15 +222,23 @@ bool CompileAction(
 		}
 	};
 
-	for (const VansCompiledActionRecord& policy : action->program.policies)
+	for (std::size_t policyIndex = 0;
+		policyIndex < action->program.policies.size(); ++policyIndex)
 	{
+		const VansCompiledActionRecord& policy = action->program.policies[policyIndex];
 		const VansSerializedValue& inputs = policy.inputs;
 		if (policy.type == "Core.Policy.Concurrency")
 		{
 			action->concurrencyGroup = StableId<VansActionConcurrencyGroupIdTag>(
 				ReadSerializedStringField(inputs, "group"));
-			action->concurrencyPolicy = ConcurrencyPolicy(
-				ReadSerializedStringField(inputs, "mode", "Allow"));
+			const std::string mode = ReadSerializedStringField(inputs, "mode", "Allow");
+			if (!ReadConcurrencyPolicy(mode, action->concurrencyPolicy))
+			{
+				AddInvalidEnumDiagnostic(diagnostics, "GAF-ACTION-CONCURRENCY-MODE",
+					"Action concurrency mode", mode,
+					"/policies/" + std::to_string(policyIndex) + "/inputs/mode");
+				continue;
+			}
 			action->concurrencyLimit = static_cast<std::uint32_t>((std::max<std::int64_t>)(1,
 				ReadSerializedIntField(inputs, "limit", 1)));
 			action->concurrencyQueueTimeoutSeconds =
@@ -307,65 +350,180 @@ bool CompileActionSet(const VansGameplayCookedAsset& cooked, VansCompiledGamepla
 	return true;
 }
 
-VansAttributeModifierOperation ModifierOperation(std::string_view value)
+bool ReadEffectModifierApplication(
+	std::string_view value,
+	VansEffectModifierApplication& application)
 {
-	if (value == "Multiplicative" || value == "Multiply")
-		return VansAttributeModifierOperation::Multiplicative;
-	if (value == "Override") return VansAttributeModifierOperation::Override;
-	return VansAttributeModifierOperation::Additive;
+	static constexpr std::pair<std::string_view, VansEffectModifierApplication> kValues[] = {
+		{ "Base", VansEffectModifierApplication::Base },
+		{ "Persistent", VansEffectModifierApplication::Persistent }
+	};
+	return ReadEnumValue(value, kValues, application);
 }
 
-VansEffectMagnitudeSource EffectMagnitudeSource(std::string_view value)
+bool ReadEffectModifierOperation(
+	std::string_view value,
+	VansEffectModifierOperation& operation)
 {
-	if (value == "SetByCaller") return VansEffectMagnitudeSource::SetByCaller;
-	if (value == "CapturedAttribute") return VansEffectMagnitudeSource::CapturedAttribute;
-	if (value == "ContextPayload") return VansEffectMagnitudeSource::ContextPayload;
-	if (value == "TargetData") return VansEffectMagnitudeSource::TargetData;
-	if (value == "RandomRange") return VansEffectMagnitudeSource::RandomRange;
-	return VansEffectMagnitudeSource::Fixed;
+	static constexpr std::pair<std::string_view, VansEffectModifierOperation> kValues[] = {
+		{ "Add", VansEffectModifierOperation::Add },
+		{ "Multiply", VansEffectModifierOperation::Multiply },
+		{ "Set", VansEffectModifierOperation::Set }
+	};
+	return ReadEnumValue(value, kValues, operation);
 }
 
-VansEffectTargetDataMetric EffectTargetDataMetric(std::string_view value)
+bool ReadEffectMagnitudeSource(
+	std::string_view value,
+	VansEffectMagnitudeSource& output)
 {
-	if (value == "HitDistance") return VansEffectTargetDataMetric::HitDistance;
-	if (value == "AreaRadius") return VansEffectTargetDataMetric::AreaRadius;
-	if (value == "RayLength") return VansEffectTargetDataMetric::RayLength;
-	return VansEffectTargetDataMetric::Count;
+	static constexpr std::pair<std::string_view, VansEffectMagnitudeSource> kValues[] = {
+		{ "Fixed", VansEffectMagnitudeSource::Fixed },
+		{ "SetByCaller", VansEffectMagnitudeSource::SetByCaller },
+		{ "CapturedAttribute", VansEffectMagnitudeSource::CapturedAttribute },
+		{ "ContextPayload", VansEffectMagnitudeSource::ContextPayload },
+		{ "TargetData", VansEffectMagnitudeSource::TargetData },
+		{ "RandomRange", VansEffectMagnitudeSource::RandomRange }
+	};
+	return ReadEnumValue(value, kValues, output);
 }
 
-bool CompileEffect(const VansGameplayCookedAsset& cooked, VansCompiledGameplayAssetData& output)
+bool ReadEffectTargetDataMetric(
+	std::string_view value,
+	VansEffectTargetDataMetric& output)
+{
+	static constexpr std::pair<std::string_view, VansEffectTargetDataMetric> kValues[] = {
+		{ "Count", VansEffectTargetDataMetric::Count },
+		{ "HitDistance", VansEffectTargetDataMetric::HitDistance },
+		{ "RayLength", VansEffectTargetDataMetric::RayLength }
+	};
+	return ReadEnumValue(value, kValues, output);
+}
+
+bool ReadEffectCapturePolicy(
+	std::string_view value,
+	VansEffectCapturePolicy& output)
+{
+	static constexpr std::pair<std::string_view, VansEffectCapturePolicy> kValues[] = {
+		{ "Snapshot", VansEffectCapturePolicy::Snapshot },
+		{ "Dynamic", VansEffectCapturePolicy::Dynamic }
+	};
+	return ReadEnumValue(value, kValues, output);
+}
+
+bool ReadEffectDurationPolicy(
+	std::string_view value,
+	VansEffectDurationPolicy& output)
+{
+	static constexpr std::pair<std::string_view, VansEffectDurationPolicy> kValues[] = {
+		{ "Instant", VansEffectDurationPolicy::Instant },
+		{ "Duration", VansEffectDurationPolicy::Duration },
+		{ "Infinite", VansEffectDurationPolicy::Infinite }
+	};
+	return ReadEnumValue(value, kValues, output);
+}
+
+bool ReadEffectStackingPolicy(
+	std::string_view value,
+	VansEffectStackingPolicy& output)
+{
+	static constexpr std::pair<std::string_view, VansEffectStackingPolicy> kValues[] = {
+		{ "None", VansEffectStackingPolicy::None },
+		{ "AggregateBySource", VansEffectStackingPolicy::AggregateBySource },
+		{ "AggregateByTarget", VansEffectStackingPolicy::AggregateByTarget }
+	};
+	return ReadEnumValue(value, kValues, output);
+}
+
+bool ReadEffectOverflowPolicy(
+	std::string_view value,
+	VansEffectOverflowPolicy& output)
+{
+	static constexpr std::pair<std::string_view, VansEffectOverflowPolicy> kValues[] = {
+		{ "Reject", VansEffectOverflowPolicy::Reject },
+		{ "RefreshOnly", VansEffectOverflowPolicy::RefreshOnly },
+		{ "ReplaceOldest", VansEffectOverflowPolicy::ReplaceOldest }
+	};
+	return ReadEnumValue(value, kValues, output);
+}
+
+enum class VansEffectCuePhase : std::uint8_t
+{
+	Execute,
+	Persistent,
+	Periodic,
+	Remove
+};
+
+bool ReadEffectCuePhase(std::string_view value, VansEffectCuePhase& output)
+{
+	static constexpr std::pair<std::string_view, VansEffectCuePhase> kValues[] = {
+		{ "Execute", VansEffectCuePhase::Execute },
+		{ "Persistent", VansEffectCuePhase::Persistent },
+		{ "Periodic", VansEffectCuePhase::Periodic },
+		{ "Remove", VansEffectCuePhase::Remove }
+	};
+	return ReadEnumValue(value, kValues, output);
+}
+
+bool CompileEffect(
+	const VansGameplayCookedAsset& cooked,
+	VansCompiledGameplayAssetData& output,
+	VansGameplayDiagnostics& diagnostics)
 {
 	const VansSerializedValue& root = cooked.runtimeDocument;
+	VansCompiledEffectAsset compiled;
 	auto effect = std::make_shared<VansEffectDefinition>();
 	effect->name = StringAt(root, "/effectId");
 	effect->id = StableId<VansEffectIdTag>(effect->name);
 	const std::string durationPolicy = StringAt(root, "/duration/policy", "Instant");
-	if (durationPolicy == "Duration") effect->durationPolicy = VansEffectDurationPolicy::Duration;
-	else if (durationPolicy == "Infinite") effect->durationPolicy = VansEffectDurationPolicy::Infinite;
+	if (!ReadEffectDurationPolicy(durationPolicy, effect->durationPolicy))
+	{
+		AddInvalidEnumDiagnostic(diagnostics, "GAF-EFFECT-DURATION-POLICY",
+			"Gameplay Effect duration policy", durationPolicy, "/duration/policy");
+		return false;
+	}
 	effect->durationSeconds = NumberAt(root, "/duration/seconds");
 	effect->periodSeconds = NumberAt(root, "/duration/period");
 	effect->executePeriodicOnApply = BoolAt(root, "/duration/executePeriodicOnApply");
 	const std::string stacking = StringAt(root, "/stacking/policy", "None");
-	if (stacking == "AggregateBySource") effect->stackingPolicy = VansEffectStackingPolicy::AggregateBySource;
-	else if (stacking == "AggregateByTarget") effect->stackingPolicy = VansEffectStackingPolicy::AggregateByTarget;
+	if (!ReadEffectStackingPolicy(stacking, effect->stackingPolicy))
+	{
+		AddInvalidEnumDiagnostic(diagnostics, "GAF-EFFECT-STACKING-POLICY",
+			"Gameplay Effect stacking policy", stacking, "/stacking/policy");
+		return false;
+	}
 	const std::string overflow = StringAt(root, "/stacking/overflow", "Reject");
-	if (overflow == "RefreshOnly") effect->overflowPolicy = VansEffectOverflowPolicy::RefreshOnly;
-	else if (overflow == "ReplaceOldest") effect->overflowPolicy = VansEffectOverflowPolicy::ReplaceOldest;
-	effect->maximumStacks = static_cast<std::uint32_t>(std::max<std::int64_t>(1,
-		IntAt(root, "/stacking/maximumStacks", 1)));
-	effect->refreshDurationOnStack = BoolAt(root, "/stacking/refreshDuration", true);
+	if (!ReadEffectOverflowPolicy(overflow, effect->overflowPolicy))
+	{
+		AddInvalidEnumDiagnostic(diagnostics, "GAF-EFFECT-OVERFLOW-POLICY",
+			"Gameplay Effect overflow policy", overflow, "/stacking/overflow");
+		return false;
+	}
+	const std::int64_t maximumStacks = IntAt(root, "/stacking/maximumStacks", 1);
+	if (maximumStacks <= 0)
+	{
+		AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+			"GAF-EFFECT-STACK", "maximumStacks must be positive",
+			"/stacking/maximumStacks");
+		return false;
+	}
+	effect->maximumStacks = static_cast<std::uint32_t>(maximumStacks);
+	effect->refreshDurationOnStack = BoolAt(root, "/stacking/refreshDuration", false);
 	effect->resetPeriodOnStack = BoolAt(root, "/stacking/resetPeriod", false);
 	effect->requirements = TagQuery(At(root, "/requirements"));
 	effect->immunity = TagQuery(At(root, "/immunity"));
-	for (const std::string& tag : StringArray(At(root, "/effectTags")))
-		effect->effectTags.push_back(StableId<VansGameplayTagIdTag>(tag));
 	for (const std::string& tag : StringArray(At(root, "/grantedTags")))
 		effect->grantedTags.push_back(StableId<VansGameplayTagIdTag>(tag));
 	if (const VansSerializedValue* extensions = At(root, "/extensions");
 		extensions && extensions->kind == VansSerializedValue::Kind::Array)
 	{
-		for (const VansSerializedValue& extension : extensions->arrayItems)
+		for (std::size_t extensionIndex = 0;
+			extensionIndex < extensions->arrayItems.size(); ++extensionIndex)
 		{
+			const VansSerializedValue& extension = extensions->arrayItems[extensionIndex];
+			const std::string inputPath = "/extensions/" +
+				std::to_string(extensionIndex) + "/inputs/";
 			if (extension.kind != VansSerializedValue::Kind::Object) continue;
 			const std::string type = ReadSerializedStringField(extension, "type");
 			const VansSerializedValue* inputs = FindObjectField(extension, "inputs");
@@ -375,23 +533,57 @@ bool CompileEffect(const VansGameplayCookedAsset& cooked, VansCompiledGameplayAs
 				VansEffectModifier modifier;
 				modifier.attribute = StableId<VansAttributeIdTag>(
 					ReadSerializedStringField(*inputs, "attribute"));
-				modifier.operation = ModifierOperation(
-					ReadSerializedStringField(*inputs, "operation", "Additive"));
+				const std::string application =
+					ReadSerializedStringField(*inputs, "application");
+				if (!ReadEffectModifierApplication(application, modifier.application))
+				{
+					AddInvalidEnumDiagnostic(diagnostics, "GAF-EFFECT-MODIFIER-APPLICATION",
+						"Gameplay Effect modifier application", application,
+						inputPath + "application");
+					return false;
+				}
+				const std::string operation =
+					ReadSerializedStringField(*inputs, "operation");
+				if (!ReadEffectModifierOperation(operation, modifier.operation))
+				{
+					AddInvalidEnumDiagnostic(diagnostics, "GAF-EFFECT-MODIFIER-OPERATION",
+						"Gameplay Effect modifier operation", operation, inputPath + "operation");
+					return false;
+				}
 				modifier.magnitude = FindObjectField(*inputs, "magnitude")
 					? ReadSerializedNumber(*FindObjectField(*inputs, "magnitude")) : 0.0;
 				modifier.priority = static_cast<std::int32_t>(
 					ReadSerializedIntField(*inputs, "priority", 0));
-				modifier.magnitudeSource = EffectMagnitudeSource(
-					ReadSerializedStringField(*inputs, "magnitudeSource", "Fixed"));
+				const std::string magnitudeSource =
+					ReadSerializedStringField(*inputs, "magnitudeSource", "Fixed");
+				if (!ReadEffectMagnitudeSource(magnitudeSource, modifier.magnitudeSource))
+				{
+					AddInvalidEnumDiagnostic(diagnostics, "GAF-EFFECT-MAGNITUDE-SOURCE",
+						"Gameplay Effect magnitude source", magnitudeSource,
+						inputPath + "magnitudeSource");
+					return false;
+				}
 				modifier.setByCallerField = StableId<VansActionFieldIdTag>(
 					ReadSerializedStringField(*inputs, "setByCaller"));
 				modifier.capturedAttribute = StableId<VansAttributeIdTag>(
 					ReadSerializedStringField(*inputs, "capturedAttribute"));
-				modifier.capturePolicy = ReadSerializedStringField(*inputs, "capture", "Snapshot") == "Dynamic"
-					? VansEffectCapturePolicy::Dynamic : VansEffectCapturePolicy::Snapshot;
+				const std::string capture =
+					ReadSerializedStringField(*inputs, "capture", "Snapshot");
+				if (!ReadEffectCapturePolicy(capture, modifier.capturePolicy))
+				{
+					AddInvalidEnumDiagnostic(diagnostics, "GAF-EFFECT-CAPTURE-POLICY",
+						"Gameplay Effect capture policy", capture, inputPath + "capture");
+					return false;
+				}
 				modifier.contextPayloadPath = ReadSerializedStringField(*inputs, "contextPath");
-				modifier.targetDataMetric = EffectTargetDataMetric(
-					ReadSerializedStringField(*inputs, "targetMetric", "Count"));
+				const std::string targetMetric =
+					ReadSerializedStringField(*inputs, "targetMetric", "Count");
+				if (!ReadEffectTargetDataMetric(targetMetric, modifier.targetDataMetric))
+				{
+					AddInvalidEnumDiagnostic(diagnostics, "GAF-EFFECT-TARGET-METRIC",
+						"Gameplay Effect target metric", targetMetric, inputPath + "targetMetric");
+					return false;
+				}
 				modifier.randomMinimum = NumberField(*inputs, "randomMinimum", 0.0);
 				modifier.randomMaximum = NumberField(*inputs, "randomMaximum", 1.0);
 				modifier.coefficient = NumberField(*inputs, "coefficient", 1.0);
@@ -402,82 +594,205 @@ bool CompileEffect(const VansGameplayCookedAsset& cooked, VansCompiledGameplayAs
 			}
 			if (type != "Gameplay.Effect.CueBinding") continue;
 			std::vector<VansCueId>* cueIds = nullptr;
-			std::vector<std::string>* cueReferences = nullptr;
+			std::vector<std::string>* cueAssets = nullptr;
 			const std::string phase = ReadSerializedStringField(*inputs, "phase", "Execute");
-			if (phase == "Execute")
+			VansEffectCuePhase cuePhase{};
+			if (!ReadEffectCuePhase(phase, cuePhase))
+			{
+				AddInvalidEnumDiagnostic(diagnostics, "GAF-EFFECT-CUE-PHASE",
+					"Gameplay Effect Cue phase", phase, inputPath + "phase");
+				return false;
+			}
+			if (cuePhase == VansEffectCuePhase::Execute)
 			{
 				cueIds = &effect->executeCues;
-				cueReferences = &effect->executeCueReferences;
+				cueAssets = &compiled.executeCueAssets;
 			}
-			else if (phase == "Persistent")
+			else if (cuePhase == VansEffectCuePhase::Persistent)
 			{
 				cueIds = &effect->persistentCues;
-				cueReferences = &effect->persistentCueReferences;
+				cueAssets = &compiled.persistentCueAssets;
 			}
-			else if (phase == "Periodic")
+			else if (cuePhase == VansEffectCuePhase::Periodic)
 			{
 				cueIds = &effect->periodicCues;
-				cueReferences = &effect->periodicCueReferences;
+				cueAssets = &compiled.periodicCueAssets;
 			}
-			else if (phase == "Remove")
+			else if (cuePhase == VansEffectCuePhase::Remove)
 			{
 				cueIds = &effect->removeCues;
-				cueReferences = &effect->removeCueReferences;
+				cueAssets = &compiled.removeCueAssets;
 			}
 			const VansSerializedValue* assets = FindObjectField(*inputs, "assets");
-			if (!cueIds || !cueReferences || !assets || assets->kind != VansSerializedValue::Kind::Array)
-				continue;
+			if (!assets || assets->kind != VansSerializedValue::Kind::Array)
+			{
+				AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+					"GAF-EFFECT-CUE-ASSETS", "Gameplay Effect Cue assets must be an array",
+					inputPath + "assets");
+				return false;
+			}
 			for (const VansSerializedValue& item : assets->arrayItems)
 			{
 				const std::string reference = ReferenceString(&item);
 				if (reference.empty()) continue;
-				cueReferences->push_back(reference);
+				cueAssets->push_back(reference);
 				cueIds->push_back(StableId<VansCueIdTag>(reference));
 			}
 		}
 	}
-	output = std::shared_ptr<const VansEffectDefinition>(std::move(effect));
+	const VansEffectPolicyValidation policyIssues =
+		VansValidateEffectPolicy(*effect);
+	for (const VansEffectPolicyIssue& issue : policyIssues)
+		AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+			"GAF-EFFECT-FIELD-INAPPLICABLE", std::string(issue.message),
+			std::string(VansEffectPolicyFieldPath(issue.field)));
+	if (!policyIssues.IsValid()) return false;
+	compiled.definition = std::shared_ptr<const VansEffectDefinition>(std::move(effect));
+	output = std::move(compiled);
 	return true;
 }
 
-VansGameplayCueScope CueScope(std::string_view value)
+bool ReadCueScope(std::string_view value, VansGameplayCueScope& output)
 {
-	if (value == "Owner") return VansGameplayCueScope::Owner;
-	if (value == "Observers") return VansGameplayCueScope::Observers;
-	if (value == "World") return VansGameplayCueScope::World;
-	if (value == "LocalOnly") return VansGameplayCueScope::LocalOnly;
-	return VansGameplayCueScope::Target;
+	static constexpr std::pair<std::string_view, VansGameplayCueScope> kValues[] = {
+		{ "Owner", VansGameplayCueScope::Owner },
+		{ "Target", VansGameplayCueScope::Target },
+		{ "Observers", VansGameplayCueScope::Observers },
+		{ "World", VansGameplayCueScope::World },
+		{ "LocalOnly", VansGameplayCueScope::LocalOnly }
+	};
+	return ReadEnumValue(value, kValues, output);
 }
 
-bool CompileCue(const VansGameplayCookedAsset& cooked, VansCompiledGameplayAssetData& output)
+bool CompileCueCommand(
+	const VansSerializedValue* source,
+	bool required,
+	std::string_view path,
+	VansGameplayCueCommandBinding& command,
+	VansGameplayDiagnostics& diagnostics)
+{
+	if (!source)
+	{
+		if (!required) return true;
+		AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+			"GAF-CUE-COMMAND", "Gameplay Cue invoke command is missing", std::string(path));
+		return false;
+	}
+	if (source->kind != VansSerializedValue::Kind::Object)
+	{
+		AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+			"GAF-CUE-COMMAND", "Gameplay Cue command must be an object", std::string(path));
+		return false;
+	}
+	const std::string name = ReadSerializedStringField(*source, "command");
+	if (name.empty())
+	{
+		if (!required && source->objectFields.empty()) return true;
+		AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+			"GAF-CUE-COMMAND", "Gameplay Cue command name is missing",
+			std::string(path) + "/command");
+		return false;
+	}
+	command.command = StableId<VansActionFieldIdTag>(name);
+	if (const VansSerializedValue* values = FindObjectField(*source, "values"))
+	{
+		if (values->kind != VansSerializedValue::Kind::Object)
+		{
+			AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+				"GAF-CUE-VALUES", "Gameplay Cue command values must be an object",
+				std::string(path) + "/values");
+			return false;
+		}
+		command.values = *values;
+	}
+	if (const VansSerializedValue* bindings = FindObjectField(*source, "bindings"))
+	{
+		if (bindings->kind != VansSerializedValue::Kind::Object)
+		{
+			AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+				"GAF-CUE-FIELD-BINDINGS", "Gameplay Cue field bindings must be an object",
+				std::string(path) + "/bindings");
+			return false;
+		}
+		for (const auto& [field, encodedSource] : bindings->objectFields)
+		{
+			VansGameplayCueSource cueSource;
+			if (field.empty() || encodedSource.kind != VansSerializedValue::Kind::String ||
+				!VansReadGameplayCueSource(encodedSource.stringValue, cueSource))
+			{
+				AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+					"GAF-CUE-FIELD-SOURCE", "Gameplay Cue field source is invalid",
+					std::string(path) + "/bindings/" + field);
+				return false;
+			}
+			command.fields.push_back({ field, cueSource });
+		}
+		std::sort(command.fields.begin(), command.fields.end(),
+			[](const auto& left, const auto& right) { return left.field < right.field; });
+	}
+	return true;
+}
+
+bool CompileCue(
+	const VansGameplayCookedAsset& cooked,
+	VansCompiledGameplayAssetData& output,
+	VansGameplayDiagnostics& diagnostics)
 {
 	const VansSerializedValue& root = cooked.runtimeDocument;
 	VansCompiledGameplayCueDefinition cue;
 	cue.name = StringAt(root, "/cueId");
 	cue.id = StableId<VansCueIdTag>(cue.name);
-	cue.scope = CueScope(StringAt(root, "/scope", "Target"));
+	const std::string scope = StringAt(root, "/scope", "Target");
+	if (!ReadCueScope(scope, cue.scope))
+	{
+		AddInvalidEnumDiagnostic(diagnostics, "GAF-CUE-SCOPE",
+			"Gameplay Cue scope", scope, "/scope");
+		return false;
+	}
 	cue.payloadSchemaAsset = ReferenceString(At(root, "/payloadSchema"));
+	std::size_t bindingCount = 0;
 	if (const VansSerializedValue* bindings = At(root, "/bindings");
 		bindings && bindings->kind == VansSerializedValue::Kind::Array)
-		for (const VansSerializedValue& binding : bindings->arrayItems)
+		for (std::size_t index = 0; index < bindings->arrayItems.size(); ++index)
 		{
+			const VansSerializedValue& binding = bindings->arrayItems[index];
 			if (binding.kind != VansSerializedValue::Kind::Object ||
 				ReadSerializedStringField(binding, "type") != "Gameplay.Cue.Invoke") continue;
+			if (++bindingCount > 1)
+			{
+				AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+					"GAF-CUE-BINDING-COUNT", "Gameplay Cue supports exactly one Service binding",
+					"/bindings/" + std::to_string(index));
+				return false;
+			}
 			const VansSerializedValue* inputs = FindObjectField(binding, "inputs");
-			if (!inputs || inputs->kind != VansSerializedValue::Kind::Object) continue;
-			VansGameplayCueAdapterMapping mapping;
-			mapping.serviceName = ReadSerializedStringField(*inputs, "capability");
-			mapping.service = StableId<VansActionServiceIdTag>(mapping.serviceName);
-			mapping.commandName = ReadSerializedStringField(*inputs, "invoke");
-			mapping.command = StableId<VansActionFieldIdTag>(mapping.commandName);
-			mapping.updateCommandName = ReadSerializedStringField(*inputs, "update");
-			mapping.updateCommand = StableId<VansActionFieldIdTag>(mapping.updateCommandName);
-			mapping.removeCommandName = ReadSerializedStringField(*inputs, "release");
-			mapping.removeCommand = StableId<VansActionFieldIdTag>(mapping.removeCommandName);
-			mapping.asset = ReferenceString(FindObjectField(*inputs, "asset"));
-			if (const VansSerializedValue* parameters = FindObjectField(*inputs, "parameters"))
-				mapping.parameters = *parameters;
-			cue.adapterMappings.push_back(std::move(mapping));
+			if (!inputs || inputs->kind != VansSerializedValue::Kind::Object)
+			{
+				AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+					"GAF-CUE-BINDING", "Gameplay Cue Service binding inputs are invalid",
+					"/bindings/" + std::to_string(index) + "/inputs");
+				return false;
+			}
+			VansGameplayCueBinding compiled;
+			const std::string capability = ReadSerializedStringField(*inputs, "capability");
+			if (capability.empty())
+			{
+				AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+					"GAF-CUE-CAPABILITY", "Gameplay Cue capability is missing",
+					"/bindings/" + std::to_string(index) + "/inputs/capability");
+				return false;
+			}
+			compiled.service = StableId<VansActionServiceIdTag>(capability);
+			compiled.asset = ReferenceString(FindObjectField(*inputs, "asset"));
+			const std::string commandRoot = "/bindings/" + std::to_string(index) + "/inputs/";
+			if (!CompileCueCommand(FindObjectField(*inputs, "invoke"), true,
+					commandRoot + "invoke", compiled.invoke, diagnostics) ||
+				!CompileCueCommand(FindObjectField(*inputs, "update"), false,
+					commandRoot + "update", compiled.update, diagnostics) ||
+				!CompileCueCommand(FindObjectField(*inputs, "release"), false,
+					commandRoot + "release", compiled.release, diagnostics))
+				return false;
+			cue.binding = std::move(compiled);
 		}
 	output = std::move(cue);
 	return true;
@@ -538,28 +853,51 @@ bool CompileAttributeSet(
 	return !HasErrors(diagnostics);
 }
 
-bool CompileTargeting(const VansGameplayCookedAsset& cooked, VansCompiledGameplayAssetData& output)
+bool CompileTargeting(
+	const VansGameplayCookedAsset& cooked,
+	const VansTargetingHandlerRegistry& handlers,
+	VansCompiledGameplayAssetData& output,
+	VansGameplayDiagnostics& diagnostics)
 {
 	const VansSerializedValue& root = cooked.runtimeDocument;
 	VansTargetingPolicy policy;
 	policy.name = StringAt(root, "/targetingId");
 	policy.id = StableId<VansTargetingPolicyIdTag>(policy.name);
-	if (const VansSerializedValue* steps = At(root, "/steps");
-		steps && steps->kind == VansSerializedValue::Kind::Array)
+	const VansSerializedValue* steps = At(root, "/steps");
+	if (!steps || steps->kind != VansSerializedValue::Kind::Array || steps->arrayItems.empty())
+		AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+			"GAF-TARGETING-STEPS", "Targeting policy must contain at least one step", "/steps");
+	else
 	{
-		for (const VansSerializedValue& item : steps->arrayItems)
+		for (std::size_t index = 0; index < steps->arrayItems.size(); ++index)
 		{
-			if (item.kind != VansSerializedValue::Kind::Object) continue;
+			const VansSerializedValue& item = steps->arrayItems[index];
+			const std::string path = "/steps/" + std::to_string(index);
+			if (item.kind != VansSerializedValue::Kind::Object)
+			{
+				AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+					"GAF-TARGETING-STEP", "Targeting step must be an object", path);
+				continue;
+			}
+			const std::string stableName = ReadSerializedStringField(item, "type");
+			const std::shared_ptr<const IVansTargetingStepHandler> handler =
+				handlers.Find(stableName);
+			if (!handler)
+			{
+				AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+					"GAF-TARGETING-HANDLER", "Unknown Targeting handler: " + stableName,
+					path + "/type");
+				continue;
+			}
 			VansTargetingStep step;
-			step.stableName = ReadSerializedStringField(item, "type");
-			step.handler = StableId<VansActionGraphNodeTypeIdTag>(step.stableName);
+			step.handler = handler->TypeId();
 			if (const VansSerializedValue* inputs = FindObjectField(item, "inputs"))
 				step.inputs = *inputs;
 			policy.steps.push_back(std::move(step));
 		}
 	}
 	output = std::move(policy);
-	return true;
+	return !HasErrors(diagnostics);
 }
 
 bool CompileTagTree(
@@ -596,70 +934,83 @@ bool CompileTagTree(
 	if (!HasErrors(diagnostics) && !dictionary.Seal(error))
 		AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
 			"GAF-TAG-TREE", error, "/tags");
-	tree.tags = dictionary.Definitions();
+	tree.tags = dictionary.Snapshot();
 	output = std::move(tree);
 	return !HasErrors(diagnostics);
 }
 
-VansTimelineValueType PayloadFieldType(std::string_view value)
+bool ReadPayloadFieldType(std::string_view value, VansTimelineValueType& output)
 {
-	if (value == "Bool") return VansTimelineValueType::Bool;
-	if (value == "Int32") return VansTimelineValueType::Int32;
-	if (value == "Int64") return VansTimelineValueType::Int64;
-	if (value == "Float") return VansTimelineValueType::Float;
-	if (value == "Double") return VansTimelineValueType::Double;
-	if (value == "Enum") return VansTimelineValueType::Enum;
-	if (value == "String") return VansTimelineValueType::String;
-	if (value == "Vec2") return VansTimelineValueType::Vec2;
-	if (value == "Vec3") return VansTimelineValueType::Vec3;
-	if (value == "Vec4") return VansTimelineValueType::Vec4;
-	if (value == "Quaternion") return VansTimelineValueType::Quaternion;
-	if (value == "ColorLinear") return VansTimelineValueType::ColorLinear;
-	if (value == "ColorSrgb") return VansTimelineValueType::ColorSrgb;
-	if (value == "ObjectReference") return VansTimelineValueType::ObjectReference;
-	if (value == "Struct") return VansTimelineValueType::Struct;
-	return VansTimelineValueType::Null;
+	static constexpr std::pair<std::string_view, VansTimelineValueType> kValues[] = {
+		{ "Bool", VansTimelineValueType::Bool },
+		{ "Int32", VansTimelineValueType::Int32 },
+		{ "Int64", VansTimelineValueType::Int64 },
+		{ "Float", VansTimelineValueType::Float },
+		{ "Double", VansTimelineValueType::Double },
+		{ "Enum", VansTimelineValueType::Enum },
+		{ "String", VansTimelineValueType::String },
+		{ "Vec2", VansTimelineValueType::Vec2 },
+		{ "Vec3", VansTimelineValueType::Vec3 },
+		{ "Vec4", VansTimelineValueType::Vec4 },
+		{ "Quaternion", VansTimelineValueType::Quaternion },
+		{ "ColorLinear", VansTimelineValueType::ColorLinear },
+		{ "ColorSrgb", VansTimelineValueType::ColorSrgb },
+		{ "ObjectReference", VansTimelineValueType::ObjectReference },
+		{ "Struct", VansTimelineValueType::Struct }
+	};
+	return ReadEnumValue(value, kValues, output);
 }
 
-bool CompilePayload(const VansGameplayCookedAsset& cooked, VansCompiledGameplayAssetData& output)
+bool CompilePayload(
+	const VansGameplayCookedAsset& cooked,
+	VansCompiledGameplayAssetData& output,
+	VansGameplayDiagnostics& diagnostics)
 {
 	const VansSerializedValue& root = cooked.runtimeDocument;
-	VansPayloadSchema schema;
+	VansTimelinePayloadSchema schema;
 	schema.stableName = StringAt(root, "/payloadTypeId");
 	schema.typeId = StableId<VansTimelinePayloadTypeTag>(schema.stableName);
 	schema.maximumBytes = static_cast<std::uint32_t>(std::max<std::int64_t>(1,
 		IntAt(root, "/maximumBytes", 4096)));
-	schema.editorSafe = BoolAt(root, "/editorSafe", false);
 	schema.allowAdditionalFields = BoolAt(root, "/allowAdditionalFields", false);
 	if (const VansSerializedValue* fields = At(root, "/fields");
 		fields && fields->kind == VansSerializedValue::Kind::Array)
 	{
-		for (const VansSerializedValue& item : fields->arrayItems)
+		for (std::size_t index = 0; index < fields->arrayItems.size(); ++index)
 		{
+			const VansSerializedValue& item = fields->arrayItems[index];
 			if (item.kind != VansSerializedValue::Kind::Object) continue;
-			VansPayloadFieldSchema field;
+			VansTimelinePayloadFieldSchema field;
 			field.name = ReadSerializedStringField(item, "name");
 			field.id = StableId<VansTimelineFieldTag>(field.name);
-			field.type = PayloadFieldType(ReadSerializedStringField(item, "type"));
+			const std::string fieldType = ReadSerializedStringField(item, "type");
+			if (!ReadPayloadFieldType(fieldType, field.type))
+			{
+				AddInvalidEnumDiagnostic(diagnostics, "GAF-PAYLOAD-FIELD-TYPE",
+					"Payload field type", fieldType,
+					"/fields/" + std::to_string(index) + "/type");
+				continue;
+			}
 			field.required = ReadSerializedBoolField(item, "required", false);
-			field.flags = ReadSerializedBoolField(item, "sensitive", false)
-				? VansPayloadFieldFlags::Sensitive : VansPayloadFieldFlags::None;
 			schema.fields.push_back(std::move(field));
 		}
 	}
 	output = std::move(schema);
-	return true;
+	return !HasErrors(diagnostics);
 }
 
-VansActionGraphNodeKind GraphNodeKind(std::string_view value)
+bool ReadGraphNodeKind(std::string_view value, VansActionGraphNodeKind& output)
 {
-	if (value == "Command") return VansActionGraphNodeKind::Command;
-	if (value == "Latent") return VansActionGraphNodeKind::Latent;
-	if (value == "State") return VansActionGraphNodeKind::State;
-	if (value == "Flow") return VansActionGraphNodeKind::Flow;
-	if (value == "Bridge") return VansActionGraphNodeKind::Bridge;
-	if (value == "SubAction") return VansActionGraphNodeKind::SubAction;
-	return VansActionGraphNodeKind::Pure;
+	static constexpr std::pair<std::string_view, VansActionGraphNodeKind> kValues[] = {
+		{ "Pure", VansActionGraphNodeKind::Pure },
+		{ "Command", VansActionGraphNodeKind::Command },
+		{ "Latent", VansActionGraphNodeKind::Latent },
+		{ "State", VansActionGraphNodeKind::State },
+		{ "Flow", VansActionGraphNodeKind::Flow },
+		{ "Bridge", VansActionGraphNodeKind::Bridge },
+		{ "SubAction", VansActionGraphNodeKind::SubAction }
+	};
+	return ReadEnumValue(value, kValues, output);
 }
 
 bool CompileGraph(
@@ -683,7 +1034,11 @@ bool CompileGraph(
 			node.guid = ReadSerializedStringField(item, "guid");
 			const std::string type = ReadSerializedStringField(item, "type");
 			node.type = StableId<VansActionGraphNodeTypeIdTag>(type);
-			node.kind = GraphNodeKind(ReadSerializedStringField(item, "kind", "Pure"));
+			const std::string kind = ReadSerializedStringField(item, "kind", "Pure");
+			if (!ReadGraphNodeKind(kind, node.kind))
+				AddInvalidEnumDiagnostic(diagnostics, "GAF-GRAPH-NODE-KIND",
+					"Action Graph node kind", kind,
+					"/nodes/" + std::to_string(index) + "/kind");
 			if (const VansSerializedValue* properties = FindObjectField(item, "properties"))
 				node.properties = *properties;
 			if (node.guid.empty() || !nodesByGuid.emplace(node.guid,
@@ -781,8 +1136,8 @@ bool VansRegisterCoreGameplayAssetCompilers(
 			[](const auto& cooked, auto& output, auto&)
 			{ return CompileActionSet(cooked, output); }, error) &&
 		registry.Register(VansAssetType::PayloadSchema, "Core.Asset.PayloadSchema",
-			[](const auto& cooked, auto& output, auto&)
-			{ return CompilePayload(cooked, output); }, error) &&
+			[](const auto& cooked, auto& output, auto& diagnostics)
+			{ return CompilePayload(cooked, output, diagnostics); }, error) &&
 		registry.Register(VansAssetType::ActionGraph, "Core.Asset.ActionGraph",
 			[](const auto& cooked, auto& output, auto& diagnostics)
 			{ return CompileGraph(cooked, output, diagnostics); }, error);
@@ -792,18 +1147,20 @@ bool VansRegisterGameplayPrimitiveAssetCompilers(
 	VansGameplayAssetCompilerRegistry& registry,
 	std::string& error)
 {
+	auto targetingHandlers = std::make_shared<VansTargetingHandlerRegistry>();
+	if (!VansBuildBuiltInTargetingHandlerRegistry(*targetingHandlers, error)) return false;
 	return registry.Register(VansAssetType::GameplayEffect, "Gameplay.Asset.Effect",
-		[](const auto& cooked, auto& output, auto&)
-		{ return CompileEffect(cooked, output); }, error) &&
+		[](const auto& cooked, auto& output, auto& diagnostics)
+		{ return CompileEffect(cooked, output, diagnostics); }, error) &&
 		registry.Register(VansAssetType::GameplayCue, "Gameplay.Asset.Cue",
-			[](const auto& cooked, auto& output, auto&)
-			{ return CompileCue(cooked, output); }, error) &&
+			[](const auto& cooked, auto& output, auto& diagnostics)
+			{ return CompileCue(cooked, output, diagnostics); }, error) &&
 		registry.Register(VansAssetType::AttributeSet, "Gameplay.Asset.AttributeSet",
 			[](const auto& cooked, auto& output, auto& diagnostics)
 			{ return CompileAttributeSet(cooked, output, diagnostics); }, error) &&
 		registry.Register(VansAssetType::TargetingPolicy, "Gameplay.Asset.TargetingPolicy",
-			[](const auto& cooked, auto& output, auto&)
-			{ return CompileTargeting(cooked, output); }, error) &&
+			[targetingHandlers](const auto& cooked, auto& output, auto& diagnostics)
+			{ return CompileTargeting(cooked, *targetingHandlers, output, diagnostics); }, error) &&
 		registry.Register(VansAssetType::GameplayTagTree, "Gameplay.Asset.TagTree",
 			[](const auto& cooked, auto& output, auto& diagnostics)
 			{ return CompileTagTree(cooked, output, diagnostics); }, error);

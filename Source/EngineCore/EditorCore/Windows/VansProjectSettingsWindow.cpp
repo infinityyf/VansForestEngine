@@ -1,4 +1,8 @@
 #include "VansProjectSettingsWindow.h"
+#include "../../EngineAPILayer/Public/IGAFEditorAPI.h"
+#include "../../EngineAPILayer/Public/IProjectEditorAPI.h"
+#include "../../EngineAPILayer/Public/IRenderEditorAPI.h"
+#include "../../EngineAPILayer/Public/ISceneInteractionEditorAPI.h"
 
 #include "../VansEditorWindow.h"
 
@@ -6,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -117,7 +122,7 @@ void VansProjectSettingsWindow::SelectTemplate(std::size_t index)
 }
 
 void VansProjectSettingsWindow::ReloadGAF(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI,
 	const std::string& projectRoot)
 {
 	m_GAFProjectRoot = projectRoot;
@@ -129,7 +134,7 @@ void VansProjectSettingsWindow::ReloadGAF(
 }
 
 void VansProjectSettingsWindow::DrawGAFSettings(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI)
 {
 	if (!m_GAFConfiguration.available)
 	{
@@ -178,11 +183,22 @@ void VansProjectSettingsWindow::DrawGAFSettings(
 			ImGui::SetNextItemWidth(180.0f);
 			if (ImGui::InputScalar(label, ImGuiDataType_U32, &value, &step) && value == 0) value = 1;
 		};
-		budget("Active Actions Per Host", m_GAFConfiguration.maximumActiveActionsPerHost);
-		budget("Tasks Per Action", m_GAFConfiguration.maximumTasksPerAction);
-		budget("Graph Transitions Per Tick", m_GAFConfiguration.maximumGraphTransitionsPerTick);
-		budget("Effects Per Host", m_GAFConfiguration.maximumEffectsPerHost);
-		budget("Payload Bytes", m_GAFConfiguration.maximumPayloadBytes);
+		budget("Active Actions Per Host", m_GAFConfiguration.performance.maximumActiveActionsPerHost);
+		budget("Tasks Per Action", m_GAFConfiguration.performance.maximumTasksPerAction);
+		budget("Graph Transitions Per Tick", m_GAFConfiguration.performance.maximumGraphTransitionsPerTick);
+		budget("Effects Per Host", m_GAFConfiguration.performance.maximumEffectsPerHost);
+		budget("Cue History Per Host", m_GAFConfiguration.performance.maximumCueHistoryPerHost);
+		ImGui::SetNextItemWidth(180.0f);
+		if (ImGui::InputDouble("Minimum Effect Period Seconds",
+			&m_GAFConfiguration.performance.minimumEffectPeriodSeconds,
+			0.001, 0.01, "%.6f") &&
+			(!std::isfinite(m_GAFConfiguration.performance.minimumEffectPeriodSeconds) ||
+				m_GAFConfiguration.performance.minimumEffectPeriodSeconds <= 0.0))
+			m_GAFConfiguration.performance.minimumEffectPeriodSeconds =
+				Vans::VansGAFPerformanceBudget::DefaultMinimumEffectPeriodSeconds;
+		budget("Effect Pulses Per Tick",
+			m_GAFConfiguration.performance.maximumEffectPulsesPerTick);
+		budget("Payload Bytes", m_GAFConfiguration.performance.maximumPayloadBytes);
 		ImGui::SeparatorText("Default Tag Roots");
 		DrawStringList("TagRoots", m_GAFConfiguration.defaultTagRoots, "Gameplay");
 		ImGui::EndTabItem();
@@ -269,17 +285,21 @@ void VansProjectSettingsWindow::DrawGAFSettings(
 
 void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-	if (!VansEditorWindow::m_ProjectSettingsWindowOpen)
+	Vans::EditorAPI::IGAFEditorAPI& gafAPI = editorAPI;
+	Vans::EditorAPI::IProjectEditorAPI& projectAPI = editorAPI;
+	Vans::EditorAPI::IRenderEditorAPI& renderAPI = editorAPI;
+	Vans::EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI = editorAPI;
+	if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::ProjectSettings))
 		return;
 
-	if (!ImGui::Begin("Project Settings", &VansEditorWindow::m_ProjectSettingsWindowOpen))
+	if (!ImGui::Begin("Project Settings", VansEditorWindow::WindowOpenState(VansEditorWindowId::ProjectSettings)))
 	{
 		ImGui::End();
 		return;
 	}
 
 	const Vans::EditorAPI::ProjectConfigSnapshot snapshot =
-		editorAPI.GetProjectConfigSnapshot();
+		projectAPI.GetProjectConfigSnapshot();
 	if (!snapshot.projectLoaded)
 	{
 		ImGui::TextDisabled("No project loaded");
@@ -294,7 +314,7 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 	static std::array<char, 260> s_RenderSettings{};
 	static std::array<char, 260> s_PhysicsSettings{};
 	static std::array<char, 260> s_CollisionLayers{};
-	static float s_FixedTimeStep = 1.0f / 60.0f;
+	static Vans::EditorAPI::VansProjectPhysicsTiming s_PhysicsTiming;
 	static Vans::EditorAPI::ProjectConfigEditResult s_LastEditResult;
 
 	if (s_LastProjectRoot != snapshot.projectRootPath)
@@ -306,16 +326,14 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 		CopyToBuffer(s_RenderSettings, snapshot.renderSettingsPath);
 		CopyToBuffer(s_PhysicsSettings, snapshot.physicsSettingsPath);
 		CopyToBuffer(s_CollisionLayers, snapshot.collisionLayerSettingsPath);
-		s_FixedTimeStep = editorAPI.GetProjectPhysicsFixedTimeStep();
-		if (s_FixedTimeStep <= 0.0f)
-			s_FixedTimeStep = 1.0f / 60.0f;
+		s_PhysicsTiming = projectAPI.GetProjectPhysicsTiming();
 		s_LastEditResult = {};
-		ReloadGAF(editorAPI, snapshot.projectRootPath);
+		ReloadGAF(gafAPI, snapshot.projectRootPath);
 	}
 
 	ImGui::BeginDisabled(!snapshot.dirty);
 	if (ImGui::Button("Save Project Documents"))
-		s_LastEditResult = editorAPI.SaveProjectDocuments();
+		s_LastEditResult = projectAPI.SaveProjectDocuments();
 	ImGui::EndDisabled();
 	ImGui::SameLine();
 	ImGui::TextDisabled(snapshot.dirty
@@ -337,7 +355,7 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 			ImGui::InputText("Default Scene", s_DefaultScene.data(), s_DefaultScene.size());
 			if (ImGui::Button("Apply Default Scene"))
 			{
-				s_LastEditResult = editorAPI.SetProjectDefaultScene(s_DefaultScene.data());
+				s_LastEditResult = projectAPI.SetProjectDefaultScene(s_DefaultScene.data());
 			}
 			DrawEditResult(s_LastEditResult);
 			ImGui::EndTabItem();
@@ -358,23 +376,23 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 
 			if (ImGui::Button("Apply Paths"))
 			{
-				s_LastEditResult = editorAPI.SetProjectPathField(
+				s_LastEditResult = projectAPI.SetProjectPathField(
 					Vans::EditorAPI::ProjectPathField::AssetsRoot,
 					s_AssetsRoot.data());
 				if (s_LastEditResult.success)
-					s_LastEditResult = editorAPI.SetProjectPathField(
+					s_LastEditResult = projectAPI.SetProjectPathField(
 						Vans::EditorAPI::ProjectPathField::ImportedArtifactRoot,
 						s_ArtifactRoot.data());
 				if (s_LastEditResult.success)
-					s_LastEditResult = editorAPI.SetProjectPathField(
+					s_LastEditResult = projectAPI.SetProjectPathField(
 						Vans::EditorAPI::ProjectPathField::RenderSettings,
 						s_RenderSettings.data());
 				if (s_LastEditResult.success)
-					s_LastEditResult = editorAPI.SetProjectPathField(
+					s_LastEditResult = projectAPI.SetProjectPathField(
 						Vans::EditorAPI::ProjectPathField::PhysicsSettings,
 						s_PhysicsSettings.data());
 				if (s_LastEditResult.success)
-					s_LastEditResult = editorAPI.SetProjectPathField(
+					s_LastEditResult = projectAPI.SetProjectPathField(
 						Vans::EditorAPI::ProjectPathField::CollisionLayerSettings,
 						s_CollisionLayers.data());
 			}
@@ -385,14 +403,14 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 		if (ImGui::BeginTabItem("Rendering"))
 		{
 			const Vans::EditorAPI::UpscalerSettingsSnapshot liveUpscaler =
-				editorAPI.GetUpscalerSettings();
+				renderAPI.GetUpscalerSettings();
 			if (!m_UpscalerEditInitialized || !m_UpscalerEditDirty)
 			{
 				m_UpscalerEdit = liveUpscaler;
 				m_UpscalerEditInitialized = true;
 			}
 			const std::vector<Vans::EditorAPI::UpscalerCapabilitiesSnapshot> capabilities =
-				editorAPI.GetUpscalerCapabilities();
+				renderAPI.GetUpscalerCapabilities();
 			const char* backendNames[] = { "Off", "FSR", "DLSS" };
 			const char* qualityNames[] = {
 				"Native AA", "Quality", "Balanced", "Performance", "Ultra Performance" };
@@ -463,7 +481,7 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 			if (ImGui::Button("Apply Upscaler Settings"))
 			{
 				const Vans::EditorAPI::ApplyUpscalerSettingsResult apply =
-					editorAPI.ApplyUpscalerSettings(m_UpscalerEdit);
+					renderAPI.ApplyUpscalerSettings(m_UpscalerEdit);
 				m_UpscalerApplySucceeded = apply.accepted;
 				m_UpscalerApplyMessage = apply.message;
 				if (apply.accepted)
@@ -495,11 +513,12 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 				liveUpscaler.outputWidth,
 				liveUpscaler.outputHeight,
 				liveUpscaler.mipBias);
-			ImGui::TextDisabled("Context: %s, jitter phases %d, dispatch ok/fail %llu/%llu, pending reset 0x%X",
+			ImGui::TextDisabled("Context: %s, jitter phases %d, dispatch ok/fail %llu/%llu, reset last/pending 0x%X/0x%X",
 				liveUpscaler.contextReady ? "ready" : "not ready",
 				liveUpscaler.jitterPhaseCount,
 				static_cast<unsigned long long>(liveUpscaler.successfulDispatchCount),
 				static_cast<unsigned long long>(liveUpscaler.failedDispatchCount),
+				liveUpscaler.lastConsumedResetReasons,
 				liveUpscaler.pendingResetReasons);
 			ImGui::TextDisabled("Auxiliary %llu, GPU %.2f MiB (aliasable %.2f MiB)",
 				static_cast<unsigned long long>(liveUpscaler.auxiliaryDispatchCount),
@@ -523,12 +542,12 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 
 			ImGui::Separator();
 			Vans::EditorAPI::CommandRecordingSettingsSnapshot commandRecording =
-				editorAPI.GetCommandRecordingSettings();
+				renderAPI.GetCommandRecordingSettings();
 			bool parallelRecording = commandRecording.parallelEnabled;
 			if (ImGui::Checkbox("Parallel Command Recording", &parallelRecording))
 			{
 				commandRecording.parallelEnabled = parallelRecording;
-				editorAPI.SetCommandRecordingSettings(commandRecording);
+				renderAPI.SetCommandRecordingSettings(commandRecording);
 			}
 			bool frameContextRing = commandRecording.frameContextRingEnabled;
 			if (ImGui::Checkbox("Frame Context Ring", &frameContextRing))
@@ -536,7 +555,7 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 				commandRecording.frameContextRingEnabled = frameContextRing;
 				if (commandRecording.framesInFlight < 2)
 					commandRecording.framesInFlight = 2;
-				editorAPI.SetCommandRecordingSettings(commandRecording);
+				renderAPI.SetCommandRecordingSettings(commandRecording);
 			}
 			int framesInFlight = static_cast<int>(commandRecording.framesInFlight);
 			ImGui::BeginDisabled(!commandRecording.frameContextRingEnabled);
@@ -544,14 +563,14 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 			if (ImGui::SliderInt("Frames In Flight", &framesInFlight, 1, 2))
 			{
 				commandRecording.framesInFlight = static_cast<std::uint32_t>(framesInFlight);
-				editorAPI.SetCommandRecordingSettings(commandRecording);
+				renderAPI.SetCommandRecordingSettings(commandRecording);
 			}
 			ImGui::EndDisabled();
 			bool asyncCompute = commandRecording.asyncComputeRequested;
 			if (ImGui::Checkbox("Async Compute", &asyncCompute))
 			{
 				commandRecording.asyncComputeRequested = asyncCompute;
-				editorAPI.SetCommandRecordingSettings(commandRecording);
+				renderAPI.SetCommandRecordingSettings(commandRecording);
 			}
 			ImGui::TextDisabled(
 				commandRecording.asyncComputeEnabled
@@ -568,19 +587,32 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 		if (ImGui::BeginTabItem("Physics"))
 		{
 			ImGui::SetNextItemWidth(160.0f);
-			ImGui::InputFloat("Fixed Timestep", &s_FixedTimeStep, 0.001f, 0.008333f, "%.6f");
-			const float simulationHz = s_FixedTimeStep > 0.0f ? 1.0f / s_FixedTimeStep : 0.0f;
+			ImGui::InputFloat("Fixed Timestep", &s_PhysicsTiming.fixedTimeStep, 0.001f, 0.008333f, "%.6f");
+			const float simulationHz = s_PhysicsTiming.fixedTimeStep > 0.0f
+				? 1.0f / s_PhysicsTiming.fixedTimeStep : 0.0f;
 			ImGui::TextDisabled("%.2f Hz", simulationHz);
+			ImGui::SetNextItemWidth(160.0f);
+			ImGui::InputScalar("Maximum Substeps", ImGuiDataType_U32,
+				&s_PhysicsTiming.maximumSubsteps);
+			ImGui::TextDisabled("Maximum catch-up window: %.2f ms",
+				1000.0f * s_PhysicsTiming.fixedTimeStep *
+				static_cast<float>(s_PhysicsTiming.maximumSubsteps));
+			ImGui::SetNextItemWidth(160.0f);
+			ImGui::InputFloat("Cloth Frame Time", &s_PhysicsTiming.clothFrameTime,
+				0.001f, 0.01f, "%.6f");
+			ImGui::SetNextItemWidth(160.0f);
+			ImGui::InputScalar("Cloth Substeps", ImGuiDataType_U32,
+				&s_PhysicsTiming.clothSubsteps);
 			if (ImGui::Button("Apply Physics"))
 			{
-				s_LastEditResult = editorAPI.SetProjectPhysicsFixedTimeStep(s_FixedTimeStep);
+				s_LastEditResult = projectAPI.SetProjectPhysicsTiming(s_PhysicsTiming);
 				if (s_LastEditResult.success)
-					s_FixedTimeStep = editorAPI.GetProjectPhysicsFixedTimeStep();
+					s_PhysicsTiming = projectAPI.GetProjectPhysicsTiming();
 			}
 			DrawEditResult(s_LastEditResult);
 
 			ImGui::Separator();
-			const std::vector<std::string> layerNames = editorAPI.GetRuntimeCollisionLayerNames();
+			const std::vector<std::string> layerNames = sceneInteractionAPI.GetRuntimeCollisionLayerNames();
 			if (ImGui::BeginTable("ProjectCollisionLayers", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
 			{
 				ImGui::TableSetupColumn("Index");
@@ -601,7 +633,7 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 
 		if (ImGui::BeginTabItem("GAF"))
 		{
-			DrawGAFSettings(editorAPI);
+			DrawGAFSettings(gafAPI);
 			ImGui::EndTabItem();
 		}
 

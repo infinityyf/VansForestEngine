@@ -1,9 +1,11 @@
 #include "VansPhysicsVehicle.h"
-#include "VansCollisionLayerManager.h"
+#include "VansPhysicsNativeAccess.h"
+#include "VansCollisionFilter.h"
+#include "../RuntimeCore/VansThreadContract.h"
 #include "../Util/VansLog.h"
 #include <algorithm>
 #include <cmath>
-#include <iostream>
+#include <limits>
 
 namespace VansEngine
 {
@@ -57,6 +59,10 @@ namespace VansEngine
 
     VansPhysicsVehicle::VansPhysicsVehicle()
     {
+        m_State.Reset();
+        m_CommandState.setToDefault();
+        m_TransmissionCommandState.setToDefault();
+        m_SimulationContext.setToDefault();
     }
 
     VansPhysicsVehicle::~VansPhysicsVehicle()
@@ -64,19 +70,39 @@ namespace VansEngine
         Shutdown();
     }
 
-    bool VansPhysicsVehicle::Initialize(VansPhysicsSystem* physicsSystem, const std::string& jsonPath, const PxTransform& startPose)
+    bool VansPhysicsVehicle::Initialize(VansPhysicsSystem* physicsSystem, const PxTransform& startPose, std::string& error)
     {
-        (void)jsonPath;
-        m_PhysicsSystem = physicsSystem;
-        if (!m_PhysicsSystem || !m_PhysicsSystem->GetPhysics() || !m_PhysicsSystem->GetScene())
+        Shutdown();
+        error.clear();
+        if (!m_Tuning.IsValid(error))
             return false;
+
+        m_PhysicsSystem = physicsSystem;
+        if (!m_PhysicsSystem ||
+            !VansPhysicsNativeAccess::Physics(*m_PhysicsSystem) ||
+            !VansPhysicsNativeAccess::Scene(*m_PhysicsSystem))
+        {
+            error = "Vehicle requires an initialized physics system";
+            m_PhysicsSystem = nullptr;
+            return false;
+        }
+        const PxCookingParams* cookingParams =
+            VansPhysicsNativeAccess::CookingParams(*m_PhysicsSystem);
+        if (!cookingParams)
+        {
+            error = "Vehicle requires the physics system cooking parameters";
+            m_PhysicsSystem = nullptr;
+            return false;
+        }
 
         // -- Initialize State --
         // Must be done BEFORE creating the actor, otherwise we wipe the actor pointer!
         PxMemZero(&m_Params, sizeof(VansVehicleParams));
-        m_State.setToDefault();
+        m_State.Reset();
         m_CommandState.setToDefault();
         m_TransmissionCommandState.setToDefault();
+        m_ComponentSequence = PxVehicleComponentSequence{};
+        m_DrivetrainSubstepGroup = PxVehicleComponentSequence::eINVALID_SUBSTEP_GROUP;
 
         // Vehicle tuning is resolved before runtime construction. Keep this path focused on
         // building PhysX vehicle params from the current tuning state.
@@ -91,26 +117,11 @@ namespace VansEngine
         m_Params.axleDescription.addAxle(2, rearWheels);
 
         // -- Frame --
-        m_Params.frame.latAxis = m_Tuning.lateralAxis;
-        m_Params.frame.vrtAxis = m_Tuning.verticalAxis;
-        m_Params.frame.lngAxis = m_Tuning.longitudinalAxis;
+        m_Params.frame = m_Tuning.BuildFrame();
 
         // -- Scale --
         m_Params.scale.scale = 1.0f;
-        auto axisToVec3 = [](PxVehicleAxes::Enum axis) -> PxVec3
-        {
-            switch (axis)
-            {
-            case PxVehicleAxes::ePosX: return PxVec3(1.0f, 0.0f, 0.0f);
-            case PxVehicleAxes::eNegX: return PxVec3(-1.0f, 0.0f, 0.0f);
-            case PxVehicleAxes::ePosY: return PxVec3(0.0f, 1.0f, 0.0f);
-            case PxVehicleAxes::eNegY: return PxVec3(0.0f, -1.0f, 0.0f);
-            case PxVehicleAxes::ePosZ: return PxVec3(0.0f, 0.0f, 1.0f);
-            case PxVehicleAxes::eNegZ: return PxVec3(0.0f, 0.0f, -1.0f);
-            default: return PxVec3(0.0f, 1.0f, 0.0f);
-            }
-        };
-        const PxVec3 upAxis = axisToVec3(m_Tuning.verticalAxis);
+        const PxVec3 upAxis = m_Params.frame.getVrtAxis();
 
         // -- Rigid Body (from Base.json) --
         m_Params.rigidBodyParams.mass = m_Tuning.bodyMass;
@@ -129,7 +140,7 @@ namespace VansEngine
         m_Params.brakeResponseParams[1].wheelResponseMultipliers[3] = 1.0f;
 
         // -- Steer Command Response Params (from Base.json) --
-        m_Params.steerResponseParams.maxResponse = m_Tuning.maxSteerAngleRad;
+        m_Params.steerResponseParams.maxResponse = m_Tuning.maxSteerAngleRadians;
         m_Params.steerResponseParams.wheelResponseMultipliers[0] = 1.0f; // Front left
         m_Params.steerResponseParams.wheelResponseMultipliers[1] = 1.0f; // Front right
         m_Params.steerResponseParams.wheelResponseMultipliers[2] = 0.0f; // Rear left
@@ -167,34 +178,21 @@ namespace VansEngine
             m_Params.suspensionForceParams[i].sprungMass = m_Tuning.sprungMass[i];
 
             // Tire force params (from Base.json)
-            const bool isFront = (i < 2);
-            m_Params.tireForceParams[i].longStiff = 24525.0f;
-            m_Params.tireForceParams[i].latStiffX = 0.009999999776482582f;
-            m_Params.tireForceParams[i].latStiffY = isFront ? 118699.637252138f : 143930.84033118f;
-            m_Params.tireForceParams[i].camberStiff = 0.0f;
-            m_Params.tireForceParams[i].restLoad = isFront ? 5628.72314453125f : 4604.3134765625f;
-            // FrictionVsSlip: flat curve at 1.0
-            m_Params.tireForceParams[i].frictionVsSlip[0][0] = 0.0f;
-            m_Params.tireForceParams[i].frictionVsSlip[0][1] = 1.0f;
-            m_Params.tireForceParams[i].frictionVsSlip[1][0] = 0.1f;
-            m_Params.tireForceParams[i].frictionVsSlip[1][1] = 1.0f;
-            m_Params.tireForceParams[i].frictionVsSlip[2][0] = 1.0f;
-            m_Params.tireForceParams[i].frictionVsSlip[2][1] = 1.0f;
-            // TireLoadFilter
-            m_Params.tireForceParams[i].loadFilter[0][0] = 0.0f;
-            m_Params.tireForceParams[i].loadFilter[0][1] = 0.23080000281333924f;
-            m_Params.tireForceParams[i].loadFilter[1][0] = 3.0f;
-            m_Params.tireForceParams[i].loadFilter[1][1] = 3.0f;
-
-            VANS_LOG("[VansVehicle] wheelParams[" << i << "] radius=" << m_Params.wheelParams[i].radius
-                << " halfWidth=" << m_Params.wheelParams[i].halfWidth
-                << " mass=" << m_Params.wheelParams[i].mass
-                << " suspensionAttachment=(" << m_Params.suspensionParams[i].suspensionAttachment.p.x
-                << ", " << m_Params.suspensionParams[i].suspensionAttachment.p.y
-                << ", " << m_Params.suspensionParams[i].suspensionAttachment.p.z << ")"
-                << " travelDist=" << m_Params.suspensionParams[i].suspensionTravelDist
-                << " stiffness=" << m_Params.suspensionForceParams[i].stiffness
-                << " sprungMass=" << m_Params.suspensionForceParams[i].sprungMass);
+            m_Params.tireForceParams[i].longStiff = m_Tuning.tireLongitudinalStiffness;
+            m_Params.tireForceParams[i].latStiffX = m_Tuning.tireLateralStiffnessX;
+            m_Params.tireForceParams[i].latStiffY = m_Tuning.tireLateralStiffnessY[i];
+            m_Params.tireForceParams[i].camberStiff = m_Tuning.tireCamberStiffness;
+            m_Params.tireForceParams[i].restLoad = m_Tuning.tireRestLoad[i];
+            for (PxU32 point = 0; point < m_Tuning.tireFrictionVsSlip.size(); ++point)
+            {
+                m_Params.tireForceParams[i].frictionVsSlip[point][0] = m_Tuning.tireFrictionVsSlip[point].input;
+                m_Params.tireForceParams[i].frictionVsSlip[point][1] = m_Tuning.tireFrictionVsSlip[point].output;
+            }
+            for (PxU32 point = 0; point < m_Tuning.tireLoadFilter.size(); ++point)
+            {
+                m_Params.tireForceParams[i].loadFilter[point][0] = m_Tuning.tireLoadFilter[point].input;
+                m_Params.tireForceParams[i].loadFilter[point][1] = m_Tuning.tireLoadFilter[point].output;
+            }
         }
 
         // -- Suspension State Calculation Params (from snippet Base.json) --
@@ -202,46 +200,31 @@ namespace VansEngine
         m_Params.suspensionStateCalculationParams.limitSuspensionExpansionVelocity = false;
 
         // -- Engine Params (from EngineDrive.json) --
-        m_Params.engineParams.torqueCurve.addPair(0.0f, 1.0f);
-        m_Params.engineParams.torqueCurve.addPair(0.33f, 1.0f);
-        m_Params.engineParams.torqueCurve.addPair(1.0f, 1.0f);
-        m_Params.engineParams.moi = 1.0f;
+        for (const VansVehicleCurvePoint& point : m_Tuning.engineTorqueCurve)
+            m_Params.engineParams.torqueCurve.addPair(point.input, point.output);
+        m_Params.engineParams.moi = m_Tuning.engineMoi;
         m_Params.engineParams.peakTorque = m_Tuning.enginePeakTorque;
-        m_Params.engineParams.idleOmega = 0.0f;
+        m_Params.engineParams.idleOmega = m_Tuning.engineIdleOmega;
         m_Params.engineParams.maxOmega = m_Tuning.engineMaxOmega;
-        m_Params.engineParams.dampingRateFullThrottle = 0.15f;
-        m_Params.engineParams.dampingRateZeroThrottleClutchEngaged = 2.0f;
-        m_Params.engineParams.dampingRateZeroThrottleClutchDisengaged = 0.35f;
+        m_Params.engineParams.dampingRateFullThrottle = m_Tuning.engineDampingFullThrottle;
+        m_Params.engineParams.dampingRateZeroThrottleClutchEngaged = m_Tuning.engineDampingZeroThrottleClutchEngaged;
+        m_Params.engineParams.dampingRateZeroThrottleClutchDisengaged = m_Tuning.engineDampingZeroThrottleClutchDisengaged;
 
         // -- Gearbox Params (from EngineDrive.json) --
         // Ratios: [reverse, neutral, 1st, 2nd, 3rd, 4th, 5th] => neutralGear index = 1
-        m_Params.gearBoxParams.neutralGear = 1;
-        m_Params.gearBoxParams.ratios[0] = -4.0f; // Reverse
-        m_Params.gearBoxParams.ratios[1] =  0.0f; // Neutral
-        m_Params.gearBoxParams.ratios[2] =  4.0f; // 1st
-        m_Params.gearBoxParams.ratios[3] =  2.0f; // 2nd
-        m_Params.gearBoxParams.ratios[4] =  1.5f; // 3rd
-        m_Params.gearBoxParams.ratios[5] =  1.1f; // 4th
-        m_Params.gearBoxParams.ratios[6] =  1.0f; // 5th
-        m_Params.gearBoxParams.nbRatios = 7;
-        m_Params.gearBoxParams.finalRatio = m_Tuning.gearboxFinalRatio;
-        m_Params.gearBoxParams.switchTime = m_Tuning.gearboxSwitchTime;
+        m_Params.gearboxParams.neutralGear = m_Tuning.neutralGear;
+        for (PxU32 gear = 0; gear < m_Tuning.gearRatios.size(); ++gear)
+            m_Params.gearboxParams.ratios[gear] = m_Tuning.gearRatios[gear];
+        m_Params.gearboxParams.nbRatios = static_cast<PxU32>(m_Tuning.gearRatios.size());
+        m_Params.gearboxParams.finalRatio = m_Tuning.gearboxFinalRatio;
+        m_Params.gearboxParams.switchTime = m_Tuning.gearboxSwitchTime;
 
         // -- Autobox Params (from EngineDrive.json) --
-        m_Params.autoboxParams.upRatios[0] = 0.65f;
-        m_Params.autoboxParams.upRatios[1] = 0.15f;
-        m_Params.autoboxParams.upRatios[2] = 0.65f;
-        m_Params.autoboxParams.upRatios[3] = 0.65f;
-        m_Params.autoboxParams.upRatios[4] = 0.65f;
-        m_Params.autoboxParams.upRatios[5] = 0.65f;
-        m_Params.autoboxParams.upRatios[6] = 0.65f;
-        m_Params.autoboxParams.downRatios[0] = 0.5f;
-        m_Params.autoboxParams.downRatios[1] = 0.5f;
-        m_Params.autoboxParams.downRatios[2] = 0.5f;
-        m_Params.autoboxParams.downRatios[3] = 0.5f;
-        m_Params.autoboxParams.downRatios[4] = 0.5f;
-        m_Params.autoboxParams.downRatios[5] = 0.5f;
-        m_Params.autoboxParams.downRatios[6] = 0.5f;
+        for (PxU32 gear = 0; gear < m_Tuning.gearRatios.size(); ++gear)
+        {
+            m_Params.autoboxParams.upRatios[gear] = m_Tuning.autoboxUpRatios[gear];
+            m_Params.autoboxParams.downRatios[gear] = m_Tuning.autoboxDownRatios[gear];
+        }
         m_Params.autoboxParams.latency = m_Tuning.autoboxLatency;
 
         // -- Clutch Command Response Params (from EngineDrive.json) --
@@ -249,41 +232,51 @@ namespace VansEngine
 
         // -- Clutch Params (from EngineDrive.json) --
         m_Params.clutchParams.accuracyMode = PxVehicleClutchAccuracyMode::eESTIMATE;
-        m_Params.clutchParams.estimateIterations = 5;
+        m_Params.clutchParams.estimateIterations = m_Tuning.clutchEstimateIterations;
 
         // -- Four Wheel Differential Params (from EngineDrive.json) --
-        m_Params.fourWheelDifferentialParams.torqueRatios[0] = 0.25f;
-        m_Params.fourWheelDifferentialParams.torqueRatios[1] = 0.25f;
-        m_Params.fourWheelDifferentialParams.torqueRatios[2] = 0.25f;
-        m_Params.fourWheelDifferentialParams.torqueRatios[3] = 0.25f;
-        m_Params.fourWheelDifferentialParams.aveWheelSpeedRatios[0] = 0.25f;
-        m_Params.fourWheelDifferentialParams.aveWheelSpeedRatios[1] = 0.25f;
-        m_Params.fourWheelDifferentialParams.aveWheelSpeedRatios[2] = 0.25f;
-        m_Params.fourWheelDifferentialParams.aveWheelSpeedRatios[3] = 0.25f;
+        for (PxU32 wheel = 0; wheel < 4; ++wheel)
+        {
+            m_Params.fourWheelDifferentialParams.torqueRatios[wheel] = m_Tuning.differentialTorqueRatios[wheel];
+            m_Params.fourWheelDifferentialParams.aveWheelSpeedRatios[wheel] = m_Tuning.differentialAverageWheelSpeedRatios[wheel];
+        }
         m_Params.fourWheelDifferentialParams.frontWheelIds[0] = 0;
         m_Params.fourWheelDifferentialParams.frontWheelIds[1] = 1;
         m_Params.fourWheelDifferentialParams.rearWheelIds[0] = 2;
         m_Params.fourWheelDifferentialParams.rearWheelIds[1] = 3;
-        m_Params.fourWheelDifferentialParams.centerBias = 1.3f;
-        m_Params.fourWheelDifferentialParams.centerTarget = 1.29f;
-        m_Params.fourWheelDifferentialParams.frontBias = 1.3f;
-        m_Params.fourWheelDifferentialParams.frontTarget = 1.29f;
-        m_Params.fourWheelDifferentialParams.rearBias = 1.3f;
-        m_Params.fourWheelDifferentialParams.rearTarget = 1.29f;
-        m_Params.fourWheelDifferentialParams.rate = 10.0f;
+        m_Params.fourWheelDifferentialParams.centerBias = m_Tuning.differentialCenterBias;
+        m_Params.fourWheelDifferentialParams.centerTarget = m_Tuning.differentialCenterTarget;
+        m_Params.fourWheelDifferentialParams.frontBias = m_Tuning.differentialFrontBias;
+        m_Params.fourWheelDifferentialParams.frontTarget = m_Tuning.differentialFrontTarget;
+        m_Params.fourWheelDifferentialParams.rearBias = m_Tuning.differentialRearBias;
+        m_Params.fourWheelDifferentialParams.rearTarget = m_Tuning.differentialRearTarget;
+        m_Params.fourWheelDifferentialParams.rate = m_Tuning.differentialRate;
 
         // -- PhysX Integration Params --
         // Set up road geometry query, material friction, suspension limit constraint params
         // following the snippet's setPhysXIntegrationParams pattern.
-        PxPhysics* physics = m_PhysicsSystem->GetPhysics();
-        PxMaterial* material = physics->createMaterial(0.5f, 0.5f, 0.6f);
-        auto& layerMgr = VansCollisionLayerManager::Get();
-        const int vehicleLayerIdx = layerMgr.GetLayerIndex(m_Tuning.collisionLayerName);
+        PxPhysics* physics = VansPhysicsNativeAccess::Physics(*m_PhysicsSystem);
+        m_Material = physics->createMaterial(
+            m_Tuning.materialStaticFriction,
+            m_Tuning.materialDynamicFriction,
+            m_Tuning.materialRestitution);
+        if (!m_Material)
+        {
+            error = "Vehicle material creation failed";
+            Shutdown();
+            return false;
+        }
         PxFilterData vehicleFilterData;
-        vehicleFilterData.word0 = static_cast<PxU32>(vehicleLayerIdx);
-        vehicleFilterData.word1 = layerMgr.GetCollisionMask(vehicleLayerIdx);
-        vehicleFilterData.word2 = 0;
-        vehicleFilterData.word3 = 0;
+        if (!VansCollisionFilter::Build(
+            m_Tuning.collisionLayerName,
+            VansCollisionFilter::None,
+            0u,
+            vehicleFilterData))
+        {
+            error = "Vehicle collision layer is unknown: " + m_Tuning.collisionLayerName;
+            Shutdown();
+            return false;
+        }
 
         PxFilterData roadQueryFilterData = vehicleFilterData;
         roadQueryFilterData.word1 = m_Tuning.useCustomRoadQueryMask
@@ -308,11 +301,11 @@ namespace VansEngine
         for (PxU32 i = 0; i < m_Params.axleDescription.nbWheels; i++)
         {
             const PxU32 wheelId = m_Params.axleDescription.wheelIdsInAxleOrder[i];
-            m_Params.physxMaterialFrictionParams[wheelId].defaultFriction = 1.0f;
+            m_Params.physxMaterialFrictionParams[wheelId].defaultFriction = m_Tuning.tireFriction;
             m_Params.physxMaterialFrictionParams[wheelId].materialFrictions = nullptr;
             m_Params.physxMaterialFrictionParams[wheelId].nbMaterialFrictions = 0;
 
-            m_Params.physxSuspensionLimitConstraintParams[wheelId].restitution = 0.0f;
+            m_Params.physxSuspensionLimitConstraintParams[wheelId].restitution = m_Tuning.suspensionLimitRestitution;
             m_Params.physxSuspensionLimitConstraintParams[wheelId].directionForSuspensionLimitConstraint =
                 PxVehiclePhysXSuspensionLimitConstraintParams::eROAD_GEOMETRY_NORMAL;
 
@@ -340,38 +333,28 @@ namespace VansEngine
             if (m_Tuning.enableWheelSimulationCollision)
                 wheelShapeFlags |= PxShapeFlag::eSIMULATION_SHAPE;
 
-            VANS_LOG("[VansVehicle] chassisShapeFlags=SIMULATION|SCENE_QUERY|VISUALIZATION"
-                << " boxHalfExtents=(" << m_Params.physxActorBoxShapeHalfExtents.x
-                << ", " << m_Params.physxActorBoxShapeHalfExtents.y
-                << ", " << m_Params.physxActorBoxShapeHalfExtents.z << ")"
-                << " boxLocalPose=(" << m_Params.physxActorBoxShapeLocalPose.p.x
-                << ", " << m_Params.physxActorBoxShapeLocalPose.p.y
-                << ", " << m_Params.physxActorBoxShapeLocalPose.p.z << ")"
-                << " wheelShapeFlags="
-                << (m_Tuning.enableWheelSimulationCollision
-                    ? "SIMULATION|SCENE_QUERY|VISUALIZATION"
-                    : "SCENE_QUERY|VISUALIZATION")
-                << " collisionLayer='" << layerMgr.GetLayerName(vehicleLayerIdx)
-                << "' layerIdx=" << vehicleLayerIdx
-                << " mask=0x" << std::hex << vehicleFilterData.word1
-                << " roadQueryMask=0x" << roadQueryFilterData.word1 << std::dec
-                << " useRoadQueryLayerFilter=" << m_Tuning.useRoadQueryLayerFilter);
-
             const PxVehiclePhysXRigidActorShapeParams rigidActorShapeParams(
-                boxGeom, m_Params.physxActorBoxShapeLocalPose, *material,
+                boxGeom, m_Params.physxActorBoxShapeLocalPose, *m_Material,
                 chassisShapeFlags, vehicleFilterData, vehicleFilterData);
             const PxVehiclePhysXWheelParams physxWheelParams(
                 m_Params.axleDescription, m_Params.wheelParams);
             const PxVehiclePhysXWheelShapeParams physxWheelShapeParams(
-                *material, wheelShapeFlags, vehicleFilterData, vehicleFilterData);
+                *m_Material, wheelShapeFlags, vehicleFilterData, vehicleFilterData);
 
             PxVehiclePhysXActorCreate(
                 m_Params.frame,
                 rigidActorParams, m_Params.physxActorCMassLocalPose,
                 rigidActorShapeParams,
                 physxWheelParams, physxWheelShapeParams,
-                *physics, PxCookingParams(PxTolerancesScale()),
+                *physics, *cookingParams,
                 m_State.physxActor);
+        }
+
+        if (!m_State.physxActor.rigidBody)
+        {
+            error = "Vehicle PhysX actor creation failed";
+            Shutdown();
+            return false;
         }
 
         // -- Create PhysX Constraints (suspension limit & sticky tire) --
@@ -381,12 +364,13 @@ namespace VansEngine
         // Apply the start pose and add to the scene
         m_State.physxActor.rigidBody->setGlobalPose(startPose);
         m_State.physxActor.rigidBody->setName("VansVehicle");
-        m_PhysicsSystem->GetScene()->addActor(*m_State.physxActor.rigidBody);
+        VansPhysicsNativeAccess::Scene(*m_PhysicsSystem)->addActor(
+            *m_State.physxActor.rigidBody);
 
         // -- Set initial gear state (from snippet initVehicles) --
         // Set the vehicle in 1st gear (neutralGear + 1)
-        m_State.gearboxState.currentGear = m_Params.gearBoxParams.neutralGear + 1;
-        m_State.gearboxState.targetGear = m_Params.gearBoxParams.neutralGear + 1;
+        m_State.gearboxState.currentGear = m_Params.gearboxParams.neutralGear + 1;
+        m_State.gearboxState.targetGear = m_Params.gearboxParams.neutralGear + 1;
 
         // Set the vehicle to use the automatic gearbox
         m_TransmissionCommandState.targetGear = PxVehicleEngineDriveTransmissionCommandState::eAUTOMATIC_GEAR;
@@ -396,29 +380,44 @@ namespace VansEngine
 
         // -- Initialize Component Sequence --
         // This order is critical and follows the snippet
-        m_ComponentSequence.add(static_cast<PxVehiclePhysXActorBeginComponent*>(this));
-        m_ComponentSequence.add(static_cast<PxVehicleEngineDriveCommandResponseComponent*>(this));
-        m_ComponentSequence.add(static_cast<PxVehicleFourWheelDriveDifferentialStateComponent*>(this));
-        m_ComponentSequence.add(static_cast<PxVehicleEngineDriveActuationStateComponent*>(this));
-        m_ComponentSequence.add(static_cast<PxVehiclePhysXRoadGeometrySceneQueryComponent*>(this));
+        bool sequenceValid = true;
+        sequenceValid &= m_ComponentSequence.add(static_cast<PxVehiclePhysXActorBeginComponent*>(this));
+        sequenceValid &= m_ComponentSequence.add(static_cast<PxVehicleEngineDriveCommandResponseComponent*>(this));
+        sequenceValid &= m_ComponentSequence.add(static_cast<PxVehicleFourWheelDriveDifferentialStateComponent*>(this));
+        sequenceValid &= m_ComponentSequence.add(static_cast<PxVehicleEngineDriveActuationStateComponent*>(this));
+        sequenceValid &= m_ComponentSequence.add(static_cast<PxVehiclePhysXRoadGeometrySceneQueryComponent*>(this));
         
-        m_ComponentSequenceSubstepGroupHandle = m_ComponentSequence.beginSubstepGroup(3); // 3 substeps
-            m_ComponentSequence.add(static_cast<PxVehicleSuspensionComponent*>(this));
-            m_ComponentSequence.add(static_cast<PxVehicleTireComponent*>(this));
-            m_ComponentSequence.add(static_cast<PxVehiclePhysXConstraintComponent*>(this));
-            m_ComponentSequence.add(static_cast<PxVehicleEngineDrivetrainComponent*>(this));
-            m_ComponentSequence.add(static_cast<PxVehicleRigidBodyComponent*>(this));
+        m_DrivetrainSubstepGroup = m_ComponentSequence.beginSubstepGroup(m_Tuning.drivetrainSubsteps);
+        if (m_DrivetrainSubstepGroup == PxVehicleComponentSequence::eINVALID_SUBSTEP_GROUP)
+        {
+            error = "Vehicle component substep group construction failed";
+            Shutdown();
+            return false;
+        }
+        sequenceValid &= m_ComponentSequence.add(static_cast<PxVehicleSuspensionComponent*>(this));
+        sequenceValid &= m_ComponentSequence.add(static_cast<PxVehicleTireComponent*>(this));
+        sequenceValid &= m_ComponentSequence.add(static_cast<PxVehiclePhysXConstraintComponent*>(this));
+        sequenceValid &= m_ComponentSequence.add(static_cast<PxVehicleEngineDrivetrainComponent*>(this));
+        sequenceValid &= m_ComponentSequence.add(static_cast<PxVehicleRigidBodyComponent*>(this));
         m_ComponentSequence.endSubstepGroup();
         
-        m_ComponentSequence.add(static_cast<PxVehicleWheelComponent*>(this));
-        m_ComponentSequence.add(static_cast<PxVehiclePhysXActorEndComponent*>(this));
+        sequenceValid &= m_ComponentSequence.add(static_cast<PxVehicleWheelComponent*>(this));
+        sequenceValid &= m_ComponentSequence.add(static_cast<PxVehiclePhysXActorEndComponent*>(this));
+        if (!sequenceValid)
+        {
+            error = "Vehicle component sequence construction failed";
+            Shutdown();
+            return false;
+        }
 
         // -- Setup Context --
         m_SimulationContext.setToDefault();
         m_SimulationContext.frame = m_Params.frame;
         m_SimulationContext.scale.scale = 1.0f;
-        m_SimulationContext.gravity = m_PhysicsSystem->GetGravity();
-        m_SimulationContext.physxScene = m_PhysicsSystem->GetScene();
+        const glm::vec3 gravity = m_PhysicsSystem->GetGravity();
+        m_SimulationContext.gravity = PxVec3(gravity.x, gravity.y, gravity.z);
+        m_SimulationContext.physxScene =
+            VansPhysicsNativeAccess::Scene(*m_PhysicsSystem);
         m_SimulationContext.physxActorUpdateMode = m_Tuning.physxActorUpdateMode;
 
         return true;
@@ -432,78 +431,38 @@ namespace VansEngine
             PxVehicleConstraintsDestroy(m_State.physxConstraints);
 
             // Remove from scene before releasing
-            if (m_PhysicsSystem && m_PhysicsSystem->GetScene())
-            {
-                m_PhysicsSystem->GetScene()->removeActor(*m_State.physxActor.rigidBody);
-            }
+            if (PxScene* scene = m_State.physxActor.rigidBody->getScene())
+                scene->removeActor(*m_State.physxActor.rigidBody);
 
             // Release rigid body + wheel shapes via the PhysX Vehicle helper
             PxVehiclePhysXActorDestroy(m_State.physxActor);
         }
+        if (m_Material)
+        {
+            m_Material->release();
+            m_Material = nullptr;
+        }
+        m_State.Reset();
+        m_CommandState.setToDefault();
+        m_TransmissionCommandState.setToDefault();
+        m_ComponentSequence = PxVehicleComponentSequence{};
+        m_DrivetrainSubstepGroup = PxVehicleComponentSequence::eINVALID_SUBSTEP_GROUP;
+        m_PhysicsSystem = nullptr;
     }
 
     void VansPhysicsVehicle::Step(float dt)
     {
+		VANS_ASSERT_PHYSICS_THREAD();
         m_ComponentSequence.update(dt, m_SimulationContext);
-        if (m_CommandState.throttle > 0.0f)
-        {
-            m_DebugLogAccumulator += dt;
-            if (m_DebugLogAccumulator >= 0.5f)
-            {
-                m_DebugLogAccumulator = 0.0f;
-
-                const PxTransform pose = GetTransform();
-                PxVec3 linearVelocity(0.0f);
-                PxVec3 angularVelocity(0.0f);
-                if (PxRigidDynamic* dynamicBody = m_State.physxActor.rigidBody
-                    ? m_State.physxActor.rigidBody->is<PxRigidDynamic>()
-                    : nullptr)
-                {
-                    linearVelocity = dynamicBody->getLinearVelocity();
-                    angularVelocity = dynamicBody->getAngularVelocity();
-                }
-
-                VANS_LOG("[VehicleDebug] throttle=" << m_CommandState.throttle
-                    << " gear=" << m_State.gearboxState.currentGear
-                    << " targetGear=" << m_State.gearboxState.targetGear
-                    << " pose=(" << pose.p.x << ", " << pose.p.y << ", " << pose.p.z << ")"
-                    << " linVel=(" << linearVelocity.x << ", " << linearVelocity.y << ", " << linearVelocity.z << ")"
-                    << " angVel=(" << angularVelocity.x << ", " << angularVelocity.y << ", " << angularVelocity.z << ")");
-
-                for (PxU32 i = 0; i < 4; ++i)
-                {
-                    const PxVehicleRoadGeometryState& road = m_State.roadGeomStates[i];
-                    const PxVehicleSuspensionState& suspension = m_State.suspensionStates[i];
-                    const PxVehicleSuspensionForce& suspensionForce = m_State.suspensionForces[i];
-                    const PxVehicleTireGripState& grip = m_State.tireGripStates[i];
-                    const PxVehicleTireForce& tireForce = m_State.tireForces[i];
-                    const PxVehicleWheelRigidBody1dState& wheelState = m_State.wheelRigidBody1dStates[i];
-
-                    const PxVec3& longForce = tireForce.forces[PxVehicleTireDirectionModes::eLONGITUDINAL];
-                    const PxVec3& latForce = tireForce.forces[PxVehicleTireDirectionModes::eLATERAL];
-                    VANS_LOG("[VehicleDebug] wheel=" << i
-                        << " roadHit=" << (road.hitState ? 1 : 0)
-                        << " roadFriction=" << road.friction
-                        << " jounce=" << suspension.jounce
-                        << " separation=" << suspension.separation
-                        << " normalForce=" << suspensionForce.normalForce
-                        << " gripLoad=" << grip.load
-                        << " gripFriction=" << grip.friction
-                        << " wheelOmega=" << wheelState.rotationSpeed
-                        << " longForce=(" << longForce.x << ", " << longForce.y << ", " << longForce.z << ")"
-                        << " latForce=(" << latForce.x << ", " << latForce.y << ", " << latForce.z << ")"
-                        << " wheelTorque=" << tireForce.wheelTorque);
-                }
-            }
-        }
-        else
-        {
-            m_DebugLogAccumulator = 0.0f;
-        }
     }
 
     void VansPhysicsVehicle::SetInputs(float throttle, float brake, float steer, float handbrake)
     {
+        VANS_ASSERT_MAIN_THREAD();
+        if (!m_PhysicsSystem)
+            return;
+
+        std::lock_guard<std::mutex> lock(m_PhysicsSystem->GetSimulationMutex());
         m_CommandState.throttle = std::clamp(throttle, 0.0f, 1.0f);
         m_CommandState.brakes[0] = std::clamp(brake, 0.0f, 1.0f);     // Standard brake
         m_CommandState.brakes[1] = std::clamp(handbrake, 0.0f, 1.0f); // Handbrake
@@ -518,15 +477,45 @@ namespace VansEngine
         }
     }
 
-    void VansPhysicsVehicle::SetGear(uint32_t gear)
+    bool VansPhysicsVehicle::SetGear(uint32_t gearIndex)
     {
-        m_TransmissionCommandState.targetGear = gear;
+        VANS_ASSERT_MAIN_THREAD();
+        if (!m_PhysicsSystem)
+            return false;
+
+        std::lock_guard<std::mutex> lock(m_PhysicsSystem->GetSimulationMutex());
+        if (gearIndex >= m_Params.gearboxParams.nbRatios)
+            return false;
+
+        m_TransmissionCommandState.targetGear = gearIndex;
+        return true;
     }
 
-    void VansPhysicsVehicle::SetAutomaticGear(bool automatic)
+    bool VansPhysicsVehicle::SetAutomaticGear(bool enabled)
     {
-        if (automatic)
-             m_TransmissionCommandState.targetGear = PxVehicleEngineDriveTransmissionCommandState::eAUTOMATIC_GEAR;
+        VANS_ASSERT_MAIN_THREAD();
+        if (!m_PhysicsSystem)
+            return false;
+
+        std::lock_guard<std::mutex> lock(m_PhysicsSystem->GetSimulationMutex());
+        if (enabled)
+        {
+            m_TransmissionCommandState.targetGear =
+                PxVehicleEngineDriveTransmissionCommandState::eAUTOMATIC_GEAR;
+            return true;
+        }
+
+        const PxU32 currentGear = m_State.gearboxState.currentGear;
+        const PxU32 pendingGear = m_State.gearboxState.targetGear;
+        const PxU32 manualGear =
+            currentGear != pendingGear && pendingGear < m_Params.gearboxParams.nbRatios
+                ? pendingGear
+                : currentGear;
+        if (manualGear >= m_Params.gearboxParams.nbRatios)
+            return false;
+
+        m_TransmissionCommandState.targetGear = manualGear;
+        return true;
     }
 
     PxTransform VansPhysicsVehicle::GetTransform() const
@@ -560,7 +549,7 @@ namespace VansEngine
         axleDescription = &m_Params.axleDescription;
         commands = &m_CommandState;
         transmissionCommands = &m_TransmissionCommandState;
-        gearParams = &m_Params.gearBoxParams;
+        gearParams = &m_Params.gearboxParams;
         gearState = &m_State.gearboxState;
         engineParams = &m_Params.engineParams;
         physxActor = &m_State.physxActor;
@@ -639,7 +628,7 @@ namespace VansEngine
         
         // We use a local helper for query state if needed, or pass the array if stored in state
         // For simplicity we mapped it to internal state
-        physxRoadGeometryStates.setData(m_PhysXRoadGeometryQueryState); 
+        physxRoadGeometryStates.setData(m_RoadGeometryQueryStates);
     }
 
     void VansPhysicsVehicle::getDataForRigidBodyComponent(
@@ -782,7 +771,7 @@ namespace VansEngine
         brakeResponseParams.setDataAndCount(m_Params.brakeResponseParams, 2);
         steerResponseParams = &m_Params.steerResponseParams;
         ackermannParams.setDataAndCount(m_Params.ackermannParams, 1);
-        gearboxParams = &m_Params.gearBoxParams;
+        gearboxParams = &m_Params.gearboxParams;
         clutchResponseParams = &m_Params.clutchCommandResponseParams;
         engineParams = &m_Params.engineParams;
         rigidBodyState = &m_State.rigidBodyState;
@@ -822,7 +811,7 @@ namespace VansEngine
         PxVehicleArrayData<PxVehicleWheelActuationState>& actuationStates)
     {
         axleDescription = &m_Params.axleDescription;
-        gearboxParams = &m_Params.gearBoxParams;
+        gearboxParams = &m_Params.gearboxParams;
         brakeResponseStates.setData(m_State.brakeCommandResponseStates);
         throttleResponseState = &m_State.throttleCommandResponseState;
         gearboxState = &m_State.gearboxState;
@@ -853,7 +842,7 @@ namespace VansEngine
         wheelParams.setData(m_Params.wheelParams);
         engineParams = &m_Params.engineParams;
         clutchParams = &m_Params.clutchParams;
-        gearboxParams = &m_Params.gearBoxParams;
+        gearboxParams = &m_Params.gearboxParams;
         brakeResponseStates.setData(m_State.brakeCommandResponseStates);
         actuationStates.setData(m_State.actuationStates);
         tireForces.setData(m_State.tireForces);
@@ -871,15 +860,140 @@ namespace VansEngine
     // Helpers
     // =========================================================
 
-    bool VansVehicleParams::isValid() const
+    bool VansVehicleTuning::IsValid(std::string& error) const
     {
-        if (!axleDescription.isValid()) return false;
-        if (!frame.isValid()) return false;
-        if (!scale.isValid()) return false;
+        auto fail = [&error](const char* message)
+        {
+            error = message;
+            return false;
+        };
+        auto finitePositive = [](PxReal value)
+        {
+            return std::isfinite(value) && value > 0.0f;
+        };
+        auto finiteNonNegative = [](PxReal value)
+        {
+            return std::isfinite(value) && value >= 0.0f;
+        };
+        auto validAxis = [](PxVehicleAxes::Enum axis)
+        {
+            return axis >= PxVehicleAxes::ePosX && axis < PxVehicleAxes::eMAX_NB_AXES;
+        };
+
+        if (!validAxis(longitudinalAxis) || !validAxis(lateralAxis) || !validAxis(verticalAxis))
+            return fail("Vehicle axes contain an invalid value");
+        if (longitudinalAxis / 2 == lateralAxis / 2 ||
+            longitudinalAxis / 2 == verticalAxis / 2 ||
+            lateralAxis / 2 == verticalAxis / 2)
+            return fail("Vehicle longitudinal, lateral, and vertical axes must use distinct dimensions");
+        if (!BuildFrame().isValid())
+            return fail("Vehicle axes do not form a valid right-handed frame");
+        if (!finitePositive(bodyMass) || !bodyMoi.isFinite() ||
+            !finitePositive(bodyMoi.x) || !finitePositive(bodyMoi.y) || !finitePositive(bodyMoi.z))
+            return fail("Vehicle body mass and moment of inertia must be finite and positive");
+        if (!centerOfMassLocalPose.isValid() || !bodyBoxLocalPose.isValid() ||
+            !bodyBoxHalfExtents.isFinite() ||
+            !finitePositive(bodyBoxHalfExtents.x) || !finitePositive(bodyBoxHalfExtents.y) ||
+            !finitePositive(bodyBoxHalfExtents.z))
+            return fail("Vehicle body transforms and box half extents are invalid");
+        if (!finitePositive(wheelRadius) || !finitePositive(wheelHalfWidth) ||
+            !finitePositive(wheelMass) || !finitePositive(wheelMoi) ||
+            !finiteNonNegative(wheelDampingRate))
+            return fail("Vehicle wheel dimensions, mass, inertia, and damping are invalid");
+        if (!finitePositive(suspensionTravelDist) || !finiteNonNegative(brakeMaxTorque) ||
+            !finiteNonNegative(handbrakeMaxTorque) || !finiteNonNegative(maxSteerAngleRadians))
+            return fail("Vehicle suspension, brake, or steering values are invalid");
+
+        for (PxU32 wheel = 0; wheel < 4; ++wheel)
+        {
+            if (!suspensionAttachmentPositions[wheel].isFinite() ||
+                !finitePositive(suspensionStiffness[wheel]) ||
+                !finiteNonNegative(suspensionDamping[wheel]) ||
+                !finitePositive(sprungMass[wheel]) ||
+                !finitePositive(tireLateralStiffnessY[wheel]) ||
+                !finitePositive(tireRestLoad[wheel]) ||
+                !finiteNonNegative(differentialTorqueRatios[wheel]) ||
+                !finiteNonNegative(differentialAverageWheelSpeedRatios[wheel]))
+                return fail("Vehicle per-wheel tuning contains an invalid value");
+        }
+
+        if (engineTorqueCurve.empty() ||
+            engineTorqueCurve.size() > PxVehicleEngineParams::eMAX_NB_ENGINE_TORQUE_CURVE_ENTRIES)
+            return fail("Vehicle engine torque curve size is invalid");
+        PxReal previousInput = -std::numeric_limits<PxReal>::infinity();
+        for (const VansVehicleCurvePoint& point : engineTorqueCurve)
+        {
+            if (!std::isfinite(point.input) || !std::isfinite(point.output) ||
+                point.input <= previousInput)
+                return fail("Vehicle engine torque curve inputs must be finite and strictly increasing");
+            previousInput = point.input;
+        }
+        previousInput = -std::numeric_limits<PxReal>::infinity();
+        for (const VansVehicleCurvePoint& point : tireFrictionVsSlip)
+        {
+            if (!std::isfinite(point.input) || !finiteNonNegative(point.output) ||
+                point.input <= previousInput)
+                return fail("Vehicle tire friction curve inputs must be finite and strictly increasing");
+            previousInput = point.input;
+        }
+        previousInput = -std::numeric_limits<PxReal>::infinity();
+        for (const VansVehicleCurvePoint& point : tireLoadFilter)
+        {
+            if (!std::isfinite(point.input) || !finiteNonNegative(point.output) ||
+                point.input <= previousInput)
+                return fail("Vehicle tire load filter inputs must be finite and strictly increasing");
+            previousInput = point.input;
+        }
+
+        if (gearRatios.empty() || gearRatios.size() > PxVehicleGearboxParams::eMAX_NB_GEARS ||
+            neutralGear >= gearRatios.size() ||
+            autoboxUpRatios.size() != gearRatios.size() ||
+            autoboxDownRatios.size() != gearRatios.size())
+            return fail("Vehicle gearbox and autobox arrays must have matching valid sizes");
+        for (PxU32 gear = 0; gear < gearRatios.size(); ++gear)
+        {
+            if (!std::isfinite(gearRatios[gear]) || !std::isfinite(autoboxUpRatios[gear]) ||
+                !std::isfinite(autoboxDownRatios[gear]))
+                return fail("Vehicle gearbox and autobox values must be finite");
+        }
+        for (PxU32 gear = 0; gear < neutralGear; ++gear)
+            if (gearRatios[gear] >= 0.0f)
+                return fail("Vehicle reverse gear ratios must be negative");
+        if (gearRatios[neutralGear] != 0.0f)
+            return fail("Vehicle neutral gear ratio must be zero");
+        for (PxU32 gear = neutralGear + 1; gear < gearRatios.size(); ++gear)
+        {
+            if (gearRatios[gear] <= 0.0f)
+                return fail("Vehicle forward gear ratios must be positive");
+            if (gear > neutralGear + 1 && gearRatios[gear] >= gearRatios[gear - 1])
+                return fail("Vehicle forward gear ratios must be strictly descending");
+        }
+
+        if (!finitePositive(enginePeakTorque) || !finitePositive(engineMaxOmega) ||
+            !finitePositive(engineMoi) || !finiteNonNegative(engineIdleOmega) ||
+            !finiteNonNegative(engineDampingFullThrottle) ||
+            !finiteNonNegative(engineDampingZeroThrottleClutchEngaged) ||
+            !finiteNonNegative(engineDampingZeroThrottleClutchDisengaged) ||
+            !finitePositive(gearboxFinalRatio) || !finiteNonNegative(gearboxSwitchTime) ||
+            !finiteNonNegative(autoboxLatency) || !finitePositive(clutchStrength) ||
+            clutchEstimateIterations == 0)
+            return fail("Vehicle engine, gearbox, or clutch tuning is invalid");
+        if (!finiteNonNegative(materialStaticFriction) || !finiteNonNegative(materialDynamicFriction) ||
+            !finiteNonNegative(materialRestitution) || !finiteNonNegative(tireFriction) ||
+            !finiteNonNegative(suspensionLimitRestitution))
+            return fail("Vehicle material and tire friction values are invalid");
+        if (materialRestitution > 1.0f || suspensionLimitRestitution > 1.0f)
+            return fail("Vehicle restitution values must be in the range [0, 1]");
+        if (collisionLayerName.empty())
+            return fail("Vehicle collision layer name is empty");
+        if (drivetrainSubsteps == 0 || drivetrainSubsteps > 16)
+            return fail("Vehicle drivetrain substeps must be in the range [1, 16]");
+
+        error.clear();
         return true;
     }
 
-    void VansVehicleState::setToDefault()
+    void VansVehicleState::Reset()
     {
         for (unsigned int i = 0; i < PxVehicleLimits::eMAX_NB_WHEELS; i++)
         {

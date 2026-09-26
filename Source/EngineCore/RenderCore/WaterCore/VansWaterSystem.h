@@ -143,7 +143,7 @@ namespace VansGraphics
 
         // SetupDescriptors：在 SetupVansWaterGBufferPass 之后（BeforeRendering 中）调用。
         // 注意：globalLayout/globalSet 可能尚未创建（在 LoadSceneForRendering 时序中
-        // CreateGlobalDescriptorSet 在 AddWaterNode 之后执行），此时可传 VK_NULL_HANDLE。
+        // CreateGlobalDescriptorSet 在 BuildWaterNode 之后执行），此时可传 VK_NULL_HANDLE。
         // 后续通过 SetGlobalDescriptorSet 在 CreateGlobalDescriptorSet 之后补设。
         void SetupDescriptors(VansRenderPassManager* renderPassManager,
                               VkDescriptorSetLayout  globalLayout,

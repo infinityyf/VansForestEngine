@@ -3,21 +3,40 @@
 #include "../VansScene.h"
 
 #include "../../SceneCore/VansSceneVehicleComponentConfig.h"
+#include <string>
 #include <unordered_set>
+#include <vector>
 
 class VansScriptVehicleComponent;
 
 namespace VansGraphics
 {
+	struct VansSceneVehicleBuildRequest
+	{
+		std::string ownerEntityGuid;
+		Vans::VansSceneVehicleComponentConfig config;
+		std::string componentGuid;
+	};
+
+	struct VansSceneBuiltVehicleRuntime
+	{
+		std::string ownerEntityGuid;
+		VansScriptVehicleComponent* component = nullptr;
+	};
+
+	struct VansSceneVehicleBuildResult
+	{
+		bool success = false;
+		std::string error;
+		std::unordered_set<uint32_t> drivenTransformIds;
+		std::vector<VansSceneBuiltVehicleRuntime> builtVehicles;
+	};
+
 	class VansSceneVehicleComponentBuilder
 	{
 	public:
-		static VansScriptVehicleComponent* AddVehiclePlaceholder(
-			VansScriptObject& object,
-			const Vans::VansSceneVehicleObjectConfig& objectConfig);
-
-		static std::unordered_set<uint32_t> ResolveVehicles(
+		static VansSceneVehicleBuildResult BuildVehicles(
 			VansScene& scene,
-			const Vans::VansSceneVehicleObjectConfigs& objectConfigs);
+			const std::vector<VansSceneVehicleBuildRequest>& requests);
 	};
 }

@@ -357,6 +357,21 @@ void VansAnimationSlotRuntime::Update(
 	for (auto& [slotId, payload] : outSlotPayloads)
 		payload = {};
 	deltaTime = std::max(0.0f, deltaTime);
+	const auto playbackDuration = [](const VansAnimationClip& clip,
+		const RequestRuntime& runtime)
+	{
+		// startTime is an absolute clip sample position.  A non-looping request
+		// therefore owns only the remaining part of the clip; using the full
+		// duration here would leave a montage with a non-zero start time alive
+		// past its authored end and would delay its blend-out.
+		const float start = std::clamp(runtime.request.startTime, 0.0f, clip.duration);
+		const float firstSpan = runtime.request.playRate >= 0.0f
+			? std::max(0.0f, clip.duration - start)
+			: start;
+		if (runtime.request.loopCount <= 1)
+			return firstSpan;
+		return firstSpan + clip.duration * static_cast<float>(runtime.request.loopCount - 1);
+	};
 	for (std::size_t slotIndex = 0; slotIndex < m_States.size(); ++slotIndex)
 	{
 		SlotState& state = m_States[slotIndex];
@@ -388,7 +403,7 @@ void VansAnimationSlotRuntime::Update(
 			}
 			const auto clip = clips.find(runtime.request.clipName);
 			const float totalDuration = clip == clips.end() ? 0.0f
-				: clip->second.duration * static_cast<float>(runtime.request.loopCount);
+				: playbackDuration(clip->second, runtime);
 			const float elapsed = std::abs(runtime.currentTime - runtime.request.startTime);
 			const float fadeInWeight = runtime.blendIn <= 0.0f ? 1.0f : std::min(1.0f, elapsed / runtime.blendIn);
 			const float remaining = std::max(0.0f, totalDuration - elapsed);
@@ -417,11 +432,11 @@ void VansAnimationSlotRuntime::Update(
 			status.playbackTime = state.active->currentTime;
 			status.weight = state.active->weight;
 			status.state = state.active->weight < 1.0f
-				? (state.active->currentTime - state.active->request.startTime < state.active->blendIn
+				? (std::abs(state.active->currentTime - state.active->request.startTime) < state.active->blendIn
 					? VansSlotPlaybackState::BlendingIn : VansSlotPlaybackState::BlendingOut)
 				: VansSlotPlaybackState::Playing;
 			const float totalDuration = clip == clips.end() ? 0.0f
-				: clip->second.duration * static_cast<float>(state.active->request.loopCount);
+				: playbackDuration(clip->second, *state.active);
 			if (clip == clips.end() || (!state.active->request.externallyDriven &&
 				std::abs(state.active->currentTime - state.active->request.startTime) >= totalDuration))
 			{

@@ -2,6 +2,7 @@
 
 #include "VansPoseMath.h"
 #include "VansPosePayloadMixer.h"
+#include "../Util/VansLog.h"
 
 #include <algorithm>
 #include <cmath>
@@ -29,26 +30,6 @@ namespace VansGraphics
 					? source.scale[axis] / divisor : 1.0f;
 			}
 			return VansPoseMath::ApplyAdditiveTransform(base, delta, weight);
-		}
-
-		VansAnimationFrameVector<glm::quat> BuildModelRotations(const VansAnimationFrameVector<VansBoneTransform>& pose,
-		                                           const Skeleton& skeleton)
-		{
-			VansAnimationFrameVector<glm::quat> result(pose.size(), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
-			auto apply = [&](int index)
-			{
-				if (index < 0 || index >= static_cast<int>(pose.size()))
-					return;
-				const int parent = skeleton.bones[index].parentIndex;
-				result[index] = parent >= 0 && parent < static_cast<int>(pose.size())
-					? glm::normalize(result[parent] * pose[index].rotation)
-					: glm::normalize(pose[index].rotation);
-			};
-			if (!skeleton.topologicalOrder.empty())
-				for (int index : skeleton.topologicalOrder) apply(index);
-			else
-				for (size_t index = 0; index < pose.size(); ++index) apply(static_cast<int>(index));
-			return result;
 		}
 
 		void ApplyLocalBoneMix(VansAnimationFrameVector<VansBoneTransform>& result,
@@ -83,30 +64,17 @@ namespace VansGraphics
 			VansAnimationFrameVector<glm::mat4> layerModel(result.size(), glm::mat4(1.0f));
 			VansAnimationFrameVector<glm::mat4> referenceModel(result.size(), glm::mat4(1.0f));
 			VansAnimationFrameVector<glm::mat4> finalModel(result.size(), glm::mat4(1.0f));
-			auto buildModel = [&](const VansAnimationFrameVector<VansBoneTransform>& pose,
-			                     VansAnimationFrameVector<glm::mat4>& output)
+			std::string topologyError;
+			if (!VansPoseMath::BuildModelTransforms(result, skeleton, baseModel, &topologyError)
+				|| !VansPoseMath::BuildModelTransforms(layer.localPose, skeleton, layerModel, &topologyError)
+				|| !VansPoseMath::BuildModelTransforms(reference, skeleton, referenceModel, &topologyError))
 			{
-				auto apply = [&](int index)
-				{
-					if (index < 0 || index >= static_cast<int>(pose.size())) return;
-					const int parent = skeleton.bones[index].parentIndex;
-					output[index] = parent >= 0 && parent < static_cast<int>(pose.size())
-						? output[parent] * VansPoseMath::Compose(pose[index])
-						: VansPoseMath::Compose(pose[index]);
-				};
-				if (!skeleton.topologicalOrder.empty())
-					for (int index : skeleton.topologicalOrder) apply(index);
-				else
-					for (size_t index = 0; index < pose.size(); ++index) apply(static_cast<int>(index));
-			};
-			buildModel(result, baseModel);
-			buildModel(layer.localPose, layerModel);
-			buildModel(reference, referenceModel);
+				VANS_LOG_WARN("[AnimationLayer] Mesh-space mix rejected: " << topologyError);
+				return;
+			}
 			finalModel = baseModel;
-			auto apply = [&](int index)
+			for (std::size_t index = 0; index < result.size(); ++index)
 			{
-				if (index < 0 || index >= static_cast<int>(result.size()))
-					return;
 				const float boneWeight = std::clamp(weight * mask.weights[index], 0.0f, 1.0f);
 				if (definition.blendMode == VansLayerBlendMode::Override)
 					finalModel[index] = VansPoseMath::BlendTransforms(
@@ -114,19 +82,22 @@ namespace VansGraphics
 				else
 					finalModel[index] = VansPoseMath::ApplyMeshSpaceAdditiveTransform(
 						baseModel[index], layerModel[index], referenceModel[index], boneWeight);
-				const int parent = skeleton.bones[index].parentIndex;
-				const glm::mat4 localModel = parent >= 0 && parent < static_cast<int>(result.size())
-					? glm::inverse(finalModel[parent]) * finalModel[index]
-					: finalModel[index];
-				if (!VansPoseMath::TryDecompose(localModel, result[index]))
+			}
+			VansAnimationFrameVector<glm::mat4> finalLocal;
+			if (!VansPoseMath::BuildLocalTransforms(
+				finalModel, skeleton, finalLocal, &topologyError))
+			{
+				VANS_LOG_WARN("[AnimationLayer] Mesh-space result rejected: " << topologyError);
+				return;
+			}
+			for (std::size_t index = 0; index < result.size(); ++index)
+			{
+				const float boneWeight = std::clamp(weight * mask.weights[index], 0.0f, 1.0f);
+				if (!VansPoseMath::TryDecompose(finalLocal[index], result[index]))
 					result[index] = definition.blendMode == VansLayerBlendMode::Override
 						? VansPoseMath::BlendTransforms(result[index], layer.localPose[index], boneWeight)
 						: result[index];
-			};
-			if (!skeleton.topologicalOrder.empty())
-				for (int index : skeleton.topologicalOrder) apply(index);
-			else
-				for (size_t index = 0; index < result.size(); ++index) apply(static_cast<int>(index));
+			}
 		}
 
 		void ApplyCurves(VansPosePayload& result, const VansPosePayload& layer,
@@ -279,21 +250,14 @@ namespace VansGraphics
 			VansAnimationFrameVector<glm::mat4> layerModel(layer.localPose.size(), glm::mat4(1.0f));
 			VansAnimationFrameVector<glm::mat4> referenceModel(baseReference.size(), glm::mat4(1.0f));
 			VansAnimationFrameVector<glm::mat4> resultModel(layer.localPose.size(), glm::mat4(1.0f));
-			auto buildModel = [&](const VansAnimationFrameVector<VansBoneTransform>& pose,
-			                     VansAnimationFrameVector<glm::mat4>& output)
+			std::string topologyError;
+			if (!VansPoseMath::BuildModelTransforms(base.localPose, skeleton, baseModel, &topologyError)
+				|| !VansPoseMath::BuildModelTransforms(layer.localPose, skeleton, layerModel, &topologyError)
+				|| !VansPoseMath::BuildModelTransforms(baseReference, skeleton, referenceModel, &topologyError))
 			{
-				auto apply = [&](int index)
-				{
-					const int parent = skeleton.bones[index].parentIndex;
-					output[index] = parent >= 0 ? output[parent] * VansPoseMath::Compose(pose[index])
-						: VansPoseMath::Compose(pose[index]);
-				};
-				if (!skeleton.topologicalOrder.empty()) for (int index : skeleton.topologicalOrder) apply(index);
-				else for (size_t index = 0; index < pose.size(); ++index) apply(static_cast<int>(index));
-			};
-			buildModel(base.localPose, baseModel);
-			buildModel(layer.localPose, layerModel);
-			buildModel(baseReference, referenceModel);
+				VANS_LOG_WARN("[AnimationLayer] Dynamic additive rejected: " << topologyError);
+				return result;
+			}
 			resultModel = layerModel;
 			for (size_t index = 0; index < layer.localPose.size(); ++index)
 			{
@@ -302,15 +266,15 @@ namespace VansGraphics
 				resultModel[index] = VansPoseMath::ApplyMeshSpaceAdditiveTransform(
 					layerModel[index], baseModel[index], referenceModel[index], boneWeight);
 			}
-			auto applyLocal = [&](int index)
+			VansAnimationFrameVector<glm::mat4> resultLocal;
+			if (!VansPoseMath::BuildLocalTransforms(
+				resultModel, skeleton, resultLocal, &topologyError))
 			{
-				const int parent = skeleton.bones[index].parentIndex;
-				const glm::mat4 local = parent >= 0 ? glm::inverse(resultModel[parent]) * resultModel[index]
-					: resultModel[index];
-				VansPoseMath::TryDecompose(local, result.localPose[index]);
-			};
-			if (!skeleton.topologicalOrder.empty()) for (int index : skeleton.topologicalOrder) applyLocal(index);
-			else for (size_t index = 0; index < result.localPose.size(); ++index) applyLocal(static_cast<int>(index));
+				VANS_LOG_WARN("[AnimationLayer] Dynamic additive result rejected: " << topologyError);
+				return result;
+			}
+			for (std::size_t index = 0; index < result.localPose.size(); ++index)
+				VansPoseMath::TryDecompose(resultLocal[index], result.localPose[index]);
 			return result;
 		}
 		for (std::size_t index = 0; index < layer.localPose.size(); ++index)

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../EngineAPILayer/Public/IRuntimeSceneEditorAPI.h"
 
 #include <string>
 
@@ -24,7 +24,7 @@ public:
     };
 
     static Result PlaceModelAsset(
-        Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+        Vans::EditorAPI::IRuntimeSceneEditorAPI& editorAPI,
         Vans::VansSceneEditService& editService,
         const std::string& assetGuid,
         const Vans::EditorAPI::Vec3& worldPosition);

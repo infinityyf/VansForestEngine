@@ -57,21 +57,13 @@ namespace Vans
 				disconnect();
 		}
 
-		bool IsConnected() const
-		{
-			if (!m_State)
-				return false;
-			std::lock_guard<std::mutex> lock(m_State->mutex);
-			return m_State->connected;
-		}
-
 		VansEventConnection(const VansEventConnection&) = delete;
 		VansEventConnection& operator=(const VansEventConnection&) = delete;
 
 	private:
 		struct State
 		{
-			mutable std::mutex mutex;
+			std::mutex mutex;
 			bool connected = true;
 			std::function<void()> disconnect;
 		};

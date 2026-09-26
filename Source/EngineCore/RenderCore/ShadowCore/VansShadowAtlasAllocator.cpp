@@ -20,7 +20,7 @@ namespace VansGraphics
 		if (!IsPowerOfTwo(m_AtlasSize) || !IsPowerOfTwo(m_BasePageSize) ||
 			m_BasePageSize > m_AtlasSize || (m_AtlasSize % m_BasePageSize) != 0)
 		{
-			m_AtlasSize = 4096;
+			m_AtlasSize = kVansRenderBootstrapSettings.punctualShadowAtlasWidth;
 			m_BasePageSize = 128;
 		}
 

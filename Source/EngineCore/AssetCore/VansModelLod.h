@@ -7,10 +7,13 @@
 
 namespace Vans
 {
+inline constexpr std::size_t MinimumModelLodLevelCount = 1;
+inline constexpr std::size_t MaximumModelLodLevelCount = 2;
+
 // 通用静态模型派生产物契约。运行时只消费资源引用，不依赖减面库或编辑器。
 struct VansModelLodSettings
 {
-    std::array<float, 2> ratios{0.5f, 0.18f};
+    std::vector<float> ratios{0.5f, 0.18f};
     float maximumError = 0.04f;
 };
 struct VansModelLodSourcePart
@@ -34,7 +37,7 @@ struct VansModelLodAsset
 {
     std::string buildKey;
     std::array<float, 4> centerRadius{};
-    // 原始模型仍由调用者持有；这里只存两个简化级。
+    // 原始模型仍由调用者持有；这里只存有界数量的简化级。
     std::vector<VansModelLodLevel> levels;
 };
 }

@@ -21,7 +21,6 @@ struct VansPcgLayerResult
 	std::vector<VansPcgPoint> points;
 	VansPcgGenerationStats stats;
 	std::vector<std::string> orphanOverrides;
-	bool requiresWholeRegionUpdate = false;
 };
 
 struct VansPcgExecutionResult

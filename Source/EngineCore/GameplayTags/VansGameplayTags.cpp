@@ -1,6 +1,7 @@
 #include "VansGameplayTags.h"
 
 #include <algorithm>
+#include <limits>
 
 namespace Vans
 {
@@ -29,6 +30,18 @@ std::string ParentName(std::string_view name)
 	const std::size_t separator = name.rfind('.');
 	return separator == std::string_view::npos ? std::string() : std::string(name.substr(0, separator));
 }
+
+std::uint64_t TotalTagCount(
+	const std::unordered_map<VansGameplayTagContainer::SourceId, std::uint32_t>& counts)
+{
+	std::uint64_t total = 0;
+	for (const auto& [source, count] : counts)
+	{
+		(void)source;
+		total += count;
+	}
+	return total;
+}
 }
 
 bool VansGameplayTagDictionary::Register(
@@ -55,6 +68,11 @@ bool VansGameplayTagDictionary::Register(
 	}
 	VansGameplayTagDefinition definition;
 	definition.id = VansMakeStableId<VansGameplayTagIdTag>(name);
+	if (m_ById.find(definition.id) != m_ById.end())
+	{
+		error = "Gameplay Tag stable ID collision: " + name;
+		return false;
+	}
 	definition.name = std::move(name);
 	definition.description = std::move(description);
 	definition.deprecated = deprecated;
@@ -73,36 +91,52 @@ bool VansGameplayTagDictionary::Register(
 bool VansGameplayTagDictionary::Seal(std::string& error)
 {
 	if (m_Sealed) return true;
+	error.clear();
+	std::uint64_t version = 0;
 	for (const VansGameplayTagDefinition& definition : m_Definitions)
 	{
-		if (definition.parent && !Resolve(definition.parent))
+		if (definition.parent && !Contains(definition.parent))
 		{
 			error = "Gameplay Tag parent is missing for " + definition.name;
 			return false;
 		}
-		if (definition.replacement && !Resolve(definition.replacement))
+		if (definition.replacement && !Contains(definition.replacement))
 		{
 			error = "deprecated Gameplay Tag replacement is missing for " + definition.name;
 			return false;
 		}
-		m_Version ^= definition.id.value + 0x9e3779b97f4a7c15ull +
-			(m_Version << 6) + (m_Version >> 2);
+		version ^= definition.id.value + 0x9e3779b97f4a7c15ull +
+			(version << 6) + (version >> 2);
 	}
-	if (m_Version == 0) m_Version = 1;
+	m_Version = version == 0 ? 1 : version;
 	m_Sealed = true;
 	return true;
 }
 
-const VansGameplayTagDefinition* VansGameplayTagDictionary::Resolve(VansGameplayTagId id) const
+bool VansGameplayTagDictionary::Contains(VansGameplayTagId id) const
 {
-	const auto found = m_ById.find(id);
-	return found == m_ById.end() ? nullptr : &m_Definitions[found->second];
+	return m_ById.find(id) != m_ById.end();
 }
 
-const VansGameplayTagDefinition* VansGameplayTagDictionary::Find(std::string_view name) const
+std::optional<VansGameplayTagId> VansGameplayTagDictionary::FindId(std::string_view name) const
 {
 	const auto found = m_ByName.find(std::string(name));
-	return found == m_ByName.end() ? nullptr : &m_Definitions[found->second];
+	return found == m_ByName.end()
+		? std::nullopt
+		: std::optional<VansGameplayTagId>{ m_Definitions[found->second].id };
+}
+
+std::optional<std::string> VansGameplayTagDictionary::FindName(VansGameplayTagId id) const
+{
+	const auto found = m_ById.find(id);
+	return found == m_ById.end()
+		? std::nullopt
+		: std::optional<std::string>{ m_Definitions[found->second].name };
+}
+
+std::vector<VansGameplayTagDefinition> VansGameplayTagDictionary::Snapshot() const
+{
+	return m_Definitions;
 }
 
 bool VansGameplayTagDictionary::IsDescendantOrEqual(
@@ -114,55 +148,37 @@ bool VansGameplayTagDictionary::IsDescendantOrEqual(
 	for (std::size_t depth = 0; depth <= m_Definitions.size(); ++depth)
 	{
 		if (current == ancestor) return true;
-		const VansGameplayTagDefinition* definition = Resolve(current);
-		if (!definition || !definition->parent) return false;
-		current = definition->parent;
+		const auto found = m_ById.find(current);
+		if (found == m_ById.end()) return false;
+		const VansGameplayTagId parent = m_Definitions[found->second].parent;
+		if (!parent) return false;
+		current = parent;
 	}
 	return false;
-}
-
-std::vector<VansGameplayTagId> VansGameplayTagDictionary::ExpandWildcard(std::string_view pattern) const
-{
-	std::vector<VansGameplayTagId> result;
-	const bool wildcard = pattern.size() >= 2 && pattern.substr(pattern.size() - 2) == ".*";
-	const std::string_view prefix = wildcard ? pattern.substr(0, pattern.size() - 1) : pattern;
-	for (const VansGameplayTagDefinition& definition : m_Definitions)
-	{
-		if ((!wildcard && definition.name == pattern) ||
-			(wildcard && definition.name.size() > prefix.size() &&
-				definition.name.compare(0, prefix.size(), prefix) == 0))
-			result.push_back(definition.id);
-	}
-	return result;
 }
 
 bool VansGameplayTagContainer::Add(VansGameplayTagId tag, SourceId source, std::uint32_t count)
 {
 	if (!tag || source == 0 || count == 0) return false;
-	if (m_Dictionary && !m_Dictionary->Resolve(tag)) return false;
-	m_Counts[tag][source] += count;
-	MarkChanged(tag);
-	return true;
-}
-
-bool VansGameplayTagContainer::Remove(VansGameplayTagId tag, SourceId source, std::uint32_t count)
-{
-	if (!tag || source == 0 || count == 0) return false;
+	if (m_Dictionary && !m_Dictionary->Contains(tag)) return false;
 	const auto tagIt = m_Counts.find(tag);
-	if (tagIt == m_Counts.end()) return false;
-	const auto sourceIt = tagIt->second.find(source);
-	if (sourceIt == tagIt->second.end() || sourceIt->second < count) return false;
-	sourceIt->second -= count;
-	if (sourceIt->second == 0) tagIt->second.erase(sourceIt);
-	if (tagIt->second.empty()) m_Counts.erase(tagIt);
-	MarkChanged(tag);
+	if (tagIt == m_Counts.end())
+	{
+		std::unordered_map<SourceId, std::uint32_t> sources;
+		sources.emplace(source, count);
+		m_Counts.emplace(tag, std::move(sources));
+		return true;
+	}
+	const std::uint64_t maximumCount = (std::numeric_limits<std::uint32_t>::max)();
+	if (TotalTagCount(tagIt->second) > maximumCount - count) return false;
+	const auto [sourceIt, inserted] = tagIt->second.try_emplace(source, count);
+	if (!inserted) sourceIt->second += count;
 	return true;
 }
 
 std::size_t VansGameplayTagContainer::RemoveSource(SourceId source)
 {
 	if (source == 0) return 0;
-	BeginBatch();
 	std::size_t removed = 0;
 	for (auto tagIt = m_Counts.begin(); tagIt != m_Counts.end();)
 	{
@@ -170,13 +186,11 @@ std::size_t VansGameplayTagContainer::RemoveSource(SourceId source)
 		if (sourceIt != tagIt->second.end())
 		{
 			tagIt->second.erase(sourceIt);
-			MarkChanged(tagIt->first);
 			++removed;
 		}
 		if (tagIt->second.empty()) tagIt = m_Counts.erase(tagIt);
 		else ++tagIt;
 	}
-	EndBatch();
 	return removed;
 }
 
@@ -184,9 +198,7 @@ std::uint32_t VansGameplayTagContainer::CountExact(VansGameplayTagId tag) const
 {
 	const auto found = m_Counts.find(tag);
 	if (found == m_Counts.end()) return 0;
-	std::uint32_t total = 0;
-	for (const auto& sourceCount : found->second) total += sourceCount.second;
-	return total;
+	return static_cast<std::uint32_t>(TotalTagCount(found->second));
 }
 
 bool VansGameplayTagContainer::Has(VansGameplayTagId tag, bool exact) const
@@ -213,6 +225,28 @@ bool VansGameplayTagContainer::Matches(const VansGameplayTagQuery& query) const
 	return true;
 }
 
+bool VansGameplayTagContainer::MatchesWithTags(
+	const VansGameplayTagQuery& query,
+	const std::vector<VansGameplayTagId>& added) const
+{
+	const auto has = [&](VansGameplayTagId tag)
+	{
+		if (Has(tag, query.exact)) return true;
+		return std::any_of(added.begin(), added.end(), [&](VansGameplayTagId candidate)
+		{
+			return candidate == tag || (!query.exact && m_Dictionary &&
+				m_Dictionary->IsDescendantOrEqual(candidate, tag));
+		});
+	};
+	for (VansGameplayTagId tag : query.all)
+		if (!has(tag)) return false;
+	if (!query.any.empty() &&
+		std::none_of(query.any.begin(), query.any.end(), has)) return false;
+	for (VansGameplayTagId tag : query.none)
+		if (has(tag)) return false;
+	return true;
+}
+
 std::vector<std::pair<VansGameplayTagId, std::uint32_t>>
 VansGameplayTagContainer::Snapshot() const
 {
@@ -220,8 +254,7 @@ VansGameplayTagContainer::Snapshot() const
 	result.reserve(m_Counts.size());
 	for (const auto& [tag, sources] : m_Counts)
 	{
-		std::uint32_t count = 0;
-		for (const auto& [source, value] : sources) { (void)source; count += value; }
+		const std::uint32_t count = static_cast<std::uint32_t>(TotalTagCount(sources));
 		if (count != 0) result.emplace_back(tag, count);
 	}
 	std::sort(result.begin(), result.end(),
@@ -229,38 +262,8 @@ VansGameplayTagContainer::Snapshot() const
 	return result;
 }
 
-void VansGameplayTagContainer::BeginBatch()
-{
-	++m_BatchDepth;
-}
-
-void VansGameplayTagContainer::EndBatch()
-{
-	if (m_BatchDepth == 0) return;
-	--m_BatchDepth;
-	if (m_BatchDepth == 0) FlushChanged();
-}
-
 void VansGameplayTagContainer::Clear()
 {
-	BeginBatch();
-	for (const auto& entry : m_Counts) MarkChanged(entry.first);
 	m_Counts.clear();
-	EndBatch();
-}
-
-void VansGameplayTagContainer::MarkChanged(VansGameplayTagId tag)
-{
-	m_PendingChanges.insert(tag);
-	if (m_BatchDepth == 0) FlushChanged();
-}
-
-void VansGameplayTagContainer::FlushChanged()
-{
-	if (m_PendingChanges.empty()) return;
-	std::vector<VansGameplayTagId> changed(m_PendingChanges.begin(), m_PendingChanges.end());
-	std::sort(changed.begin(), changed.end());
-	m_PendingChanges.clear();
-	if (m_Changed) m_Changed(changed);
 }
 }

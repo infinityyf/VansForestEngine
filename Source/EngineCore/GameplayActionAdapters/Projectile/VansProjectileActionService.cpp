@@ -4,10 +4,9 @@
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../SceneRuntime/VansRuntimeWorld.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
-#include "../../ScriptCore/VansTransform.h"
+#include "../../SceneRuntime/Transform/VansTransformStore.h"
 #include "../../ScriptCore/VansCommonUtils.h"
 #include "../../RuntimeCore/VansCharacterMotion.h"
-#include "../../GameplayActionCore/VansGameplayRuntime.h"
 #include "../../SceneCore/VansSceneParticleComponentReader.h"
 #include <algorithm>
 #include <cmath>
@@ -22,8 +21,8 @@ double Number(const VansSerializedValue& value, const char* name, double fallbac
     return field ? ReadSerializedNumber(*field, fallback) : fallback;
 }
 }
-VansProjectileActionService::VansProjectileActionService(VansRuntimeWorld& world, VansGameplayRuntime& gameplay, VansProjectileSceneBackend backend)
-    : m_World(world), m_Gameplay(gameplay), m_Backend(std::move(backend)) {}
+VansProjectileActionService::VansProjectileActionService(VansRuntimeWorld& world, IVansGameplayServiceRuntime& runtime, VansProjectileSceneBackend backend)
+    : m_World(world), m_Runtime(runtime), m_Backend(std::move(backend)) {}
 const VansActionServiceCapability& VansProjectileActionService::Capability() const { return VansProjectileActionCapability(); }
 
 VansActionCommandResult VansProjectileActionService::Execute(const VansActionCommand& command)
@@ -52,14 +51,14 @@ VansActionCommandResult VansProjectileActionService::Execute(const VansActionCom
     const float speed = static_cast<float>(Number(command.payload, "speed", 8.0));
     const float lift = static_cast<float>(Number(command.payload, "lift", 3.0));
     const double lifetime = Number(command.payload, "lifetime", 10.0);
-    auto* storage = static_cast<VansComponentStorage<VansRuntimeTransformComponent>*>(m_World.FindStorage(VansRuntimeComponentType_Transform));
+    auto* storage = m_World.FindStorage<VansRuntimeTransformComponent>(VansRuntimeComponentType_Transform);
     bool hasDirection = false;
     if (storage) for (auto handle : m_World.CollectComponentsOwnedBy(request.owner))
     {
         if (handle.typeId != VansRuntimeComponentType_Transform) continue;
         const auto* component = storage->Get(handle);
-        if (!component || !VansGraphics::VansTransformStore::IsAllocated(component->transformStoreId)) continue;
-        const auto& transform = VansGraphics::VansTransformStore::GetTransform(component->transformStoreId);
+        if (!component || !Vans::VansTransformStore::IsAllocated(component->transformStoreId)) continue;
+        const auto& transform = Vans::VansTransformStore::Read(component->transformStoreId);
         request.velocity = LocomotionLocalToWorldPlanar(glm::vec3(0,0,speed), transform.m_Rotation.y) + glm::vec3(0,lift,0);
         hasDirection = true;
         break;
@@ -108,7 +107,7 @@ void VansProjectileActionService::Tick(double deltaSeconds)
                 projectile.entity = {};
         }
         if (!projectile.entity.IsValid()
-            && m_Gameplay.ForgetCompletedWorldResource(Capability().service, handle)) completed.push_back(handle);
+            && m_Runtime.ForgetCompletedWorldResource(Capability().service, handle)) completed.push_back(handle);
     });
     for (auto handle : completed) m_Projectiles.Release(handle);
 }

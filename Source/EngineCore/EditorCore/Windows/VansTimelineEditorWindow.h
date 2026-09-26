@@ -4,6 +4,8 @@
 #include "../Timeline/VansTimelineCommandMap.h"
 #include "../Timeline/VansTimelineEditService.h"
 #include "../Timeline/VansTimelinePreviewSession.h"
+#include "../Timeline/VansTimelineTrackDescriptorRegistry.h"
+#include "../../EngineAPILayer/Public/IPlayModeEditorAPI.h"
 
 #include <cstddef>
 #include <optional>
@@ -90,7 +92,9 @@ private:
 	std::string m_InstanceOwnerGuid;
 	std::string m_LastError;
 	Vans::EditorAPI::IEngineEditorAPI* m_ActiveAPI = nullptr;
+	Vans::EditorAPI::IPlayModeEditorAPI* m_PlayModeAPI = nullptr;
 	Vans::VansTimelineEditService m_Edit;
+	std::vector<Vans::VansTimelineTrackDescriptor> m_TrackDescriptors;
 	Vans::VansTimelineCommandMap m_CommandMap;
 	Vans::VansTimelinePreviewSession m_Preview;
 	Selection m_Selection;

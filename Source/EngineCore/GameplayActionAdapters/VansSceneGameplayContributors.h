@@ -14,6 +14,7 @@ namespace VansEngine { class VansAudioManager; }
 
 namespace Vans
 {
+class VansFakeActionService;
 class VansRuntimeWorld;
 class VansTimelineRuntimeSystem;
 
@@ -37,5 +38,12 @@ bool VansDiscoverSceneGameplayContributors(
 	const VansGAFProjectConfiguration& configuration,
 	const VansSceneGameplayContributorContext& context,
 	VansGameplayRuntimeDependencies& dependencies,
+	std::string& error);
+
+bool VansDiscoverSimulationGameplayContributors(
+	const VansGAFProjectConfiguration& configuration,
+	VansTimelineRuntimeSystem& timeline,
+	VansGameplayRuntimeDependencies& dependencies,
+	std::vector<std::shared_ptr<VansFakeActionService>>& services,
 	std::string& error);
 }

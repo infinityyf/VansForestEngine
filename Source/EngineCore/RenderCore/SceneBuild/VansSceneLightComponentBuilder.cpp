@@ -1,14 +1,14 @@
 #include "VansSceneLightComponentBuilder.h"
 
+#include "../../AssetCore/VansAssetBytes.h"
+#include "../../AssetCore/VansAssetObjectRepository.h"
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../Util/VansLog.h"
 #include "../BRDFData/VansLight.h"
 #include "../VansGraphicsDevice.h"
 #include "../VansMaterial.h"
-#include "../VansVideoManager.h"
 #include "../VulkanCore/VansTexture.h"
 #include "../VulkanCore/VansVKDevice.h"
-#include "../VulkanCore/VansVideoTexture.h"
 
 #include <algorithm>
 
@@ -16,6 +16,46 @@ namespace VansGraphics
 {
 namespace
 {
+int ResolveIesProfileIndex(
+	const std::optional<std::string>& assetGuidText,
+	const Vans::VansAssetObjectRepository& repository,
+	VansIESProfileManager& iesProfileManager,
+	const std::string& objectName,
+	const char* lightType)
+{
+	if (!assetGuidText || assetGuidText->empty())
+		return -1;
+
+	Vans::VansAssetGuid assetGuid;
+	Vans::VansAssetObjectSnapshotInfo info;
+	if (!Vans::VansAssetGuid::TryParse(*assetGuidText, assetGuid) ||
+		!repository.FindInfo(assetGuid, info) ||
+		info.assetType != Vans::VansAssetType::IESProfile)
+	{
+		VANS_LOG_WARN("[LoadSceneObjects] " << lightType << " '" << objectName
+			<< "' IES asset is unavailable: " << *assetGuidText);
+		return -1;
+	}
+
+	const auto asset = repository.ResolveLatest<Vans::VansAssetBytes>(assetGuid);
+	if (!asset || asset->bytes.empty())
+	{
+		VANS_LOG_WARN("[LoadSceneObjects] " << lightType << " '" << objectName
+			<< "' IES memory snapshot is unavailable: " << *assetGuidText);
+		return -1;
+	}
+
+	int profileIndex = -1;
+	if (!iesProfileManager.LoadIESFromMemory(
+		*assetGuidText, asset->bytes.data(), asset->bytes.size(), profileIndex))
+	{
+		VANS_LOG_WARN("[LoadSceneObjects] " << lightType << " '" << objectName
+			<< "' IES parse or allocation failed: " << *assetGuidText);
+		return -1;
+	}
+	return profileIndex;
+}
+
 glm::vec3 ReadColorOrWhite(const std::optional<std::array<float, 3>>& color)
 {
 	if (color.has_value())
@@ -85,6 +125,24 @@ VansPunctualShadowSettings ReadShadowSettings(
 	return settings;
 }
 
+void ApplyCookieConfig(
+	VansLightCookieSettings& target,
+	const Vans::VansSceneLightCookieConfig& source)
+{
+	target.enabled = source.enabled;
+	target.textureGuid = source.textureGuid;
+	target.strength = source.strength;
+	target.sizeX = source.sizeX;
+	target.sizeY = source.sizeY;
+	target.scaleX = source.scaleX;
+	target.scaleY = source.scaleY;
+	target.offsetX = source.offsetX;
+	target.offsetY = source.offsetY;
+	target.rotationDegrees = source.rotationDegrees;
+	target.repeat = source.repeat;
+	target.useAlpha = source.useAlpha;
+}
+
 void WriteWhiteRectLightEmissiveFallback(VansMaterialManager& materialManager, int layer)
 {
 	VansTexture* emissiveArray = materialManager.GetRuntimeRenderTexture(
@@ -104,15 +162,21 @@ void WriteWhiteRectLightEmissiveFallback(VansMaterialManager& materialManager, i
 		texVkDevice->GetCommandBuffer(), kWhitePixel, 1, 1, layer);
 }
 
-bool LoadRectLightStaticEmissiveTexture(
+bool UploadRectLightEmissive(
 	VansMaterialManager& materialManager,
 	VansLightManager& lightManager,
 	const std::string& objectName,
-	const std::string& projectRoot,
-	const std::string& emissiveTexPath,
-	int lightIndex,
-	bool isFallback)
+	const VansTexture& sourceTexture,
+	int lightIndex)
 {
+	const VansRgba8Image& sourceImage = sourceTexture.GetRetainedRgba8Image();
+	if (!sourceImage.IsValid())
+	{
+		VANS_LOG_WARN("[LoadSceneObjects] 面光源 '" << objectName
+			<< "' 发光贴图没有可用的 RGBA8 内存数据，回退到单色");
+		return false;
+	}
+
 	VansTexture* emissiveArray = materialManager.GetRuntimeRenderTexture(
 		VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
 	if (emissiveArray == nullptr)
@@ -127,35 +191,89 @@ bool LoadRectLightStaticEmissiveTexture(
 		VANS_LOG_WARN("[VansSceneLightComponentBuilder] Vulkan device unavailable, skip rect light emissive texture");
 		return false;
 	}
-
-	const std::string absTexPath = projectRoot + emissiveTexPath;
-	if (emissiveArray->LoadTextureLayer(texVkDevice->GetCommandBuffer(), absTexPath, lightIndex))
+	const int textureSlot = lightManager.AcquireRectLightTextureSlot(
+		static_cast<uint32_t>(lightIndex));
+	if (textureSlot < 0)
 	{
-		lightManager.GetRectLights()[lightIndex].m_TextureSlot = static_cast<float>(lightIndex);
-		if (isFallback)
-			VANS_LOG("[LoadSceneObjects] 面光源 '" << objectName << "' 降级加载静态发光贴图 slot=" << lightIndex);
-		else
-			VANS_LOG("[LoadSceneObjects] 面光源 '" << objectName << "' 加载发光贴图 slot=" << lightIndex);
+		VANS_LOG_WARN("[LoadSceneObjects] 面光源 '" << objectName << "' 没有可用发光纹理槽位");
+		return false;
+	}
+
+	if (emissiveArray->UpdateArrayLayerFromPixels(
+		texVkDevice->GetCommandBuffer(),
+		sourceImage.pixels.data(),
+		sourceImage.width,
+		sourceImage.height,
+		textureSlot))
+	{
+		VANS_LOG("[LoadSceneObjects] 面光源 '" << objectName
+			<< "' 上传 GUID 发光贴图 slot=" << textureSlot);
 		return true;
 	}
 
-	VANS_LOG_WARN("[LoadSceneObjects] 面光源 '" << objectName << "' 发光贴图加载失败，回退到单色: " << absTexPath);
+	lightManager.ReleaseRectLightTextureSlot(static_cast<uint32_t>(lightIndex));
+	VANS_LOG_WARN("[LoadSceneObjects] 面光源 '" << objectName
+		<< "' 发光贴图上传失败，回退到单色");
 	return false;
 }
+}
+
+VansSceneLightDependencies VansSceneLightComponentBuilder::ResolveDependencies(
+	VansScene& scene,
+	const Vans::VansSceneLightComponentConfig& config,
+	const Vans::VansAssetObjectRepository& repository,
+	VansIESProfileManager& iesProfileManager,
+	const std::string& objectName)
+{
+	VansSceneLightDependencies dependencies;
+	if (config.pointLight)
+		dependencies.pointIesProfileIndex = ResolveIesProfileIndex(
+			config.pointLight->iesProfileGuid, repository, iesProfileManager,
+			objectName, "PointLight");
+	if (config.spotLight)
+		dependencies.spotIesProfileIndex = ResolveIesProfileIndex(
+			config.spotLight->iesProfileGuid, repository, iesProfileManager,
+			objectName, "SpotLight");
+	if (config.rectLight && config.rectLight->emissiveTextureGuid &&
+		!config.rectLight->emissiveTextureGuid->empty())
+	{
+		const std::string& guidText = *config.rectLight->emissiveTextureGuid;
+		Vans::VansAssetGuid guid;
+		Vans::VansAssetObjectSnapshotInfo info;
+		if (!Vans::VansAssetGuid::TryParse(guidText, guid) ||
+			!repository.FindInfo(guid, info) ||
+			info.assetType != Vans::VansAssetType::Texture)
+		{
+			VANS_LOG_WARN("[LoadSceneObjects] RectLight '" << objectName
+				<< "' emissive texture asset is unavailable: " << guidText);
+		}
+		else
+		{
+			auto* texture = static_cast<VansTexture*>(scene.FindTextureAssetByGuid(guidText));
+			if (texture == nullptr || !texture->GetRetainedRgba8Image().IsValid())
+			{
+				VANS_LOG_WARN("[LoadSceneObjects] RectLight '" << objectName
+					<< "' emissive texture memory is unavailable: " << guidText);
+			}
+			else
+			{
+				dependencies.rectEmissiveTexture = texture;
+			}
+		}
+	}
+	return dependencies;
 }
 
 VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 	VansScene& scene,
 	VansScriptObject& object,
 	const Vans::VansSceneLightComponentConfig& config,
-	const std::string& projectRoot,
+	const VansSceneLightDependencies& dependencies,
 	const std::function<void()>& ensureObjectTransform)
 {
 	VansSceneLightBuildResult result;
 	VansLightManager& lightManager = *scene.GetLightManager();
 	VansMaterialManager& materialManager = *scene.GetMaterialManager();
-	VansIESProfileManager& iesProfileManager = *scene.GetIESProfileManager();
-	VansVideoManager* videoManager = scene.GetVideoManager();
 
 	if (config.directionalLight.has_value())
 	{
@@ -172,19 +290,7 @@ VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 		auto* dlComp = new VansScriptDirectionalLightComponent();
 		dlComp->m_LightManager = &lightManager;
 		dlComp->m_LightIndex = idx;
-        auto& cookie = lightManager.Cookie(0, idx);
-        cookie.enabled = dl.cookie.enabled;
-        cookie.textureGuid = dl.cookie.textureGuid;
-        cookie.strength = dl.cookie.strength;
-        cookie.sizeX = dl.cookie.sizeX;
-        cookie.sizeY = dl.cookie.sizeY;
-        cookie.scaleX = dl.cookie.scaleX;
-        cookie.scaleY = dl.cookie.scaleY;
-        cookie.offsetX = dl.cookie.offsetX;
-        cookie.offsetY = dl.cookie.offsetY;
-        cookie.rotationDegrees = dl.cookie.rotationDegrees;
-        cookie.repeat = dl.cookie.repeat;
-        cookie.useAlpha = dl.cookie.useAlpha;
+		ApplyCookieConfig(lightManager.Cookie(0, idx), dl.cookie);
 
 		object.AddComponent(dlComp);
 		result.directionalLight = dlComp;
@@ -199,20 +305,10 @@ VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 		pointLight.m_Color = ReadColorOrWhite(pl.color);
 		pointLight.m_Intensity = pl.intensity.value_or(1.0f);
 		pointLight.m_Radius = pl.radius.value_or(10.0f);
-		pointLight.m_IESProfileIndex = -1.0f;
+		pointLight.m_IESProfileIndex = static_cast<float>(dependencies.pointIesProfileIndex);
 		pointLight.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
 		pointLight.m_Position = glm::vec3(0.0f);
 		const VansPunctualShadowSettings shadowSettings = ReadShadowSettings(pl.shadow, true);
-
-		if (pl.iesProfile.has_value() && !pl.iesProfile->empty())
-		{
-			std::string iesPath = projectRoot + *pl.iesProfile;
-			int iesIdx = -1;
-			if (iesProfileManager.LoadIESFile(iesPath, iesIdx))
-				pointLight.m_IESProfileIndex = static_cast<float>(iesIdx);
-			else
-				VANS_LOG_WARN("[LoadSceneObjects] 点光源 '" << object.m_ObjectName << "' IES 加载失败: " << iesPath);
-		}
 
 		int idx = static_cast<int>(lightManager.GetPointLights().size());
 		lightManager.AddPointLight(pointLight, shadowSettings);
@@ -220,19 +316,7 @@ VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 		auto* plComp = new VansScriptPointLightComponent();
 		plComp->m_LightManager = &lightManager;
 		plComp->m_LightIndex = idx;
-        auto& cookie = lightManager.Cookie(1, idx);
-        cookie.enabled = pl.cookie.enabled;
-        cookie.textureGuid = pl.cookie.textureGuid;
-        cookie.strength = pl.cookie.strength;
-        cookie.sizeX = pl.cookie.sizeX;
-        cookie.sizeY = pl.cookie.sizeY;
-        cookie.scaleX = pl.cookie.scaleX;
-        cookie.scaleY = pl.cookie.scaleY;
-        cookie.offsetX = pl.cookie.offsetX;
-        cookie.offsetY = pl.cookie.offsetY;
-        cookie.rotationDegrees = pl.cookie.rotationDegrees;
-        cookie.repeat = pl.cookie.repeat;
-        cookie.useAlpha = pl.cookie.useAlpha;
+		ApplyCookieConfig(lightManager.Cookie(1, idx), pl.cookie);
 
 		object.AddComponent(plComp);
 		result.pointLight = plComp;
@@ -249,7 +333,7 @@ VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 		spotLight.m_Radius = sl.radius.value_or(10.0f);
 		spotLight.m_InnerCutOff = glm::radians(sl.innerCutoffDegrees.value_or(30.0f));
 		spotLight.m_OuterCutOff = glm::radians(sl.outerCutoffDegrees.value_or(45.0f));
-		spotLight.m_IESProfileIndex = -1.0f;
+		spotLight.m_IESProfileIndex = static_cast<float>(dependencies.spotIesProfileIndex);
 		spotLight.m_IESIntensityScale = sl.iesIntensityScale.value_or(1.0f);
 		spotLight.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
 		spotLight.m_pad0 = 0.0f;
@@ -257,35 +341,13 @@ VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 		spotLight.m_Direction = glm::vec3(0.0f, 1.0f, 0.0f);
 		const VansPunctualShadowSettings shadowSettings = ReadShadowSettings(sl.shadow, true);
 
-		if (sl.iesProfile.has_value() && !sl.iesProfile->empty())
-		{
-			std::string iesPath = projectRoot + *sl.iesProfile;
-			int iesIdx = -1;
-			if (iesProfileManager.LoadIESFile(iesPath, iesIdx))
-				spotLight.m_IESProfileIndex = static_cast<float>(iesIdx);
-			else
-				VANS_LOG_WARN("[LoadSceneObjects] 聚光灯 '" << object.m_ObjectName << "' IES 加载失败: " << iesPath);
-		}
-
 		int idx = static_cast<int>(lightManager.GetSpotLight().size());
 		lightManager.AddSpotLight(spotLight, shadowSettings);
 
 		auto* slComp = new VansScriptSpotLightComponent();
 		slComp->m_LightManager = &lightManager;
 		slComp->m_LightIndex = idx;
-        auto& cookie = lightManager.Cookie(2, idx);
-        cookie.enabled = sl.cookie.enabled;
-        cookie.textureGuid = sl.cookie.textureGuid;
-        cookie.strength = sl.cookie.strength;
-        cookie.sizeX = sl.cookie.sizeX;
-        cookie.sizeY = sl.cookie.sizeY;
-        cookie.scaleX = sl.cookie.scaleX;
-        cookie.scaleY = sl.cookie.scaleY;
-        cookie.offsetX = sl.cookie.offsetX;
-        cookie.offsetY = sl.cookie.offsetY;
-        cookie.rotationDegrees = sl.cookie.rotationDegrees;
-        cookie.repeat = sl.cookie.repeat;
-        cookie.useAlpha = sl.cookie.useAlpha;
+		ApplyCookieConfig(lightManager.Cookie(2, idx), sl.cookie);
 
 		object.AddComponent(slComp);
 		result.spotLight = slComp;
@@ -314,68 +376,22 @@ VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 		VansPunctualShadowSettings shadowSettings =
 			ReadShadowSettings(rl.shadow, false);
 
-		const std::string emissiveTexPath = rl.emissiveTexture.value_or("");
-		const std::string emissiveVideoName = rl.emissiveVideo.value_or("");
-
 		int idx = static_cast<int>(lightManager.GetRectLights().size());
 		lightManager.AddRectLight(rectLight, shadowSettings);
 
 		auto* rlComp = new VansScriptRectLightComponent();
 		rlComp->m_LightManager = &lightManager;
 		rlComp->m_LightIndex = idx;
-        auto& cookie = lightManager.Cookie(3, idx);
-        cookie.enabled = rl.cookie.enabled;
-        cookie.textureGuid = rl.cookie.textureGuid;
-        cookie.strength = rl.cookie.strength;
-        cookie.sizeX = rl.cookie.sizeX;
-        cookie.sizeY = rl.cookie.sizeY;
-        cookie.scaleX = rl.cookie.scaleX;
-        cookie.scaleY = rl.cookie.scaleY;
-        cookie.offsetX = rl.cookie.offsetX;
-        cookie.offsetY = rl.cookie.offsetY;
-        cookie.rotationDegrees = rl.cookie.rotationDegrees;
-        cookie.repeat = rl.cookie.repeat;
-        cookie.useAlpha = rl.cookie.useAlpha;
+		ApplyCookieConfig(lightManager.Cookie(3, idx), rl.cookie);
 
-		rlComp->m_EmissiveTexturePath = emissiveTexPath;
-
-		if (!emissiveVideoName.empty() && idx < 32)
+		if (dependencies.rectEmissiveTexture != nullptr)
 		{
-			VansVideoTexture* videoTex = videoManager ? videoManager->Get(emissiveVideoName) : nullptr;
-			if (videoTex != nullptr)
-			{
-				lightManager.GetRectLights()[idx].m_TextureSlot = static_cast<float>(idx);
-				WriteWhiteRectLightEmissiveFallback(materialManager, idx);
-				VANS_LOG("[LoadSceneObjects] 面光源 '" << object.m_ObjectName << "' 绑定视频发光 '"
-					<< emissiveVideoName << "' slot=" << idx);
-			}
-			else
-			{
-				VANS_LOG_WARN("[LoadSceneObjects] 面光源 '" << object.m_ObjectName
-					<< "' emissive_video '" << emissiveVideoName << "' 未找到，回退到静态贴图");
-				if (!emissiveTexPath.empty())
-				{
-					LoadRectLightStaticEmissiveTexture(
-						materialManager,
-						lightManager,
-						object.m_ObjectName,
-						projectRoot,
-						emissiveTexPath,
-						idx,
-						true);
-				}
-			}
-		}
-		else if (!emissiveTexPath.empty() && idx < 32)
-		{
-			LoadRectLightStaticEmissiveTexture(
+			UploadRectLightEmissive(
 				materialManager,
 				lightManager,
 				object.m_ObjectName,
-				projectRoot,
-				emissiveTexPath,
-				idx,
-				false);
+				*dependencies.rectEmissiveTexture,
+				idx);
 		}
 
 		object.AddComponent(rlComp);
@@ -385,7 +401,7 @@ VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 	return result;
 }
 
-void VansSceneLightComponentBuilder::BindExplicitVideoComponentToRectLight(
+void VansSceneLightComponentBuilder::BindVideo(
 	VansScene& scene,
 	VansScriptObject& object)
 {
@@ -400,17 +416,20 @@ void VansSceneLightComponentBuilder::BindExplicitVideoComponentToRectLight(
 	}
 
 	const int idx = rlComp->m_LightIndex;
-	if (idx < 0 || idx >= 32)
+	VansLightManager& lightManager = *scene.GetLightManager();
+	if (idx < 0 || idx >= static_cast<int>(lightManager.GetRectLights().size()))
+		return;
+	const int textureSlot = lightManager.AcquireRectLightTextureSlot(
+		static_cast<uint32_t>(idx));
+	if (textureSlot < 0)
 		return;
 
-	VansLightManager& lightManager = *scene.GetLightManager();
 	VansMaterialManager& materialManager = *scene.GetMaterialManager();
 	rlComp->m_VideoComponent = videoComp;
-	lightManager.GetRectLights()[idx].m_TextureSlot = static_cast<float>(idx);
-	WriteWhiteRectLightEmissiveFallback(materialManager, idx);
+	WriteWhiteRectLightEmissiveFallback(materialManager, textureSlot);
 
 	VANS_LOG("[LoadSceneObjects] 面光源 '" << object.m_ObjectName
-		<< "' 自动绑定 VideoComponent '" << videoComp->m_VideoName
-		<< "' slot=" << idx);
+		<< "' 自动绑定 VideoComponent '" << videoComp->m_VideoAssetGuid
+		<< "' slot=" << textureSlot);
 }
 }

@@ -23,13 +23,6 @@ namespace Vans
 		}
 		m_InitializedGLFW = true;
 
-		if (!glfwVulkanSupported())
-		{
-			error = "GLFW Vulkan is not supported";
-			Destroy();
-			return false;
-		}
-
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 		m_Window = glfwCreateWindow(width, height, title ? title : "ForestGame", nullptr, nullptr);
 		if (!m_Window)

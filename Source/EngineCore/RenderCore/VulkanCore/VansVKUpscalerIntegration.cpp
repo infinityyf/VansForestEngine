@@ -676,6 +676,16 @@ namespace VansGraphics
 		m_DLSSEnabled = false;
 	}
 
+	void VansVKDevice::CleanupUpscalerResources()
+	{
+		// This method is intentionally idempotent: AfterRendering owns the normal
+		// render-thread teardown, while VulkanDestroy retains a partial-startup
+		// fallback before the device is destroyed.
+		CleanupFSR();
+		CleanupDLSS();
+		CleanupUpscalerOutputImage();
+	}
+
 	bool VansVKDevice::GetTemporalUpscaleJitterOffset(
 		uint32_t frameIndex,
 		float& outPixelX,
@@ -836,6 +846,16 @@ namespace VansGraphics
 		}
 		outputWidth = std::max(outputWidth, 1u);
 		outputHeight = std::max(outputHeight, 1u);
+		VansUpscalerSelectionChange rejected;
+		if (!VansUpscaleResolutionPolicy::ValidateOutputExtent(
+			{ outputWidth, outputHeight },
+			false,
+			m_DeviceProperties.limits.maxImageDimension2D,
+			rejected.error))
+		{
+			VANS_LOG_ERROR("[Upscaler] Rejected output extent: " << rejected.error);
+			return rejected;
+		}
 		VansUpscalerCapabilitySet capabilities;
 		capabilities.off = GetUpscalerCapabilities(VansUpscalerBackend::Off);
 		capabilities.fsr = GetUpscalerCapabilities(VansUpscalerBackend::FSR);
@@ -866,14 +886,11 @@ namespace VansGraphics
 		return change;
 	}
 
-	void VansVKDevice::ApplyRenderRuntimeConfig(
+	VansUpscalerSelectionChange VansVKDevice::ApplyRenderRuntimeConfig(
 		const VansRenderRuntimeConfig& config,
 		uint32_t outputWidth,
 		uint32_t outputHeight)
 	{
-		m_AtmosphereQualityConfig = config.atmosphere;
-		m_NearMediaQualityConfig = config.nearMedia;
-		m_CloudShadowQualityConfig = config.cloudShadow;
 		// 项目可声明独立于宿主窗口的最终输出分辨率；旧项目的 0x0 配置仍跟随窗口。
 		const uint32_t requestedOutputWidth = config.output.HasExplicitExtent()
 			? config.output.width
@@ -881,15 +898,21 @@ namespace VansGraphics
 		const uint32_t requestedOutputHeight = config.output.HasExplicitExtent()
 			? config.output.height
 			: outputHeight;
-		RequestUpscalerConfig(
+		VansUpscalerSelectionChange selection = RequestUpscalerConfig(
 			config.upscaler,
 			requestedOutputWidth,
 			requestedOutputHeight);
+		if (!selection.accepted)
+			return selection;
+		m_AtmosphereQualityConfig = config.atmosphere;
+		m_NearMediaQualityConfig = config.nearMedia;
+		m_CloudShadowQualityConfig = config.cloudShadow;
 		ApplyCommandRecordingSettings(
 			config.commandRecording.parallelEnabled,
 			config.commandRecording.frameContextRingEnabled,
 			config.commandRecording.framesInFlight,
 			config.commandRecording.asyncComputeEnabled);
+		return selection;
 	}
 
 	void VansVKDevice::ProcessPendingUpscalerConfig()
@@ -1009,43 +1032,92 @@ namespace VansGraphics
 			break;
 		case VansUpscalerBackend::FSR:
 			capabilities.compiledIn = true;
-			capabilities.runtimeAvailable = true;
-			capabilities.deviceSupported = true;
-			capabilities.supportedQualityMask =
-				qualityBit(VansUpscaleQualityMode::NativeAA) |
-				qualityBit(VansUpscaleQualityMode::Quality) |
-				qualityBit(VansUpscaleQualityMode::Balanced) |
-				qualityBit(VansUpscaleQualityMode::Performance) |
-				qualityBit(VansUpscaleQualityMode::UltraPerformance);
-			capabilities.featureVersion = "FidelityFX API";
+			capabilities.runtimeAvailable = VansFSR::QueryRuntimeCapability(
+				capabilities.featureVersion,
+				capabilities.unavailableReason);
+			capabilities.deviceSupported = capabilities.runtimeAvailable &&
+				m_VansVKPhysicalDevice != VK_NULL_HANDLE &&
+				m_VansVKLogicDevice != VK_NULL_HANDLE;
+			if (!capabilities.runtimeAvailable)
+			{
+				capabilities.unavailableReasonCode =
+					VansUpscalerFallbackReason::RuntimeUnavailable;
+			}
+			else if (!capabilities.deviceSupported)
+			{
+				capabilities.unavailableReasonCode =
+					VansUpscalerFallbackReason::UnsupportedDevice;
+				capabilities.unavailableReason =
+					"FidelityFX FSR requires an initialized Vulkan device";
+			}
+			else
+			{
+				capabilities.supportedQualityMask =
+					qualityBit(VansUpscaleQualityMode::NativeAA) |
+					qualityBit(VansUpscaleQualityMode::Quality) |
+					qualityBit(VansUpscaleQualityMode::Balanced) |
+					qualityBit(VansUpscaleQualityMode::Performance) |
+					qualityBit(VansUpscaleQualityMode::UltraPerformance);
+			}
 			break;
 		case VansUpscalerBackend::DLSS:
+		{
 		#if defined(VANS_HAS_STREAMLINE)
 			capabilities.compiledIn = true;
-			capabilities.runtimeAvailable =
-				VansStreamlineRuntime::Get().IsInitialized();
-			capabilities.deviceSupported =
-				VansStreamlineRuntime::Get().IsDLSSAvailable();
-			capabilities.supportedQualityMask =
-				qualityBit(VansUpscaleQualityMode::NativeAA) |
-				qualityBit(VansUpscaleQualityMode::Quality) |
-				qualityBit(VansUpscaleQualityMode::Balanced) |
-				qualityBit(VansUpscaleQualityMode::Performance) |
-				qualityBit(VansUpscaleQualityMode::UltraPerformance);
+			const VansStreamlineRuntime& streamline = VansStreamlineRuntime::Get();
+			capabilities.runtimeAvailable = streamline.IsInitialized();
+			capabilities.deviceSupported = streamline.IsDLSSAvailable();
+			switch (streamline.GetDLSSAvailability())
+			{
+			case VansStreamlineDLSSAvailability::MissingRuntimeBinary:
+				capabilities.unavailableReasonCode =
+					VansUpscalerFallbackReason::MissingRuntimeBinary;
+				break;
+			case VansStreamlineDLSSAvailability::RuntimeIntegrityRejected:
+				capabilities.unavailableReasonCode =
+					VansUpscalerFallbackReason::RuntimeIntegrityRejected;
+				break;
+			case VansStreamlineDLSSAvailability::UnsupportedDevice:
+				capabilities.unavailableReasonCode =
+					VansUpscalerFallbackReason::UnsupportedDevice;
+				break;
+			case VansStreamlineDLSSAvailability::DriverOutOfDate:
+				capabilities.unavailableReasonCode =
+					VansUpscalerFallbackReason::DriverOutOfDate;
+				break;
+			case VansStreamlineDLSSAvailability::Available:
+				capabilities.supportedQualityMask =
+					qualityBit(VansUpscaleQualityMode::NativeAA) |
+					qualityBit(VansUpscaleQualityMode::Quality) |
+					qualityBit(VansUpscaleQualityMode::Balanced) |
+					qualityBit(VansUpscaleQualityMode::Performance) |
+					qualityBit(VansUpscaleQualityMode::UltraPerformance);
+				break;
+			case VansStreamlineDLSSAvailability::NotInitialized:
+			case VansStreamlineDLSSAvailability::RuntimeUnavailable:
+			case VansStreamlineDLSSAvailability::CapabilityPending:
+			default:
+				capabilities.unavailableReasonCode =
+					VansUpscalerFallbackReason::RuntimeUnavailable;
+				break;
+			}
 			capabilities.featureVersion =
-				VansStreamlineRuntime::Get().GetFeatureVersion();
+				streamline.GetFeatureVersion();
 			capabilities.unavailableReason =
-				VansStreamlineRuntime::Get().GetUnavailableReason();
+				streamline.GetUnavailableReason();
 		#else
 			capabilities.compiledIn = false;
 			capabilities.runtimeAvailable = false;
 			capabilities.deviceSupported = false;
 			capabilities.supportedQualityMask = 0;
+			capabilities.unavailableReasonCode =
+				VansUpscalerFallbackReason::NotCompiled;
 			capabilities.featureVersion = "Not compiled";
 			capabilities.unavailableReason =
 				"Streamline DLSS is disabled in this build";
 		#endif
 			break;
+		}
 		default:
 			capabilities.unavailableReason = "Unknown upscaler backend";
 			break;
@@ -1065,6 +1137,8 @@ namespace VansGraphics
 		diagnostics.outputExtent = { outputExtent.width, outputExtent.height };
 		diagnostics.mipBias = GetTemporalUpscaleMipBias();
 		diagnostics.pendingResetReasons = m_UpscalerManager.GetHistory().GetPendingReasons();
+		diagnostics.lastConsumedResetReasons =
+			m_UpscalerManager.GetHistory().GetLastConsumedResetReasons();
 		diagnostics.featureVersion =
 			GetUpscalerCapabilities(diagnostics.effective.backend).featureVersion;
 

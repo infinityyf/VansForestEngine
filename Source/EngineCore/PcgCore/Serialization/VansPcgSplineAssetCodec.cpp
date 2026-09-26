@@ -1,4 +1,5 @@
 #include "VansPcgSplineAssetCodec.h"
+#include "../../Util/VansFileFingerprint.h"
 #include "VansPcgValueCodec.h"
 #include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include <nlohmann/json.hpp>
@@ -138,8 +139,6 @@ std::uint64_t VansPcgSplineAssetCodec::ContentHash(const VansPcgSplineAsset& ass
     Value root; std::string error;
     if (!Encode(asset,root,error)) return 0;
     const auto text=EncodeSerializedValueJson<nlohmann::ordered_json>(root).dump();
-    std::uint64_t hash=14695981039346656037ull;
-    for (const unsigned char c:text) {hash^=c;hash*=1099511628211ull;}
-    return hash;
+    return ComputeMemoryFnv1a64(text.data(),text.size());
 }
 }

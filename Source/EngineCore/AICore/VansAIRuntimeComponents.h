@@ -14,6 +14,7 @@ struct VansRuntimeNavigationAgentComponent
 	float stoppingDistance = 1.6f;
 	float repathInterval = 0.25f;
 	float targetMoveThreshold = 0.75f;
+	float forceRepathDistance = 6.0f;
 };
 
 struct VansRuntimeAISightConfig
@@ -34,6 +35,13 @@ struct VansRuntimeAIFacingConfig
 	bool yawOnly = false;
 };
 
+struct VansRuntimeAITimingConfig
+{
+	float perceptionInterval = 0.1f;
+	float decisionInterval = 0.1f;
+	float maximumDeltaSeconds = 0.25f;
+};
+
 struct VansRuntimeAIAgentComponent
 {
 	std::string behaviorGuid;
@@ -45,7 +53,38 @@ struct VansRuntimeAIAgentComponent
 	int maxMovementState = 2;
 	VansRuntimeAIFacingConfig facing;
 	VansRuntimeAISightConfig sight;
+	VansRuntimeAITimingConfig timing;
 };
+
+inline bool ValidateAIRuntimeTiming(
+	const VansRuntimeAIAgentComponent& ai,
+	const VansRuntimeNavigationAgentComponent& navigation,
+	std::string& error)
+{
+	if (!std::isfinite(ai.timing.perceptionInterval) ||
+		ai.timing.perceptionInterval <= 0.0f ||
+		!std::isfinite(ai.timing.decisionInterval) ||
+		ai.timing.decisionInterval <= 0.0f ||
+		!std::isfinite(ai.timing.maximumDeltaSeconds) ||
+		ai.timing.maximumDeltaSeconds <= 0.0f)
+	{
+		error = "AIAgent timing values must be positive and finite";
+		return false;
+	}
+	if (!std::isfinite(navigation.repathInterval) ||
+		navigation.repathInterval <= 0.0f ||
+		!std::isfinite(navigation.targetMoveThreshold) ||
+		navigation.targetMoveThreshold < 0.0f ||
+		!std::isfinite(navigation.forceRepathDistance) ||
+		navigation.forceRepathDistance <= navigation.targetMoveThreshold)
+	{
+		error = "NavigationAgent repath timing requires a positive interval and "
+			"forceRepathDistance greater than targetMoveThreshold";
+		return false;
+	}
+	error.clear();
+	return true;
+}
 
 inline int ResolveAIMovementState(
 	float planarSpeed,

@@ -9,8 +9,6 @@ namespace Vans
 struct VansCombatSceneBackend
 {
     std::function<bool(glm::vec3&, glm::vec3&)> viewRay;
-    std::function<bool(const glm::vec3&, const glm::vec3&, float, uint32_t,
-        VansEntityHandle, VansEntityHandle, VansSurfaceImpact&, std::string&)> raycastSurface;
-    std::function<bool(VansEntityHandle)> hasPreciseCollider;
+    std::function<bool(const VansSurfaceQueryRequest&, VansSurfaceImpact&, std::string&)> querySurface;
 };
 }

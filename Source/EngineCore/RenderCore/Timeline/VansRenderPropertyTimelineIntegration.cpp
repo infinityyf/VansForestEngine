@@ -29,8 +29,8 @@ using namespace Vans;
 VansCamera* ResolveCamera(const VansTimelinePropertyAccessContext& context)
 {
 	if (!context.world) return nullptr;
-	auto* storage = static_cast<VansComponentStorage<VansRuntimeCameraComponent>*>(
-		context.world->FindStorage(VansRuntimeComponentType_Camera));
+	auto* storage = context.world->FindStorage<VansRuntimeCameraComponent>(
+		VansRuntimeComponentType_Camera);
 	if (!storage) return nullptr;
 	if (context.target.component.IsValid() && context.target.component.typeId == VansRuntimeComponentType_Camera)
 		if (const auto* runtime = storage->Get(context.target.component)) return runtime->camera;
@@ -69,8 +69,7 @@ VansRuntimeLightComponent* ResolveLight(VansRuntimeWorld& world,
 	const VansComponentHandle component = ResolveLightComponent(world, target);
 	if (handle) *handle = component;
 	if (!component.IsValid()) return nullptr;
-	auto* storage = static_cast<VansComponentStorage<VansRuntimeLightComponent>*>(
-		world.FindStorage(component.typeId));
+	auto* storage = world.FindStorage<VansRuntimeLightComponent>(component.typeId);
 	return storage ? storage->Get(component) : nullptr;
 }
 
@@ -344,8 +343,8 @@ std::vector<VansRenderNode*> ResolveRenderNodes(VansRuntimeWorld& world,
 {
 	std::vector<VansRenderNode*> nodes;
 	const VansComponentHandle component = ResolveRenderComponent(world, target);
-	auto* storage = static_cast<VansComponentStorage<VansRuntimeRenderComponent>*>(
-		world.FindStorage(VansRuntimeComponentType_Render));
+	auto* storage = world.FindStorage<VansRuntimeRenderComponent>(
+		VansRuntimeComponentType_Render);
 	const VansRuntimeRenderComponent* runtime = storage ? storage->Get(component) : nullptr;
 	if (!runtime) return nodes;
 	if (!runtime->renderNodes.empty()) nodes = runtime->renderNodes;

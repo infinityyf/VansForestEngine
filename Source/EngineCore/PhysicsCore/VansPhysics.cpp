@@ -1,16 +1,58 @@
 #include "VansPhysics.h"
+#include "VansPhysicsNativeAccess.h"
 #include "VansPhysicsEventCallback.h"
 #include "VansClothSystem.h"
 #include "VansRagdollTypes.h"
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
 #include "../RuntimeCore/VansThreadContract.h"
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <chrono>
 #include <vehicle2/PxVehicleAPI.h>
 
 namespace VansEngine
 {
+	using namespace physx;
+
+	class VansPhysicsErrorCallback final : public PxErrorCallback
+	{
+	public:
+		void reportError(
+			PxErrorCode::Enum code,
+			const char* message,
+			const char* file,
+			int line) override;
+	};
+
+	class VansPhysicsAllocator final : public PxAllocatorCallback
+	{
+	public:
+		void* allocate(
+			size_t size,
+			const char* typeName,
+			const char* filename,
+			int line) override;
+		void deallocate(void* ptr) override;
+	};
+
+	struct VansPhysicsSystem::NativeState
+	{
+		PxFoundation* foundation = nullptr;
+		PxPhysics* physics = nullptr;
+		PxDefaultCpuDispatcher* dispatcher = nullptr;
+		PxScene* scene = nullptr;
+		PxMaterial* defaultMaterial = nullptr;
+		PxControllerManager* controllerManager = nullptr;
+		PxCookingParams* cookingParams = nullptr;
+		PxPvd* pvd = nullptr;
+		PxPvdTransport* pvdTransport = nullptr;
+		VansPhysicsEventCallback* eventCallback = nullptr;
+		VansPhysicsErrorCallback errorCallback;
+		VansPhysicsAllocator allocator;
+	};
+
 	// ============================================================================
 	// VansCollisionFilterShader replaces PxDefaultSimulationFilterShader.
 	// ============================================================================
@@ -108,6 +150,7 @@ namespace VansEngine
 	// VansPhysicsSystem
 	// ============================================================================
 	VansPhysicsSystem::VansPhysicsSystem()
+		: m_Native(std::make_unique<NativeState>())
 	{
 	}
 
@@ -124,24 +167,52 @@ namespace VansEngine
 
 	bool VansPhysicsSystem::Initialize()
 	{
+		VansClothSystem& clothSystem = VansClothSystem::GetInstance();
+		if (m_Native->foundation && m_Native->physics && m_Native->dispatcher && m_Native->scene &&
+			m_Native->defaultMaterial && m_Native->controllerManager && clothSystem.IsInitialized())
+		{
+			return true;
+		}
+
+		const bool hasPartialState =
+			(m_Native->controllerManager != nullptr) ||
+			(m_Native->defaultMaterial != nullptr) ||
+			(m_Native->scene != nullptr) ||
+			(m_Native->dispatcher != nullptr) ||
+			(m_Native->physics != nullptr) ||
+			(m_Native->pvd != nullptr) ||
+			(m_Native->pvdTransport != nullptr) ||
+			(m_Native->foundation != nullptr) ||
+			(m_Native->cookingParams != nullptr) ||
+			(m_Native->eventCallback != nullptr) ||
+			clothSystem.IsInitialized();
+		if (hasPartialState)
+			Shutdown();
+
+		const auto failInitialization = [this]()
+		{
+			Shutdown();
+			return false;
+		};
+
 		// Create Foundation
-		m_Foundation = PxCreateFoundation(PX_PHYSICS_VERSION, m_Allocator, m_ErrorCallback);
-		if (!m_Foundation)
+		m_Native->foundation = PxCreateFoundation(PX_PHYSICS_VERSION, m_Native->allocator, m_Native->errorCallback);
+		if (!m_Native->foundation)
 		{
 			VANS_LOG_ERROR("[PhysX] Failed to create Foundation");
-			return false;
+			return failInitialization();
 		}
 
 		// Create PVD (PhysX Visual Debugger)
-		m_Pvd = PxCreatePvd(*m_Foundation);
-		if (m_Pvd)
+		m_Native->pvd = PxCreatePvd(*m_Native->foundation);
+		if (m_Native->pvd)
 		{
 			// Create PVD transport (network connection to PVD application)
-			PxPvdTransport* transport = PxDefaultPvdSocketTransportCreate("127.0.0.1", 5425, 10);
-			if (transport)
+			m_Native->pvdTransport = PxDefaultPvdSocketTransportCreate("127.0.0.1", 5425, 10);
+			if (m_Native->pvdTransport)
 			{
 				// Connect to PVD with full instrumentation
-				bool pvdConnected = m_Pvd->connect(*transport, PxPvdInstrumentationFlag::eALL);
+				bool pvdConnected = m_Native->pvd->connect(*m_Native->pvdTransport, PxPvdInstrumentationFlag::eALL);
 				if (pvdConnected)
 				{
 					VANS_LOG("[PhysX PVD] Connected to PhysX Visual Debugger at 127.0.0.1:5425");
@@ -163,26 +234,31 @@ namespace VansEngine
 		}
 
 		// Create Physics
-		m_Physics = PxCreatePhysics(PX_PHYSICS_VERSION, *m_Foundation, PxTolerancesScale(), true, m_Pvd);
-		if (!m_Physics)
+		m_Native->physics = PxCreatePhysics(PX_PHYSICS_VERSION, *m_Native->foundation, PxTolerancesScale(), true, m_Native->pvd);
+		if (!m_Native->physics)
 		{
 			VANS_LOG_ERROR("[PhysX] Failed to create Physics");
-			return false;
+			return failInitialization();
 		}
 
 		// Initialize Cooking Parameters (PhysX 5 uses standalone cooking functions)
-		m_CookingParams = new PxCookingParams(PxTolerancesScale());
+		m_Native->cookingParams = new PxCookingParams(PxTolerancesScale());
 		// Configure cooking parameters for better performance and mesh quality
-		m_CookingParams->meshWeldTolerance = 0.001f;
-		m_CookingParams->meshPreprocessParams = PxMeshPreprocessingFlags(PxMeshPreprocessingFlag::eWELD_VERTICES);
+		m_Native->cookingParams->meshWeldTolerance = 0.001f;
+		m_Native->cookingParams->meshPreprocessParams = PxMeshPreprocessingFlags(PxMeshPreprocessingFlag::eWELD_VERTICES);
 
 		// Create CPU Dispatcher
-		m_Dispatcher = PxDefaultCpuDispatcherCreate(2); // 2 worker threads
+		m_Native->dispatcher = PxDefaultCpuDispatcherCreate(2); // 2 worker threads
+		if (!m_Native->dispatcher)
+		{
+			VANS_LOG_ERROR("[PhysX] Failed to create CPU dispatcher");
+			return failInitialization();
+		}
 
 		// Create Scene
-		PxSceneDesc sceneDesc(m_Physics->getTolerancesScale());
+		PxSceneDesc sceneDesc(m_Native->physics->getTolerancesScale());
 		sceneDesc.gravity = PxVec3(0.0f, -9.81f, 0.0f);
-		sceneDesc.cpuDispatcher = m_Dispatcher;
+		sceneDesc.cpuDispatcher = m_Native->dispatcher;
 		sceneDesc.filterShader = VansCollisionFilterShader;
 		sceneDesc.kineKineFilteringMode = PxPairFilteringMode::eKEEP;
 		sceneDesc.staticKineFilteringMode = PxPairFilteringMode::eKEEP;
@@ -190,20 +266,20 @@ namespace VansEngine
 		VANS_LOG("[PhysX] Scene pair filtering enabled: kineKine=eKEEP, staticKine=eKEEP");
 
 		// Register collision and trigger event callbacks.
-		m_EventCallback = new VansPhysicsEventCallback();
-		sceneDesc.simulationEventCallback = m_EventCallback;
+		m_Native->eventCallback = new VansPhysicsEventCallback();
+		sceneDesc.simulationEventCallback = m_Native->eventCallback;
 		
-		m_Scene = m_Physics->createScene(sceneDesc);
-		if (!m_Scene)
+		m_Native->scene = m_Native->physics->createScene(sceneDesc);
+		if (!m_Native->scene)
 		{
 			VANS_LOG_ERROR("[PhysX] Failed to create Scene");
-			return false;
+			return failInitialization();
 		}
 
 		// Setup PVD client for the scene (if PVD is connected)
-		if (m_Pvd && m_Pvd->isConnected())
+		if (m_Native->pvd && m_Native->pvd->isConnected())
 		{
-			PxPvdSceneClient* pvdClient = m_Scene->getScenePvdClient();
+			PxPvdSceneClient* pvdClient = m_Native->scene->getScenePvdClient();
 			if (pvdClient)
 			{
 				pvdClient->setScenePvdFlag(PxPvdSceneFlag::eTRANSMIT_CONSTRAINTS, true);
@@ -214,21 +290,29 @@ namespace VansEngine
 		}
 
 		// Create Default Material
-		m_DefaultMaterial = m_Physics->createMaterial(0.5f, 0.5f, 0.6f); // static friction, dynamic friction, restitution
-
-		VANS_LOG("[PhysX] Initialized successfully");
-
-		// Initialize NvCloth CPU simulation
-		VansClothSystem::GetInstance().Initialize();
-
-		// Create the single CCT manager owned by this PxScene.
-		m_ControllerManager = PxCreateControllerManager(*m_Scene);
-		if (!m_ControllerManager)
+		m_Native->defaultMaterial = m_Native->physics->createMaterial(0.5f, 0.5f, 0.6f); // static friction, dynamic friction, restitution
+		if (!m_Native->defaultMaterial)
 		{
-			VANS_LOG_ERROR("[VansPhysics] PxCreateControllerManager failed");
-			return false;
+			VANS_LOG_ERROR("[PhysX] Failed to create default material");
+			return failInitialization();
 		}
 
+		// Initialize NvCloth CPU simulation
+		if (!clothSystem.Initialize())
+		{
+			VANS_LOG_ERROR("[PhysX] Failed to initialize NvCloth");
+			return failInitialization();
+		}
+
+		// Create the single CCT manager owned by this PxScene.
+		m_Native->controllerManager = PxCreateControllerManager(*m_Native->scene);
+		if (!m_Native->controllerManager)
+		{
+			VANS_LOG_ERROR("[VansPhysics] PxCreateControllerManager failed");
+			return failInitialization();
+		}
+
+		VANS_LOG("[PhysX] Initialized successfully");
 		return true;
 	}
 
@@ -236,40 +320,58 @@ namespace VansEngine
 	{
 		StopSimulation();
 
+		VansClothSystem& clothSystem = VansClothSystem::GetInstance();
 		const bool hadResources =
-			(m_ControllerManager != nullptr) ||
-			(m_DefaultMaterial != nullptr) ||
-			(m_Scene != nullptr) ||
-			(m_Dispatcher != nullptr) ||
-			(m_Physics != nullptr) ||
-			(m_Pvd != nullptr) ||
-			(m_Foundation != nullptr) ||
-			(m_CookingParams != nullptr) ||
-			(m_EventCallback != nullptr);
+			(m_Native->controllerManager != nullptr) ||
+			(m_Native->defaultMaterial != nullptr) ||
+			(m_Native->scene != nullptr) ||
+			(m_Native->dispatcher != nullptr) ||
+			(m_Native->physics != nullptr) ||
+			(m_Native->pvd != nullptr) ||
+			(m_Native->pvdTransport != nullptr) ||
+			(m_Native->foundation != nullptr) ||
+			(m_Native->cookingParams != nullptr) ||
+			(m_Native->eventCallback != nullptr) ||
+			clothSystem.IsInitialized();
 
 		// The singleton destructor can call Shutdown() after explicit engine shutdown.
 		// Other singleton dependencies may already be destroyed on that second call.
 		if (!hadResources)
 			return;
 
-		VansClothSystem::GetInstance().Shutdown();
+		clothSystem.Shutdown();
 
 		// Release the controller manager before the PxScene.
-		if (m_ControllerManager)
+		if (m_Native->controllerManager)
 		{
-			m_ControllerManager->release();
-			m_ControllerManager = nullptr;
+			m_Native->controllerManager->release();
+			m_Native->controllerManager = nullptr;
 		}
 
-		if (m_DefaultMaterial) { m_DefaultMaterial->release(); m_DefaultMaterial = nullptr; }
-		if (m_Scene) { m_Scene->release(); m_Scene = nullptr; }
-		if (m_Dispatcher) { m_Dispatcher->release(); m_Dispatcher = nullptr; }
-		if (m_Physics) { m_Physics->release(); m_Physics = nullptr; }
-		if (m_Pvd) { m_Pvd->release(); m_Pvd = nullptr; }
-		if (m_Foundation) { m_Foundation->release(); m_Foundation = nullptr; }
-		if (m_CookingParams) { delete m_CookingParams; m_CookingParams = nullptr; }
-		if (m_EventCallback) { delete m_EventCallback; m_EventCallback = nullptr; }
+		if (m_Native->defaultMaterial) { m_Native->defaultMaterial->release(); m_Native->defaultMaterial = nullptr; }
+		if (m_Native->scene) { m_Native->scene->release(); m_Native->scene = nullptr; }
+		if (m_Native->dispatcher) { m_Native->dispatcher->release(); m_Native->dispatcher = nullptr; }
+		if (m_Native->eventCallback) { delete m_Native->eventCallback; m_Native->eventCallback = nullptr; }
+		if (m_Native->cookingParams) { delete m_Native->cookingParams; m_Native->cookingParams = nullptr; }
+		if (m_Native->physics) { m_Native->physics->release(); m_Native->physics = nullptr; }
+		if (m_Native->pvd)
+		{
+			if (m_Native->pvd->isConnected())
+				m_Native->pvd->disconnect();
+			m_Native->pvd->release();
+			m_Native->pvd = nullptr;
+		}
+		if (m_Native->pvdTransport) { m_Native->pvdTransport->release(); m_Native->pvdTransport = nullptr; }
+		if (m_Native->foundation) { m_Native->foundation->release(); m_Native->foundation = nullptr; }
 		m_PreSimulateCallback = nullptr;
+		const VansPhysicsTiming defaultTiming;
+		m_FixedTimeStep.store(defaultTiming.fixedTimeStep);
+		m_MaximumSubsteps.store(defaultTiming.maximumSubsteps);
+		m_ClothFrameTime.store(defaultTiming.clothFrameTime);
+		m_ClothSubsteps.store(defaultTiming.clothSubsteps);
+		m_Accumulator = 0.0;
+		m_ShouldExit = false;
+		m_IsPaused = false;
 
 		VANS_LOG("[PhysX] Shutdown complete");
 	}
@@ -316,26 +418,58 @@ namespace VansEngine
 		VANS_LOG("[PhysX] Simulation resumed");
 	}
 
-	void VansPhysicsSystem::SetFixedTimeStep(float deltaTime)
+	bool VansPhysicsSystem::SetTiming(const VansPhysicsTiming& timing)
 	{
-		if (deltaTime <= 0.0f)
+		VANS_ASSERT_MAIN_THREAD();
+		if (!timing.IsValid())
 		{
-			VANS_LOG_WARN("[PhysX] Ignore invalid fixed timestep: " << deltaTime);
-			return;
+			VANS_LOG_WARN("[PhysX] Ignore invalid timing: fixedTimeStep=" << timing.fixedTimeStep
+				<< " maximumSubsteps=" << timing.maximumSubsteps
+				<< " clothFrameTime=" << timing.clothFrameTime
+				<< " clothSubsteps=" << timing.clothSubsteps);
+			return false;
 		}
 
-		m_FixedTimeStep.store(deltaTime);
-		VANS_LOG("[PhysX] Fixed timestep set to: " << deltaTime << "s");
+		m_MaximumSubsteps.store(timing.maximumSubsteps);
+		m_FixedTimeStep.store(timing.fixedTimeStep);
+		m_ClothSubsteps.store(timing.clothSubsteps);
+		m_ClothFrameTime.store(timing.clothFrameTime);
+		VANS_LOG("[PhysX] Timing set: fixedTimeStep=" << timing.fixedTimeStep
+			<< "s maximumSubsteps=" << timing.maximumSubsteps
+			<< " clothFrameTime=" << timing.clothFrameTime
+			<< "s clothSubsteps=" << timing.clothSubsteps);
+		return true;
+	}
+
+	VansPhysicsTiming VansPhysicsSystem::GetTiming() const
+	{
+		VansPhysicsTiming timing;
+		timing.fixedTimeStep = m_FixedTimeStep.load();
+		timing.maximumSubsteps = m_MaximumSubsteps.load();
+		timing.clothFrameTime = m_ClothFrameTime.load();
+		timing.clothSubsteps = m_ClothSubsteps.load();
+		return timing;
+	}
+
+	void VansPhysicsSystem::SetPreSimulateCallback(PhysicsStepCallback callback)
+	{
+		VANS_ASSERT_MAIN_THREAD();
+		std::lock_guard<std::mutex> lock(m_SimulationMutex);
+		m_PreSimulateCallback = std::move(callback);
 	}
 
 	void VansPhysicsSystem::SimulationThread()
 	{
+		VANS_INIT_PHYSICS_THREAD();
+		VANS_ASSERT_PHYSICS_THREAD();
 		VANS_PROFILE_THREAD("Physics Thread");
 
-		using Clock = std::chrono::high_resolution_clock;
+		using Clock = std::chrono::steady_clock;
 		auto lastTime = Clock::now();
 
-		VANS_LOG("[PhysX] Simulation thread running with fixed timestep: " << GetFixedTimeStep() << "s");
+		const VansPhysicsTiming initialTiming = GetTiming();
+		VANS_LOG("[PhysX] Simulation thread running with fixedTimeStep="
+			<< initialTiming.fixedTimeStep << "s maximumSubsteps=" << initialTiming.maximumSubsteps);
 		if (IsPvdConnected())
 		{
 			VANS_LOG("[PhysX PVD] Real-time physics data streaming active");
@@ -355,14 +489,19 @@ namespace VansEngine
 			}
 
 			auto currentTime = Clock::now();
-			float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
-			const float fixedTimeStep = m_FixedTimeStep.load();
+			const VansPhysicsTiming timing = GetTiming();
+			const double fixedTimeStep = static_cast<double>(timing.fixedTimeStep);
+			const double maximumAccumulatedTime =
+				fixedTimeStep * static_cast<double>(timing.maximumSubsteps);
+			double deltaTime = std::chrono::duration<double>(currentTime - lastTime).count();
 			lastTime = currentTime;
 
-			// Fixed timestep accumulator
-			m_Accumulator += deltaTime;
+			// 丢弃异常长停顿的超额时间，避免补步风暴长期占用 SimulationMutex。
+			deltaTime = (std::clamp)(deltaTime, 0.0, maximumAccumulatedTime);
+			m_Accumulator = (std::min)(m_Accumulator + deltaTime, maximumAccumulatedTime);
 
-			while (m_Accumulator >= fixedTimeStep)
+			std::uint32_t substepCount = 0;
+			while (m_Accumulator >= fixedTimeStep && substepCount < timing.maximumSubsteps)
 			{
 				VANS_PROFILE_SCOPE("PhysicsThread::FixedStep", Vans::ProfileCategory::Physics);
 				{
@@ -372,17 +511,17 @@ namespace VansEngine
                     if (m_PreSimulateCallback)
                     {
 						VANS_PROFILE_SCOPE("Physics::PreSimulateCallback", Vans::ProfileCategory::Physics);
-						m_PreSimulateCallback(fixedTimeStep);
+						m_PreSimulateCallback(timing.fixedTimeStep);
                     }
 
 					// Step the simulation
 					{
 						VANS_PROFILE_SCOPE("PhysX::simulate", Vans::ProfileCategory::Physics);
-						m_Scene->simulate(fixedTimeStep);
+						m_Native->scene->simulate(timing.fixedTimeStep);
 					}
 					{
 						VANS_PROFILE_SCOPE("PhysX::fetchResults", Vans::ProfileCategory::Physics);
-						m_Scene->fetchResults(true); // Block until simulation is done
+						m_Native->scene->fetchResults(true); // Block until simulation is done
 					}
 					
 					// PVD data is automatically streamed when connected
@@ -390,6 +529,7 @@ namespace VansEngine
 				}
 
 				m_Accumulator -= fixedTimeStep;
+				++substepCount;
 			}
 
 			// Sleep to avoid spinning
@@ -399,6 +539,8 @@ namespace VansEngine
 			}
 		}
 		
+		VANS_ASSERT_PHYSICS_THREAD();
+		VANS_CLEAR_THREAD_ROLE();
 		VANS_LOG("[PhysX] Simulation thread stopped");
 	}
 
@@ -407,71 +549,109 @@ namespace VansEngine
 		return m_SimulationMutex;
 	}
 
-	void VansPhysicsSystem::FetchResults()
+	bool VansPhysicsSystem::IsPvdConnected() const
 	{
-		// Main thread calls this to synchronize with physics thread
-		std::lock_guard<std::mutex> lock(m_SimulationMutex);
-		// The simulation thread already calls fetchResults internally
-		// This lock ensures we don't read transforms while simulation is running
+		return m_Native->pvd && m_Native->pvd->isConnected();
 	}
 
-	void VansPhysicsSystem::SetGravity(const PxVec3& gravity)
+	void VansPhysicsSystem::SetGravity(const glm::vec3& gravity)
 	{
-		if (m_Scene)
+		if (m_Native->scene)
 		{
 			std::lock_guard<std::mutex> lock(m_SimulationMutex);
-			m_Scene->setGravity(gravity);
+			m_Native->scene->setGravity(PxVec3(gravity.x, gravity.y, gravity.z));
 		}
 	}
 
-	PxVec3 VansPhysicsSystem::GetGravity() const
+	glm::vec3 VansPhysicsSystem::GetGravity() const
 	{
-		if (m_Scene)
+		if (m_Native->scene)
 		{
-			return m_Scene->getGravity();
+			const PxVec3 gravity = m_Native->scene->getGravity();
+			return glm::vec3(gravity.x, gravity.y, gravity.z);
 		}
-		return PxVec3(0.0f, -9.81f, 0.0f);
+		return glm::vec3(0.0f, -9.81f, 0.0f);
 	}
 
-	// ============================================================================
-	// Mesh Cooking Helper Methods (PhysX 5 API)
-	// ============================================================================
-	PxConvexMesh* VansPhysicsSystem::CookConvexMesh(const PxConvexMeshDesc& desc)
+	PxScene* VansPhysicsNativeAccess::Scene(VansPhysicsSystem& system)
 	{
-		if (!m_Physics || !m_CookingParams)
+		return system.m_Native->scene;
+	}
+
+	const PxScene* VansPhysicsNativeAccess::Scene(const VansPhysicsSystem& system)
+	{
+		return system.m_Native->scene;
+	}
+
+	PxPhysics* VansPhysicsNativeAccess::Physics(VansPhysicsSystem& system)
+	{
+		return system.m_Native->physics;
+	}
+
+	PxControllerManager* VansPhysicsNativeAccess::ControllerManager(VansPhysicsSystem& system)
+	{
+		return system.m_Native->controllerManager;
+	}
+
+	PxMaterial* VansPhysicsNativeAccess::DefaultMaterial(VansPhysicsSystem& system)
+	{
+		return system.m_Native->defaultMaterial;
+	}
+
+	const PxCookingParams* VansPhysicsNativeAccess::CookingParams(
+		const VansPhysicsSystem& system)
+	{
+		return system.m_Native->cookingParams;
+	}
+
+	PxConvexMesh* VansPhysicsNativeAccess::CookConvexMesh(
+		VansPhysicsSystem& system,
+		const PxConvexMeshDesc& desc)
+	{
+		if (!system.m_Native->physics || !system.m_Native->cookingParams)
 		{
 			VANS_LOG_ERROR("[PhysX] Physics or cooking params not initialized for cooking convex mesh");
 			return nullptr;
 		}
 
-		// In PhysX 5, use standalone cooking functions
-		PxInsertionCallback& insertionCallback = m_Physics->getPhysicsInsertionCallback();
-		return PxCreateConvexMesh(*m_CookingParams, desc, insertionCallback);
+		PxInsertionCallback& insertionCallback =
+			system.m_Native->physics->getPhysicsInsertionCallback();
+		return PxCreateConvexMesh(
+			*system.m_Native->cookingParams,
+			desc,
+			insertionCallback);
 	}
 
-	PxTriangleMesh* VansPhysicsSystem::CookTriangleMesh(const PxTriangleMeshDesc& desc)
+	PxTriangleMesh* VansPhysicsNativeAccess::CookTriangleMesh(
+		VansPhysicsSystem& system,
+		const PxTriangleMeshDesc& desc)
 	{
-		if (!m_Physics || !m_CookingParams)
+		if (!system.m_Native->physics || !system.m_Native->cookingParams)
 		{
 			VANS_LOG_ERROR("[PhysX] Physics or cooking params not initialized for cooking triangle mesh");
 			return nullptr;
 		}
 
-		// In PhysX 5, use standalone cooking functions
-		PxInsertionCallback& insertionCallback = m_Physics->getPhysicsInsertionCallback();
-		return PxCreateTriangleMesh(*m_CookingParams, desc, insertionCallback);
+		PxInsertionCallback& insertionCallback =
+			system.m_Native->physics->getPhysicsInsertionCallback();
+		return PxCreateTriangleMesh(
+			*system.m_Native->cookingParams,
+			desc,
+			insertionCallback);
 	}
 
-	PxHeightField* VansPhysicsSystem::CookHeightField(const PxHeightFieldDesc& desc)
+	PxHeightField* VansPhysicsNativeAccess::CookHeightField(
+		VansPhysicsSystem& system,
+		const PxHeightFieldDesc& desc)
 	{
-		if (!m_Physics)
+		if (!system.m_Native->physics)
 		{
 			VANS_LOG_ERROR("[PhysX] Physics not initialized for cooking height field");
 			return nullptr;
 		}
 
-		// In PhysX 5, use standalone cooking functions
-		PxInsertionCallback& insertionCallback = m_Physics->getPhysicsInsertionCallback();
+		PxInsertionCallback& insertionCallback =
+			system.m_Native->physics->getPhysicsInsertionCallback();
 		return PxCreateHeightField(desc, insertionCallback);
 	}
 }

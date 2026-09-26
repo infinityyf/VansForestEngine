@@ -12,7 +12,7 @@ namespace VansGraphics
 class VansCamera;
 class VansCameraControlArbiter;
 class VansVirtualCameraParameterStore;
-bool VansRegisterRenderTimelineExtensions(
+bool VansRegisterCameraTimelineExtensions(
 	Vans::VansTimelineTrackExtensionRegistry& registry,
 	std::string& error);
 bool VansRegisterCameraTimelineIntegration(

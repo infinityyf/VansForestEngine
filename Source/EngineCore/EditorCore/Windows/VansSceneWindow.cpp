@@ -10,37 +10,54 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include "../VansEditorSelection.h"
-#include "../VansEditorSceneMath.h"
+#include "../../Util/VansSceneViewMath.h"
 #include "../VansScenePickingService.h"
 #include "../VansSceneViewCommands.h"
-#include "../VansEditorObjectReference.h"
+#include "../../AuthoringCore/VansEditorObjectReference.h"
 #include "../VansSceneAssetPlacementService.h"
 #include "../VansEditorWindow.h"
+#include "../VansEditorDebugViewState.h"
 #include "../VansSceneEditService.h"
 #include "../../RuntimeUI/Public/VansUISystem.h"
 #include "../../VansTimer.h"
 #include "../../Util/VansLog.h"
 #include "VansMotionMatchingDebugWindow.h"
+#include "../../EngineAPILayer/Public/IGAFEditorAPI.h"
+#include "../../EngineAPILayer/Public/IMotionMatchingEditorAPI.h"
+#include "../../EngineAPILayer/Public/IPcgEditorAPI.h"
+#include "../../EngineAPILayer/Public/IPlayModeEditorAPI.h"
+#include "../../EngineAPILayer/Public/IRenderEditorAPI.h"
+#include "../../EngineAPILayer/Public/IRuntimeSceneEditorAPI.h"
+#include "../../EngineAPILayer/Public/ISceneInteractionEditorAPI.h"
+#include "../../EngineAPILayer/Public/ITerrainEditorAPI.h"
+#include "../../EngineAPILayer/Public/IVehicleEditorAPI.h"
 #include "VansGAFDebuggerWindow.h"
 #include "VansSceneAnimationPreviewWindow.h"
 
 void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
+	Vans::EditorAPI::IPcgEditorAPI& pcgAPI = editorAPI;
+	Vans::EditorAPI::IPlayModeEditorAPI& playModeAPI = editorAPI;
+	Vans::EditorAPI::IRenderEditorAPI& renderAPI = editorAPI;
+	Vans::EditorAPI::IRuntimeSceneEditorAPI& runtimeSceneAPI = editorAPI;
+	Vans::EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI = editorAPI;
+	Vans::EditorAPI::ITerrainEditorAPI& terrainAPI = editorAPI;
+	Vans::EditorAPI::IVehicleEditorAPI& vehicleAPI = editorAPI;
+	Vans::EditorAPI::IGAFEditorAPI& gafAPI = editorAPI;
     m_GameCursorViewportInteractive = false;
-	const auto pcgBrush = editorAPI.GetPcgBrushSnapshot();
-	const auto splineEditor = editorAPI.GetPcgSplineSnapshot();
+	const auto pcgBrush = pcgAPI.GetPcgBrushSnapshot();
+	const auto splineEditor = pcgAPI.GetPcgSplineSnapshot();
 	const bool splineToolActive=splineEditor.editable && splineEditor.toolEnabled;
 	if (m_SplineGizmoDragging && (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::GetIO().AppFocusLost ||
 		ImGui::IsKeyPressed(ImGuiKey_Escape) || !splineToolActive))
-		FinishSplineGizmo(editorAPI,ImGui::IsKeyPressed(ImGuiKey_Escape)||!splineToolActive);
+		FinishSplineGizmo(pcgAPI,ImGui::IsKeyPressed(ImGuiKey_Escape)||!splineToolActive);
 	if (m_PcgBrushDragging && (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::GetIO().AppFocusLost ||
 		ImGui::IsKeyPressed(ImGuiKey_Escape) || !pcgBrush.enabled || !(pcgBrush.target == m_PcgDragTarget)))
 	{
 		Vans::EditorAPI::PcgBrushInput finish;
 		finish.target = m_PcgDragTarget;
 		finish.phase = ImGui::IsKeyPressed(ImGuiKey_Escape) ? Vans::EditorAPI::PcgBrushPhase::Cancel : Vans::EditorAPI::PcgBrushPhase::End;
-		editorAPI.ApplyPcgBrushInput(finish);
+		pcgAPI.ApplyPcgBrushInput(finish);
 		m_PcgBrushDragging = false;
 	}
     // -------------------------------------------------------------------------
@@ -50,7 +67,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         ImGui::Begin("Scene");
 		Vans::EditorAPI::UpscalerSettingsSnapshot upscalerSettings =
-			editorAPI.GetUpscalerSettings();
+			renderAPI.GetUpscalerSettings();
 
         // ── Gizmo mode toolbar ────────────────────────────────────────────────
         {
@@ -95,7 +112,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 				if (upscalerSettings.desiredBackend == Vans::EditorAPI::UpscalerBackend::Off)
 					upscalerSettings.desiredQuality =
 						Vans::EditorAPI::UpscaleQualityMode::NativeAA;
-				editorAPI.ApplyUpscalerSettings(upscalerSettings);
+				renderAPI.ApplyUpscalerSettings(upscalerSettings);
 			}
 
 			ImGui::SameLine();
@@ -107,7 +124,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 			{
 				upscalerSettings.desiredQuality =
 					static_cast<Vans::EditorAPI::UpscaleQualityMode>(quality);
-				editorAPI.ApplyUpscalerSettings(upscalerSettings);
+				renderAPI.ApplyUpscalerSettings(upscalerSettings);
 			}
 			ImGui::EndDisabled();
 
@@ -136,7 +153,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
         ImVec2 viewportSize = ImGui::GetContentRegionAvail();
 
         // ── No scene loaded: show an empty black region ───────────────────
-        if (!editorAPI.IsRuntimeSceneReady())
+        if (!runtimeSceneAPI.IsRuntimeSceneReady())
         {
             m_CameraController.Reset(m_Camera);
             Vans::VansSceneViewCommands::Clear();
@@ -150,7 +167,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
             return;
         }
 
-        Vans::EditorAPI::RenderTexturePreview scenePreview = editorAPI.GetViewportPreview(0);
+        Vans::EditorAPI::RenderTexturePreview scenePreview = renderAPI.GetViewportPreview(0);
 
         Vans::EditorAPI::EditorTextureHandle sceneTexture = scenePreview.texture;
 
@@ -275,7 +292,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                 imageScreenPos.x - mainViewportPos.x,
                 imageScreenPos.y - mainViewportPos.y);
 			const Vans::EditorAPI::TerrainEditorSnapshot terrainEditor =
-				editorAPI.GetTerrainEditorSnapshot();
+				terrainAPI.GetTerrainEditorSnapshot();
 			const bool terrainBrushActive = !splineToolActive && terrainEditor.available &&
 				terrainEditor.editable && terrainEditor.brushEnabled;
 			const bool pcgBrushActive = !splineToolActive && pcgBrush.available && pcgBrush.enabled && !pcgBrush.canvasStrokeActive;
@@ -306,26 +323,23 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                 }
             }
 
-			bool previewHandleActive = false;
-			if (VansEditorWindow::m_SceneAnimationPreviewWindow)
-			{
-				previewHandleActive = VansEditorWindow::m_SceneAnimationPreviewWindow
-					->DrawSceneViewportHandle(
-						editorAPI, m_Camera, imageScreenPos, drawSize);
-			}
+			const bool previewHandleActive =
+				VansEditorWindow::DrawSceneAnimationPreviewViewportHandle(
+					editorAPI, m_Camera, imageScreenPos, drawSize);
 			if (!previewHandleActive && !terrainBrushActive && !pcgBrushActive && !splineToolActive)
 			{
 				m_Gizmos.HandleHotkeys();
-				m_Gizmos.Draw(editorAPI, m_Camera, imageScreenPos, drawSize);
+				m_Gizmos.Draw(editorAPI, m_SceneEdits, m_Camera, imageScreenPos, drawSize,
+					m_DebugViewState);
 			}
 
             // ── Vehicle physics debug visualization ───────────────────────
-            ImGui::Checkbox("Vehicle Debug", &VansEditorWindow::m_VehicleDebugGizmos);
+            ImGui::Checkbox("Vehicle Debug", &m_DebugViewState.vehicleDebugGizmos);
             Vans::EditorAPI::VehicleDebugSnapshot vehicleDebug;
-            if (VansEditorWindow::m_VehicleDebugGizmos)
-                vehicleDebug = editorAPI.GetVehicleDebugSnapshot();
+            if (m_DebugViewState.vehicleDebugGizmos)
+                vehicleDebug = vehicleAPI.GetVehicleDebugSnapshot();
 
-            if (VansEditorWindow::m_VehicleDebugGizmos && vehicleDebug.available)
+            if (m_DebugViewState.vehicleDebugGizmos && vehicleDebug.available)
             {
                 const glm::mat4 view = m_Camera->GetViewMatrix();
                 const glm::mat4 proj = m_Camera->GetProjectiveMatrix();
@@ -440,9 +454,10 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
             // 统一拥有；Scene 只消费稳定 DTO 并负责绘制。
 			if (VansMotionMatchingDebugWindow::SceneOverlayEnabled() && m_Camera)
 			{
+				Vans::EditorAPI::IMotionMatchingEditorAPI& motionMatchingAPI = editorAPI;
 				const glm::mat4 viewProj = m_Camera->GetProjectiveMatrix() * m_Camera->GetViewMatrix();
 				ImDrawList* drawList = ImGui::GetWindowDrawList();
-				const auto motionMatchingDebug = editorAPI.GetMotionMatchingDebugSnapshot();
+				const auto motionMatchingDebug = motionMatchingAPI.GetMotionMatchingDebugSnapshot();
 				auto toGlm = [](const Vans::EditorAPI::Vec3& value)
 				{
 					return glm::vec3(value.x, value.y, value.z);
@@ -563,7 +578,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 			{
 				const glm::mat4 viewProj = m_Camera->GetProjectiveMatrix() * m_Camera->GetViewMatrix();
 				ImDrawList* drawList = ImGui::GetWindowDrawList();
-				const auto combatDebug = editorAPI.GetGAFCombatDebugSnapshot();
+				const auto combatDebug = gafAPI.GetGAFCombatDebugSnapshot();
 				const auto toGlm = [](const Vans::EditorAPI::Vec3& value)
 				{
 					return glm::vec3(value.x, value.y, value.z);
@@ -695,7 +710,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                 const bool canFrame = !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive() &&
                     !ImGuizmo::IsUsing() && !previewHandleActive && !terrainBrushActive && !pcgBrushActive &&
                     !splineToolActive && !ImGui::IsMouseDown(ImGuiMouseButton_Right) &&
-                    editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
+                    playModeAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
                 if (canFrame && (sceneImageHovered || ImGui::IsWindowFocused()) && ImGui::IsKeyPressed(ImGuiKey_F, false))
                     Vans::VansSceneViewCommands::RequestFrameSelection();
                 Vans::EditorAPI::EditorSceneBounds frameBounds;
@@ -703,7 +718,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                     m_CameraController.Frame(m_Camera, frameBounds, drawSize.x / std::max(drawSize.y, 1.0f));
                 const ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
                 VansEditorCameraInputState cameraInput;
-                cameraInput.editMode = editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
+                cameraInput.editMode = playModeAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
                 cameraInput.viewportHovered = mouseInsideSceneImage;
                 cameraInput.rightMouseClicked = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
                 cameraInput.rightMouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Right);
@@ -746,9 +761,9 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 
 			if (splineToolActive && m_Camera)
 			{
-				DrawSplineTools(editorAPI,splineEditor,{imageScreenPos.x,imageScreenPos.y},{drawSize.x,drawSize.y},mouseInsideSceneImage);
+				DrawSplineTools(pcgAPI,splineEditor,{imageScreenPos.x,imageScreenPos.y},{drawSize.x,drawSize.y},mouseInsideSceneImage);
 				if (mouseInsideSceneImage && ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGuizmo::IsOver())
-					editorAPI.AppendPcgSplinePoint(buildTerrainRay());
+					pcgAPI.AppendPcgSplinePoint(buildTerrainRay());
 			}
 			if (terrainBrushActive && m_Camera)
 			{
@@ -786,7 +801,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 
 				if (submitBrushInput)
 				{
-					const auto brushResult = editorAPI.ApplyTerrainBrushInput(input);
+					const auto brushResult = terrainAPI.ApplyTerrainBrushInput(input);
 					m_TerrainBrushHit = brushResult.hit;
 					if (brushResult.hit)
 						m_TerrainBrushWorldPosition = brushResult.worldPosition;
@@ -855,7 +870,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                 else input.phase=PcgBrushPhase::Hover;
                 if (canPaint || m_PcgBrushDragging)
                 {
-                    const auto result=editorAPI.ApplyPcgBrushInput(input);
+					const auto result=pcgAPI.ApplyPcgBrushInput(input);
                     m_PcgBrushDragging=result.strokeActive;
                     m_PcgDragTarget=input.target;
                     if (!result.success && !result.message.empty()) m_PcgBrushMessage=result.message;
@@ -900,13 +915,19 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
             {
                 if (m_ObjectPickPressed && sceneImageHovered && canPick && m_Camera)
                 {
-                    Vans::EditorAPI::Ray ray;
+                    glm::vec3 rayOrigin(0.0f);
+                    glm::vec3 rayDirection(0.0f);
                     float length = 0;
                     const glm::vec2 uv((m_ObjectPickStart.x - imageScreenPos.x) / drawSize.x,
                         (m_ObjectPickStart.y - imageScreenPos.y) / drawSize.y);
-                    if (Vans::BuildEditorSceneRay(m_Camera->GetProjectiveMatrix() * m_Camera->GetViewMatrix(), uv, ray, length))
+                    if (Vans::VansSceneViewMath::BuildRay(
+                        m_Camera->GetProjectiveMatrix() * m_Camera->GetViewMatrix(),
+                        uv, rayOrigin, rayDirection, length))
                     {
-                        const auto result = Vans::VansScenePickingService::Pick(editorAPI, ray, length,
+                        const Vans::EditorAPI::Ray ray{
+                            {rayOrigin.x, rayOrigin.y, rayOrigin.z},
+                            {rayDirection.x, rayDirection.y, rayDirection.z}};
+                        const auto result = Vans::VansScenePickingService::Pick(sceneInteractionAPI, ray, length,
                             ImGui::GetIO().KeyCtrl, ImGui::GetIO().KeyShift);
                         if (!result.success && !result.message.empty()) VANS_LOG_WARN("[ScenePicking] " << result.message);
                     }

@@ -19,6 +19,11 @@ namespace Vans
     struct VansOpenAssetDocument;
 }
 
+namespace Vans::EditorAPI
+{
+    class IAssetAuthoringEditorAPI;
+}
+
 namespace VansGraphics
 {
     // =========================================================================
@@ -52,6 +57,7 @@ namespace VansGraphics
         std::unique_ptr<VansEngine::VansClothProfile> m_Profile;
         std::shared_ptr<Vans::VansOpenAssetDocument> m_Document;
         Vans::EditorAPI::IEngineEditorAPI* m_ActiveAPI = nullptr;
+        Vans::EditorAPI::IAssetAuthoringEditorAPI* m_AssetAuthoringAPI = nullptr;
         std::uint64_t m_DocumentStateId = 0;
 
         // ── 编辑器专用 CPU 网格数据（由 m_Profile.m_ModelPath 独立加载）──────

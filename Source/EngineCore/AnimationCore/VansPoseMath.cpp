@@ -46,6 +46,66 @@ namespace VansGraphics::VansPoseMath
 				second = -second;
 			return glm::normalize(glm::slerp(first, second, alpha));
 		}
+
+		template <typename LocalContainer, typename ModelContainer, typename ConvertLocal>
+		bool BuildModelTransformsInternal(
+			const LocalContainer& localTransforms,
+			const Skeleton& skeleton,
+			ModelContainer& outModelTransforms,
+			ConvertLocal convertLocal,
+			std::string* error)
+		{
+			if (localTransforms.size() != skeleton.bones.size())
+			{
+				if (error) *error = "local transform count does not match bone count";
+				return false;
+			}
+			if (!skeleton.ValidateTopology(error))
+				return false;
+
+			outModelTransforms.resize(localTransforms.size());
+			for (int boneIndex : skeleton.topologicalOrder)
+			{
+				const std::size_t index = static_cast<std::size_t>(boneIndex);
+				const glm::mat4 local = convertLocal(localTransforms[index]);
+				const int parentIndex = skeleton.bones[index].parentIndex;
+				outModelTransforms[index] = parentIndex >= 0
+					? outModelTransforms[static_cast<std::size_t>(parentIndex)] * local
+					: local;
+			}
+			return true;
+		}
+
+		template <typename ModelContainer, typename LocalContainer>
+		bool BuildLocalTransformsInternal(
+			const ModelContainer& modelTransforms,
+			const Skeleton& skeleton,
+			LocalContainer& outLocalTransforms,
+			std::string* error)
+		{
+			if (modelTransforms.size() != skeleton.bones.size())
+			{
+				if (error) *error = "model transform count does not match bone count";
+				return false;
+			}
+			if (!skeleton.ValidateTopology(error))
+				return false;
+
+			outLocalTransforms.resize(modelTransforms.size());
+			// Reverse topological order also makes in-place model-to-local safe:
+			// every parent is still in model space while a child is converted.
+			for (auto bone = skeleton.topologicalOrder.rbegin();
+			     bone != skeleton.topologicalOrder.rend(); ++bone)
+			{
+				const std::size_t index = static_cast<std::size_t>(*bone);
+				const glm::mat4 model = modelTransforms[index];
+				const int parentIndex = skeleton.bones[index].parentIndex;
+				outLocalTransforms[index] = parentIndex >= 0
+					? glm::inverse(modelTransforms[static_cast<std::size_t>(parentIndex)]) * model
+					: model;
+			}
+			return true;
+		}
 	}
 
 	bool TryDecompose(const glm::mat4& matrix, VansBoneTransform& outTransform)
@@ -165,6 +225,64 @@ namespace VansGraphics::VansPoseMath
 		return true;
 	}
 
+	bool BuildModelTransforms(const std::vector<glm::mat4>& localTransforms,
+	                          const Skeleton& skeleton,
+	                          std::vector<glm::mat4>& outModelTransforms,
+	                          std::string* error)
+	{
+		return BuildModelTransformsInternal(
+			localTransforms, skeleton, outModelTransforms,
+			[](const glm::mat4& local) { return local; }, error);
+	}
+
+	bool BuildModelTransforms(const VansAnimationFrameVector<glm::mat4>& localTransforms,
+	                          const Skeleton& skeleton,
+	                          VansAnimationFrameVector<glm::mat4>& outModelTransforms,
+	                          std::string* error)
+	{
+		return BuildModelTransformsInternal(
+			localTransforms, skeleton, outModelTransforms,
+			[](const glm::mat4& local) { return local; }, error);
+	}
+
+	bool BuildModelTransforms(const VansAnimationFrameVector<VansBoneTransform>& localPose,
+	                          const Skeleton& skeleton,
+	                          VansAnimationFrameVector<glm::mat4>& outModelTransforms,
+	                          std::string* error)
+	{
+		return BuildModelTransformsInternal(
+			localPose, skeleton, outModelTransforms,
+			[](const VansBoneTransform& local) { return Compose(local); }, error);
+	}
+
+	bool BuildModelTransforms(const std::vector<VansBoneTransform>& localPose,
+	                          const Skeleton& skeleton,
+	                          std::vector<glm::mat4>& outModelTransforms,
+	                          std::string* error)
+	{
+		return BuildModelTransformsInternal(
+			localPose, skeleton, outModelTransforms,
+			[](const VansBoneTransform& local) { return Compose(local); }, error);
+	}
+
+	bool BuildLocalTransforms(const std::vector<glm::mat4>& modelTransforms,
+	                          const Skeleton& skeleton,
+	                          std::vector<glm::mat4>& outLocalTransforms,
+	                          std::string* error)
+	{
+		return BuildLocalTransformsInternal(
+			modelTransforms, skeleton, outLocalTransforms, error);
+	}
+
+	bool BuildLocalTransforms(const VansAnimationFrameVector<glm::mat4>& modelTransforms,
+	                          const Skeleton& skeleton,
+	                          VansAnimationFrameVector<glm::mat4>& outLocalTransforms,
+	                          std::string* error)
+	{
+		return BuildLocalTransformsInternal(
+			modelTransforms, skeleton, outLocalTransforms, error);
+	}
+
 	glm::mat4 BlendTransforms(const glm::mat4& first, const glm::mat4& second, float alpha)
 	{
 		const float clampedAlpha = std::clamp(alpha, 0.0f, 1.0f);
@@ -225,25 +343,4 @@ namespace VansGraphics::VansPoseMath
 		return baseModel * Compose(weightedDelta);
 	}
 
-	void BlendPoses(const std::vector<glm::mat4>& first,
-	                const std::vector<glm::mat4>& second,
-	                float alpha,
-	                std::vector<glm::mat4>& outPose)
-	{
-		const size_t count = (std::min)(first.size(), second.size());
-		outPose.resize(count);
-		for (size_t index = 0; index < count; ++index)
-			outPose[index] = BlendTransforms(first[index], second[index], alpha);
-	}
-
-	void ApplyAdditivePose(const std::vector<glm::mat4>& base,
-	                       const std::vector<glm::mat4>& additive,
-	                       float weight,
-	                       std::vector<glm::mat4>& outPose)
-	{
-		const size_t count = (std::min)(base.size(), additive.size());
-		outPose.resize(count);
-		for (size_t index = 0; index < count; ++index)
-			outPose[index] = ApplyAdditiveTransform(base[index], additive[index], weight);
-	}
 }

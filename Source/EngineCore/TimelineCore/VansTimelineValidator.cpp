@@ -88,7 +88,7 @@ VansTimelineDiagnostics VansTimelineValidator::Validate(
 		const VansTimelineTrackExtensionDescriptor* descriptor = context.extensions ? context.extensions->Resolve(track.type.typeId) : nullptr;
 		if (!descriptor)
 		{
-			Add(diagnostics, context.runtimeValidation ? VansTimelineDiagnosticSeverity::Error : VansTimelineDiagnosticSeverity::Warning,
+			Add(diagnostics, context.requireRuntimeCapabilities ? VansTimelineDiagnosticSeverity::Error : VansTimelineDiagnosticSeverity::Warning,
 				"Timeline.TrackExtensionMissing", track.id, "type", "Timeline track extension is not registered: " + track.type.stableName);
 			continue;
 		}
@@ -107,7 +107,7 @@ VansTimelineDiagnostics VansTimelineValidator::Validate(
 			Add(diagnostics, VansTimelineDiagnosticSeverity::Warning, "Timeline.PreviewDestructiveTrack", track.id, "type", "Destructive Timeline extension is disabled in preview");
 		if (descriptor->validate) descriptor->validate(track, descriptor->sourceSchema, context, diagnostics);
 		else VansValidateTimelineExtensionSchema(track, descriptor->sourceSchema, diagnostics);
-		if (context.runtimeValidation && context.hasOutputApplier)
+		if (context.requireRuntimeCapabilities && context.hasOutputApplier)
 			for (const VansTimelineOutputDeclaration& output : descriptor->outputs)
 				if (output.applierRequired && !context.hasOutputApplier(output.typeId))
 					Add(diagnostics, VansTimelineDiagnosticSeverity::Error, "Timeline.ApplierMissing",

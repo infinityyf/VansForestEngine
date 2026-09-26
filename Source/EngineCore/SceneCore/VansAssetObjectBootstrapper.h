@@ -2,6 +2,7 @@
 
 #include "../AssetCore/Serialization/VansSerializedValue.h"
 #include "../AssetCore/VansAssetDatabase.h"
+#include "../NavigationCore/VansNavigationTypes.h"
 
 #include <cstddef>
 #include <string>
@@ -26,7 +27,8 @@ namespace Vans
 		static VansAssetObjectBootstrapResult Publish(
 			const std::vector<VansAssetRecord>& records,
 			VansAssetObjectRepository& repository,
-			const std::vector<VansAssetRecord>& resourceRecords = {});
+			const std::vector<VansAssetRecord>& resourceRecords = {},
+			VansNavigationSettings navigationSettings = {});
 		static bool PublishSerialized(
 			const VansAssetRecord& record,
 			const VansSerializedValue& sourceRoot,

@@ -1,5 +1,4 @@
 #include "VansScene.h"
-#include "../Configration/VansConfigration.h"
 
 #include "VansMainCameraVisibility.h"
 #include "VulkanCore/VansMesh.h"

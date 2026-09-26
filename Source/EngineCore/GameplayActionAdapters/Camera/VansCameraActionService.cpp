@@ -241,7 +241,7 @@ VansSerializedValue VansCameraActionService::ResourceValue(VansGenerationHandle 
 }
 
 VansActionCommandResult VansCameraActionService::CreateContribution(
-	VansCameraContribution contribution)
+	VansCameraContributionRequest contribution)
 {
 	const VansGenerationHandle owner = m_OwnerTokens.Emplace(OwnerToken{});
 	contribution.owner = { Domain(), owner };
@@ -270,7 +270,7 @@ VansActionCommandResult VansCameraActionService::ExecuteShot(const VansActionCom
 	const VansCameraRigDefinition* rig = found == m_Rigs.end()
 		? nullptr : m_Runtime->ResolveRig(found->second);
 	if (!rig) return Failure(VansActionError::InvalidDefinition, "Camera Shot rig is unresolved");
-	VansCameraContribution contribution;
+	VansCameraContributionRequest contribution;
 	contribution.view = ViewId(command.payload);
 	contribution.kind = VansCameraContributionKind::Shot;
 	contribution.value = rig->initialView;
@@ -289,7 +289,7 @@ VansActionCommandResult VansCameraActionService::ExecuteLens(const VansActionCom
 	const VansSerializedValue* lens = FindObjectField(command.payload, "lens");
 	if (!lens || lens->kind != VansSerializedValue::Kind::Object)
 		return Failure(VansActionError::InvalidDefinition, "Camera Lens payload is invalid");
-	VansCameraContribution contribution;
+	VansCameraContributionRequest contribution;
 	contribution.view = ViewId(command.payload);
 	contribution.kind = VansCameraContributionKind::Lens;
 	contribution.value = m_Runtime->ResolveView(contribution.view).snapshot;
@@ -335,7 +335,7 @@ VansActionCommandResult VansCameraActionService::ExecuteShake(const VansActionCo
 		VansMakeStableId<VansCameraShakeIdTag>(name));
 	if (found == m_Shakes.end())
 		return Failure(VansActionError::InvalidDefinition, "Camera Shake profile is unresolved");
-	VansCameraContribution contribution;
+	VansCameraContributionRequest contribution;
 	contribution.view = ViewId(command.payload);
 	contribution.kind = VansCameraContributionKind::Shake;
 	contribution.blendMode = VansCameraBlendMode::Additive;
@@ -351,7 +351,7 @@ VansActionCommandResult VansCameraActionService::ExecuteShake(const VansActionCo
 
 VansActionCommandResult VansCameraActionService::ExecuteImpulse(const VansActionCommand& command)
 {
-	VansCameraContribution contribution;
+	VansCameraContributionRequest contribution;
 	contribution.view = ViewId(command.payload);
 	if (m_NextTransientWriter == UINT32_MAX) m_NextTransientWriter = 1;
 	contribution.owner = { TransientDomain(), { m_NextTransientWriter++, 1 } };
@@ -361,7 +361,7 @@ VansActionCommandResult VansCameraActionService::ExecuteImpulse(const VansAction
 	contribution.channels = VansCameraChannel_Position | VansCameraChannel_Rotation;
 	contribution.value.pose.position = Vector3(FindObjectField(command.payload, "translation"));
 	contribution.value.pose.rotationDegrees = Vector3(FindObjectField(command.payload, "rotation"));
-	contribution.consumeAfterResolve = true;
+	contribution.lifetime = VansCameraContributionLifetime::ResolveOnce;
 	std::string error;
 	if (!m_Runtime->AddContribution(std::move(contribution), error))
 		return Failure(VansActionError::Execution, std::move(error));
@@ -382,7 +382,7 @@ VansActionCommandResult VansCameraActionService::ExecuteLockOn(const VansActionC
 		resolved = m_TargetResolver(primaryTarget, target);
 	if (!resolved)
 		return Failure(VansActionError::Rejected, "Camera LockOn target position is unresolved");
-	VansCameraContribution contribution;
+	VansCameraContributionRequest contribution;
 	contribution.view = ViewId(command.payload);
 	contribution.kind = VansCameraContributionKind::LockOn;
 	contribution.value = m_Runtime->ResolveView(contribution.view).snapshot;
@@ -406,9 +406,9 @@ VansActionCommandResult VansCameraActionService::ExecuteUpdateLockOn(
 	if (!ReadResource(command.payload, resource) ||
 		m_ResourceOwners.find(ResourceKey(resource)) == m_ResourceOwners.end())
 		return Failure(VansActionError::Internal, "Camera LockOn resource is invalid");
-	const VansCameraContribution* current =
-		m_Runtime->ResolveContribution({ resource });
-	if (!current || current->kind != VansCameraContributionKind::LockOn)
+	VansCameraContributionRequest contribution;
+	if (!m_Runtime->ReadContribution({ resource }, contribution) ||
+		contribution.kind != VansCameraContributionKind::LockOn)
 		return Failure(VansActionError::Internal, "Camera resource is not an active LockOn");
 	glm::vec3 target;
 	const VansSerializedValue* targetValue = FindObjectField(command.payload, "target");
@@ -422,7 +422,6 @@ VansActionCommandResult VansCameraActionService::ExecuteUpdateLockOn(
 		resolved = m_TargetResolver(primaryTarget, target);
 	if (!resolved)
 		return Failure(VansActionError::Rejected, "Camera LockOn target position is unresolved");
-	VansCameraContribution contribution = *current;
 	const VansCameraViewSnapshot view = m_Runtime->ResolveView(contribution.view).snapshot;
 	const glm::vec3 direction = target - view.pose.position;
 	const float length = glm::length(direction);

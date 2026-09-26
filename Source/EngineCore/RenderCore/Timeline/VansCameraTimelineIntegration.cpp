@@ -5,7 +5,7 @@
 #include "../VansCameraControlArbiter.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../../SceneRuntime/VansRuntimeWorld.h"
-#include "../../ScriptCore/VansTransform.h"
+#include "../../SceneRuntime/Transform/VansTransformStore.h"
 #include "../../TimelineRuntime/VansTimelineEvaluator.h"
 #include "../../TimelineRuntime/VansTimelineModuleApplierState.h"
 #include "../../TimelineRuntime/VansTimelineSampleExtension.h"
@@ -21,8 +21,8 @@ namespace
 {
 std::uint32_t TransformId(Vans::VansRuntimeWorld& world, Vans::VansEntityHandle entity)
 {
-	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeTransformComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Transform));
+	auto* storage = world.FindStorage<Vans::VansRuntimeTransformComponent>(
+		Vans::VansRuntimeComponentType_Transform);
 	if (!storage || !world.IsAlive(entity)) return UINT32_MAX;
 	for (Vans::VansComponentHandle component : world.CollectComponentsOwnedBy(entity))
 		if (component.typeId == Vans::VansRuntimeComponentType_Transform)
@@ -32,8 +32,8 @@ std::uint32_t TransformId(Vans::VansRuntimeWorld& world, Vans::VansEntityHandle 
 
 VansCamera* CameraForEntity(Vans::VansRuntimeWorld& world, Vans::VansEntityHandle entity)
 {
-	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeCameraComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Camera));
+	auto* storage = world.FindStorage<Vans::VansRuntimeCameraComponent>(
+		Vans::VansRuntimeComponentType_Camera);
 	if (!storage || !world.IsAlive(entity)) return nullptr;
 	for (Vans::VansComponentHandle component : world.CollectComponentsOwnedBy(entity))
 		if (component.typeId == Vans::VansRuntimeComponentType_Camera)
@@ -41,13 +41,15 @@ VansCamera* CameraForEntity(Vans::VansRuntimeWorld& world, Vans::VansEntityHandl
 	return nullptr;
 }
 
-VansCameraControlMode ControlMode(Vans::VansTimelineBlendMode mode, float weight)
+Vans::VansCameraBlendMode ControlMode(Vans::VansTimelineBlendMode mode, float weight)
 {
 	return mode == Vans::VansTimelineBlendMode::Additive
-		? VansCameraControlMode::Additive
+		? Vans::VansCameraBlendMode::Additive
 		: (mode == Vans::VansTimelineBlendMode::Override
-			? (weight >= 1.0f ? VansCameraControlMode::Exclusive : VansCameraControlMode::Weighted)
-			: VansCameraControlMode::Weighted);
+			? (weight >= 1.0f
+				? Vans::VansCameraBlendMode::Exclusive
+				: Vans::VansCameraBlendMode::Weighted)
+			: Vans::VansCameraBlendMode::Weighted);
 }
 
 float Number(const Vans::VansTimelineValue& value, float fallback)
@@ -73,9 +75,36 @@ float BlendCurveWeight(float alpha, const Vans::VansTimelineStructValue* curve)
 	return alpha;
 }
 
-VansCameraControlOwner TimelineOwner(Vans::VansTimelineWriterHandle writer)
+Vans::VansCameraContributionOwner TimelineOwner(Vans::VansTimelineWriterHandle writer)
 {
 	return { VansCameraControlArbiter::TimelineDomain(), writer };
+}
+
+Vans::VansCameraContributionRequest TimelineContribution(
+	Vans::VansTimelineWriterHandle writer,
+	Vans::VansCameraViewSnapshot view,
+	Vans::VansCameraContributionKind kind,
+	Vans::VansCameraBlendMode blendMode,
+	Vans::VansCameraSpace space,
+	std::int32_t priority,
+	std::uint64_t sequence,
+	float weight,
+	std::uint32_t channels,
+	bool suppressUserLook = false)
+{
+	Vans::VansCameraContributionRequest contribution;
+	contribution.view = Vans::VansCameraRuntime::MainView();
+	contribution.owner = TimelineOwner(writer);
+	contribution.kind = kind;
+	contribution.value = view;
+	contribution.blendMode = blendMode;
+	contribution.space = space;
+	contribution.order.priority = priority;
+	contribution.order.stableSequence = sequence;
+	contribution.weight = weight;
+	contribution.channels = channels;
+	contribution.suppressUserLook = suppressUserLook;
+	return contribution;
 }
 
 struct CameraPropertyRestoreState
@@ -109,9 +138,9 @@ public:
 		if (!target.entity.IsValid()) return { Vans::VansTimelineApplyStatus::Failed, {},
 			"CameraProperty binding has no scene entity" };
 		const bool targetsOutputCamera = CameraForEntity(m_World, target.entity) == &m_MainCamera;
-		const VansCameraControlPose outputPose = m_MainCamera.CaptureControlPose();
+		const Vans::VansCameraViewSnapshot outputView = m_MainCamera.CaptureView();
 		VansVirtualCameraParameters parameters{
-			outputPose.fieldOfView, outputPose.nearClip, outputPose.farClip };
+			outputView.lens.fieldOfView, outputView.lens.nearClip, outputView.lens.farClip };
 		if (!targetsOutputCamera)
 			if (const VansVirtualCameraParameters* existing = m_VirtualCameraParameters.Find(target.entity))
 				parameters = *existing;
@@ -141,15 +170,25 @@ public:
 			return { Vans::VansTimelineApplyStatus::Applied,
 				{ restore, {}, {}, { Vans::VansStableHash64("Camera.VirtualParameters"), instance + 1 } } };
 		}
-		VansCameraControlPose pose = outputPose;
-		pose.fieldOfView = parameters.fieldOfView;
-		pose.nearClip = parameters.nearClip;
-		pose.farClip = parameters.farClip;
+		Vans::VansCameraViewSnapshot output = outputView;
+		output.lens.fieldOfView = parameters.fieldOfView;
+		output.lens.nearClip = parameters.nearClip;
+		output.lens.farClip = parameters.farClip;
 		const float weight = static_cast<float>(std::clamp(sample->weight, 0.0, 1.0));
-		m_Arbiter.Submit({ TimelineOwner(context.writer), pose, ControlMode(context.blendMode, weight),
-			VansCameraControlSpace::World,
+		std::string submitError;
+		if (!m_Arbiter.Submit(TimelineContribution(
+			context.writer,
+			output,
+			Vans::VansCameraContributionKind::Lens,
+			ControlMode(context.blendMode, weight),
+			Vans::VansCameraSpace::World,
 			VansCameraControlArbiter::TimelinePriority + context.order.priority,
-			context.order.sequence, weight, channels });
+			context.order.sequence,
+			weight,
+			channels), submitError))
+		{
+			return { Vans::VansTimelineApplyStatus::Failed, {}, submitError };
+		}
 		return { Vans::VansTimelineApplyStatus::Applied };
 	}
 	bool Restore(Vans::VansTimelineRestoreToken token) override
@@ -219,18 +258,18 @@ public:
 				return { Vans::VansTimelineApplyStatus::Failed, {}, "CameraCut target is not the scene output camera" };
 		}
 		const std::uint32_t sourceTransformId = TransformId(m_World, sourceEntity);
-		if (sourceTransformId >= VansTransformStore::GlobalTransforms.size())
+		if (!Vans::VansTransformStore::IsAllocated(sourceTransformId))
 			return { Vans::VansTimelineApplyStatus::Failed, {}, "CameraCut source Transform is unavailable" };
-		VansCameraControlPose pose = m_MainCamera.CaptureControlPose();
-		const VansTransform& sourceTransform = VansTransformStore::GetTransform(sourceTransformId);
-		pose.position = sourceTransform.m_Position;
-		pose.rotationDegrees = sourceTransform.m_Rotation;
+		Vans::VansCameraViewSnapshot viewSnapshot = m_MainCamera.CaptureView();
+		const Vans::VansTransform& sourceTransform = Vans::VansTransformStore::Read(sourceTransformId);
+		viewSnapshot.pose.position = sourceTransform.m_Position;
+		viewSnapshot.pose.rotationDegrees = sourceTransform.m_Rotation;
 		std::uint32_t channels = 0x03u;
 		if (const VansVirtualCameraParameters* lens = m_VirtualCameraParameters.Find(sourceEntity))
 		{
-			pose.fieldOfView = lens->fieldOfView;
-			pose.nearClip = lens->nearClip;
-			pose.farClip = lens->farClip;
+			viewSnapshot.lens.fieldOfView = lens->fieldOfView;
+			viewSnapshot.lens.nearClip = lens->nearClip;
+			viewSnapshot.lens.farClip = lens->farClip;
 			channels |= 0x1Cu;
 		}
 		float weight = static_cast<float>(sample->weight);
@@ -239,12 +278,11 @@ public:
 		const auto* durationValue = reader.ValueAt(context.section->extensionData, 3);
 		const auto* curveValue = reader.ValueAt(context.section->extensionData, 4);
 		const auto* curve = curveValue ? std::get_if<Vans::VansTimelineStructValue>(curveValue) : nullptr;
-		const auto* priorityValue = reader.ValueAt(context.section->extensionData, 5);
-		const auto* blendOutDurationValue = reader.ValueAt(context.section->extensionData, 6);
-		const auto* blendOutCurveValue = reader.ValueAt(context.section->extensionData, 7);
+		const auto* blendOutDurationValue = reader.ValueAt(context.section->extensionData, 5);
+		const auto* blendOutCurveValue = reader.ValueAt(context.section->extensionData, 6);
 		const auto* blendOutCurve = blendOutCurveValue
 			? std::get_if<Vans::VansTimelineStructValue>(blendOutCurveValue) : nullptr;
-		const auto* suppressUserLookValue = reader.ValueAt(context.section->extensionData, 8);
+		const auto* suppressUserLookValue = reader.ValueAt(context.section->extensionData, 7);
 		const Vans::VansTimelineTick blendTicks = durationValue
 			? static_cast<Vans::VansTimelineTick>(Number(*durationValue, 0.0f)) : 0;
 		const Vans::VansTimelineTick blendOutTicks = blendOutDurationValue
@@ -262,16 +300,25 @@ public:
 				0, sectionEndTick - sample->timelineTick);
 			weight *= BlendCurveWeight(static_cast<float>(remainingTicks) / blendOutTicks, blendOutCurve);
 		}
-		const std::int32_t priority = priorityValue
-			? static_cast<std::int32_t>(Number(*priorityValue, static_cast<float>(context.order.priority)))
-			: context.order.priority;
 		const auto* suppressUserLook = suppressUserLookValue
 			? std::get_if<bool>(suppressUserLookValue) : nullptr;
-		m_Arbiter.Submit({ TimelineOwner(context.writer), pose,
-			(mode && *mode == "Blend") ? VansCameraControlMode::Weighted : VansCameraControlMode::Exclusive,
-			VansCameraControlSpace::World,
-			VansCameraControlArbiter::TimelinePriority + priority,
-			context.order.sequence, weight, channels, suppressUserLook && *suppressUserLook });
+		std::string submitError;
+		if (!m_Arbiter.Submit(TimelineContribution(
+			context.writer,
+			viewSnapshot,
+			Vans::VansCameraContributionKind::Shot,
+			(mode && *mode == "Blend")
+				? Vans::VansCameraBlendMode::Weighted
+				: Vans::VansCameraBlendMode::Exclusive,
+			Vans::VansCameraSpace::World,
+			VansCameraControlArbiter::TimelinePriority + context.order.priority,
+			context.order.sequence,
+			weight,
+			channels,
+			suppressUserLook && *suppressUserLook), submitError))
+		{
+			return { Vans::VansTimelineApplyStatus::Failed, {}, submitError };
+		}
 		return { Vans::VansTimelineApplyStatus::Applied };
 	}
 	bool Restore(Vans::VansTimelineRestoreToken) override { return true; }
@@ -304,27 +351,35 @@ public:
 		const auto* sample = view.As<Vans::VansTimelineSampleOutput>();
 		if (!sample || !sample->active || !context.section) return { Vans::VansTimelineApplyStatus::Ignored };
 		const Vans::VansTimelineCompiledDataReader reader(context.timeline.CompiledBytes(), context.timeline.CompiledValues());
-		VansCameraControlPose pose{};
+		Vans::VansCameraViewSnapshot offset{};
 		std::uint32_t channels = 0;
 		for (const Vans::VansTimelineChannel& channel : context.section->channels)
 			if (const auto value = Vans::VansTimelineEvaluator::SampleChannel(channel, sample->localTick))
 			{
 				if (channel.name == "positionOffset")
 					if (const auto* typed = std::get_if<Vans::VansTimelineVec3>(&*value))
-					{ pose.position = { typed->value[0], typed->value[1], typed->value[2] }; channels |= 0x01u; }
+					{ offset.pose.position = { typed->value[0], typed->value[1], typed->value[2] }; channels |= 0x01u; }
 				if (channel.name == "rotationOffset")
 					if (const auto* typed = std::get_if<Vans::VansTimelineVec3>(&*value))
-					{ pose.rotationDegrees = { typed->value[0], typed->value[1], typed->value[2] }; channels |= 0x02u; }
+					{ offset.pose.rotationDegrees = { typed->value[0], typed->value[1], typed->value[2] }; channels |= 0x02u; }
 			}
 		if (!channels) return { Vans::VansTimelineApplyStatus::Ignored };
 		const auto* amplitudeValue = reader.ValueAt(context.section->extensionData, 0);
-		const auto* priorityValue = reader.ValueAt(context.section->extensionData, 1);
 		const float amplitude = amplitudeValue ? Number(*amplitudeValue, 1.0f) : 1.0f;
-		const std::int32_t priority = priorityValue ? static_cast<std::int32_t>(Number(*priorityValue, 0)) : 0;
-		m_Arbiter.Submit({ TimelineOwner(context.writer), pose, VansCameraControlMode::Additive,
-			VansCameraControlSpace::CameraLocal,
-			VansCameraControlArbiter::TimelinePriority + priority, context.order.sequence,
-			static_cast<float>(std::clamp(sample->weight * amplitude, 0.0, 1.0)), channels });
+		std::string submitError;
+		if (!m_Arbiter.Submit(TimelineContribution(
+			context.writer,
+			offset,
+			Vans::VansCameraContributionKind::PoseOffset,
+			Vans::VansCameraBlendMode::Additive,
+			Vans::VansCameraSpace::CameraLocal,
+			VansCameraControlArbiter::TimelinePriority + context.order.priority,
+			context.order.sequence,
+			static_cast<float>(std::clamp(sample->weight * amplitude, 0.0, 1.0)),
+			channels), submitError))
+		{
+			return { Vans::VansTimelineApplyStatus::Failed, {}, submitError };
+		}
 		return { Vans::VansTimelineApplyStatus::Applied };
 	}
 	bool Restore(Vans::VansTimelineRestoreToken) override { return true; }
@@ -352,7 +407,7 @@ bool VansRegisterCameraTimelineIntegration(
 	return registry.Register(std::make_shared<CameraShakeTimelineApplier>(arbiter), error);
 }
 
-bool VansRegisterRenderTimelineExtensions(
+bool VansRegisterCameraTimelineExtensions(
 	Vans::VansTimelineTrackExtensionRegistry& registry,
 	std::string& error)
 {
@@ -368,7 +423,6 @@ bool VansRegisterRenderTimelineExtensions(
 				{ "Cut", "Blend" }),
 			Vans::VansMakeTimelineSourceField("blendDurationTicks", F::Int64, std::int64_t{}),
 			Vans::VansMakeTimelineSourceField("blendCurve", F::Struct, Vans::VansTimelineStructValue{}),
-			Vans::VansMakeTimelineSourceField("priority", F::Int32, std::int32_t{ 100 }),
 			Vans::VansMakeTimelineSourceField("blendOutDurationTicks", F::Int64, std::int64_t{}),
 			Vans::VansMakeTimelineSourceField("blendOutCurve", F::Struct, Vans::VansTimelineStructValue{}),
 			Vans::VansMakeTimelineSourceField("suppressUserLook", F::Bool, false) },
@@ -379,21 +433,11 @@ bool VansRegisterRenderTimelineExtensions(
 		{ {}, { Vans::VansMakeTimelineChannelSchema("fieldOfView", F::Float),
 			Vans::VansMakeTimelineChannelSchema("nearClip", F::Float),
 			Vans::VansMakeTimelineChannelSchema("farClip", F::Float) }, false, false }, nullptr), error)) return false;
-	if (!registry.Register(Vans::VansMakeTimelineSampleExtension(
+	return registry.Register(Vans::VansMakeTimelineSampleExtension(
 		Vans::TimelineNames::CameraShake, "Camera Shake", "Cinematic", P::Camera, B::None,
 		Vans::VansTimelineContinuousTrackFlags(),
-		{ { Vans::VansMakeTimelineSourceField("amplitudeScale", F::Float, 1.0f),
-			Vans::VansMakeTimelineSourceField("priority", F::Int32, std::int32_t{}) },
+		{ { Vans::VansMakeTimelineSourceField("amplitudeScale", F::Float, 1.0f) },
 			{ Vans::VansMakeTimelineChannelSchema("positionOffset", F::Vec3),
-				Vans::VansMakeTimelineChannelSchema("rotationOffset", F::Vec3) }, false, false }, nullptr), error)) return false;
-	auto fadePostProcess = Vans::VansMakeTimelineSampleExtension(
-		Vans::TimelineNames::FadePostProcess, "Fade / Post Process", "Cinematic", P::PostScript, B::None,
-		Vans::VansTimelineContinuousTrackFlags(),
-		{ { Vans::VansMakeTimelineSourceField("mode", F::Enum, std::string("Fade"), false,
-				{ "Fade", "PostProcess" }),
-			Vans::VansMakeTimelineSourceField("color", F::ColorLinear, Vans::VansTimelineColorLinear{}) },
-			{ Vans::VansMakeTimelineChannelSchema("weight", F::Float) }, false, false });
-	fadePostProcess.sectionAssetKind = "PostProcessProfile";
-	return registry.Register(std::move(fadePostProcess), error);
+				Vans::VansMakeTimelineChannelSchema("rotationOffset", F::Vec3) }, false, false }, nullptr), error);
 }
 }

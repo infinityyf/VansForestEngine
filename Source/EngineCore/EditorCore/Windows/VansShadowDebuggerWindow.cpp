@@ -1,6 +1,7 @@
 #include "VansShadowDebuggerWindow.h"
 
 #include "../VansEditorWindow.h"
+#include "../../EngineAPILayer/Public/IRenderEditorAPI.h"
 #include "imgui.h"
 
 #include <algorithm>
@@ -164,10 +165,11 @@ namespace
 
 void VansGraphics::VansShadowDebuggerWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-	if (!VansEditorWindow::m_ShadowDebuggerWindowOpen)
+	Vans::EditorAPI::IRenderEditorAPI& renderAPI = editorAPI;
+	if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::ShadowDebugger))
 		return;
 
-	if (!ImGui::Begin("Shadow Debugger", &VansEditorWindow::m_ShadowDebuggerWindowOpen))
+	if (!ImGui::Begin("Shadow Debugger", VansEditorWindow::WindowOpenState(VansEditorWindowId::ShadowDebugger)))
 	{
 		ImGui::End();
 		return;
@@ -181,8 +183,8 @@ void VansGraphics::VansShadowDebuggerWindow::ShowWindow(Vans::EditorAPI::IEngine
 	if (refreshSnapshot)
 	{
 		if (m_RequestPreviewNextFrame)
-			editorAPI.RequestPunctualShadowDebugPreview();
-		m_CachedSnapshot = editorAPI.GetPunctualShadowDebugSnapshot();
+			renderAPI.RequestPunctualShadowDebugPreview();
+		m_CachedSnapshot = renderAPI.GetPunctualShadowDebugSnapshot();
 		m_HasCachedSnapshot = true;
 		m_LastSnapshotTime = now;
 	}
@@ -299,7 +301,7 @@ void VansGraphics::VansShadowDebuggerWindow::ShowWindow(Vans::EditorAPI::IEngine
 
 			if (ImGui::Button("Apply"))
 			{
-				editorAPI.ApplyPunctualScreenSpaceShadowSettings(m_DraftSettings);
+				renderAPI.ApplyPunctualScreenSpaceShadowSettings(m_DraftSettings);
 				m_LastSnapshotTime = -1.0;
 			}
 			ImGui::SameLine();
@@ -310,7 +312,7 @@ void VansGraphics::VansShadowDebuggerWindow::ShowWindow(Vans::EditorAPI::IEngine
 				m_DraftSettings.normalBias = 0.020f;
 				m_DraftSettings.maxSteps = 96;
 				m_DraftSettings.strength = 1.0f;
-				editorAPI.ApplyPunctualScreenSpaceShadowSettings(m_DraftSettings);
+				renderAPI.ApplyPunctualScreenSpaceShadowSettings(m_DraftSettings);
 				m_LastSnapshotTime = -1.0;
 			}
 			ImGui::SameLine();

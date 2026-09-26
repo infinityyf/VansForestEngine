@@ -6,7 +6,7 @@
 
 namespace Vans::EditorAPI
 {
-	class IEngineEditorAPI;
+	class ISceneInteractionEditorAPI;
 }
 
 namespace Vans
@@ -15,7 +15,7 @@ namespace Vans
 	{
 	public:
 		static EditorAPI::EditorScenePickResult Pick(
-			EditorAPI::IEngineEditorAPI& editorAPI,
+			EditorAPI::ISceneInteractionEditorAPI& editorAPI,
 			const EditorAPI::Ray& ray,
 			float maxDistance, bool toggle, bool additive);
 	};

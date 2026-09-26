@@ -1,7 +1,8 @@
 #include "EngineAPIImpl.h"
-#include "../../EditorCore/ModelLod/VansModelLodBuilder.h"
-#include "../../EditorCore/VansAssetDocumentRegistry.h"
-#include "../../EditorCore/VansAssetDocumentEditService.h"
+#include "../../AuthoringCore/ModelLod/VansModelLodBuilder.h"
+#include "../../AuthoringCore/Pcg/VansPlantLodOrchestrator.h"
+#include "../../AuthoringCore/VansAssetDocumentRegistry.h"
+#include "../../AuthoringCore/VansAssetDocumentEditService.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../PcgCore/Serialization/VansPlantTypeAssetCodec.h"
 #include "../../RenderCore/VansScene.h"
@@ -47,7 +48,8 @@ ModelLodBuildResult EngineAPIImpl::BuildModelLods(const ModelLodBuildRequest& re
     }
     VansModelLodSettings settings;settings.ratios=request.ratios;settings.maximumError=request.maximumError;
     VansModelLodAsset asset;
-    if(!VansModelLodBuilder::Build(*database,parts,settings,asset,result.message))return result;
+    if(!VansModelLodBuilder::Build(*database,parts,settings,
+        VansModelLodBuildMode::Publish,asset,result.message))return result;
     result.success=true;result.buildKey=asset.buildKey;result.centerRadius=asset.centerRadius;
     for(const auto& level:asset.levels){ModelLodLevel output;
         for(const auto& part:level.parts)output.parts.push_back({part.model.ToString(),part.material.ToString(),part.submesh,part.sourcePart,part.triangleCount,part.error});
@@ -66,22 +68,12 @@ PcgEditorOperationResult EngineAPIImpl::BuildPcgPlantLods(const std::string& tex
     const auto state=document->sourceDocument.CurrentStateId();VansPlantTypeAsset plant;std::string error;
     if(!VansPlantTypeAssetCodec::Decode(document->sourceDocument.SerializedRootSnapshot(),plant,error))return {false,error};
     if(plant.category!=VansPlantCategory::Tree)return {true,{}};
-    for(auto& variant:plant.variants){
-        if(variant.geometry!=VansPlantGeometry::Mesh||variant.parts.empty())continue;
-        ModelLodBuildRequest request;request.ratios=variant.lodSettings.ratios;request.maximumError=variant.lodSettings.maximumError;
-        bool ready=true;
-        for(const auto& part:variant.parts){if(!part.mesh.IsValid()||!part.material.IsValid()){ready=false;break;}
-            request.parts.push_back({part.mesh.ToString(),part.material.ToString(),part.submesh,part.kind==VansPlantPartKind::Leaves});}
-        if(!ready)continue;
-        const auto built=BuildModelLods(request);if(!built.success)return {false,variant.name+": "+built.message};
-        variant.lod={};variant.lod.buildKey=built.buildKey;variant.lod.centerRadius=built.centerRadius;
-        for(const auto& level:built.levels){VansModelLodLevel output;
-            for(const auto& part:level.parts){VansModelLodPart value;VansAssetGuid::TryParse(part.model,value.model);VansAssetGuid::TryParse(part.material,value.material);
-                value.submesh=part.submesh;value.sourcePart=part.sourcePart;value.triangleCount=part.triangleCount;value.error=part.error;output.parts.push_back(value);}
-            variant.lod.levels.push_back(std::move(output));}
-    }
+    VansPlantTypeAsset builtPlant;
+    std::vector<VansPlantLodVariantSummary> summaries;
+    if(!VansPlantLodOrchestrator::Build(*database,plant,VansModelLodBuildMode::Publish,
+        builtPlant,summaries,error))return {false,error};
     if(document->sourceDocument.CurrentStateId()!=state)return {false,"Plant changed during LOD construction; apply again."};
-    VansSerializedValue root;if(!VansPlantTypeAssetCodec::Encode(plant,root,error))return {false,error};
+    VansSerializedValue root;if(!VansPlantTypeAssetCodec::Encode(builtPlant,root,error))return {false,error};
     const auto edited=VansAssetDocumentEditService::ReplaceRoot(document->sourceDocument,std::move(root));
     if(!edited)return {false,edited.message};
     const auto preview=RefreshPcgRecipePreview();

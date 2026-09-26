@@ -2,7 +2,7 @@
 
 #include "../AssetsSystem/VansAssetsFileWatcher.h"
 #include "../../AssetCore/Importers/Shader/VansShaderCompiler.h"
-#include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../../EngineAPILayer/Public/IShaderEditorAPI.h"
 #include "../../EventCore/VansEventConnection.h"
 
 #include <chrono>
@@ -15,16 +15,16 @@
 namespace Vans
 {
 	// Editor policy owner for automatic shader rebuilds. RenderCore is reached
-	// only through IEngineEditorAPI at the frame-safe call site.
+	// only through IShaderEditorAPI at the frame-safe call site.
 	class VansEditorShaderHotReloadController
 	{
 	public:
 		VansEditorShaderHotReloadController() = default;
 		~VansEditorShaderHotReloadController();
 
-		void Initialize(EditorAPI::IEngineEditorAPI& engineAPI);
+		void Initialize(EditorAPI::IShaderEditorAPI& engineAPI);
 		void Shutdown();
-		void TickAndApply(EditorAPI::IEngineEditorAPI& engineAPI);
+		void TickAndApply(EditorAPI::IShaderEditorAPI& engineAPI);
 
 	private:
 		struct ProgramState
@@ -46,11 +46,11 @@ namespace Vans
 			const std::vector<EditorAPI::ShaderProgramSourceSnapshot>& snapshots);
 		static std::filesystem::path FindShaderRoot(const std::filesystem::path& sourcePath);
 
-		void RefreshProgramRegistry(EditorAPI::IEngineEditorAPI& engineAPI);
+		void RefreshProgramRegistry(EditorAPI::IShaderEditorAPI& engineAPI);
 		void RebuildDependencyIndex();
 		void AddDependencyWatches(const ProgramState& program);
 		void HandleFileChangedEvent(const VansAssetFileChangedEvent& event);
-		void BuildProgram(const std::string& programId, EditorAPI::IEngineEditorAPI& engineAPI);
+		void BuildProgram(const std::string& programId, EditorAPI::IShaderEditorAPI& engineAPI);
 
 		VansAssetsFileWatcher m_FileWatcher;
 		VansScopedEventConnections m_EventConnections;

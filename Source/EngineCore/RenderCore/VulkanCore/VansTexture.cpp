@@ -23,6 +23,15 @@
 
 namespace VansGraphics
 {
+	bool VansRgba8Image::IsValid() const
+	{
+		if (width <= 0 || height <= 0)
+			return false;
+		const std::uint64_t expectedSize =
+			static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * 4u;
+		return expectedSize == pixels.size();
+	}
+
 	namespace
 	{
 		std::atomic<std::uint64_t> g_TextureUploadFailures{ 0 };
@@ -30,6 +39,31 @@ namespace VansGraphics
 		void RecordTextureUploadFailure()
 		{
 			g_TextureUploadFailures.fetch_add(1, std::memory_order_relaxed);
+		}
+
+		bool RetainCookedRgba8Mip0(
+			const Vans::VansCookedTextureData& cooked,
+			VansRgba8Image& image)
+		{
+			image = {};
+			if (cooked.format != Vans::VansCookedTextureFormat::RGBA8 || cooked.mips.empty())
+				return false;
+
+			const Vans::VansCookedTextureMip& mip = cooked.mips.front();
+			const std::uint64_t expectedSize =
+				static_cast<std::uint64_t>(mip.width) * static_cast<std::uint64_t>(mip.height) * 4u;
+			if (mip.width == 0 || mip.height == 0 || mip.size != expectedSize ||
+				mip.offset > cooked.data.size() || mip.size > cooked.data.size() - mip.offset)
+			{
+				return false;
+			}
+
+			image.width = static_cast<int>(mip.width);
+			image.height = static_cast<int>(mip.height);
+			image.pixels.assign(
+				cooked.data.begin() + static_cast<std::size_t>(mip.offset),
+				cooked.data.begin() + static_cast<std::size_t>(mip.offset + mip.size));
+			return image.IsValid();
 		}
 
 		bool ResolveCookedTextureFormat(
@@ -825,6 +859,7 @@ namespace VansGraphics
 
 	void VansTexture::LoadTexture(VansVKCommandBuffer& command_buffer, const TextureLoadDesc& loadDesc)
 	{
+		m_RetainedRgba8Image = {};
 		if (!loadDesc.cookedPath.empty() && LoadCookedTexture(command_buffer, loadDesc))
 			return;
 
@@ -847,6 +882,24 @@ namespace VansGraphics
 
 		if (loadDesc.importChannel != 0)
 			num_components = loadDesc.importChannel;
+
+		if (loadDesc.retainRgba8Pixels)
+		{
+			if (loadDesc.precision != LOW_PRES_8 || bytes_per_channel != 1 || num_components != 4)
+			{
+				VANS_LOG_ERROR("[VansTexture] Retained CPU image requires low8 RGBA source: "
+					<< loadDesc.path);
+				stbi_image_free(pixel_data);
+				return;
+			}
+			const std::size_t pixelBytes =
+				static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u;
+			m_RetainedRgba8Image.width = width;
+			m_RetainedRgba8Image.height = height;
+			m_RetainedRgba8Image.pixels.assign(
+				static_cast<const std::uint8_t*>(pixel_data),
+				static_cast<const std::uint8_t*>(pixel_data) + pixelBytes);
+		}
 
 		m_TextureWidth = width;
 		m_TextureHeight = height;
@@ -885,6 +938,13 @@ namespace VansGraphics
 			cooked.data.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
 		{
 			VANS_LOG_WARN("[VansTexture] Unsupported cooked texture payload: " << loadDesc.cookedPath);
+			return false;
+		}
+		if (loadDesc.retainRgba8Pixels &&
+			!RetainCookedRgba8Mip0(cooked, m_RetainedRgba8Image))
+		{
+			VANS_LOG_WARN("[VansTexture] Cooked texture cannot retain RGBA8 mip 0: "
+				<< loadDesc.cookedPath);
 			return false;
 		}
 
@@ -968,6 +1028,11 @@ namespace VansGraphics
 			loadDesc.useCompress, loadDesc.importChannel, format) ||
 			cooked.width == 0 || cooked.height == 0 || cooked.mips.empty() || cooked.data.empty() ||
 			cooked.data.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+		{
+			return false;
+		}
+		if (loadDesc.retainRgba8Pixels &&
+			!RetainCookedRgba8Mip0(cooked, m_RetainedRgba8Image))
 		{
 			return false;
 		}
@@ -1283,7 +1348,7 @@ namespace VansGraphics
 
 		RGBA8LayerUploadView upload{};
 		{
-			VANS_PROFILE_SCOPE("RectLightVideo::ResizeCPU", Vans::ProfileCategory::Video);
+			VANS_PROFILE_SCOPE("RectLightEmissive::ResizeCPU", Vans::ProfileCategory::Video);
 			upload = PrepareRGBA8LayerUpload(pixels, srcW, srcH, m_TextureWidth, m_TextureHeight);
 		}
 

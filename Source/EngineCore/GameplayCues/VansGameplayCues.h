@@ -1,13 +1,16 @@
 #pragma once
 
 #include "../GameplayActionCore/VansActionServices.h"
+#include "../GameplayActionSchema/VansGAFPerformanceBudget.h"
 #include "../GameplayActionSchema/VansGameplaySchemaTypes.h"
 #include "../RuntimeCore/VansGenerationPool.h"
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -16,6 +19,8 @@
 
 namespace Vans
 {
+struct VansTargetData;
+
 enum class VansGameplayCueScope : std::uint8_t
 {
 	Owner,
@@ -29,13 +34,14 @@ struct VansGameplayCueKey
 {
 	std::uint64_t correlationId = 0;
 	VansCueId cue;
+	std::uint64_t producerId = 0;
 	std::uint32_t sequence = 0;
 
-	bool IsValid() const { return cue.IsValid() && sequence != 0; }
+	bool IsValid() const { return cue.IsValid() && producerId != 0 && sequence != 0; }
 	friend bool operator==(const VansGameplayCueKey& left, const VansGameplayCueKey& right)
 	{
 		return left.correlationId == right.correlationId && left.cue == right.cue &&
-			left.sequence == right.sequence;
+			left.producerId == right.producerId && left.sequence == right.sequence;
 	}
 };
 
@@ -46,34 +52,72 @@ struct VansGameplayCueKeyHash
 		std::size_t value = std::hash<std::uint64_t>{}(key.cue.value);
 		value ^= std::hash<std::uint64_t>{}(key.correlationId) + 0x9e3779b9u +
 			(value << 6) + (value >> 2);
+		value ^= std::hash<std::uint64_t>{}(key.producerId) + 0x9e3779b9u +
+			(value << 6) + (value >> 2);
 		value ^= std::hash<std::uint32_t>{}(key.sequence) + 0x9e3779b9u + (value << 6) + (value >> 2);
 		return value;
 	}
+};
+
+enum class VansGameplayCueExecuteStatus : std::uint8_t
+{
+	Failed,
+	Executed,
+	Suppressed
 };
 
 struct VansGameplayCueParameters
 {
 	VansActionContext context;
 	VansEntityHandle target;
-	std::array<double, 3> position{};
-	std::array<double, 3> direction{};
+	std::optional<std::array<double, 3>> position;
+	std::optional<std::array<double, 3>> origin;
+	std::optional<std::array<double, 3>> direction;
+	std::optional<std::array<double, 3>> normal;
 	double intensity = 1.0;
 	VansGameplayTagId surface;
 	VansSerializedValue payload = VansSerializedValue::Object({});
 };
 
-struct VansGameplayCueAdapterMapping
+enum class VansGameplayCueSource : std::uint8_t
 {
-	std::string serviceName;
-	VansActionServiceId service;
-	std::string commandName;
+	Asset,
+	Target,
+	Position,
+	Origin,
+	Direction,
+	Normal,
+	Surface,
+	Intensity,
+	Payload
+};
+
+bool VansReadGameplayCueSource(std::string_view name, VansGameplayCueSource& source);
+std::string_view VansGameplayCueSourceName(VansGameplayCueSource source);
+void VansApplyGameplayCueTargetData(
+	VansGameplayCueParameters& parameters,
+	const VansTargetData& targetData);
+
+struct VansGameplayCueFieldBinding
+{
+	std::string field;
+	VansGameplayCueSource source = VansGameplayCueSource::Payload;
+};
+
+struct VansGameplayCueCommandBinding
+{
 	VansActionFieldId command;
-	std::string updateCommandName;
-	VansActionFieldId updateCommand;
-	std::string removeCommandName;
-	VansActionFieldId removeCommand;
+	VansSerializedValue values = VansSerializedValue::Object({});
+	std::vector<VansGameplayCueFieldBinding> fields;
+};
+
+struct VansGameplayCueBinding
+{
+	VansActionServiceId service;
 	std::string asset;
-	VansSerializedValue parameters = VansSerializedValue::Object({});
+	VansGameplayCueCommandBinding invoke;
+	VansGameplayCueCommandBinding update;
+	VansGameplayCueCommandBinding release;
 };
 
 class IVansGameplayCueAdapter
@@ -82,7 +126,7 @@ public:
 	virtual ~IVansGameplayCueAdapter() = default;
 	virtual VansCueId CueId() const = 0;
 	virtual std::string_view StableName() const = 0;
-	virtual VansGameplayCueScope DefaultScope() const { return VansGameplayCueScope::Target; }
+	virtual VansGameplayCueScope DefaultScope() const = 0;
 	virtual bool Execute(
 		const VansGameplayCueKey& key,
 		VansGameplayCueScope scope,
@@ -107,7 +151,7 @@ public:
 		VansCueId cue,
 		std::string stableName,
 		VansGameplayCueScope scope,
-		std::vector<VansGameplayCueAdapterMapping> mappings,
+		VansGameplayCueBinding binding,
 		const VansActionServiceRegistry* services);
 
 	bool Validate(std::string& error) const;
@@ -123,33 +167,23 @@ public:
 	bool Remove(VansGenerationHandle resource, std::string& error) override;
 
 private:
-	struct BoundResource
-	{
-		std::size_t mapping = 0;
-		VansGenerationHandle external;
-		bool active = true;
-	};
 	struct ActiveCue
 	{
-		VansGameplayCueKey key;
-		VansGameplayCueScope scope = VansGameplayCueScope::Target;
 		VansGameplayCueParameters parameters;
-		std::vector<BoundResource> resources;
+		VansGenerationHandle resource;
 	};
 
 	VansActionCommandResult Run(
-		const VansGameplayCueAdapterMapping& mapping,
-		std::string_view commandName,
-		VansActionFieldId command,
+		const VansGameplayCueCommandBinding& command,
 		const VansGameplayCueParameters& parameters,
 		VansGenerationHandle resource) const;
-	bool ReleaseBound(BoundResource& resource,
-		const VansGameplayCueParameters* parameters, std::string& error) const;
+	bool ReleaseBound(VansGenerationHandle resource,
+		const VansGameplayCueParameters& parameters, std::string& error) const;
 
 	VansCueId m_Cue;
 	std::string m_StableName;
-	VansGameplayCueScope m_Scope = VansGameplayCueScope::Target;
-	std::vector<VansGameplayCueAdapterMapping> m_Mappings;
+	VansGameplayCueScope m_Scope;
+	VansGameplayCueBinding m_Binding;
 	const VansActionServiceRegistry* m_Services = nullptr;
 	VansGenerationPool<ActiveCue> m_Active;
 };
@@ -158,9 +192,8 @@ class VansGameplayCueRegistry
 {
 public:
 	bool Register(std::shared_ptr<IVansGameplayCueAdapter> adapter, std::string& error);
-	bool Seal(std::string& error);
+	bool Seal(bool allowEmpty, std::string& error);
 	std::shared_ptr<IVansGameplayCueAdapter> Resolve(VansCueId cue) const;
-	VansGameplayCueScope DefaultScope(VansCueId cue) const;
 	bool IsSealed() const { return m_Sealed; }
 
 private:
@@ -171,25 +204,26 @@ private:
 class VansGameplayCueService
 {
 public:
-	explicit VansGameplayCueService(const VansGameplayCueRegistry* registry = nullptr)
-		: m_Registry(registry) {}
+	explicit VansGameplayCueService(
+		const VansGameplayCueRegistry* registry = nullptr,
+		std::size_t maximumExecutionHistory =
+			VansGAFPerformanceBudget::DefaultMaximumCueHistoryPerHost)
+		: m_Registry(registry), m_MaximumExecutionHistory(maximumExecutionHistory) {}
 
 	void SetRegistry(const VansGameplayCueRegistry* registry) { m_Registry = registry; }
-	bool Execute(
+	bool Contains(VansCueId cue) const { return m_Registry && m_Registry->Resolve(cue); }
+	VansGameplayCueExecuteStatus Execute(
 		const VansGameplayCueKey& key,
-		VansGameplayCueScope scope,
+		std::optional<VansGameplayCueScope> scopeOverride,
 		const VansGameplayCueParameters& parameters,
 		std::string& error);
 	VansCueHandle Add(
 		const VansGameplayCueKey& key,
-		VansGameplayCueScope scope,
+		std::optional<VansGameplayCueScope> scopeOverride,
 		const VansGameplayCueParameters& parameters,
-		std::uint64_t source,
 		std::string& error);
 	bool Update(VansCueHandle handle, const VansGameplayCueParameters& parameters, std::string& error);
 	bool Remove(VansCueHandle handle, std::string& error);
-	VansGameplayCueScope DefaultScope(VansCueId cue) const;
-	std::size_t RemoveSource(std::uint64_t source);
 	void Clear();
 	std::size_t ActiveCount() const { return m_Active.ActiveCount(); }
 
@@ -198,12 +232,12 @@ private:
 	{
 		std::shared_ptr<IVansGameplayCueAdapter> adapter;
 		VansGenerationHandle resource;
-		VansGameplayCueKey key;
-		std::uint64_t source = 0;
 	};
 
 	const VansGameplayCueRegistry* m_Registry = nullptr;
 	VansGenerationPool<ActiveCue> m_Active;
 	std::unordered_set<VansGameplayCueKey, VansGameplayCueKeyHash> m_Executed;
+	std::deque<VansGameplayCueKey> m_ExecutionOrder;
+	std::size_t m_MaximumExecutionHistory;
 };
 }

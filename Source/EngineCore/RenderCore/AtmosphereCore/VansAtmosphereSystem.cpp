@@ -307,59 +307,42 @@ bool VansAtmosphereSystem::CreateDescriptorResources()
 	if (!m_Scene)
 		return false;
 	auto* descriptors = VansVKDescriptorManager::GetInstance();
-	const VkShaderStageFlags compute = VK_SHADER_STAGE_COMPUTE_BIT;
-	const std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{ 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
-		{ 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
-		{ 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
-		{ 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
-		{ 4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
-		{ 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr },
-		{ 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr },
-		{ 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
-		{ 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr },
-		{ 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr },
-		{ 10, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
-		{ 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr }
-	};
-	if (!descriptors->CreateDesciptorSetLayout(bindings, m_PassLayout))
-		return false;
 	std::vector<VkDescriptorSet> sets;
-	if (!descriptors->AllocateDescriptorSet(
-		{ m_PassLayout }, sets, VansDescriptorLifetimeRole::ScenePersistent) || sets.empty())
+	if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Atmosphere(m_PassLayout, sets)
+		|| sets.empty())
 		return false;
 	m_PassSet = sets[0];
 
 	auto* renderPasses = VansRenderPassManager::GetInstance();
 	descriptors->BeginDescriptorUpdate();
-	descriptors->WriteImageDescriptor(m_PassSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_TRANSMITTANCE_LUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ m_TransmittanceLut.GetSampler(), m_TransmittanceLut.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_MULTI_SCATTERING_LUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ m_MultiScatteringLut.GetSampler(), m_MultiScatteringLut.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_SKY_VIEW_LUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ m_SkyViewLut.GetSampler(), m_SkyViewLut.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_AERIAL_SCATTERING, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ m_AerialScattering.GetSampler(), m_AerialScattering.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_AERIAL_OPTICAL_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ m_AerialOpticalDepth.GetSampler(), m_AerialOpticalDepth.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_RAW_OPAQUE_SCENE_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{{ renderPasses->GetRawOpaqueSceneColor().GetSampler(),
 		   renderPasses->GetRawOpaqueSceneColor().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_SCENE_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{{ renderPasses->GetDepth().GetSampler(),
 		   renderPasses->GetDepth().GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_SCENE_COLOR_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ renderPasses->GetColor().GetSampler(),
 		   renderPasses->GetColor().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_WATER_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{{ renderPasses->GetWaterGBufNormal().GetSampler(),
 		   renderPasses->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_WATER_POSITION_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{{ renderPasses->GetWaterGBufLinearDepth().GetSampler(),
 		   renderPasses->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 10, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_AERIAL_CLEAR_SCATTERING_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ m_AerialClearScattering.GetSampler(), m_AerialClearScattering.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_AERIAL_CLEAR_SCATTERING_INPUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{{ m_AerialClearScattering.GetSampler(), m_AerialClearScattering.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 	descriptors->CommitDescriptorUpdates();
 	return true;

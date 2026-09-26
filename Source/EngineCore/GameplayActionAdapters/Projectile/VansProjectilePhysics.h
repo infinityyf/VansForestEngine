@@ -30,14 +30,9 @@ inline VansEngine::PhysicsNodeProperties VansBuildProjectilePhysicsProperties(
     properties.material.dynamicFriction = request.friction;
     properties.material.restitutionCombine = combine(request.restitutionCombine);
     properties.material.frictionCombine = combine(request.frictionCombine);
+    properties.enableSpeculativeCcd = true;
+    properties.initialLinearVelocity = request.velocity;
+    properties.initialAngularVelocity = request.angularVelocity;
     return properties;
-}
-
-inline void VansLaunchProjectileBody(physx::PxRigidDynamic& actor, const VansProjectileSpawnRequest& request)
-{
-    physx::PxRigidBodyExt::setMassAndUpdateInertia(actor, request.mass);
-    actor.setRigidBodyFlag(physx::PxRigidBodyFlag::eENABLE_SPECULATIVE_CCD, true);
-    actor.setLinearVelocity(physx::PxVec3(request.velocity.x, request.velocity.y, request.velocity.z));
-    actor.setAngularVelocity(physx::PxVec3(request.angularVelocity.x, request.angularVelocity.y, request.angularVelocity.z));
 }
 }

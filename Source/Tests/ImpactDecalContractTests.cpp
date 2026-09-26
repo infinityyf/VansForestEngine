@@ -1,9 +1,12 @@
+#include "../EngineCore/SceneRuntime/Transform/VansTransformStore.h"
 #include "../EngineCore/RenderCore/Decal/VansImpactDecalSystem.h"
 #include "../EngineCore/RenderCore/VansRenderNode.h"
 #include "../EngineCore/GameplayActionAdapters/Decal/VansDecalActionService.h"
+#include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeWorld.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../EngineCore/PhysicsCore/VansPhysicsNode.h"
+#include "../EngineCore/PhysicsCore/VansPhysics.h"
 #include "../EngineCore/RuntimeCore/VansThreadContract.h"
 #include "../EngineCore/RenderCore/GeometryCore/VansTriangleGeometryQuery.h"
 #include <iostream>
@@ -44,8 +47,12 @@ bool TestImpactDecalRuntimeContract()
     std::string error;
     if (!check(system.AddPool("template", config, nodes, error), error.c_str())) return false;
     const auto aliveBefore = world.Entities().AliveCount();
-    const auto transformsBefore = VansTransformStore::GlobalTransforms.size();
-    auto anchor = VansTransformStore::GetTransform(target.m_TransformID).GetModelMatrix();
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> poolTransforms;
+    poolTransforms.reserve(nodes.size());
+    for (const auto* node : nodes)
+        poolTransforms.emplace_back(node->m_TransformID,
+            Vans::VansTransformStore::GetGeneration(node->m_TransformID));
+    auto anchor = Vans::VansTransformStore::Read(target.m_TransformID).GetModelMatrix();
     const glm::vec3 localPoint(.1f,.2f,.3f), localNormal(0,1,0);
     const glm::vec3 position = glm::vec3(anchor*glm::vec4(localPoint,1));
     const glm::vec3 normal = glm::normalize(glm::transpose(glm::inverse(glm::mat3(anchor)))*localNormal);
@@ -56,11 +63,20 @@ bool TestImpactDecalRuntimeContract()
     impact.hit.position = {position.x,position.y,position.z};
     impact.hit.normal = {normal.x,normal.y,normal.z};
     impact.hit.distance = 5;
+    impact.hit.surface = VansMakeStableId<VansGameplayTagIdTag>("Surface.Test.Concrete");
     VansSurfaceImpact decoded;
-    if (!check(VansDecodeSurfaceImpact(VansEncodeSurfaceImpact(impact), decoded, error) && decoded.hit.hitEntity == targetEntity,
-        "Surface impact codec lost collider identity")) return false;
+    if (!check(VansDecodeSurfaceImpact(VansEncodeSurfaceImpact(impact), decoded, error) && decoded.hit.hitEntity == targetEntity &&
+        decoded.hit.surface == impact.hit.surface, "Surface impact codec lost collider identity or surface tag")) return false;
+    const auto convertedImpact = VansToSurfaceImpact(VansToTargetHitResult(decoded), decoded.kind, decoded.layerName);
+    if (!check(convertedImpact.hit.surface == impact.hit.surface && convertedImpact.hit.position == impact.hit.position &&
+        convertedImpact.kind == impact.kind, "Surface impact conversion lost target hit fields")) return false;
+    auto missingSurface = VansEncodeSurfaceImpact(impact);
+    EraseSerializedObjectField(missingSurface, "surface");
+    if (!check(!VansDecodeSurfaceImpact(missingSurface, decoded, error) && decoded.hit.surface == impact.hit.surface,
+        "Missing surface tag was accepted or replaced the last valid impact")) return false;
     auto malformed = impact; malformed.hit.normal = {0,0,0};
-    if (!check(!VansDecodeSurfaceImpact(VansEncodeSurfaceImpact(malformed), decoded, error), "Zero normal accepted")) return false;
+    if (!check(!VansDecodeSurfaceImpact(VansEncodeSurfaceImpact(malformed), decoded, error) &&
+        decoded.hit.surface == impact.hit.surface, "Zero normal accepted or replaced the last valid impact")) return false;
     if (!check(system.Spawn("template", impact, error), "First rigid impact rejected")) return false;
     system.Tick(.31);
     auto debug = system.CaptureDebug();
@@ -68,7 +84,7 @@ bool TestImpactDecalRuntimeContract()
         debug[0].scale == glm::vec3(.04f,.01f,.04f) && target.m_DecalReceiverId>0 && neighbor.m_DecalReceiverId==0,
         "Placement, action-independent lifetime, size or receiver isolation failed")) return false;
     target.SetTransformData({-2,4,7},{-35,90,65},{.5f,4,2});
-    anchor = VansTransformStore::GetTransform(target.m_TransformID).GetModelMatrix();
+    anchor = Vans::VansTransformStore::Read(target.m_TransformID).GetModelMatrix();
     system.Tick(.1);
     debug = system.CaptureDebug();
     const glm::vec3 moved = glm::vec3(anchor*glm::vec4(localPoint,1));
@@ -81,8 +97,13 @@ bool TestImpactDecalRuntimeContract()
     debug = system.CaptureDebug();
     size_t active = 0;
     for (const auto& entry : debug) active += entry.active;
+    bool poolTransformsStable = poolTransforms.size() == nodes.size();
+    for (std::size_t i = 0; poolTransformsStable && i < nodes.size(); ++i)
+        poolTransformsStable = nodes[i]->m_TransformID == poolTransforms[i].first &&
+            Vans::VansTransformStore::IsAllocated(poolTransforms[i].first) &&
+            Vans::VansTransformStore::GetGeneration(poolTransforms[i].first) == poolTransforms[i].second;
     if (!check(active==64 && debug[0].receiver==debug[63].receiver && system.SpawnCount()==71 &&
-        world.Entities().AliveCount()==aliveBefore && VansTransformStore::GlobalTransforms.size()==transformsBefore,
+        world.Entities().AliveCount()==aliveBefore && poolTransformsStable,
         "Pool grew entities/transforms or lost bounded reuse")) return false;
     const auto tickBegin=std::chrono::steady_clock::now();
     for (int i=0; i<1000; ++i) system.Tick(0);
@@ -123,7 +144,9 @@ bool TestImpactDecalRuntimeContract()
                 { VansGeometryTriangle t; t.a=vertices.at(indices[0]);t.b=vertices.at(indices[i]);t.c=vertices.at(indices[i+1]);triangles.push_back(t); }
             }
         }
-        VansTriangleGeometryQuery query; query.Build(std::move(triangles)); VansGeometryHit hit;
+        VansTriangleGeometryQuery query;
+        if (!check(query.Build(std::move(triangles), error), error.c_str())) return false;
+        VansGeometryHit hit;
         if (!check(query.Raycast({.25f,1.5f,2},{0,0,-1},10,hit) && std::abs(hit.position.z-.1f)<.0001f &&
             maximumZ-hit.position.z>.1f,"Production wall ray did not distinguish rendered face from outer box")) return false;
         impact.kind=VansSurfaceImpactKind::Render; impact.hit.componentGuid="decal-render";
@@ -136,14 +159,14 @@ bool TestImpactDecalRuntimeContract()
         system.Tick(30.01);
     }
     if (!check(system.Spawn("template",impact,error),"Render receiver re-spawn failed")) return false;
-    const auto renderStorage=world.FindStorage(VansRuntimeComponentType_Render);
+    const auto renderStorage=world.FindStorage<VansRuntimeRenderComponent>(VansRuntimeComponentType_Render);
     world.SetComponentEnabled(renderStorage->FindByStableGuid("decal-render"),false); system.Tick(0);
     for (const auto& entry : system.CaptureDebug()) if (entry.active) return check(false,"Disabled render receiver retained decal");
     // 不同表面法线和负向投影，以及不受支持的材质/人物命中。
     for (glm::vec3 n : {glm::vec3(1,0,0),glm::vec3(0,-1,0),glm::vec3(0,0,1),glm::normalize(glm::vec3(1,2,3))})
     {
         const glm::vec3 reference=std::abs(n.y)<.9f?glm::vec3(0,1,0):glm::vec3(1,0,0);
-        VansTransform pose;
+        Vans::VansTransform pose;
         if (!check(VansImpactDecalSystem::BuildPose(glm::mat4(1),{},n,glm::normalize(glm::cross(reference,n)),config,pose) &&
             glm::dot(glm::normalize(glm::vec3(pose.GetModelMatrix()[1])),n)>.9999f,"Wall/ceiling/sloped normal orientation failed")) return false;
     }

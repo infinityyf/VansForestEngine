@@ -1,6 +1,9 @@
 #include "VansPostProcessWindow.h"
 
 #include "../VansEditorWindow.h"
+#include "../../EngineAPILayer/Public/IPlayModeEditorAPI.h"
+#include "../../EngineAPILayer/Public/IRuntimeCommandHistoryEditorAPI.h"
+#include "../../EngineAPILayer/Public/ISceneSettingsEditorAPI.h"
 
 #include "imgui.h"
 
@@ -78,7 +81,8 @@ namespace
 	}
 
 	void FlushPendingSceneCommit(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+		Vans::EditorAPI::IRuntimeCommandHistoryEditorAPI& runtimeHistoryAPI,
+		Vans::EditorAPI::ISceneSettingsEditorAPI& sceneSettingsAPI,
 		bool canPersist)
 	{
 		if (!g_PendingSceneCommit)
@@ -90,8 +94,8 @@ namespace
 			return;
 		}
 
-		editorAPI.CommitPostProcessSettings();
-		editorAPI.BreakCommandMergeGroup();
+		sceneSettingsAPI.CommitPostProcessSettings();
+		runtimeHistoryAPI.BreakCommandMergeGroup();
 		g_PendingSceneCommit = false;
 	}
 }
@@ -99,25 +103,28 @@ namespace
 void VansGraphics::VansPostProcessWindow::ShowWindow(
 	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-	const bool canPersist = editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
-	if (!VansEditorWindow::m_PostProcessWindowOpen)
+	Vans::EditorAPI::IRuntimeCommandHistoryEditorAPI& runtimeHistoryAPI = editorAPI;
+	Vans::EditorAPI::ISceneSettingsEditorAPI& sceneSettingsAPI = editorAPI;
+	Vans::EditorAPI::IPlayModeEditorAPI& playModeAPI = editorAPI;
+	const bool canPersist = playModeAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
+	if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::PostProcess))
 	{
-		FlushPendingSceneCommit(editorAPI, canPersist);
+		FlushPendingSceneCommit(runtimeHistoryAPI, sceneSettingsAPI, canPersist);
 		return;
 	}
 
 	g_CommandMergeBoundaryReached = false;
-	if (!ImGui::Begin("Post Process", &VansEditorWindow::m_PostProcessWindowOpen))
+	if (!ImGui::Begin("Post Process", VansEditorWindow::WindowOpenState(VansEditorWindowId::PostProcess)))
 	{
-		FlushPendingSceneCommit(editorAPI, canPersist);
+		FlushPendingSceneCommit(runtimeHistoryAPI, sceneSettingsAPI, canPersist);
 		ImGui::End();
 		return;
 	}
 
-	Vans::EditorAPI::PostProcessSettingsSnapshot settings = editorAPI.GetPostProcessSettings();
+	Vans::EditorAPI::PostProcessSettingsSnapshot settings = sceneSettingsAPI.GetPostProcessSettings();
 	if (!settings.available)
 	{
-		FlushPendingSceneCommit(editorAPI, canPersist);
+		FlushPendingSceneCommit(runtimeHistoryAPI, sceneSettingsAPI, canPersist);
 		ImGui::TextDisabled("Post-process runtime is not available. Load a scene first.");
 		ImGui::End();
 		return;
@@ -217,30 +224,30 @@ void VansGraphics::VansPostProcessWindow::ShowWindow(
 
 	if (changed)
 	{
-		editorAPI.ApplyPostProcessSettings(settings);
+		sceneSettingsAPI.ApplyPostProcessSettings(settings);
 		if (canPersist)
 			g_PendingSceneCommit = true;
 		else
 			g_PendingSceneCommit = false;
 	}
 	if (g_CommandMergeBoundaryReached || !ImGui::IsAnyItemActive())
-		FlushPendingSceneCommit(editorAPI, canPersist);
+		FlushPendingSceneCommit(runtimeHistoryAPI, sceneSettingsAPI, canPersist);
 
 	ImGui::Separator();
 	if (ImGui::Button("Reset to Defaults"))
 	{
 		Vans::EditorAPI::PostProcessSettingsSnapshot defaults;
 		defaults.available = true;
-		editorAPI.BreakCommandMergeGroup();
-		editorAPI.ApplyPostProcessSettings(defaults);
+		runtimeHistoryAPI.BreakCommandMergeGroup();
+		sceneSettingsAPI.ApplyPostProcessSettings(defaults);
 		g_PendingSceneCommit = false;
 		if (canPersist)
-			editorAPI.CommitPostProcessSettings();
-		editorAPI.BreakCommandMergeGroup();
+			sceneSettingsAPI.CommitPostProcessSettings();
+		runtimeHistoryAPI.BreakCommandMergeGroup();
 	}
 
 	if (g_CommandMergeBoundaryReached)
-		editorAPI.BreakCommandMergeGroup();
+		runtimeHistoryAPI.BreakCommandMergeGroup();
 
 	ImGui::End();
 }

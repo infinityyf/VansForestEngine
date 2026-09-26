@@ -11,18 +11,15 @@
 #include "../TerrainCore/VansTerrainAsset.h"
 #include <memory>
 
-using namespace physx;
-
 namespace VansEngine
 {
+    using namespace physx;
+
     struct TerrainPhysicsProperties
     {
         bool enabled = false;
         std::shared_ptr<const Vans::VansTerrainAsset> surface;
-        float terrainSize = 1024.0f;
-        float maxHeight = 500.0f;
-        float heightOffset = -23.0f;
-        std::string layerName = "Environment";
+        std::string layerName;
         PhysicsMaterialProperties material;
     };
 
@@ -40,10 +37,19 @@ namespace VansEngine
         PxRigidStatic* GetActor() const { return m_Actor; }
 
     private:
-        bool LoadHeightSamples(std::vector<PxHeightFieldSample>& samples, PxU32& rowCount, PxU32& columnCount);
+        static bool BuildHeightSamples(
+            const Vans::VansTerrainAsset& surface,
+            std::vector<PxHeightFieldSample>& samples,
+            PxU32& rowCount,
+            PxU32& columnCount);
+        static PxHeightFieldGeometry BuildHeightFieldGeometry(
+            PxHeightField* heightField,
+            PxU32 rowCount,
+            PxU32 columnCount,
+            const Vans::VansTerrainAssetSettings& settings);
         bool CreateHeightFieldActor(const std::vector<PxHeightFieldSample>& samples, PxU32 rowCount, PxU32 columnCount);
         PxMaterial* CreatePhysicsMaterial();
-        void ApplyFilterData();
+        bool ApplyFilterData();
 
     private:
         TerrainPhysicsProperties m_Properties;

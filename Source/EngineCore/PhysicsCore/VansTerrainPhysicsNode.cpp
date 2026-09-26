@@ -1,11 +1,13 @@
 #include "VansTerrainPhysicsNode.h"
-#include "VansCollisionLayerManager.h"
+#include "VansPhysics.h"
+#include "VansPhysicsNativeAccess.h"
+#include "VansCollisionFilter.h"
+#include "../TerrainCore/VansTerrainHeightEncoding.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <iomanip>
 
 namespace VansEngine
 {
@@ -37,7 +39,7 @@ namespace VansEngine
         std::vector<PxHeightFieldSample> samples;
         PxU32 rowCount = 0;
         PxU32 columnCount = 0;
-        if (!LoadHeightSamples(samples, rowCount, columnCount))
+        if (!BuildHeightSamples(*m_Properties.surface, samples, rowCount, columnCount))
         {
             return false;
         }
@@ -48,14 +50,15 @@ namespace VansEngine
             return false;
         }
 
-        ApplyFilterData();
+        if (!ApplyFilterData())
+        {
+            VANS_LOG_ERROR("[TerrainPhysics] Unknown collision layer '"
+                << m_Properties.layerName << "'.");
+            Shutdown();
+            return false;
+        }
         m_Enabled = true;
 
-        VANS_LOG("[TerrainPhysics] Heightfield collision created. rows=" << rowCount
-                 << " columns=" << columnCount
-                 << " terrainSize=" << m_Properties.terrainSize
-                 << " maxHeight=" << m_Properties.maxHeight
-                 << " heightOffset=" << m_Properties.heightOffset);
         return true;
     }
 
@@ -63,7 +66,8 @@ namespace VansEngine
     {
         if (m_Actor)
         {
-            PxScene* scene = VansPhysicsSystem::GetInstance().GetScene();
+            auto& physicsSystem = VansPhysicsSystem::GetInstance();
+            PxScene* scene = VansPhysicsNativeAccess::Scene(physicsSystem);
             if (scene)
             {
                 PxSceneWriteLock scopedWriteLock(*scene);
@@ -94,68 +98,119 @@ namespace VansEngine
         m_Enabled = false;
     }
 
-    bool VansTerrainPhysicsNode::LoadHeightSamples(std::vector<PxHeightFieldSample>& samples, PxU32& rowCount, PxU32& columnCount)
+    bool VansTerrainPhysicsNode::BuildHeightSamples(
+        const Vans::VansTerrainAsset& surface,
+        std::vector<PxHeightFieldSample>& samples,
+        PxU32& rowCount,
+        PxU32& columnCount)
     {
-        const auto& surface=m_Properties.surface;
-        if (!surface || !surface->HasPixelData()) return false;
-        rowCount=surface->width;columnCount=surface->height;
-        samples.resize(static_cast<size_t>(rowCount)*columnCount);
-        // 保留已有高度场网格布局和量化约定，数据改为共享的内存有效地形。
-        for (PxU32 row=0;row<rowCount;++row) for (PxU32 column=0;column<columnCount;++column)
+        if (!surface.HasPixelData() || surface.width < 2u || surface.height < 2u)
         {
-            const auto pixel=surface->heights[static_cast<size_t>(column)*rowCount+row];
-            auto& sample=samples[static_cast<size_t>(row)*columnCount+column];
-            sample.height=static_cast<PxI16>(std::lround(float(pixel)*32767.0f/65535.0f));
-            sample.materialIndex0=0;sample.materialIndex1=0;sample.clearTessFlag();
+            return false;
+        }
+
+        rowCount = surface.width;
+        columnCount = surface.height;
+        samples.resize(static_cast<size_t>(rowCount) * columnCount);
+        for (PxU32 row = 0; row < rowCount; ++row)
+        {
+            for (PxU32 column = 0; column < columnCount; ++column)
+            {
+                const auto pixel = surface.heights[
+                    static_cast<size_t>(column) * rowCount + row];
+                auto& sample = samples[
+                    static_cast<size_t>(row) * columnCount + column];
+                sample.height = Vans::VansTerrainHeightEncoding::EncodePhysics(pixel);
+                sample.materialIndex0 = 0;
+                sample.materialIndex1 = 0;
+                sample.clearTessFlag();
+            }
         }
         return true;
     }
 
+    PxHeightFieldGeometry VansTerrainPhysicsNode::BuildHeightFieldGeometry(
+        PxHeightField* heightField,
+        PxU32 rowCount,
+        PxU32 columnCount,
+        const Vans::VansTerrainAssetSettings& settings)
+    {
+        return PxHeightFieldGeometry(
+            heightField,
+            PxMeshGeometryFlags(),
+            Vans::VansTerrainHeightEncoding::PhysicsHeightScale(settings.maxHeight),
+            settings.terrainSize / static_cast<float>(rowCount - 1u),
+            settings.terrainSize / static_cast<float>(columnCount - 1u));
+    }
+
     bool VansTerrainPhysicsNode::UpdateSurface(std::shared_ptr<const Vans::VansTerrainAsset> surface)
     {
-        if (!surface || !surface->HasPixelData()) return false;
-        auto properties=m_Properties;
-        properties.surface=surface;
-        properties.terrainSize=surface->settings.terrainSize;
-        properties.maxHeight=surface->settings.maxHeight;
-        properties.heightOffset=surface->settings.heightOffset;
+        if (!surface || !surface->HasPixelData())
+        {
+            return false;
+        }
+
+        auto properties = m_Properties;
+        properties.surface = surface;
         if (!m_HeightField || !m_Shape || !m_Actor ||
-            m_HeightField->getNbRows()!=surface->width || m_HeightField->getNbColumns()!=surface->height ||
-            m_Properties.terrainSize!=properties.terrainSize || m_Properties.maxHeight!=properties.maxHeight ||
-            m_Properties.heightOffset!=properties.heightOffset)
+            m_HeightField->getNbRows() != surface->width ||
+            m_HeightField->getNbColumns() != surface->height ||
+            !m_Properties.surface ||
+            m_Properties.surface->settings.terrainSize != surface->settings.terrainSize ||
+            m_Properties.surface->settings.maxHeight != surface->settings.maxHeight ||
+            m_Properties.surface->settings.heightOffset != surface->settings.heightOffset)
         {
             VansTerrainPhysicsNode replacement;
-            if (!replacement.Initialize(properties)) return false;
-            std::swap(m_Properties,replacement.m_Properties);
-            std::swap(m_HeightField,replacement.m_HeightField);
-            std::swap(m_Shape,replacement.m_Shape);
-            std::swap(m_Actor,replacement.m_Actor);
-            std::swap(m_Material,replacement.m_Material);
-            std::swap(m_Enabled,replacement.m_Enabled);
+            if (!replacement.Initialize(properties))
+            {
+                return false;
+            }
+            std::swap(m_Properties, replacement.m_Properties);
+            std::swap(m_HeightField, replacement.m_HeightField);
+            std::swap(m_Shape, replacement.m_Shape);
+            std::swap(m_Actor, replacement.m_Actor);
+            std::swap(m_Material, replacement.m_Material);
+            std::swap(m_Enabled, replacement.m_Enabled);
             return true;
         }
-        const auto old=m_Properties.surface;
-        m_Properties.surface=surface;
-        std::vector<PxHeightFieldSample> samples;PxU32 rows=0,columns=0;
-        if (!LoadHeightSamples(samples,rows,columns)) {m_Properties.surface=old;return false;}
-        PxHeightFieldDesc desc;desc.nbRows=rows;desc.nbColumns=columns;
-        desc.samples.data=samples.data();desc.samples.stride=sizeof(PxHeightFieldSample);
-        auto* scene=VansPhysicsSystem::GetInstance().GetScene();
-        if (!scene) {m_Properties.surface=old;return false;}
+
+        std::vector<PxHeightFieldSample> samples;
+        PxU32 rows = 0;
+        PxU32 columns = 0;
+        if (!BuildHeightSamples(*surface, samples, rows, columns))
+        {
+            return false;
+        }
+
+        PxHeightFieldDesc desc;
+        desc.nbRows = rows;
+        desc.nbColumns = columns;
+        desc.samples.data = samples.data();
+        desc.samples.stride = sizeof(PxHeightFieldSample);
+        auto& physicsSystem = VansPhysicsSystem::GetInstance();
+        auto* scene = VansPhysicsNativeAccess::Scene(physicsSystem);
+        if (!scene)
+        {
+            return false;
+        }
         PxSceneWriteLock lock(*scene);
-        if (!m_HeightField->modifySamples(0,0,desc,true)) {m_Properties.surface=old;return false;}
-        const PxHeightFieldGeometry geometry(m_HeightField,PxMeshGeometryFlags(),
-            properties.maxHeight/32767.0f,properties.terrainSize/float(rows-1),properties.terrainSize/float(columns-1));
+        if (!m_HeightField->modifySamples(0, 0, desc, true))
+        {
+            return false;
+        }
+        const PxHeightFieldGeometry geometry = BuildHeightFieldGeometry(
+            m_HeightField, rows, columns, surface->settings);
         // PhysX 要求更新所有引用形状，刷新查询加速结构与边界。
         m_Shape->setGeometry(geometry);
+        m_Properties = properties;
         return true;
     }
 
     bool VansTerrainPhysicsNode::CreateHeightFieldActor(const std::vector<PxHeightFieldSample>& samples, PxU32 rowCount, PxU32 columnCount)
     {
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
-        PxPhysics* physics = physicsSystem.GetPhysics();
-        PxScene* scene = physicsSystem.GetScene();
+        PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
+        PxScene* scene = VansPhysicsNativeAccess::Scene(physicsSystem);
 
         if (!physics || !scene)
         {
@@ -163,10 +218,11 @@ namespace VansEngine
             return false;
         }
 
-        if (m_Properties.terrainSize <= 0.0f || m_Properties.maxHeight <= 0.0f)
+        const Vans::VansTerrainAssetSettings& settings = m_Properties.surface->settings;
+        if (settings.terrainSize <= 0.0f || settings.maxHeight <= 0.0f)
         {
-            VANS_LOG_ERROR("[TerrainPhysics] Invalid terrain scale: terrainSize=" << m_Properties.terrainSize
-                           << " maxHeight=" << m_Properties.maxHeight);
+            VANS_LOG_ERROR("[TerrainPhysics] Invalid terrain scale: terrainSize=" << settings.terrainSize
+                           << " maxHeight=" << settings.maxHeight);
             return false;
         }
 
@@ -182,7 +238,7 @@ namespace VansEngine
             return false;
         }
 
-        m_HeightField = physicsSystem.CookHeightField(heightFieldDesc);
+        m_HeightField = VansPhysicsNativeAccess::CookHeightField(physicsSystem, heightFieldDesc);
         if (!m_HeightField)
         {
             VANS_LOG_ERROR("[TerrainPhysics] Failed to cook PxHeightField.");
@@ -196,11 +252,8 @@ namespace VansEngine
             return false;
         }
 
-        const float heightScale = m_Properties.maxHeight / 32767.0f;
-        const float rowScale = m_Properties.terrainSize / static_cast<float>(rowCount - 1);
-        const float columnScale = m_Properties.terrainSize / static_cast<float>(columnCount - 1);
-
-        PxHeightFieldGeometry geometry(m_HeightField, PxMeshGeometryFlags(), heightScale, rowScale, columnScale);
+        const PxHeightFieldGeometry geometry = BuildHeightFieldGeometry(
+            m_HeightField, rowCount, columnCount, m_Properties.surface->settings);
         if (!geometry.isValid())
         {
             VANS_LOG_ERROR("[TerrainPhysics] Invalid PxHeightFieldGeometry.");
@@ -217,8 +270,8 @@ namespace VansEngine
         m_Shape->setFlag(PxShapeFlag::eSIMULATION_SHAPE, true);
         m_Shape->setFlag(PxShapeFlag::eSCENE_QUERY_SHAPE, true);
 
-        const float halfSize = m_Properties.terrainSize * 0.5f;
-        PxTransform terrainTransform(PxVec3(-halfSize, m_Properties.heightOffset, -halfSize), PxQuat(PxIdentity));
+        const float halfSize = settings.terrainSize * 0.5f;
+        PxTransform terrainTransform(PxVec3(-halfSize, settings.heightOffset, -halfSize), PxQuat(PxIdentity));
         m_Actor = physics->createRigidStatic(terrainTransform);
         if (!m_Actor)
         {
@@ -238,15 +291,13 @@ namespace VansEngine
             scene->addActor(*m_Actor);
         }
 
-        VANS_LOG("[TerrainPhysics] Geometry scale: heightScale=" << heightScale
-                 << " rowScale=" << rowScale
-                 << " columnScale=" << columnScale);
         return true;
     }
 
     PxMaterial* VansTerrainPhysicsNode::CreatePhysicsMaterial()
     {
-        PxPhysics* physics = VansPhysicsSystem::GetInstance().GetPhysics();
+        auto& physicsSystem = VansPhysicsSystem::GetInstance();
+        PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
         if (!physics)
         {
             return nullptr;
@@ -258,33 +309,23 @@ namespace VansEngine
             m_Properties.material.restitution);
     }
 
-    void VansTerrainPhysicsNode::ApplyFilterData()
+    bool VansTerrainPhysicsNode::ApplyFilterData()
     {
         if (!m_Shape)
         {
-            return;
-        }
-
-        auto& layerMgr = VansCollisionLayerManager::Get();
-        int layerIdx = layerMgr.GetLayerIndex(m_Properties.layerName);
-        if (layerIdx == 0 && m_Properties.layerName != layerMgr.GetLayerName(0))
-        {
-            VANS_LOG_WARN("[TerrainPhysics] Layer '" << m_Properties.layerName
-                          << "' not found, terrain collision falls back to '"
-                          << layerMgr.GetLayerName(0) << "'.");
+            return false;
         }
 
         PxFilterData filterData;
-        filterData.word0 = static_cast<PxU32>(layerIdx);
-        filterData.word1 = layerMgr.GetCollisionMask(layerIdx);
-        filterData.word2 = 0u;
-        filterData.word3 = 0u;
+        if (!VansCollisionFilter::Build(
+            m_Properties.layerName,
+            VansCollisionFilter::None,
+            0u,
+            filterData))
+            return false;
 
         m_Shape->setSimulationFilterData(filterData);
         m_Shape->setQueryFilterData(filterData);
-
-        VANS_LOG("[TerrainPhysics] ApplyFilterData: layer='" << m_Properties.layerName
-                 << "' layerIdx=" << layerIdx
-                 << " mask=0x" << std::hex << filterData.word1 << std::dec);
+        return true;
     }
 }

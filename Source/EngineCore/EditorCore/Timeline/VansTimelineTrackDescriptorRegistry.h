@@ -24,9 +24,12 @@ struct VansTimelineTrackDescriptor
 class VansTimelineTrackDescriptorRegistry
 {
 public:
-	static const VansTimelineTrackDescriptor* Find(VansTimelineTrackTypeId typeId);
-	static const VansTimelineTrackDescriptor* Find(const VansTimelineTrackTypeRef& type);
-	static const std::vector<VansTimelineTrackDescriptor>& All();
+	static const VansTimelineTrackDescriptor* Find(
+		const std::vector<VansTimelineTrackDescriptor>& descriptors,
+		VansTimelineTrackTypeId typeId);
+	static const VansTimelineTrackDescriptor* Find(
+		const std::vector<VansTimelineTrackDescriptor>& descriptors,
+		const VansTimelineTrackTypeRef& type);
 	static std::vector<VansTimelineTrackDescriptor> Build(
 		const VansTimelineTrackExtensionRegistry& extensions);
 };

@@ -91,7 +91,9 @@ namespace VansGraphics
 		Equal,         // ==
 		NotEqual,      // !=
 		GreaterEqual,  // >=
-		LessEqual      // <=
+		LessEqual,     // <=
+		AbsGreaterEqual, // abs(value) >= threshold
+		AbsLess          // abs(value) < threshold
 	};
 
 	// ─── 过渡条件 ───
@@ -116,6 +118,15 @@ namespace VansGraphics
 		bool               rootMotion  = false;
 		float              startTime   = 0.0f;
 		float              endTime     = -1.0f;  // -1 = 完整 clip
+		// Optional pose graph node used by generic state machines.  When set,
+		// the state evaluates that node instead of sampling clipName directly;
+		// this lets imported state machines keep BlendSpace/pose subgraphs while
+		// preserving the same transition and timing machinery.
+		int                poseNodeId  = -1;
+		// Optional runtime float parameter used to scale this state's playback.
+		// Empty keeps the authored constant speed. This is generic state-machine
+		// functionality for imported per-state play-rate pins.
+		std::string        speedParameter;
 	};
 
 	// ─── 过渡（Transition）───
@@ -200,6 +211,10 @@ namespace VansGraphics
 
 		// ─── 状态查询 ──────────────────────────────────────────────────
 		std::string GetCurrentStateName() const;
+		std::string GetActiveStatePath() const;
+		// Primary clip selected by the active graph. This is a diagnostic query
+		// shared by retargeted and ordinary animation controllers.
+		std::string GetPrimaryClipName() const;
 		AnimationState GetPlaybackState() const;
 		float GetCurrentPlayTime() const;
 		float GetCurrentDuration() const;
@@ -456,8 +471,6 @@ namespace VansGraphics
 		                       const Skeleton& skeleton);
 		void NormalizeRootTransform(std::vector<glm::mat4>& localTransforms,
 		                            const Skeleton& skeleton);
-		void UpdateHierarchy(std::vector<glm::mat4>& localTransforms,
-		                     const Skeleton& skeleton);
 		void BuildFinalMatrices(const std::vector<glm::mat4>& globalTransforms,
 		                        const Skeleton& skeleton);
 		void RefreshExternalMotionState();

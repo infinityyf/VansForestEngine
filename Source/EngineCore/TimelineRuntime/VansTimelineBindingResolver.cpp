@@ -1,5 +1,6 @@
 #include "VansTimelineBindingResolver.h"
 
+#include "../SceneCore/VansComponentTypeCatalog.h"
 #include "../SceneRuntime/VansRuntimeWorld.h"
 
 #include <algorithm>
@@ -91,13 +92,13 @@ VansResolvedTimelineTarget VansTimelineBindingResolver::ResolveOne(
 
 	std::string entityGuid = binding.targetGuid;
 	std::string componentGuid = binding.componentGuid;
-	std::uint16_t componentTypeId = binding.componentTypeId;
+	std::string componentType = binding.componentType;
 	if (const VansTimelineBindingOverride* overrideValue = FindOverride(compiled.id))
 	{
 		if (overrideValue->useOwner) target.entity = m_Owner;
 		else if (!overrideValue->targetEntityGuid.empty()) entityGuid = overrideValue->targetEntityGuid;
 		if (!overrideValue->targetComponentGuid.empty()) componentGuid = overrideValue->targetComponentGuid;
-		if (overrideValue->targetComponentTypeId != 0) componentTypeId = overrideValue->targetComponentTypeId;
+		if (!overrideValue->targetComponentType.empty()) componentType = overrideValue->targetComponentType;
 	}
 	if (!target.entity.IsValid() && (entityGuid == "owner" || entityGuid.empty()) &&
 		binding.kind != VansTimelineBindingKind::Asset && binding.kind != VansTimelineBindingKind::External)
@@ -108,6 +109,19 @@ VansResolvedTimelineTarget VansTimelineBindingResolver::ResolveOne(
 	if (binding.kind == VansTimelineBindingKind::SceneComponent ||
 		binding.kind == VansTimelineBindingKind::UIComponent)
 	{
+		const VansComponentTypeDescriptor* componentDescriptor = componentType.empty()
+			? nullptr
+			: VansComponentTypeCatalog::Find(componentType);
+		const std::uint16_t componentTypeId = componentDescriptor
+			? componentDescriptor->runtimeTypeId
+			: VansInvalidComponentTypeId;
+		if (!componentType.empty() && componentTypeId == VansInvalidComponentTypeId)
+		{
+			diagnostics.push_back({ VansTimelineDiagnosticSeverity::Error,
+				"Timeline.BindingComponentTypeUnknown", {}, binding.id, "componentType",
+				"Timeline binding references an unknown component type '" + componentType + "'" });
+			return target;
+		}
 		target.component = m_World->FindComponentByGuid(componentGuid, componentTypeId);
 		if (const auto* header = m_World->GetComponentHeader(target.component)) target.entity = header->owner;
 		target.valid = target.component.IsValid() && m_World->IsAlive(target.entity);

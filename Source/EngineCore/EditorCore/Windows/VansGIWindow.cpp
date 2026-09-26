@@ -1,6 +1,7 @@
 #include "VansGIWindow.h"
 
 #include "../VansEditorWindow.h"
+#include "../../EngineAPILayer/Public/IGIEditorAPI.h"
 #include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
 #include "imgui.h"
 
@@ -14,16 +15,17 @@ namespace VansGraphics
 {
 void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-	if (!VansEditorWindow::m_GIWindowOpen)
+	Vans::EditorAPI::IGIEditorAPI& giAPI = editorAPI;
+	if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::GI))
 		return;
 
-	if (!ImGui::Begin("GI Inspector", &VansEditorWindow::m_GIWindowOpen))
+	if (!ImGui::Begin("GI Inspector", VansEditorWindow::WindowOpenState(VansEditorWindowId::GI)))
 	{
 		ImGui::End();
 		return;
 	}
 
-	Vans::EditorAPI::GIInspectorSettingsSnapshot settings = editorAPI.GetGISettings();
+	Vans::EditorAPI::GIInspectorSettingsSnapshot settings = giAPI.GetGISettings();
 	static Vans::EditorAPI::GIInspectorSettingsSnapshot draftSettings;
 	static bool draftInitialized = false;
 	static bool applyFailed = false;
@@ -102,7 +104,7 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 				(previewParamsChanged || previews.empty() || lastPreviewRequestTime < 0.0 || (now - lastPreviewRequestTime) >= 0.25);
 			if (refreshRequested || livePreviewDue)
 			{
-				previews = editorAPI.RequestGIRTPreviews(
+				previews = giAPI.RequestGIRTPreviews(
 					followActiveSlice ? 0xffffffffu : static_cast<std::uint32_t>(zSlice),
 					static_cast<std::uint32_t>(rayIndex),
 					previewExposure,
@@ -294,7 +296,7 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 			visualizationChanged = true;
 		}
 		if (visualizationChanged)
-			editorAPI.SetGIProbeVisualization(draftSettings.showProbeGizmos, draftSettings.showProbeVolume, draftSettings.gizmoStride);
+			giAPI.SetGIProbeVisualization(draftSettings.showProbeGizmos, draftSettings.showProbeVolume, draftSettings.gizmoStride);
 		ImGui::TextDisabled("Display changes apply immediately. Stride 1 shows every probe.");
 
 		ImGui::DragFloat("DDGI Atlas Exposure", &draftSettings.debugExposure, 0.05f, 0.001f, 64.0f, "%.3f");
@@ -304,7 +306,7 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 		ImGui::TextDisabled("Directly displays the per-pixel DDGI atlas sample. SSGI, sky, direct lighting and BRDF are skipped.");
 
 		ImGui::Separator();
-		const auto debugSnapshot = editorAPI.GetGIProbeDebugSnapshot();
+		const auto debugSnapshot = giAPI.GetGIProbeDebugSnapshot();
 		if (debugSnapshot && debugSnapshot->available)
 		{
 			ImGui::Text("Physical probes: %u; displayed: %u", debugSnapshot->physicalProbeCount, static_cast<unsigned>(debugSnapshot->probes.size()));
@@ -317,7 +319,7 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	if (ImGui::Button("Apply Runtime GI Settings"))
 	{
 		draftSettings.available = true;
-		applyFailed = !editorAPI.ApplyGISettings(draftSettings);
+		applyFailed = !giAPI.ApplyGISettings(draftSettings);
 		if (!applyFailed) draftInitialized = false;
 	}
 	ImGui::SameLine();
@@ -329,7 +331,7 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	if (applyFailed)
 		ImGui::TextWrapped("GI settings could not be applied. Previous lighting is retained; see the log for details.");
 	if (ImGui::Button("Store Runtime GI in Scene"))
-		editorAPI.SaveGIConfiguration();
+		giAPI.SaveGIConfiguration();
 
 	ImGui::End();
 }

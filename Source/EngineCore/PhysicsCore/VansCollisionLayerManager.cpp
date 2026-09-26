@@ -23,16 +23,6 @@ namespace VansEngine
 		m_LayerCount = config.layerCount;
 	}
 
-	int VansCollisionLayerManager::GetLayerIndex(const std::string& name) const
-	{
-		for (int index = 0; index < MAX_PHYSICS_LAYERS; ++index)
-		{
-			if (m_LayerNames[index] == name)
-				return index;
-		}
-		return 0;
-	}
-
 	bool VansCollisionLayerManager::TryGetLayerIndex(const std::string& name, int& index) const
 	{
 		for (int candidate = 0; candidate < m_LayerCount; ++candidate)
@@ -57,8 +47,8 @@ namespace VansEngine
 
 	uint32_t VansCollisionLayerManager::GetCollisionMask(int layerIndex) const
 	{
-		if (layerIndex < 0 || layerIndex >= MAX_PHYSICS_LAYERS)
-			return 0xFFFFFFFF;
+		if (layerIndex < 0 || layerIndex >= m_LayerCount || m_LayerNames[layerIndex].empty())
+			return 0u;
 		return m_CollisionMasks[layerIndex];
 	}
 
@@ -67,7 +57,7 @@ namespace VansEngine
 		if (layerA < 0 || layerA >= MAX_PHYSICS_LAYERS ||
 			layerB < 0 || layerB >= MAX_PHYSICS_LAYERS)
 		{
-			return true;
+			return false;
 		}
 
 		return (m_CollisionMasks[layerA] & (1u << layerB)) != 0 &&

@@ -2,6 +2,8 @@
 
 #include "../VansEditorWindow.h"
 #include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../../EngineAPILayer/Public/IRenderEditorAPI.h"
+#include "../../EngineAPILayer/Public/IWaterEditorAPI.h"
 
 #include "imgui.h"
 
@@ -44,7 +46,7 @@ namespace
     }
 
     void DisplayWaterTexture(
-        Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+        Vans::EditorAPI::IRenderEditorAPI& editorAPI,
         const char* label,
         const char* textureName,
         std::uint32_t requestedLayer = 0u,
@@ -116,11 +118,13 @@ void VansWaterWindow::ApplyPreset(Vans::EditorAPI::WaterSettingsSnapshot& settin
 
 void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-    if (!VansEditorWindow::m_WaterWindowOpen)
+	Vans::EditorAPI::IRenderEditorAPI& renderAPI = editorAPI;
+	Vans::EditorAPI::IWaterEditorAPI& waterAPI = editorAPI;
+    if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::Water))
         return;
 
-    Vans::EditorAPI::WaterSettingsSnapshot settings = editorAPI.GetWaterSettings();
-    Vans::EditorAPI::WaterRuntimeStats stats = editorAPI.GetWaterRuntimeStats();
+    Vans::EditorAPI::WaterSettingsSnapshot settings = waterAPI.GetWaterSettings();
+    Vans::EditorAPI::WaterRuntimeStats stats = waterAPI.GetWaterRuntimeStats();
 
     if (!settings.available)
     {
@@ -416,13 +420,13 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 static int waterLayer = 0;
                 waterLayer = std::clamp(waterLayer, 0, stats.maxSpectrumCascade);
                 ImGui::SliderInt("Spectrum Cascade", &waterLayer, 0, stats.maxSpectrumCascade);
-                DisplayWaterTexture(editorAPI, "Water Displacement", "displacement", static_cast<std::uint32_t>(waterLayer));
+                DisplayWaterTexture(renderAPI, "Water Displacement", "displacement", static_cast<std::uint32_t>(waterLayer));
 
                 ImGui::Separator();
-                DisplayWaterTexture(editorAPI, "Surface dPdx", "derivative", static_cast<std::uint32_t>(waterLayer * 2));
+                DisplayWaterTexture(renderAPI, "Surface dPdx", "derivative", static_cast<std::uint32_t>(waterLayer * 2));
 
                 ImGui::Separator();
-                DisplayWaterTexture(editorAPI, "Flow Map", "flow_map");
+                DisplayWaterTexture(renderAPI, "Flow Map", "flow_map");
 
                 ImGui::SeparatorText("Detail & Scene Color Pyramid");
                 const int maxDetailMip = stats.detailNormalMipCount > 0u
@@ -430,14 +434,14 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 static int detailMip = 0;
                 detailMip = std::clamp(detailMip, 0, maxDetailMip);
                 ImGui::SliderInt("Detail Normal Mip", &detailMip, 0, maxDetailMip);
-                DisplayWaterTexture(editorAPI, "Detail Wave Normal", "detail_normal", 0u, static_cast<std::uint32_t>(detailMip));
+                DisplayWaterTexture(renderAPI, "Detail Wave Normal", "detail_normal", 0u, static_cast<std::uint32_t>(detailMip));
 
                 const int maxBackgroundMip = stats.waterBackgroundPyramidMipCount > 0u
                     ? static_cast<int>(stats.waterBackgroundPyramidMipCount - 1u) : 0;
                 static int backgroundMip = 0;
                 backgroundMip = std::clamp(backgroundMip, 0, maxBackgroundMip);
                 ImGui::SliderInt("Water Background Mip", &backgroundMip, 0, maxBackgroundMip);
-                DisplayWaterTexture(editorAPI, "Water Background Pyramid", "background_pyramid", 0u, static_cast<std::uint32_t>(backgroundMip));
+                DisplayWaterTexture(renderAPI, "Water Background Pyramid", "background_pyramid", 0u, static_cast<std::uint32_t>(backgroundMip));
 
                 if (stats.fftAvailable)
                 {
@@ -446,7 +450,7 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                     static int fftLod = 0;
                     fftLod = std::clamp(fftLod, 0, stats.maxSpectrumCascade);
                     ImGui::SliderInt("FFT H0 Cascade", &fftLod, 0, stats.maxSpectrumCascade);
-                    DisplayWaterTexture(editorAPI, "FFT H0 Spectrum", "fft_h0", static_cast<std::uint32_t>(fftLod));
+                    DisplayWaterTexture(renderAPI, "FFT H0 Spectrum", "fft_h0", static_cast<std::uint32_t>(fftLod));
 
                     const char* fieldNames[] = { "Height", "Displacement X", "Displacement Z" };
                     static int fftField = 0;
@@ -456,10 +460,10 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                     if (ImGui::BeginTable("FFTInternalTexTable", 2, ImGuiTableFlags_Borders))
                     {
                         ImGui::TableNextColumn();
-                        DisplayWaterTexture(editorAPI, "FFT Ping-Pong 0", "fft_ping0", fieldLayer);
+                        DisplayWaterTexture(renderAPI, "FFT Ping-Pong 0", "fft_ping0", fieldLayer);
 
                         ImGui::TableNextColumn();
-                        DisplayWaterTexture(editorAPI, "FFT Ping-Pong 1", "fft_ping1", fieldLayer);
+                        DisplayWaterTexture(renderAPI, "FFT Ping-Pong 1", "fft_ping1", fieldLayer);
 
                         ImGui::EndTable();
                     }
@@ -469,15 +473,15 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 if (ImGui::BeginTable("WaterTexTable", 2, ImGuiTableFlags_Borders))
                 {
                     ImGui::TableNextColumn();
-                    DisplayWaterTexture(editorAPI, "Reflection", "reflection");
+                    DisplayWaterTexture(renderAPI, "Reflection", "reflection");
 
                     ImGui::TableNextColumn();
-                    DisplayWaterTexture(editorAPI, "Refraction", "refraction");
+                    DisplayWaterTexture(renderAPI, "Refraction", "refraction");
 
                     ImGui::TableNextColumn();
 
                     ImGui::TableNextColumn();
-                    DisplayWaterTexture(editorAPI, "Thickness", "thickness");
+                    DisplayWaterTexture(renderAPI, "Thickness", "thickness");
 
                     ImGui::EndTable();
                 }
@@ -491,7 +495,7 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 
     if (changed)
     {
-        editorAPI.ApplyWaterSettings(settings);
+        waterAPI.ApplyWaterSettings(settings);
     }
 
     ImGui::End();

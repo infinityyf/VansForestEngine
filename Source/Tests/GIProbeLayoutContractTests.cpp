@@ -12,6 +12,11 @@ namespace
 {
     using namespace VansGraphics;
     void Check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+    void BuildQuery(VansTriangleGeometryQuery& query, std::vector<VansGeometryTriangle> triangles)
+    {
+        std::string error;
+        Check(query.Build(std::move(triangles), error), error.c_str());
+    }
     void ValidateScrollingGrid()
     {
         VansGIScrollingGrid grid;
@@ -388,14 +393,14 @@ namespace
         GIProbePlacementSettings settings; settings.enabled = true; settings.maxProbeCount = 65536;
         const auto region = Region(); std::string error;
         VansGIProbeLayout layout; VansSceneGeometrySnapshot geometry;
-        Check(layout.Build({region}, settings, geometry, error), error.c_str());
+        Check(layout.Build({region}, settings, geometry, nullptr, error), error.c_str());
         Check(!layout.Positions().empty() && layout.Leaves().empty() && !layout.ParentCells().empty(), "empty world lost parent GI coverage");
         ValidateTopology(layout, settings.maxProbeCount, settings.minProbeSpacing);
         ValidatePackedLayout(layout, {region});
         for (float threshold : {5.0f, 2.5f, 1.1f})
         {
             settings.parentProbeMaxSize = threshold;
-            Check(layout.Build({region}, settings, geometry, error), error.c_str());
+            Check(layout.Build({region}, settings, geometry, nullptr, error), error.c_str());
             ValidateTopology(layout, settings.maxProbeCount, settings.minProbeSpacing);
             for (const auto& cell : layout.ParentCells())
                 Check(cell.minimumAndSpacing.w <= threshold, "parent record exceeds configurable maximum size");
@@ -409,8 +414,8 @@ namespace
             }
         }
         settings.parentProbeMaxSize = 5.0f;
-        geometry.opaque.Build(Floor());
-        Check(layout.Build({region}, settings, geometry, error), error.c_str());
+        BuildQuery(geometry.opaque, Floor());
+        Check(layout.Build({region}, settings, geometry, nullptr, error), error.c_str());
         Check(layout.Stats().acceptedSplits == 0 && layout.Stats().finestSpacing == 4.0f, "flat plane was densely subdivided");
         Check(!layout.Positions().empty(), "flat receiver lost all probes");
         // 平面在 y=-9.25，实际偏移后仍在 [-12,-8] 根层。
@@ -433,8 +438,8 @@ namespace
         ValidateTopology(layout, settings.maxProbeCount, settings.minProbeSpacing);
         Report("flat", layout);
 
-        auto triangles = Floor(); AddWall(triangles); geometry.opaque.Build(triangles);
-        Check(layout.Build({region}, settings, geometry, error), error.c_str());
+        auto triangles = Floor(); AddWall(triangles); BuildQuery(geometry.opaque, triangles);
+        Check(layout.Build({region}, settings, geometry, nullptr, error), error.c_str());
         Check(layout.Stats().acceptedSplits > 0 && layout.Stats().finestSpacing == 0.5f && layout.Stats().coarsestSpacing == 4.0f,
             "corner refinement did not reach configured density while preserving coarse coverage");
         ValidateTopology(layout, settings.maxProbeCount, settings.minProbeSpacing);
@@ -449,53 +454,53 @@ namespace
             retessellated.push_back({t.a,ab,ca,t.normal}); retessellated.push_back({ab,t.b,bc,t.normal});
             retessellated.push_back({ca,bc,t.c,t.normal}); retessellated.push_back({ab,bc,ca,t.normal});
         }
-        geometry.opaque.Build(retessellated);
-        Check(layout.Build({region}, settings, geometry, error), error.c_str());
+        BuildQuery(geometry.opaque, retessellated);
+        Check(layout.Build({region}, settings, geometry, nullptr, error), error.c_str());
         Check(layout.Leaves().size() == originalLeaves.size() && layout.Positions().size() == originalPositions.size(),
             "triangle tessellation changed final refinement demand");
         // 精确比较同输入重建结果，包括共享物理地址，不只比较数量。
         const auto first = layout.Leaves(); const auto positions = layout.Positions();
-        Check(layout.Build({region}, settings, geometry, error), error.c_str());
+        Check(layout.Build({region}, settings, geometry, nullptr, error), error.c_str());
         for (size_t i=0; i<first.size(); ++i)
             Check(first[i].minimumAndSpacing == layout.Leaves()[i].minimumAndSpacing && first[i].probes == layout.Leaves()[i].probes
                 && first[i].metadata == layout.Leaves()[i].metadata, "layout generation is not deterministic");
         for (size_t i=0; i<positions.size(); ++i)
             Check(positions[i].positionAndSpacing == layout.Positions()[i].positionAndSpacing, "shared positions are unstable");
         settings.minProbeSpacing = 0.25f;
-        Check(layout.Build({region}, settings, geometry, error), error.c_str());
+        Check(layout.Build({region}, settings, geometry, nullptr, error), error.c_str());
         Check(layout.Stats().finestSpacing == 0.25f, "minimum spacing was hard-coded to 0.5 m");
         ValidateTopology(layout, settings.maxProbeCount, settings.minProbeSpacing);
         Report("corner_min_0.25", layout);
         settings.minProbeSpacing = 0.3f;
-        Check(layout.Build({region}, settings, geometry, error), error.c_str());
+        Check(layout.Build({region}, settings, geometry, nullptr, error), error.c_str());
         Check(std::abs(layout.Stats().finestSpacing - 0.3f) < 1e-6f && layout.Stats().coarsestSpacing <= settings.maxProbeSpacing,
             "non-power-of-two minimum did not define the refinement lattice");
         ValidateTopology(layout, settings.maxProbeCount, settings.minProbeSpacing);
         Report("corner_min_0.3", layout);
 
         settings.minProbeSpacing = 0.5f; settings.maxProbeCount = coarseCount + 150u;
-        Check(layout.Build({region}, settings, geometry, error), error.c_str());
+        Check(layout.Build({region}, settings, geometry, nullptr, error), error.c_str());
         Check(layout.Stats().budgetLimitedSplits > 0, "budget-limited refinement not reported");
         ValidateTopology(layout, settings.maxProbeCount, settings.minProbeSpacing);
         Report("corner_budget", layout);
         const auto retainedRoots = layout.Roots(); const auto retainedCount = layout.Positions().size();
         settings.maxProbeCount = 8;
-        Check(!layout.Build({region}, settings, geometry, error) && !error.empty(), "insufficient coarse coverage budget silently truncated layout");
+        Check(!layout.Build({region}, settings, geometry, nullptr, error) && !error.empty(), "insufficient coarse coverage budget silently truncated layout");
         Check(layout.Roots() == retainedRoots && layout.Positions().size() == retainedCount, "failed build published a partial layout");
         settings.enabled = false;
-        Check(!layout.Build({region}, settings, geometry, error) && layout.Roots() == retainedRoots, "disabled generator replaced authored selection");
+        Check(!layout.Build({region}, settings, geometry, nullptr, error) && layout.Roots() == retainedRoots, "disabled generator replaced authored selection");
 
         settings.enabled = true; settings.maxProbeCount = 65536;
-        geometry.opaque.Build({}); geometry.transmissionReceivers = Floor();
-        Check(layout.Build({region}, settings, geometry, error) && !layout.Positions().empty(), "transparent receivers lost GI support");
+        BuildQuery(geometry.opaque, {}); geometry.transmissionReceivers = Floor();
+        Check(layout.Build({region}, settings, geometry, nullptr, error) && !layout.Positions().empty(), "transparent receivers lost GI support");
         geometry.transmissionReceivers.clear(); geometry.dynamicReceivers = {{{-1,-9,-1},{1,-7,1}}};
-        Check(layout.Build({region}, settings, geometry, error) && !layout.Positions().empty(), "dynamic receiver volume lost GI support");
+        Check(layout.Build({region}, settings, geometry, nullptr, error) && !layout.Positions().empty(), "dynamic receiver volume lost GI support");
         ValidateTopology(layout, settings.maxProbeCount, settings.minProbeSpacing);
 
         geometry.dynamicReceivers.clear(); triangles.clear();
         const glm::vec3 boxMin(-3,-11,-3), boxMax(3,-5,3);
-        AddBox(triangles, boxMin, boxMax); geometry.opaque.Build(triangles);
-        Check(layout.Build({region}, settings, geometry, error), error.c_str());
+        AddBox(triangles, boxMin, boxMax); BuildQuery(geometry.opaque, triangles);
+        Check(layout.Build({region}, settings, geometry, nullptr, error), error.c_str());
         for (const auto& probe : layout.Positions())
             Check(!(glm::all(glm::greaterThan(glm::vec3(probe.positionAndSpacing), boxMin)) &&
                 glm::all(glm::lessThan(glm::vec3(probe.positionAndSpacing), boxMax))), "probe allocated inside a closed solid");
@@ -514,21 +519,21 @@ namespace
                 const glm::vec3 maximum = minimum + glm::vec3(extent(sceneRandom), extent(sceneRandom), extent(sceneRandom));
                 AddBox(triangles, minimum, maximum);
             }
-            geometry.opaque.Build(triangles);
+            BuildQuery(geometry.opaque, triangles);
             settings.minProbeSpacing = scenario % 2 ? 0.3f : 0.5f;
             settings.maxProbeCount = scenario < 4 ? 4096u : 700u;
-            Check(layout.Build({region}, settings, geometry, error), error.c_str());
+            Check(layout.Build({region}, settings, geometry, nullptr, error), error.c_str());
             ValidateTopology(layout, settings.maxProbeCount, settings.minProbeSpacing);
             Report(("finite_objects_" + std::to_string(scenario)).c_str(), layout);
         }
 
-        geometry.opaque.Build(Floor()); settings.minProbeSpacing = settings.maxProbeSpacing = 4.0f;
+        BuildQuery(geometry.opaque, Floor()); settings.minProbeSpacing = settings.maxProbeSpacing = 4.0f;
         auto adjacent = region; adjacent.stableId = 91; adjacent.volumeMin.x += 16; adjacent.center.x += 16;
         VansGIProbeLayout firstRegion, secondRegion;
-        Check(firstRegion.Build({region}, settings, geometry, error) && secondRegion.Build({adjacent}, settings, geometry, error), error.c_str());
+        Check(firstRegion.Build({region}, settings, geometry, nullptr, error) && secondRegion.Build({adjacent}, settings, geometry, nullptr, error), error.c_str());
         const uint32_t combinedCount = uint32_t(firstRegion.Positions().size() + secondRegion.Positions().size());
         settings.maxProbeCount = combinedCount;
-        Check(layout.Build({region,adjacent}, settings, geometry, error) && layout.Positions().size() == combinedCount,
+        Check(layout.Build({region,adjacent}, settings, geometry, nullptr, error) && layout.Positions().size() == combinedCount,
             "multiple regions did not share one logical probe budget");
         ValidateTopology(layout, settings.maxProbeCount, settings.minProbeSpacing);
         settings.maxProbeCount = combinedCount - 1;
@@ -538,14 +543,14 @@ namespace
             positionSnapshot->regions[0].metadata.y == region.stableId && positionSnapshot->regions[1].metadata.y == adjacent.stableId,
             "position snapshot lost physical probes or stable region ownership");
         const auto firstPosition = positionSnapshot->positions.front().positionAndSpacing;
-        Check(!layout.Build({region,adjacent}, settings, geometry, error) && layout.Positions().size() == combinedCount,
+        Check(!layout.Build({region,adjacent}, settings, geometry, nullptr, error) && layout.Positions().size() == combinedCount,
             "last region was silently omitted to satisfy a global budget");
         settings.maxProbeCount = 65536; settings.minProbeSpacing = 0.5f;
         auto farRegion = region; farRegion.volumeMin = glm::vec3(100000000.0f);
-        Check(!layout.Build({farRegion}, settings, geometry, error) && error.find("precision") != std::string::npos,
+        Check(!layout.Build({farRegion}, settings, geometry, nullptr, error) && error.find("precision") != std::string::npos,
             "layout accepted indistinguishable float positions at extreme world coordinates");
         auto disabled = region; disabled.enabled = false;
-        Check(layout.Build({disabled}, settings, geometry, error) && layout.Positions().empty() && layout.Roots().empty(),
+        Check(layout.Build({disabled}, settings, geometry, nullptr, error) && layout.Positions().empty() && layout.Roots().empty(),
             "disabled authored region generated probes");
         Check(layout.CapturePositionSnapshot()->positions.empty() && positionSnapshot->positions.size() == combinedCount &&
             positionSnapshot->positions.front().positionAndSpacing == firstPosition,

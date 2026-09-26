@@ -2,6 +2,7 @@
 #include "VansActionBinding.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../Util/VansLog.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1038,15 +1039,23 @@ VansActionGraphNodeResult ExecuteGraphCommand(
 		resource.externalResource = executed.resource;
 		resource.release = [service, handle = executed.resource]
 		{
-			std::string ignored;
-			return service->Release(handle, ignored);
+			std::string releaseError;
+			const bool released = service->Release(handle, releaseError);
+			if (!released)
+				VANS_LOG_ERROR("[GAF] Action Graph resource cleanup failed: " << releaseError);
+			return released;
 		};
 		std::string resourceError;
 		registeredResource = context.resources->Register(std::move(resource), resourceError);
 		if (!registeredResource)
 		{
-			std::string ignored;
-			service->Release(executed.resource, ignored);
+			std::string releaseError;
+			if (!service->Release(executed.resource, releaseError))
+			{
+				VANS_LOG_ERROR("[GAF] Untracked Action Graph resource cleanup failed: " <<
+					releaseError);
+				resourceError += "; resource cleanup failed: " + releaseError;
+			}
 			return { VansActionGraphNodeStatus::Failed, "Failure", VansActionError::Execution,
 				resourceError };
 		}

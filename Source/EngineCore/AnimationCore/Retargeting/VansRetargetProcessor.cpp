@@ -44,21 +44,6 @@ namespace
 		return result;
 	}
 
-	bool HasValidTopologicalOrder(const Skeleton& skeleton)
-	{
-		if (skeleton.topologicalOrder.size() != skeleton.bones.size()) return false;
-		std::vector<bool> visited(skeleton.bones.size(), false);
-		for (int bone : skeleton.topologicalOrder)
-		{
-			if (bone < 0 || bone >= static_cast<int>(skeleton.bones.size())
-				|| visited[static_cast<std::size_t>(bone)]) return false;
-			const int parent = skeleton.bones[static_cast<std::size_t>(bone)].parentIndex;
-			if (parent >= 0 && (parent >= static_cast<int>(skeleton.bones.size())
-				|| !visited[static_cast<std::size_t>(parent)])) return false;
-			visited[static_cast<std::size_t>(bone)] = true;
-		}
-		return true;
-	}
 }
 
 bool VansRetargetProcessor::Build(
@@ -90,8 +75,8 @@ bool VansRetargetProcessor::Build(
 	m_LocalPoseScratch.clear();
 
 	if (sourceSkeleton.bones.empty() || targetSkeleton.bones.empty()
-		|| !HasValidTopologicalOrder(sourceSkeleton)
-		|| !HasValidTopologicalOrder(targetSkeleton)
+		|| !sourceSkeleton.ValidateTopology()
+		|| !targetSkeleton.ValidateTopology()
 		|| targetRig.skeleton != &targetSkeleton)
 		return false;
 	if (desc.translationScaleMode != VansRetargetTranslationScaleMode::AutoPelvis
@@ -121,8 +106,8 @@ bool VansRetargetProcessor::Build(
 	}
 	else
 	{
-		const int sourcePelvis = FindBone(sourceSkeleton, "pelvis");
-		const int targetPelvis = FindBone(targetSkeleton, "pelvis");
+		const int sourcePelvis = sourceSkeleton.FindBoneIndex("pelvis");
+		const int targetPelvis = targetSkeleton.FindBoneIndex("pelvis");
 		if (sourcePelvis >= 0 && targetPelvis >= 0)
 		{
 			const glm::vec3 sourcePelvisTranslation = glm::vec3(sourceSkeleton.bones[sourcePelvis].localTransform[3]);
@@ -138,12 +123,12 @@ bool VansRetargetProcessor::Build(
 	for (size_t targetIndex = 0; targetIndex < targetSkeleton.bones.size(); ++targetIndex)
 	{
 		const BoneInfo& targetBone = targetSkeleton.bones[targetIndex];
-		auto sourceIt = sourceSkeleton.boneNameToIndex.find(targetBone.name);
-		if (sourceIt == sourceSkeleton.boneNameToIndex.end())
+		const int sourceIndex = sourceSkeleton.FindBoneIndex(targetBone.name);
+		if (sourceIndex < 0)
 			continue;
 
 		BoneMapEntry entry;
-		entry.sourceIndex = sourceIt->second;
+		entry.sourceIndex = sourceIndex;
 		entry.targetIndex = static_cast<int>(targetIndex);
 		entry.copyTranslationDelta =
 			targetBone.name == "root" ||
@@ -164,9 +149,9 @@ bool VansRetargetProcessor::Build(
 	{
 		CompiledLimbChain chain;
 		chain.name = chainDesc.name;
-		chain.sourceRoot = FindBone(sourceSkeleton, chainDesc.sourceRoot.c_str());
-		chain.sourceMid = FindBone(sourceSkeleton, chainDesc.sourceMid.c_str());
-		chain.sourceTip = FindBone(sourceSkeleton, chainDesc.sourceTip.c_str());
+		chain.sourceRoot = sourceSkeleton.FindBoneIndex(chainDesc.sourceRoot);
+		chain.sourceMid = sourceSkeleton.FindBoneIndex(chainDesc.sourceMid);
+		chain.sourceTip = sourceSkeleton.FindBoneIndex(chainDesc.sourceTip);
 		chain.targetChainIndex = m_TargetRig.FindChain(chainDesc.targetChainId);
 		chain.positionWeight = glm::clamp(chainDesc.positionWeight, 0.0f, 1.0f);
 		const bool sourceChainValid =
@@ -213,8 +198,8 @@ bool VansRetargetProcessor::Build(
 	}
 	if (m_Valid && desc.rootAlignment == VansRetargetRootAlignment::FeetToOwner)
 	{
-		const int footL = FindBone(targetSkeleton, "foot_l");
-		const int footR = FindBone(targetSkeleton, "foot_r");
+		const int footL = targetSkeleton.FindBoneIndex("foot_l");
+		const int footR = targetSkeleton.FindBoneIndex("foot_r");
 		if (footL < 0 || footR < 0)
 		{
 			m_Valid = false;
@@ -262,7 +247,9 @@ bool VansRetargetProcessor::Process(
 		return false;
 	}
 
-	BuildLocalFromModel(sourceModelTransforms, sourceSkeleton, m_SourceLocalScratch);
+	if (!VansPoseMath::BuildLocalTransforms(
+		sourceModelTransforms, sourceSkeleton, m_SourceLocalScratch))
+		return false;
 	std::vector<glm::mat4>& sourceLocalTransforms = m_SourceLocalScratch;
 	std::vector<glm::mat4>& targetLocalTransforms = m_TargetLocalScratch;
 	targetLocalTransforms.assign(targetSkeleton.bones.size(), glm::mat4(1.0f));
@@ -516,16 +503,8 @@ bool VansRetargetProcessor::Process(
 			}
 		};
 
-		if (!targetSkeleton.topologicalOrder.empty())
-		{
-			for (int targetIndex : targetSkeleton.topologicalOrder)
-				applyModelSpaceRotation(targetIndex);
-		}
-		else
-		{
-			for (int targetIndex = 0; targetIndex < static_cast<int>(targetSkeleton.bones.size()); ++targetIndex)
-				applyModelSpaceRotation(targetIndex);
-		}
+		for (int targetIndex : targetSkeleton.topologicalOrder)
+			applyModelSpaceRotation(targetIndex);
 
 		for (const BoneMapEntry& entry : m_BoneMap)
 		{
@@ -561,7 +540,9 @@ bool VansRetargetProcessor::Process(
 		if (!applyConfiguredLimbChains(glm::inverse(targetToSourceRotation)))
 			return false;
 
-		BuildModelFromLocal(targetLocalTransforms, targetSkeleton, outTargetModelTransforms);
+		if (!VansPoseMath::BuildModelTransforms(
+			targetLocalTransforms, targetSkeleton, outTargetModelTransforms))
+			return false;
 		if (m_HasTargetModelSpaceCorrection || m_HasRootAlignmentCorrection)
 		{
 			for (glm::mat4& transform : outTargetModelTransforms)
@@ -613,7 +594,9 @@ bool VansRetargetProcessor::Process(
 	}
 
 	std::vector<glm::mat4>& resolvedModelTransforms = m_ResolvedModelScratch;
-	BuildModelFromLocal(targetLocalTransforms, targetSkeleton, resolvedModelTransforms);
+	if (!VansPoseMath::BuildModelTransforms(
+		targetLocalTransforms, targetSkeleton, resolvedModelTransforms))
+		return false;
 	for (const BoneMapEntry& entry : m_BoneMap)
 	{
 		if (!entry.copyTranslationDelta ||
@@ -647,7 +630,9 @@ bool VansRetargetProcessor::Process(
 	if (!applyConfiguredLimbChains(glm::quat(1.0f, 0.0f, 0.0f, 0.0f)))
 		return false;
 
-	BuildModelFromLocal(targetLocalTransforms, targetSkeleton, outTargetModelTransforms);
+	if (!VansPoseMath::BuildModelTransforms(
+		targetLocalTransforms, targetSkeleton, outTargetModelTransforms))
+		return false;
 	if (m_HasTargetModelSpaceCorrection || m_HasRootAlignmentCorrection)
 	{
 		for (glm::mat4& transform : outTargetModelTransforms)
@@ -698,40 +683,6 @@ bool VansRetargetProcessor::DecomposeTransform(
 	return true;
 }
 
-void VansRetargetProcessor::BuildLocalFromModel(
-	const std::vector<glm::mat4>& modelTransforms,
-	const Skeleton& skeleton,
-	std::vector<glm::mat4>& outLocalTransforms)
-{
-	outLocalTransforms.assign(modelTransforms.size(), glm::mat4(1.0f));
-	for (size_t index = 0; index < modelTransforms.size(); ++index)
-	{
-		const int parentIndex = skeleton.bones[index].parentIndex;
-		if (parentIndex >= 0 && parentIndex < static_cast<int>(modelTransforms.size()))
-			outLocalTransforms[index] = glm::inverse(modelTransforms[parentIndex]) * modelTransforms[index];
-		else
-			outLocalTransforms[index] = modelTransforms[index];
-	}
-}
-
-void VansRetargetProcessor::BuildModelFromLocal(
-	const std::vector<glm::mat4>& localTransforms,
-	const Skeleton& skeleton,
-	std::vector<glm::mat4>& outModelTransforms)
-{
-	const uint32_t boneCount = static_cast<uint32_t>(skeleton.bones.size());
-	outModelTransforms.assign(boneCount, glm::mat4(1.0f));
-	for (uint32_t index = 0; index < boneCount; ++index)
-		outModelTransforms[index] = localTransforms[index];
-
-	for (int index : skeleton.topologicalOrder)
-	{
-		const int parentIndex = skeleton.bones[static_cast<std::size_t>(index)].parentIndex;
-		if (parentIndex >= 0 && parentIndex < static_cast<int>(boneCount))
-			outModelTransforms[index] = outModelTransforms[parentIndex] * outModelTransforms[index];
-	}
-}
-
 std::vector<glm::mat4> VansRetargetProcessor::BuildBindModelTransforms(const Skeleton& skeleton)
 {
 	std::vector<glm::mat4> localTransforms(skeleton.bones.size(), glm::mat4(1.0f));
@@ -739,7 +690,7 @@ std::vector<glm::mat4> VansRetargetProcessor::BuildBindModelTransforms(const Ske
 		localTransforms[index] = skeleton.bones[index].localTransform;
 
 	std::vector<glm::mat4> modelTransforms;
-	BuildModelFromLocal(localTransforms, skeleton, modelTransforms);
+	VansPoseMath::BuildModelTransforms(localTransforms, skeleton, modelTransforms);
 	return modelTransforms;
 }
 
@@ -748,12 +699,12 @@ bool VansRetargetProcessor::TryBuildHumanoidBasis(
 	const std::vector<glm::mat4>& modelTransforms,
 	glm::mat3& outBasis)
 {
-	const int pelvis = FindBone(skeleton, "pelvis");
-	const int head = FindBone(skeleton, "head");
-	const int handL = FindBone(skeleton, "hand_l");
-	const int handR = FindBone(skeleton, "hand_r");
-	const int footL = FindBone(skeleton, "foot_l");
-	const int footR = FindBone(skeleton, "foot_r");
+	const int pelvis = skeleton.FindBoneIndex("pelvis");
+	const int head = skeleton.FindBoneIndex("head");
+	const int handL = skeleton.FindBoneIndex("hand_l");
+	const int handR = skeleton.FindBoneIndex("hand_r");
+	const int footL = skeleton.FindBoneIndex("foot_l");
+	const int footR = skeleton.FindBoneIndex("foot_r");
 
 	if (pelvis < 0 || head < 0 ||
 	    pelvis >= static_cast<int>(modelTransforms.size()) ||
@@ -793,10 +744,4 @@ bool VansRetargetProcessor::TryBuildHumanoidBasis(
 	outBasis[1] = up;
 	outBasis[2] = forward;
 	return true;
-}
-
-int VansRetargetProcessor::FindBone(const Skeleton& skeleton, const char* name)
-{
-	auto it = skeleton.boneNameToIndex.find(name);
-	return it != skeleton.boneNameToIndex.end() ? it->second : -1;
 }

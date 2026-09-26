@@ -1,140 +1,74 @@
 #pragma once
 
-// Prevent windows.h min/max macros from conflicting with std::numeric_limits and GLM
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
+#include "VansPhysicsTiming.h"
 
-#include <PxPhysicsAPI.h>
-#include <characterkinematic/PxControllerManager.h>
 #include <atomic>
-#include <thread>
-#include <mutex>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
-#include <vector>
-#include "VansPhysicsEvents.h"
+#include <memory>
+#include <mutex>
+#include <thread>
 
-using namespace physx;
+#include <glm/vec3.hpp>
 
 namespace VansEngine
 {
-	class VansPhysicsEventCallback; // forward declaration
+	class VansPhysicsNativeAccess;
 
-	// 自定义碰撞过滤器（替代 PxDefaultSimulationFilterShader）
-	PxFilterFlags VansCollisionFilterShader(
-		PxFilterObjectAttributes attributes0, PxFilterData filterData0,
-		PxFilterObjectAttributes attributes1, PxFilterData filterData1,
-		PxPairFlags& pairFlags, const void* constantBlock, PxU32 constantBlockSize);
-	// PhysX Error Callback
-	class VansPhysicsErrorCallback : public PxErrorCallback
-	{
-	public:
-		virtual void reportError(PxErrorCode::Enum code, const char* message, const char* file, int line) override;
-	};
-
-	// PhysX Allocator
-	class VansPhysicsAllocator : public PxAllocatorCallback
-	{
-	public:
-		virtual void* allocate(size_t size, const char* typeName, const char* filename, int line) override;
-		virtual void deallocate(void* ptr) override;
-	};
-
-	// Main Physics System
+	// Engine-facing physics lifecycle and scheduling facade. PhysX objects are
+	// deliberately hidden behind the PhysicsCore-only native access bridge.
 	class VansPhysicsSystem
 	{
 	public:
 		static VansPhysicsSystem& GetInstance();
-		
-		// Lifecycle
+
 		bool Initialize();
 		void Shutdown();
-		
-		// Simulation Control
+
 		void StartSimulation();
 		void StopSimulation();
-		// 暂停/恢复物理模拟（不停线程，仅冻结模拟步进）
 		void PauseSimulation();
 		void ResumeSimulation();
 		bool IsSimulationRunning() const { return m_IsRunning; }
-		bool IsSimulationPaused() const { return m_IsPaused.load(); }
-		void SetFixedTimeStep(float deltaTime);
-		float GetFixedTimeStep() const { return m_FixedTimeStep.load(); }
-		
-		// Scene Access
-		PxScene* GetScene() { return m_Scene; }
-		PxPhysics* GetPhysics() { return m_Physics; }
-		const PxCookingParams* GetCookingParams() { return m_CookingParams; }
 
-		// CCT（角色控制器）访问
-		PxControllerManager* GetControllerManager() { return m_ControllerManager; }
-		PxMaterial* GetDefaultMaterial() { return m_DefaultMaterial; }
-		
-		// Gravity
-		void SetGravity(const PxVec3& gravity);
-		PxVec3 GetGravity() const;
-		
-		// Synchronization
-		// Returns the simulation mutex. Lock this to pause/synchronize with the simulation thread.
+		bool SetTiming(const VansPhysicsTiming& timing);
+		VansPhysicsTiming GetTiming() const;
+
+		void SetGravity(const glm::vec3& gravity);
+		glm::vec3 GetGravity() const;
+
 		std::mutex& GetSimulationMutex();
-        
-        // Callback to run additional physics logic (like Vehicle updates) before the scene simulation
-        // This is called inside the physics thread lock
-        using PhysicsStepCallback = std::function<void(float dt)>;
-        void SetPreSimulateCallback(PhysicsStepCallback callback) { m_PreSimulateCallback = callback; }
 
-		// Call this from main thread to synchronize with physics thread (wait for current step)
-		void FetchResults();
-		
-		// PVD Debugging Support
-		bool IsPvdConnected() const { return m_Pvd && m_Pvd->isConnected(); }
-		PxPvd* GetPvd() { return m_Pvd; }
-		
-		// Mesh Cooking Helper Methods (PhysX 5 API)
-		PxConvexMesh* CookConvexMesh(const PxConvexMeshDesc& desc);
-		PxTriangleMesh* CookTriangleMesh(const PxTriangleMeshDesc& desc);
-		PxHeightField* CookHeightField(const PxHeightFieldDesc& desc);
-		
+		using PhysicsStepCallback = std::function<void(float dt)>;
+		void SetPreSimulateCallback(PhysicsStepCallback callback);
+
+		bool IsPvdConnected() const;
+
 	private:
+		friend class VansPhysicsNativeAccess;
+		struct NativeState;
+
 		VansPhysicsSystem();
 		~VansPhysicsSystem();
 		VansPhysicsSystem(const VansPhysicsSystem&) = delete;
 		VansPhysicsSystem& operator=(const VansPhysicsSystem&) = delete;
-		
-		// Simulation Thread
-		void SimulationThread();
-		
-		// PhysX Core Objects
-		PxFoundation* m_Foundation = nullptr;
-		PxPhysics* m_Physics = nullptr;
-		PxDefaultCpuDispatcher* m_Dispatcher = nullptr;
-		PxScene* m_Scene = nullptr;
-		PxMaterial* m_DefaultMaterial = nullptr;
 
-		// CCT Manager（每个 PxScene 只能创建一个）
-		PxControllerManager* m_ControllerManager = nullptr;
-		PxCookingParams* m_CookingParams = nullptr;
-		PxPvd* m_Pvd = nullptr; // PhysX Visual Debugger
-		
-		// Callbacks
-		VansPhysicsErrorCallback m_ErrorCallback;
-		VansPhysicsAllocator m_Allocator;
-		VansPhysicsEventCallback* m_EventCallback = nullptr;
-		
-		// Threading
+		void SimulationThread();
+
+		std::unique_ptr<NativeState> m_Native;
 		std::thread m_SimulationThread;
 		std::atomic<bool> m_IsRunning{ false };
 		std::atomic<bool> m_ShouldExit{ false };
-		// 物理模拟是否被暂停（线程仍运行，20不步进）
 		std::atomic<bool> m_IsPaused{ false };
 		std::mutex m_SimulationMutex;
 		std::condition_variable m_SimulationCV;
-		
-		// Timing
-		std::atomic<float> m_FixedTimeStep{ 1.0f / 60.0f }; // 60 FPS default
+
+		std::atomic<float> m_FixedTimeStep{ 1.0f / 60.0f };
+		std::atomic<std::uint32_t> m_MaximumSubsteps{ 8 };
+		std::atomic<float> m_ClothFrameTime{ 0.03f };
+		std::atomic<std::uint32_t> m_ClothSubsteps{ 8 };
 		double m_Accumulator = 0.0;
-        
-        PhysicsStepCallback m_PreSimulateCallback;
+		PhysicsStepCallback m_PreSimulateCallback;
 	};
 }

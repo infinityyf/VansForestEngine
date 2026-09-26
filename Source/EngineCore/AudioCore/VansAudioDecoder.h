@@ -3,14 +3,12 @@
 #include <vector>
 #include <cstdint>
 #include <mutex>
-
-// Keep FFmpeg C headers out of this public header.
-struct AVFormatContext;
-struct AVCodecContext;
-struct SwrContext;
+#include <memory>
 
 namespace VansEngine
 {
+    class VansMediaDecodeSession;
+
     // One decoded PCM block in interleaved signed 16-bit format.
     struct AudioPCMChunk
     {
@@ -31,7 +29,7 @@ namespace VansEngine
     class VansAudioDecoder
     {
     public:
-        VansAudioDecoder()  = default;
+        VansAudioDecoder();
         ~VansAudioDecoder();
 
         VansAudioDecoder(const VansAudioDecoder&)            = delete;
@@ -56,17 +54,13 @@ namespace VansEngine
         // Seek back to the start for loop playback.
         bool Reset();
 
-        bool   IsOpen()        const { return m_FmtCtx != nullptr; }
+        bool   IsOpen()        const;
         int    GetChannels()   const { return m_TargetChannels;    }
         int    GetSampleRate() const { return m_TargetSampleRate;  }
         double GetDuration()   const { return m_Duration;          }
 
     private:
-        AVFormatContext* m_FmtCtx         = nullptr;
-        AVCodecContext*  m_CodecCtx        = nullptr;
-        SwrContext*      m_SwrCtx          = nullptr;
-        int              m_AudioStream     = -1;
-
+        std::unique_ptr<VansMediaDecodeSession> m_Session;
         int    m_TargetChannels   = 2;
         int    m_TargetSampleRate = 48000;
         double m_Duration         = 0.0;

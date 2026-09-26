@@ -238,7 +238,7 @@ Vans::VansMaterialAuthoringAsset BuildRuntimeMaterialAsset(
 		const VansGraphics::VansSkinGPUParam payload = skin->BuildGPUParam();
 		asset.materialType = "skin";
 		asset.parameters = Vans::VansSerializedValue::Object({
-			{ "skinProfile", Vans::VansSerializedValue::String(skin->m_SkinProfileName) },
+			{ "skinProfilePreset", Vans::VansSerializedValue::String(skin->m_SkinProfileName) },
 			{ "scatterColor", Vec3Value(glm::vec3(payload.scatterColorAmount)) },
 			{ "roughness", Vans::VansSerializedValue::Float(payload.roughnessNormalSpecular.x) },
 			{ "normalStrength", Vans::VansSerializedValue::Float(payload.roughnessNormalSpecular.y) },
@@ -489,7 +489,7 @@ RuntimeGeneratedMaterialDraft BuildRuntimeGeneratedMaterialDraft(
 	meta.SetStringSetting("generatedFrom", rootName);
 	meta.SetStringSetting("generatedFor", "runtimeMultiMeshExpansion");
 	std::string encodeError;
-	nlohmann::ordered_json metaRoot;
+	Vans::VansSerializedValue metaRoot;
 	if (!Vans::VansAssetMetaJsonCodec::Encode(meta, metaRoot, encodeError))
 	{
 		VANS_LOG_ERROR("[MultiMeshMaterialGen] Failed encoding generated material meta: "
@@ -500,7 +500,8 @@ RuntimeGeneratedMaterialDraft BuildRuntimeGeneratedMaterialDraft(
 	draft.sourcePath = materialPath.string();
 	draft.sourceCanonicalJson = Vans::EncodeSerializedValueJson<nlohmann::ordered_json>(
 		Vans::WriteMaterialAuthoringAssetRoot(materialAsset)).dump();
-	draft.metaCanonicalJson = metaRoot.dump();
+	draft.metaCanonicalJson = Vans::EncodeSerializedValueJson<nlohmann::ordered_json>(
+		metaRoot).dump();
 	draft.requiresSave = true;
 	return draft;
 }

@@ -27,6 +27,7 @@ namespace VansGraphics
 		NotCompiled,
 		RuntimeUnavailable,
 		UnsupportedDevice,
+		UnsupportedQuality,
 		DriverOutOfDate,
 		MissingRuntimeBinary,
 		RuntimeIntegrityRejected,
@@ -128,12 +129,18 @@ namespace VansGraphics
 		bool runtimeAvailable = false;
 		bool deviceSupported = false;
 		std::uint32_t supportedQualityMask = 0;
+		VansUpscalerFallbackReason unavailableReasonCode =
+			VansUpscalerFallbackReason::None;
 		std::string featureVersion;
 		std::string unavailableReason;
 
 		bool Supports(VansUpscaleQualityMode quality) const
 		{
-			const std::uint32_t bit = 1u << static_cast<std::uint32_t>(quality);
+			const std::uint32_t index = static_cast<std::uint32_t>(quality);
+			if (index > static_cast<std::uint32_t>(
+				VansUpscaleQualityMode::UltraPerformance))
+				return false;
+			const std::uint32_t bit = 1u << index;
 			return (supportedQualityMask & bit) != 0;
 		}
 	};
@@ -151,6 +158,7 @@ namespace VansGraphics
 		bool lastDispatchSucceeded = false;
 		bool lastDispatchReset = false;
 		VansUpscalerResetReason pendingResetReasons = VansUpscalerResetReason::FirstFrame;
+		VansUpscalerResetReason lastConsumedResetReasons = VansUpscalerResetReason::None;
 		std::uint32_t backendCreateCode = 0;
 		std::uint32_t backendQueryCode = 0;
 		std::uint32_t backendDispatchCode = 0;

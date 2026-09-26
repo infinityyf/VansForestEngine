@@ -273,7 +273,8 @@ void Fixture::Initialize()
     shaders.RegisterComputeShader("GIReceiverVisibilityReproject","EngineAssets/Shaders/GIReceiverVisibilityReproject",80);
     shaders.RegisterComputeShader("GIReceiverVisibilityWorldCache","EngineAssets/Shaders/GIReceiverVisibilityWorldCache",32);
     shaders.RegisterRayTracingShader("GIReceiverBias","EngineAssets/Shaders/GIReceiverBias");
-    Check(shaders.LoadAll(std::filesystem::current_path().generic_string()+"/",device->GetLogicDevice()),"production visibility shaders");
+    Check(shaders.LoadAll(std::filesystem::current_path().generic_string()+"/",
+        std::filesystem::current_path()/"Library/Artifacts/Shaders",device->GetLogicDevice()),"production visibility shaders");
     trace=shaders.FindRayTracingShader("GIReceiverVisibilityTrace");prepare=shaders.FindComputeShader("GIReceiverVisibilityPrepare");
     reproject=shaders.FindComputeShader("GIReceiverVisibilityReproject");
     worldShader=shaders.FindComputeShader("GIReceiverVisibilityWorldCache");

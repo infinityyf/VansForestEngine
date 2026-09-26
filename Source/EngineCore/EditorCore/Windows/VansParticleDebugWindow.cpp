@@ -1,5 +1,6 @@
 #include "VansParticleDebugWindow.h"
 #include "../VansEditorWindow.h"
+#include "../../EngineAPILayer/Public/IParticleEditorAPI.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -39,9 +40,10 @@ void DrawNode(ImDrawList* draw, ImVec2 position, bool root, std::size_t index, b
 }
 void VansParticleDebugWindow::Refresh(Vans::EditorAPI::IEngineEditorAPI& api)
 {
+	Vans::EditorAPI::IParticleEditorAPI& particleAPI = api;
     if (m_Frame == ImGui::GetFrameCount()) return;
     m_Frame = ImGui::GetFrameCount();
-    auto current = api.GetParticleDebugSnapshot();
+    auto current = particleAPI.GetParticleDebugSnapshot();
     if (!current.available || current.sceneGeneration != m_Snapshot.sceneGeneration)
     {
         m_Frozen = false;
@@ -57,13 +59,13 @@ bool VansParticleDebugWindow::Includes(const ParticleDebugEmitter& emitter) cons
 }
 void VansParticleDebugWindow::ShowWindow(IEngineEditorAPI& api)
 {
-    if (!VansEditorWindow::m_ParticleDebugWindowOpen)
+    if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::ParticleDebug))
     {
         m_Snapshot = {}; m_SelectedEmitter.clear(); m_Frozen = false; m_Frame = -1;
         return;
     }
     ImGui::SetNextWindowSize(ImVec2(530, 470), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Particle Debug", &VansEditorWindow::m_ParticleDebugWindowOpen))
+    if (!ImGui::Begin("Particle Debug", VansEditorWindow::WindowOpenState(VansEditorWindowId::ParticleDebug)))
     { ImGui::End(); return; }
     Refresh(api);
     ImGui::Checkbox("Scene Overlay (X-ray)", &m_Overlay);
@@ -151,7 +153,7 @@ void VansParticleDebugWindow::ShowWindow(IEngineEditorAPI& api)
 void VansParticleDebugWindow::DrawSceneOverlay(IEngineEditorAPI& api,
     const glm::mat4& viewProjection, ImVec2 origin, ImVec2 size)
 {
-    if (!VansEditorWindow::m_ParticleDebugWindowOpen || !m_Overlay) return;
+    if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::ParticleDebug) || !m_Overlay) return;
     Refresh(api);
     const auto project = [&](const Vec3& point, ImVec2& screen) {
         const auto clip = viewProjection * glm::vec4(point.x, point.y, point.z, 1);

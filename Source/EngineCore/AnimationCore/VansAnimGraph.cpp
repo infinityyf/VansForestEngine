@@ -24,6 +24,76 @@
 
 namespace VansGraphics
 {
+	bool VansAnimGraphMotionMatchingPort::Evaluate(
+		float deltaTime,
+		const Skeleton& skeleton,
+		const std::unordered_map<std::string, VansAnimationClip>& clips,
+		const std::unordered_map<std::string, AnimatorParameter>& parameters,
+		const Vans::VansCharacterTrajectory* trajectory,
+		VansPosePayload& outPayload) const
+	{
+		return m_Runtime && m_Runtime->Update(
+			deltaTime, skeleton, clips, parameters, trajectory, outPayload);
+	}
+
+	AnimGraphPose VansAnimGraphNode::EvaluateInputPose(
+		VansAnimGraphInstance& instance,
+		int nodeId,
+		int inputPinIndex,
+		const AnimGraphContext& ctx)
+	{
+		return instance.EvaluateInput(nodeId, inputPinIndex, ctx);
+	}
+
+	AnimGraphPose VansAnimGraphNode::EvaluateNodePose(
+		VansAnimGraphInstance& instance,
+		int nodeId,
+		const AnimGraphContext& ctx)
+	{
+		return instance.EvaluateNode(nodeId, ctx);
+	}
+
+	VansAnimGraphClipRuntimeState& VansAnimGraphNode::ResolveClipState(
+		VansAnimGraphInstance& instance, int nodeId)
+	{
+		return instance.GetClipState(nodeId);
+	}
+
+	VansAnimGraphStateMachineRuntimeState&
+	VansAnimGraphNode::ResolveStateMachineState(
+		VansAnimGraphInstance& instance,
+		int nodeId,
+		const AnimGraphStateMachineNode& definition)
+	{
+		return instance.GetStateMachineState(nodeId, definition);
+	}
+
+	void VansAnimGraphNode::StoreCachedPose(
+		VansAnimGraphInstance& instance,
+		const std::string& name,
+		const AnimGraphPose& pose)
+	{
+		instance.SetCachedPose(name, pose);
+	}
+
+	const AnimGraphPose* VansAnimGraphNode::ResolveCachedPose(
+		const VansAnimGraphInstance& instance,
+		const std::string& name)
+	{
+		return instance.FindCachedPose(name);
+	}
+
+	AnimGraphPose VansAnimGraphNode::AppendProceduralPose(
+		VansAnimGraphInstance& instance,
+		int nodeId,
+		const AnimGraphContext& ctx)
+	{
+		AnimGraphPose pose = instance.EvaluateInput(nodeId, 0, ctx);
+		if (pose.valid)
+			pose.proceduralNodeIds.push_back(nodeId);
+		return pose;
+	}
+
 	// ═════════════════════════════════════════════════════════════
 	//  工具函数
 	// ═════════════════════════════════════════════════════════════
@@ -32,34 +102,34 @@ namespace VansGraphics
 	//  节点类型名称映射
 	// ═════════════════════════════════════════════════════════════
 
-	const char* VansAnimGraphNode::TypeToString(AnimGraphNodeType type)
+	const char* VansAnimGraphNode::TypeToString(VansAnimGraphNodeType type)
 	{
 		switch (type)
 		{
-		case AnimGraphNodeType::Entry:          return "Entry";
-		case AnimGraphNodeType::Output:         return "Output";
-		case AnimGraphNodeType::Clip:           return "Clip";
-		case AnimGraphNodeType::Blend:          return "Blend";
-		case AnimGraphNodeType::Blend1D:        return "Blend1D";
-		case AnimGraphNodeType::BlendSpace2D:   return "BlendSpace2D";
-		case AnimGraphNodeType::IfCondition:    return "IfCondition";
-		case AnimGraphNodeType::Switch:         return "Switch";
-		case AnimGraphNodeType::AdditiveBlend:  return "AdditiveBlend";
-		case AnimGraphNodeType::SpeedScale:     return "SpeedScale";
-		case AnimGraphNodeType::StateMachine:   return "StateMachine";
-		case AnimGraphNodeType::MotionMatching: return "MotionMatching";
-		case AnimGraphNodeType::Slot:           return "Slot";
-		case AnimGraphNodeType::TargetPoseInput:return "TargetPoseInput";
-		case AnimGraphNodeType::Goal:           return "Goal";
-		case AnimGraphNodeType::AimConstraint:  return "AimConstraint";
-		case AnimGraphNodeType::Grounding:      return "Grounding";
-		case AnimGraphNodeType::LimbIK:         return "LimbIK";
-		case AnimGraphNodeType::ChainIK:        return "ChainIK";
-		case AnimGraphNodeType::RotationDistribution: return "RotationDistribution";
-		case AnimGraphNodeType::PoseCheckpoint: return "PoseCheckpoint";
-		case AnimGraphNodeType::SaveCachedPose: return "SaveCachedPose";
-		case AnimGraphNodeType::UseCachedPose: return "UseCachedPose";
-		case AnimGraphNodeType::LayeredBlendPerBone: return "LayeredBlendPerBone";
+		case VansAnimGraphNodeType::Entry:          return "Entry";
+		case VansAnimGraphNodeType::Output:         return "Output";
+		case VansAnimGraphNodeType::Clip:           return "Clip";
+		case VansAnimGraphNodeType::Blend:          return "Blend";
+		case VansAnimGraphNodeType::Blend1D:        return "Blend1D";
+		case VansAnimGraphNodeType::BlendSpace2D:   return "BlendSpace2D";
+		case VansAnimGraphNodeType::IfCondition:    return "IfCondition";
+		case VansAnimGraphNodeType::Switch:         return "Switch";
+		case VansAnimGraphNodeType::AdditiveBlend:  return "AdditiveBlend";
+		case VansAnimGraphNodeType::SpeedScale:     return "SpeedScale";
+		case VansAnimGraphNodeType::StateMachine:   return "StateMachine";
+		case VansAnimGraphNodeType::MotionMatching: return "MotionMatching";
+		case VansAnimGraphNodeType::Slot:           return "Slot";
+		case VansAnimGraphNodeType::TargetPoseInput:return "TargetPoseInput";
+		case VansAnimGraphNodeType::Goal:           return "Goal";
+		case VansAnimGraphNodeType::AimConstraint:  return "AimConstraint";
+		case VansAnimGraphNodeType::Grounding:      return "Grounding";
+		case VansAnimGraphNodeType::LimbIK:         return "LimbIK";
+		case VansAnimGraphNodeType::ChainIK:        return "ChainIK";
+		case VansAnimGraphNodeType::RotationDistribution: return "RotationDistribution";
+		case VansAnimGraphNodeType::PoseCheckpoint: return "PoseCheckpoint";
+		case VansAnimGraphNodeType::SaveCachedPose: return "SaveCachedPose";
+		case VansAnimGraphNodeType::UseCachedPose: return "UseCachedPose";
+		case VansAnimGraphNodeType::LayeredBlendPerBone: return "LayeredBlendPerBone";
 		}
 		return "Unknown";
 	}
@@ -70,7 +140,7 @@ namespace VansGraphics
 
 	AnimGraphEntryNode::AnimGraphEntryNode()
 	{
-		m_Type = AnimGraphNodeType::Entry;
+		m_Type = VansAnimGraphNodeType::Entry;
 		m_Name = "Entry";
 	}
 
@@ -93,7 +163,7 @@ namespace VansGraphics
 
 	AnimGraphOutputNode::AnimGraphOutputNode()
 	{
-		m_Type = AnimGraphNodeType::Output;
+		m_Type = VansAnimGraphNodeType::Output;
 		m_Name = "Output";
 	}
 
@@ -106,7 +176,7 @@ namespace VansGraphics
 	AnimGraphPose AnimGraphOutputNode::Evaluate(const AnimGraphContext& ctx,
 	                                            VansAnimGraphInstance& instance) const
 	{
-		return instance.EvaluateInput(m_NodeId, 0, ctx);
+		return EvaluateInputPose(instance, m_NodeId, 0, ctx);
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -115,7 +185,7 @@ namespace VansGraphics
 
 	AnimGraphClipNode::AnimGraphClipNode()
 	{
-		m_Type = AnimGraphNodeType::Clip;
+		m_Type = VansAnimGraphNodeType::Clip;
 		m_Name = "Clip";
 	}
 
@@ -132,7 +202,7 @@ namespace VansGraphics
 		if (!ctx.clips || !ctx.skeleton) return pose;
 		auto it = ctx.clips->find(m_ClipName);
 		if (it == ctx.clips->end()) return pose;
-		const VansAnimGraphClipRuntimeState& runtime = instance.GetClipState(m_NodeId);
+		const VansAnimGraphClipRuntimeState& runtime = ResolveClipState(instance, m_NodeId);
 		VansAnimationSampleRequest request;
 		request.previousTime = runtime.previousTime;
 		request.currentTime = runtime.currentTime;
@@ -150,7 +220,7 @@ namespace VansGraphics
 
 	AnimGraphBlendNode::AnimGraphBlendNode()
 	{
-		m_Type = AnimGraphNodeType::Blend;
+		m_Type = VansAnimGraphNodeType::Blend;
 		m_Name = "Blend";
 	}
 
@@ -166,8 +236,8 @@ namespace VansGraphics
 	AnimGraphPose AnimGraphBlendNode::Evaluate(const AnimGraphContext& ctx,
 	                                           VansAnimGraphInstance& instance) const
 	{
-		AnimGraphPose poseA = instance.EvaluateInput(m_NodeId, 0, ctx);
-		AnimGraphPose poseB = instance.EvaluateInput(m_NodeId, 1, ctx);
+		AnimGraphPose poseA = EvaluateInputPose(instance, m_NodeId, 0, ctx);
+		AnimGraphPose poseB = EvaluateInputPose(instance, m_NodeId, 1, ctx);
 
 		if (!poseA.valid) return poseB;
 		if (!poseB.valid) return poseA;
@@ -190,7 +260,7 @@ namespace VansGraphics
 
 	AnimGraphBlend1DNode::AnimGraphBlend1DNode()
 	{
-		m_Type = AnimGraphNodeType::Blend1D;
+		m_Type = VansAnimGraphNodeType::Blend1D;
 		m_Name = "Blend1D";
 	}
 
@@ -230,17 +300,17 @@ namespace VansGraphics
 		if (count == 1)
 		{
 			// 只有一个入口，直接输出
-			return instance.EvaluateInput(m_NodeId, 0, ctx);
+			return EvaluateInputPose(instance, m_NodeId, 0, ctx);
 		}
 
 		// 找到 paramValue 落在哪两个阈值之间
 		if (paramValue <= m_Thresholds.front())
 		{
-			return instance.EvaluateInput(m_NodeId, 0, ctx);
+			return EvaluateInputPose(instance, m_NodeId, 0, ctx);
 		}
 		if (paramValue >= m_Thresholds.back())
 		{
-			return instance.EvaluateInput(m_NodeId, count - 1, ctx);
+			return EvaluateInputPose(instance, m_NodeId, count - 1, ctx);
 		}
 
 		for (int i = 0; i < count - 1; ++i)
@@ -252,8 +322,8 @@ namespace VansGraphics
 					? (paramValue - m_Thresholds[i]) / range
 					: 0.0f;
 
-				AnimGraphPose poseA = instance.EvaluateInput(m_NodeId, i, ctx);
-				AnimGraphPose poseB = instance.EvaluateInput(m_NodeId, i + 1, ctx);
+				AnimGraphPose poseA = EvaluateInputPose(instance, m_NodeId, i, ctx);
+				AnimGraphPose poseB = EvaluateInputPose(instance, m_NodeId, i + 1, ctx);
 
 				if (!poseA.valid) return poseB;
 				if (!poseB.valid) return poseA;
@@ -271,7 +341,7 @@ namespace VansGraphics
 
 	AnimGraphBlendSpace2DNode::AnimGraphBlendSpace2DNode()
 	{
-		m_Type = AnimGraphNodeType::BlendSpace2D;
+		m_Type = VansAnimGraphNodeType::BlendSpace2D;
 		m_Name = "BlendSpace2D";
 	}
 
@@ -383,7 +453,7 @@ namespace VansGraphics
 		{
 			if (weights[static_cast<size_t>(index)] <= epsilon)
 				continue;
-			AnimGraphPose pose = instance.EvaluateInput(m_NodeId, index, ctx);
+			AnimGraphPose pose = EvaluateInputPose(instance, m_NodeId, index, ctx);
 			if (!pose.valid)
 				continue;
 			const float normalizedWeight = weights[static_cast<size_t>(index)] / totalWeight;
@@ -406,7 +476,7 @@ namespace VansGraphics
 
 	AnimGraphIfConditionNode::AnimGraphIfConditionNode()
 	{
-		m_Type = AnimGraphNodeType::IfCondition;
+		m_Type = VansAnimGraphNodeType::IfCondition;
 		m_Name = "IfCondition";
 	}
 
@@ -444,6 +514,8 @@ namespace VansGraphics
 					case CompareOp::NotEqual:     condResult = std::abs(a - b) >= 0.0001f; break;
 					case CompareOp::GreaterEqual: condResult = a >= b; break;
 					case CompareOp::LessEqual:    condResult = a <= b; break;
+					case CompareOp::AbsGreaterEqual: condResult = std::abs(a) >= b; break;
+					case CompareOp::AbsLess:          condResult = std::abs(a) < b; break;
 					}
 					break;
 				}
@@ -473,7 +545,7 @@ namespace VansGraphics
 		}
 
 		int pinIndex = condResult ? 0 : 1;
-		return instance.EvaluateInput(m_NodeId, pinIndex, ctx);
+		return EvaluateInputPose(instance, m_NodeId, pinIndex, ctx);
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -482,7 +554,7 @@ namespace VansGraphics
 
 	AnimGraphSwitchNode::AnimGraphSwitchNode()
 	{
-		m_Type = AnimGraphNodeType::Switch;
+		m_Type = VansAnimGraphNodeType::Switch;
 		m_Name = "Switch";
 	}
 
@@ -516,7 +588,7 @@ namespace VansGraphics
 		// clamp 到有效范围
 		selectedCase = std::clamp(selectedCase, 0, m_CaseCount - 1);
 
-		return instance.EvaluateInput(m_NodeId, selectedCase, ctx);
+		return EvaluateInputPose(instance, m_NodeId, selectedCase, ctx);
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -525,7 +597,7 @@ namespace VansGraphics
 
 	AnimGraphAdditiveBlendNode::AnimGraphAdditiveBlendNode()
 	{
-		m_Type = AnimGraphNodeType::AdditiveBlend;
+		m_Type = VansAnimGraphNodeType::AdditiveBlend;
 		m_Name = "AdditiveBlend";
 	}
 
@@ -541,8 +613,8 @@ namespace VansGraphics
 	AnimGraphPose AnimGraphAdditiveBlendNode::Evaluate(const AnimGraphContext& ctx,
 	                                                   VansAnimGraphInstance& instance) const
 	{
-		AnimGraphPose basePose = instance.EvaluateInput(m_NodeId, 0, ctx);
-		AnimGraphPose additivePose = instance.EvaluateInput(m_NodeId, 1, ctx);
+		AnimGraphPose basePose = EvaluateInputPose(instance, m_NodeId, 0, ctx);
+		AnimGraphPose additivePose = EvaluateInputPose(instance, m_NodeId, 1, ctx);
 
 		if (!basePose.valid) return basePose;
 		if (!additivePose.valid) return basePose;
@@ -564,7 +636,7 @@ namespace VansGraphics
 
 	AnimGraphSpeedScaleNode::AnimGraphSpeedScaleNode()
 	{
-		m_Type = AnimGraphNodeType::SpeedScale;
+		m_Type = VansAnimGraphNodeType::SpeedScale;
 		m_Name = "SpeedScale";
 	}
 
@@ -589,7 +661,7 @@ namespace VansGraphics
 		}
 		AnimGraphContext scaledContext = ctx;
 		scaledContext.deltaTime *= speed;
-		return instance.EvaluateInput(m_NodeId, 0, scaledContext);
+		return EvaluateInputPose(instance, m_NodeId, 0, scaledContext);
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -598,7 +670,7 @@ namespace VansGraphics
 
 	AnimGraphStateMachineNode::AnimGraphStateMachineNode()
 	{
-		m_Type = AnimGraphNodeType::StateMachine;
+		m_Type = VansAnimGraphNodeType::StateMachine;
 		m_Name = "StateMachine";
 	}
 
@@ -614,7 +686,7 @@ namespace VansGraphics
 			return {};
 
 		VansAnimGraphStateMachineRuntimeState& runtime =
-			instance.GetStateMachineState(m_NodeId, *this);
+			ResolveStateMachineState(instance, m_NodeId, *this);
 		auto findState = [this](const std::string& name) -> const AnimatorState*
 		{
 			for (const AnimatorState& state : m_States)
@@ -644,6 +716,8 @@ namespace VansGraphics
 					case CompareOp::NotEqual: satisfied = std::abs(parameter.floatVal - condition.floatVal) >= 0.0001f; break;
 					case CompareOp::GreaterEqual: satisfied = parameter.floatVal >= condition.floatVal; break;
 					case CompareOp::LessEqual: satisfied = parameter.floatVal <= condition.floatVal; break;
+					case CompareOp::AbsGreaterEqual: satisfied = std::abs(parameter.floatVal) >= condition.floatVal; break;
+					case CompareOp::AbsLess: satisfied = std::abs(parameter.floatVal) < condition.floatVal; break;
 					}
 					break;
 				case AnimatorParamType::Bool:
@@ -730,6 +804,14 @@ namespace VansGraphics
 
 			auto sampleState = [&](const AnimatorState& state) -> AnimGraphPose
 			{
+				if (state.poseNodeId >= 0)
+				{
+					// A state may own a complete pose subgraph (BlendSpace,
+					// layered pose, or another generic node).  The state machine
+					// still owns transition selection/blending; the referenced
+					// node owns pose evaluation and curve output.
+					return EvaluateNodePose(instance, state.poseNodeId, ctx);
+				}
 				AnimGraphPose pose;
 				auto clipIt = ctx.clips->find(state.clipName);
 				if (clipIt == ctx.clips->end())
@@ -782,22 +864,84 @@ namespace VansGraphics
 	VansAnimGraph::VansAnimGraph()  = default;
 	VansAnimGraph::~VansAnimGraph() = default;
 
+	namespace
+	{
+		template<typename Node>
+		std::unique_ptr<VansAnimGraphNode> CloneNodeAs(const VansAnimGraphNode& source)
+		{
+			return std::make_unique<Node>(static_cast<const Node&>(source));
+		}
+
+		std::unique_ptr<VansAnimGraphNode> CloneNodeDefinition(const VansAnimGraphNode& source)
+		{
+			switch (source.GetType())
+			{
+			case VansAnimGraphNodeType::Entry: return CloneNodeAs<AnimGraphEntryNode>(source);
+			case VansAnimGraphNodeType::Output: return CloneNodeAs<AnimGraphOutputNode>(source);
+			case VansAnimGraphNodeType::Clip: return CloneNodeAs<AnimGraphClipNode>(source);
+			case VansAnimGraphNodeType::Blend: return CloneNodeAs<AnimGraphBlendNode>(source);
+			case VansAnimGraphNodeType::Blend1D: return CloneNodeAs<AnimGraphBlend1DNode>(source);
+			case VansAnimGraphNodeType::BlendSpace2D: return CloneNodeAs<AnimGraphBlendSpace2DNode>(source);
+			case VansAnimGraphNodeType::IfCondition: return CloneNodeAs<AnimGraphIfConditionNode>(source);
+			case VansAnimGraphNodeType::Switch: return CloneNodeAs<AnimGraphSwitchNode>(source);
+			case VansAnimGraphNodeType::AdditiveBlend: return CloneNodeAs<AnimGraphAdditiveBlendNode>(source);
+			case VansAnimGraphNodeType::SpeedScale: return CloneNodeAs<AnimGraphSpeedScaleNode>(source);
+			case VansAnimGraphNodeType::StateMachine: return CloneNodeAs<AnimGraphStateMachineNode>(source);
+			case VansAnimGraphNodeType::MotionMatching: return CloneNodeAs<AnimGraphMotionMatchingNode>(source);
+			case VansAnimGraphNodeType::Slot: return CloneNodeAs<AnimGraphSlotNode>(source);
+			case VansAnimGraphNodeType::TargetPoseInput: return CloneNodeAs<AnimGraphTargetPoseInputNode>(source);
+			case VansAnimGraphNodeType::Goal: return CloneNodeAs<AnimGraphGoalNode>(source);
+			case VansAnimGraphNodeType::AimConstraint: return CloneNodeAs<AnimGraphAimConstraintNode>(source);
+			case VansAnimGraphNodeType::Grounding: return CloneNodeAs<AnimGraphGroundingNode>(source);
+			case VansAnimGraphNodeType::LimbIK: return CloneNodeAs<AnimGraphLimbIKNode>(source);
+			case VansAnimGraphNodeType::ChainIK: return CloneNodeAs<AnimGraphChainIKNode>(source);
+			case VansAnimGraphNodeType::PoseCheckpoint: return CloneNodeAs<AnimGraphPoseCheckpointNode>(source);
+			case VansAnimGraphNodeType::RotationDistribution: return CloneNodeAs<AnimGraphRotationDistributionNode>(source);
+			case VansAnimGraphNodeType::SaveCachedPose: return CloneNodeAs<AnimGraphSaveCachedPoseNode>(source);
+			case VansAnimGraphNodeType::UseCachedPose: return CloneNodeAs<AnimGraphUseCachedPoseNode>(source);
+			case VansAnimGraphNodeType::LayeredBlendPerBone: return CloneNodeAs<AnimGraphLayeredBlendPerBoneNode>(source);
+			}
+			return nullptr;
+		}
+	}
+
+	std::unique_ptr<VansAnimGraph> VansAnimGraph::Clone() const
+	{
+		auto clone = std::make_unique<VansAnimGraph>();
+		clone->m_Nodes.reserve(m_Nodes.size());
+		for (const auto& [nodeId, node] : m_Nodes)
+		{
+			if (!node)
+				return nullptr;
+			auto clonedNode = CloneNodeDefinition(*node);
+			if (!clonedNode)
+				return nullptr;
+			clone->m_Nodes.emplace(nodeId, std::move(clonedNode));
+		}
+		clone->m_Links = m_Links;
+		clone->m_EntryNodeId = m_EntryNodeId;
+		clone->m_OutputNodeId = m_OutputNodeId;
+		clone->m_NextNodeId = m_NextNodeId;
+		clone->m_NextLinkId = m_NextLinkId;
+		return clone;
+	}
+
 	int VansAnimGraph::AddNode(std::unique_ptr<VansAnimGraphNode> node)
 	{
 		if (!node)
 			return -1;
-		if (node->GetType() == AnimGraphNodeType::Entry && m_EntryNodeId >= 0)
+		if (node->GetType() == VansAnimGraphNodeType::Entry && m_EntryNodeId >= 0)
 			return -1;
-		if (node->GetType() == AnimGraphNodeType::Output && m_OutputNodeId >= 0)
+		if (node->GetType() == VansAnimGraphNodeType::Output && m_OutputNodeId >= 0)
 			return -1;
 
 		int id = m_NextNodeId++;
 		node->m_NodeId = id;
 
 		// 自动记录 Entry / Output 节点
-		if (node->GetType() == AnimGraphNodeType::Entry)
+		if (node->GetType() == VansAnimGraphNodeType::Entry)
 			m_EntryNodeId = id;
-		else if (node->GetType() == AnimGraphNodeType::Output)
+		else if (node->GetType() == VansAnimGraphNodeType::Output)
 			m_OutputNodeId = id;
 
 		m_Nodes[id] = std::move(node);
@@ -808,15 +952,15 @@ namespace VansGraphics
 	{
 		if (!node || nodeId <= 0 || m_Nodes.find(nodeId) != m_Nodes.end())
 			return false;
-		if (node->GetType() == AnimGraphNodeType::Entry && m_EntryNodeId >= 0)
+		if (node->GetType() == VansAnimGraphNodeType::Entry && m_EntryNodeId >= 0)
 			return false;
-		if (node->GetType() == AnimGraphNodeType::Output && m_OutputNodeId >= 0)
+		if (node->GetType() == VansAnimGraphNodeType::Output && m_OutputNodeId >= 0)
 			return false;
 
 		node->m_NodeId = nodeId;
-		if (node->GetType() == AnimGraphNodeType::Entry)
+		if (node->GetType() == VansAnimGraphNodeType::Entry)
 			m_EntryNodeId = nodeId;
-		else if (node->GetType() == AnimGraphNodeType::Output)
+		else if (node->GetType() == VansAnimGraphNodeType::Output)
 			m_OutputNodeId = nodeId;
 		m_Nodes.emplace(nodeId, std::move(node));
 		m_NextNodeId = std::max(m_NextNodeId, nodeId + 1);
@@ -965,21 +1109,22 @@ namespace VansGraphics
 		std::unordered_map<int, int> visitState;
 		std::function<bool(int)> visit = [&](int nodeId)
 		{
-			int& state = visitState[nodeId];
-			if (state == 2)
+			int& visitMark = visitState[nodeId];
+			if (visitMark == 2)
 				return true;
-			if (state == 1)
+			if (visitMark == 1)
 			{
 				outError = "Animation graph contains a directed cycle at node " + std::to_string(nodeId);
 				return false;
 			}
-			if (!GetNode(nodeId))
+			const VansAnimGraphNode* node = GetNode(nodeId);
+			if (!node)
 			{
 				outError = "Animation graph execution plan references missing node " + std::to_string(nodeId);
 				return false;
 			}
 
-			state = 1;
+			visitMark = 1;
 			std::vector<const AnimGraphLink*> inputs;
 			for (const AnimGraphLink& link : m_Links)
 				if (link.toNodeId == nodeId)
@@ -993,7 +1138,22 @@ namespace VansGraphics
 			for (const AnimGraphLink* link : inputs)
 				if (!visit(link->fromNodeId))
 					return false;
-			state = 2;
+			// A state may reference a complete pose subgraph (for example a
+			// BlendSpace or layered pose) instead of a single clip.  These
+			// references are part of the graph's dependency tree even though they
+			// are not represented as ordinary input links on the StateMachine
+			// node.  Visit them before publishing the StateMachine so the plan is
+			// topologically ordered and so unreferenced pose nodes are rejected.
+			if (node->GetType() == VansAnimGraphNodeType::StateMachine)
+			{
+				const auto* stateMachine = static_cast<const AnimGraphStateMachineNode*>(node);
+				for (const AnimatorState& animatorState : stateMachine->m_States)
+				{
+					if (animatorState.poseNodeId >= 0 && !visit(animatorState.poseNodeId))
+						return false;
+				}
+			}
+			visitMark = 2;
 			outPlan.push_back(nodeId);
 			return true;
 		};
@@ -1002,7 +1162,7 @@ namespace VansGraphics
 			return false;
 		for (const auto& [nodeId, node] : m_Nodes)
 		{
-			if (node && node->GetType() != AnimGraphNodeType::Entry
+			if (node && node->GetType() != VansAnimGraphNodeType::Entry
 			    && visitState[nodeId] != 2)
 			{
 				outError = "Animation graph contains unreachable node " + std::to_string(nodeId);
@@ -1020,11 +1180,11 @@ namespace VansGraphics
 			const VansAnimGraphNode* node = GetNode(nodeId);
 			if (!node)
 				return false;
-			if (node->GetType() == AnimGraphNodeType::SpeedScale)
+			if (node->GetType() == VansAnimGraphNodeType::SpeedScale)
 				speedPath.push_back(nodeId);
-			const bool statefulSource = node->GetType() == AnimGraphNodeType::Clip
-				|| node->GetType() == AnimGraphNodeType::StateMachine
-				|| node->GetType() == AnimGraphNodeType::MotionMatching;
+			const bool statefulSource = node->GetType() == VansAnimGraphNodeType::Clip
+				|| node->GetType() == VansAnimGraphNodeType::StateMachine
+				|| node->GetType() == VansAnimGraphNodeType::MotionMatching;
 			if (statefulSource)
 			{
 				auto [found, inserted] = sourceSpeedPaths.emplace(nodeId, speedPath);
@@ -1038,6 +1198,14 @@ namespace VansGraphics
 			for (const AnimGraphLink& link : m_Links)
 				if (link.toNodeId == nodeId && !validateSpeedPath(link.fromNodeId, speedPath))
 					return false;
+			if (node->GetType() == VansAnimGraphNodeType::StateMachine)
+			{
+				const auto* stateMachine = static_cast<const AnimGraphStateMachineNode*>(node);
+				for (const AnimatorState& state : stateMachine->m_States)
+					if (state.poseNodeId >= 0
+						&& !validateSpeedPath(state.poseNodeId, speedPath))
+						return false;
+			}
 			return true;
 		};
 		if (!validateSpeedPath(m_OutputNodeId, {}))
@@ -1072,6 +1240,30 @@ namespace VansGraphics
 
 	VansAnimGraphInstance::~VansAnimGraphInstance() = default;
 
+	const VansAnimGraphInstance::VansLayeredBlendRuntimeState&
+	VansAnimGraphInstance::ResolveLayeredBlendRuntime(
+		int nodeId, const VansBoneMaskAsset& mask, const Skeleton& skeleton)
+	{
+		auto found = m_LayeredBlendRuntimes.try_emplace(nodeId).first;
+		VansLayeredBlendRuntimeState& runtime = found->second;
+		const std::uint64_t signature = skeleton.signature != 0
+			? skeleton.signature
+			: skeleton.ComputeSignature();
+		if (!runtime.initialized || runtime.skeletonSignature != signature)
+		{
+			VansCompiledBoneMask compiledMask = VansBoneMaskCompiler::Compile(mask, skeleton);
+			VansAnimationFrameVector<VansBoneTransform> bindPose{
+				std::pmr::new_delete_resource() };
+			VansAnimationLayerMixer::BuildBindPose(skeleton, bindPose);
+
+			runtime.skeletonSignature = signature;
+			runtime.mask = std::move(compiledMask);
+			runtime.bindPose = std::move(bindPose);
+			runtime.initialized = true;
+		}
+		return runtime;
+	}
+
 	AnimGraphPose VansAnimGraphInstance::Evaluate(const AnimGraphContext& ctx)
 	{
 		if (!IsCompiled())
@@ -1087,13 +1279,19 @@ namespace VansGraphics
 		for (int nodeId : m_ExecutionPlan)
 		{
 			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
-			if (node && node->GetType() == AnimGraphNodeType::SaveCachedPose)
+			if (node && node->GetType() == VansAnimGraphNodeType::SaveCachedPose)
 				EvaluateNode(nodeId, ctx);
 		}
 		AnimGraphPose result = EvaluateNode(m_Definition.GetOutputNodeId(), ctx);
 		for (int nodeId : m_ExecutionPlan)
 			m_PreviousActiveNodes[nodeId] = m_EvaluatedNodes[nodeId];
 		return result;
+	}
+
+	AnimGraphPose VansAnimGraphInstance::EvaluateFrame(const AnimGraphContext& ctx)
+	{
+		AdvanceTime(ctx.deltaTime, ctx);
+		return Evaluate(ctx);
 	}
 
 	AnimGraphPose VansAnimGraphInstance::EvaluateNode(int nodeId, const AnimGraphContext& ctx)
@@ -1142,7 +1340,7 @@ namespace VansGraphics
 			if (!node)
 				return;
 			float inputScale = scale;
-			if (node->GetType() == AnimGraphNodeType::SpeedScale)
+			if (node->GetType() == VansAnimGraphNodeType::SpeedScale)
 			{
 				const auto* speedNode = static_cast<const AnimGraphSpeedScaleNode*>(node);
 				float speed = speedNode->m_FixedSpeed;
@@ -1154,6 +1352,32 @@ namespace VansGraphics
 						speed = parameter->second.floatVal;
 				}
 				inputScale *= speed;
+			}
+			if (node->GetType() == VansAnimGraphNodeType::StateMachine)
+			{
+				const auto* stateMachine = static_cast<const AnimGraphStateMachineNode*>(node);
+				const auto& runtime = GetStateMachineState(nodeId, *stateMachine);
+				auto propagateStatePose = [&](const std::string& stateName)
+				{
+					for (const AnimatorState& state : stateMachine->m_States)
+					{
+						if (state.name != stateName || state.poseNodeId < 0)
+							continue;
+						float stateScale = state.speed;
+						if (!state.speedParameter.empty() && ctx.parameters)
+						{
+							auto parameter = ctx.parameters->find(state.speedParameter);
+							if (parameter != ctx.parameters->end()
+								&& parameter->second.type == AnimatorParamType::Float)
+								stateScale *= parameter->second.floatVal;
+						}
+						self(self, state.poseNodeId, inputScale * stateScale);
+						break;
+					}
+				};
+				propagateStatePose(runtime.currentStateName);
+				if (runtime.blendState == ControllerBlendState::Blending)
+					propagateStatePose(runtime.previousStateName);
 			}
 			for (const AnimGraphLink& link : m_Definition.GetLinks())
 				if (link.toNodeId == nodeId)
@@ -1168,7 +1392,7 @@ namespace VansGraphics
 			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
 			if (!node)
 				continue;
-			if (node->GetType() == AnimGraphNodeType::Clip)
+			if (node->GetType() == VansAnimGraphNodeType::Clip)
 			{
 				const auto* clipNode = static_cast<const AnimGraphClipNode*>(node);
 				VansAnimGraphClipRuntimeState& state = GetClipState(nodeId);
@@ -1178,7 +1402,7 @@ namespace VansGraphics
 				state.currentTime += deltaTime * timeScale * clipNode->m_Speed;
 				continue;
 			}
-			if (node->GetType() != AnimGraphNodeType::StateMachine || !ctx.clips)
+			if (node->GetType() != VansAnimGraphNodeType::StateMachine || !ctx.clips)
 				continue;
 
 			const auto* stateMachine = static_cast<const AnimGraphStateMachineNode*>(node);
@@ -1212,7 +1436,15 @@ namespace VansGraphics
 					}
 					const float timeScale = m_HasActiveTimeScale[nodeId]
 						? m_ActiveTimeScales[nodeId] : 1.0f;
-					time += deltaTime * timeScale * state->speed;
+					float stateSpeed = state->speed;
+					if (!state->speedParameter.empty() && ctx.parameters)
+					{
+						auto parameter = ctx.parameters->find(state->speedParameter);
+						if (parameter != ctx.parameters->end()
+						    && parameter->second.type == AnimatorParamType::Float)
+							stateSpeed *= parameter->second.floatVal;
+					}
+					time += deltaTime * timeScale * stateSpeed;
 					if (!state->loop)
 						time = std::clamp(time, start, end);
 				};
@@ -1241,7 +1473,7 @@ namespace VansGraphics
 		for (int nodeId : m_ExecutionPlan)
 		{
 			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
-			if (!node || node->GetType() != AnimGraphNodeType::StateMachine)
+			if (!node || node->GetType() != VansAnimGraphNodeType::StateMachine)
 				continue;
 			const auto* stateMachine = static_cast<const AnimGraphStateMachineNode*>(node);
 			for (const AnimatorState& state : stateMachine->m_States)
@@ -1288,6 +1520,33 @@ namespace VansGraphics
 		return {};
 	}
 
+	std::string VansAnimGraphInstance::GetActiveStatePath() const
+	{
+		std::string path;
+		for (int nodeId : m_ExecutionPlan)
+		{
+			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
+			if (!node || node->GetType() != VansAnimGraphNodeType::StateMachine)
+				continue;
+			auto runtimeIt = m_StateMachineStates.find(nodeId);
+			if (runtimeIt == m_StateMachineStates.end()
+				|| runtimeIt->second.currentStateName.empty())
+				continue;
+			if (!path.empty())
+				path += " | ";
+			path += node->GetName();
+			path += ":";
+			path += runtimeIt->second.currentStateName;
+			if (runtimeIt->second.blendState == ControllerBlendState::Blending
+				&& !runtimeIt->second.previousStateName.empty())
+			{
+				path += "<-";
+				path += runtimeIt->second.previousStateName;
+			}
+		}
+		return path;
+	}
+
 	float VansAnimGraphInstance::GetPrimaryPlaybackTime() const
 	{
 		for (int nodeId : m_ExecutionPlan)
@@ -1314,7 +1573,7 @@ namespace VansGraphics
 			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
 			if (!node)
 				continue;
-			if (node->GetType() == AnimGraphNodeType::StateMachine)
+			if (node->GetType() == VansAnimGraphNodeType::StateMachine)
 			{
 				auto runtimeIt = m_StateMachineStates.find(nodeId);
 				if (runtimeIt == m_StateMachineStates.end())
@@ -1324,7 +1583,7 @@ namespace VansGraphics
 					if (state.name == runtimeIt->second.currentStateName)
 						return state.clipName;
 			}
-			if (node->GetType() == AnimGraphNodeType::Clip
+			if (node->GetType() == VansAnimGraphNodeType::Clip
 			    && m_ClipStates.find(nodeId) != m_ClipStates.end())
 				return static_cast<const AnimGraphClipNode*>(node)->m_ClipName;
 		}
@@ -1341,7 +1600,7 @@ namespace VansGraphics
 			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
 			if (!node)
 				continue;
-			if (node->GetType() == AnimGraphNodeType::StateMachine)
+			if (node->GetType() == VansAnimGraphNodeType::StateMachine)
 			{
 				const auto* definition = static_cast<const AnimGraphStateMachineNode*>(node);
 				VansAnimGraphStateMachineRuntimeState& runtime = GetStateMachineState(nodeId, *definition);
@@ -1364,7 +1623,7 @@ namespace VansGraphics
 				m_PreviousActiveNodes[nodeId] = true;
 				return true;
 			}
-			if (node->GetType() == AnimGraphNodeType::Clip)
+			if (node->GetType() == VansAnimGraphNodeType::Clip)
 			{
 				VansAnimGraphClipRuntimeState& runtime = GetClipState(nodeId);
 				runtime.previousTime = runtime.currentTime;
@@ -1387,7 +1646,7 @@ namespace VansGraphics
 		{
 			const VansAnimGraphNode* node = leader.m_Definition.GetNode(nodeId);
 			auto runtime = leader.m_StateMachineStates.find(nodeId);
-			if (node && node->GetType() == AnimGraphNodeType::StateMachine
+			if (node && node->GetType() == VansAnimGraphNodeType::StateMachine
 				&& runtime != leader.m_StateMachineStates.end())
 			{
 				leaderNodeId = nodeId;
@@ -1405,7 +1664,7 @@ namespace VansGraphics
 		for (int nodeId : m_ExecutionPlan)
 		{
 			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
-			if (node && node->GetType() == AnimGraphNodeType::StateMachine)
+			if (node && node->GetType() == VansAnimGraphNodeType::StateMachine)
 			{
 				followerNodeId = nodeId;
 				followerDefinition = static_cast<const AnimGraphStateMachineNode*>(node);
@@ -1510,7 +1769,7 @@ namespace VansGraphics
 		for (const auto& [nodeId, state] : snapshot.clipStates)
 		{
 			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
-			if (!node || node->GetType() != AnimGraphNodeType::Clip
+			if (!node || node->GetType() != VansAnimGraphNodeType::Clip
 				|| !std::isfinite(state.previousTime) || !std::isfinite(state.currentTime))
 			{
 				fullyCompatible = false;
@@ -1522,7 +1781,7 @@ namespace VansGraphics
 		for (const auto& [nodeId, source] : snapshot.stateMachineStates)
 		{
 			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
-			if (!node || node->GetType() != AnimGraphNodeType::StateMachine)
+			if (!node || node->GetType() != VansAnimGraphNodeType::StateMachine)
 			{
 				fullyCompatible = false;
 				continue;
@@ -1579,12 +1838,6 @@ namespace VansGraphics
 		return fullyCompatible;
 	}
 
-	float VansAnimGraphInstance::GetClipTime(int nodeId) const
-	{
-		auto it = m_ClipStates.find(nodeId);
-		return it == m_ClipStates.end() ? 0.0f : it->second.currentTime;
-	}
-
 	VansAnimGraphClipRuntimeState& VansAnimGraphInstance::GetClipState(int nodeId)
 	{
 		return m_ClipStates[nodeId];
@@ -1608,64 +1861,64 @@ namespace VansGraphics
 
 	// ─── 节点工厂 ──────────────────────────────────────────────
 
-	std::unique_ptr<VansAnimGraphNode> VansAnimGraph::CreateNodeByType(AnimGraphNodeType type)
+	std::unique_ptr<VansAnimGraphNode> VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType type)
 	{
 		switch (type)
 		{
-		case AnimGraphNodeType::Entry:         return std::make_unique<AnimGraphEntryNode>();
-		case AnimGraphNodeType::Output:        return std::make_unique<AnimGraphOutputNode>();
-		case AnimGraphNodeType::Clip:          return std::make_unique<AnimGraphClipNode>();
-		case AnimGraphNodeType::Blend:         return std::make_unique<AnimGraphBlendNode>();
-		case AnimGraphNodeType::Blend1D:       return std::make_unique<AnimGraphBlend1DNode>();
-		case AnimGraphNodeType::BlendSpace2D:  return std::make_unique<AnimGraphBlendSpace2DNode>();
-		case AnimGraphNodeType::IfCondition:   return std::make_unique<AnimGraphIfConditionNode>();
-		case AnimGraphNodeType::Switch:        return std::make_unique<AnimGraphSwitchNode>();
-		case AnimGraphNodeType::AdditiveBlend: return std::make_unique<AnimGraphAdditiveBlendNode>();
-		case AnimGraphNodeType::SpeedScale:    return std::make_unique<AnimGraphSpeedScaleNode>();
-		case AnimGraphNodeType::StateMachine:  return std::make_unique<AnimGraphStateMachineNode>();
-		case AnimGraphNodeType::MotionMatching:return std::make_unique<AnimGraphMotionMatchingNode>();
-		case AnimGraphNodeType::Slot:          return std::make_unique<AnimGraphSlotNode>();
-		case AnimGraphNodeType::TargetPoseInput:return std::make_unique<AnimGraphTargetPoseInputNode>();
-		case AnimGraphNodeType::Goal:          return std::make_unique<AnimGraphGoalNode>();
-		case AnimGraphNodeType::AimConstraint: return std::make_unique<AnimGraphAimConstraintNode>();
-		case AnimGraphNodeType::Grounding:     return std::make_unique<AnimGraphGroundingNode>();
-		case AnimGraphNodeType::LimbIK:        return std::make_unique<AnimGraphLimbIKNode>();
-		case AnimGraphNodeType::ChainIK:       return std::make_unique<AnimGraphChainIKNode>();
-		case AnimGraphNodeType::RotationDistribution: return std::make_unique<AnimGraphRotationDistributionNode>();
-		case AnimGraphNodeType::PoseCheckpoint: return std::make_unique<AnimGraphPoseCheckpointNode>();
-		case AnimGraphNodeType::SaveCachedPose: return std::make_unique<AnimGraphSaveCachedPoseNode>();
-		case AnimGraphNodeType::UseCachedPose: return std::make_unique<AnimGraphUseCachedPoseNode>();
-		case AnimGraphNodeType::LayeredBlendPerBone: return std::make_unique<AnimGraphLayeredBlendPerBoneNode>();
+		case VansAnimGraphNodeType::Entry:         return std::make_unique<AnimGraphEntryNode>();
+		case VansAnimGraphNodeType::Output:        return std::make_unique<AnimGraphOutputNode>();
+		case VansAnimGraphNodeType::Clip:          return std::make_unique<AnimGraphClipNode>();
+		case VansAnimGraphNodeType::Blend:         return std::make_unique<AnimGraphBlendNode>();
+		case VansAnimGraphNodeType::Blend1D:       return std::make_unique<AnimGraphBlend1DNode>();
+		case VansAnimGraphNodeType::BlendSpace2D:  return std::make_unique<AnimGraphBlendSpace2DNode>();
+		case VansAnimGraphNodeType::IfCondition:   return std::make_unique<AnimGraphIfConditionNode>();
+		case VansAnimGraphNodeType::Switch:        return std::make_unique<AnimGraphSwitchNode>();
+		case VansAnimGraphNodeType::AdditiveBlend: return std::make_unique<AnimGraphAdditiveBlendNode>();
+		case VansAnimGraphNodeType::SpeedScale:    return std::make_unique<AnimGraphSpeedScaleNode>();
+		case VansAnimGraphNodeType::StateMachine:  return std::make_unique<AnimGraphStateMachineNode>();
+		case VansAnimGraphNodeType::MotionMatching:return std::make_unique<AnimGraphMotionMatchingNode>();
+		case VansAnimGraphNodeType::Slot:          return std::make_unique<AnimGraphSlotNode>();
+		case VansAnimGraphNodeType::TargetPoseInput:return std::make_unique<AnimGraphTargetPoseInputNode>();
+		case VansAnimGraphNodeType::Goal:          return std::make_unique<AnimGraphGoalNode>();
+		case VansAnimGraphNodeType::AimConstraint: return std::make_unique<AnimGraphAimConstraintNode>();
+		case VansAnimGraphNodeType::Grounding:     return std::make_unique<AnimGraphGroundingNode>();
+		case VansAnimGraphNodeType::LimbIK:        return std::make_unique<AnimGraphLimbIKNode>();
+		case VansAnimGraphNodeType::ChainIK:       return std::make_unique<AnimGraphChainIKNode>();
+		case VansAnimGraphNodeType::RotationDistribution: return std::make_unique<AnimGraphRotationDistributionNode>();
+		case VansAnimGraphNodeType::PoseCheckpoint: return std::make_unique<AnimGraphPoseCheckpointNode>();
+		case VansAnimGraphNodeType::SaveCachedPose: return std::make_unique<AnimGraphSaveCachedPoseNode>();
+		case VansAnimGraphNodeType::UseCachedPose: return std::make_unique<AnimGraphUseCachedPoseNode>();
+		case VansAnimGraphNodeType::LayeredBlendPerBone: return std::make_unique<AnimGraphLayeredBlendPerBoneNode>();
 		}
 		return nullptr;
 	}
 
 	std::unique_ptr<VansAnimGraphNode> VansAnimGraph::CreateNodeByTypeName(const std::string& typeName)
 	{
-		if (typeName == "Entry")          return CreateNodeByType(AnimGraphNodeType::Entry);
-		if (typeName == "Output")         return CreateNodeByType(AnimGraphNodeType::Output);
-		if (typeName == "Clip")           return CreateNodeByType(AnimGraphNodeType::Clip);
-		if (typeName == "Blend")          return CreateNodeByType(AnimGraphNodeType::Blend);
-		if (typeName == "Blend1D")        return CreateNodeByType(AnimGraphNodeType::Blend1D);
-		if (typeName == "BlendSpace2D")   return CreateNodeByType(AnimGraphNodeType::BlendSpace2D);
-		if (typeName == "IfCondition")    return CreateNodeByType(AnimGraphNodeType::IfCondition);
-		if (typeName == "Switch")         return CreateNodeByType(AnimGraphNodeType::Switch);
-		if (typeName == "AdditiveBlend")  return CreateNodeByType(AnimGraphNodeType::AdditiveBlend);
-		if (typeName == "SpeedScale")     return CreateNodeByType(AnimGraphNodeType::SpeedScale);
-		if (typeName == "StateMachine")   return CreateNodeByType(AnimGraphNodeType::StateMachine);
-		if (typeName == "MotionMatching") return CreateNodeByType(AnimGraphNodeType::MotionMatching);
-		if (typeName == "Slot")           return CreateNodeByType(AnimGraphNodeType::Slot);
-		if (typeName == "TargetPoseInput")return CreateNodeByType(AnimGraphNodeType::TargetPoseInput);
-		if (typeName == "Goal")           return CreateNodeByType(AnimGraphNodeType::Goal);
-		if (typeName == "AimConstraint")  return CreateNodeByType(AnimGraphNodeType::AimConstraint);
-		if (typeName == "Grounding")      return CreateNodeByType(AnimGraphNodeType::Grounding);
-		if (typeName == "LimbIK")         return CreateNodeByType(AnimGraphNodeType::LimbIK);
-		if (typeName == "ChainIK")        return CreateNodeByType(AnimGraphNodeType::ChainIK);
-		if (typeName == "RotationDistribution") return CreateNodeByType(AnimGraphNodeType::RotationDistribution);
-		if (typeName == "PoseCheckpoint") return CreateNodeByType(AnimGraphNodeType::PoseCheckpoint);
-		if (typeName == "SaveCachedPose") return CreateNodeByType(AnimGraphNodeType::SaveCachedPose);
-		if (typeName == "UseCachedPose") return CreateNodeByType(AnimGraphNodeType::UseCachedPose);
-		if (typeName == "LayeredBlendPerBone") return CreateNodeByType(AnimGraphNodeType::LayeredBlendPerBone);
+		if (typeName == "Entry")          return CreateNodeByType(VansAnimGraphNodeType::Entry);
+		if (typeName == "Output")         return CreateNodeByType(VansAnimGraphNodeType::Output);
+		if (typeName == "Clip")           return CreateNodeByType(VansAnimGraphNodeType::Clip);
+		if (typeName == "Blend")          return CreateNodeByType(VansAnimGraphNodeType::Blend);
+		if (typeName == "Blend1D")        return CreateNodeByType(VansAnimGraphNodeType::Blend1D);
+		if (typeName == "BlendSpace2D")   return CreateNodeByType(VansAnimGraphNodeType::BlendSpace2D);
+		if (typeName == "IfCondition")    return CreateNodeByType(VansAnimGraphNodeType::IfCondition);
+		if (typeName == "Switch")         return CreateNodeByType(VansAnimGraphNodeType::Switch);
+		if (typeName == "AdditiveBlend")  return CreateNodeByType(VansAnimGraphNodeType::AdditiveBlend);
+		if (typeName == "SpeedScale")     return CreateNodeByType(VansAnimGraphNodeType::SpeedScale);
+		if (typeName == "StateMachine")   return CreateNodeByType(VansAnimGraphNodeType::StateMachine);
+		if (typeName == "MotionMatching") return CreateNodeByType(VansAnimGraphNodeType::MotionMatching);
+		if (typeName == "Slot")           return CreateNodeByType(VansAnimGraphNodeType::Slot);
+		if (typeName == "TargetPoseInput")return CreateNodeByType(VansAnimGraphNodeType::TargetPoseInput);
+		if (typeName == "Goal")           return CreateNodeByType(VansAnimGraphNodeType::Goal);
+		if (typeName == "AimConstraint")  return CreateNodeByType(VansAnimGraphNodeType::AimConstraint);
+		if (typeName == "Grounding")      return CreateNodeByType(VansAnimGraphNodeType::Grounding);
+		if (typeName == "LimbIK")         return CreateNodeByType(VansAnimGraphNodeType::LimbIK);
+		if (typeName == "ChainIK")        return CreateNodeByType(VansAnimGraphNodeType::ChainIK);
+		if (typeName == "RotationDistribution") return CreateNodeByType(VansAnimGraphNodeType::RotationDistribution);
+		if (typeName == "PoseCheckpoint") return CreateNodeByType(VansAnimGraphNodeType::PoseCheckpoint);
+		if (typeName == "SaveCachedPose") return CreateNodeByType(VansAnimGraphNodeType::SaveCachedPose);
+		if (typeName == "UseCachedPose") return CreateNodeByType(VansAnimGraphNodeType::UseCachedPose);
+		if (typeName == "LayeredBlendPerBone") return CreateNodeByType(VansAnimGraphNodeType::LayeredBlendPerBone);
 		return nullptr;
 	}
 
@@ -1684,6 +1937,8 @@ namespace VansGraphics
 		case CompareOp::NotEqual:     return "!=";
 		case CompareOp::GreaterEqual: return ">=";
 		case CompareOp::LessEqual:    return "<=";
+		case CompareOp::AbsGreaterEqual: return "abs>=";
+		case CompareOp::AbsLess:          return "abs<";
 		}
 		return "==";
 	}
@@ -1696,6 +1951,8 @@ namespace VansGraphics
 		if (s == "!=") return CompareOp::NotEqual;
 		if (s == ">=") return CompareOp::GreaterEqual;
 		if (s == "<=") return CompareOp::LessEqual;
+		if (s == "abs>=") return CompareOp::AbsGreaterEqual;
+		if (s == "abs<") return CompareOp::AbsLess;
 		return CompareOp::Equal;
 	}
 
@@ -1723,13 +1980,13 @@ namespace VansGraphics
 		std::initializer_list<const char*> allowed)
 	{
 		if (!value.is_object())
-			throw std::invalid_argument("Procedural node properties must be an object");
+			throw std::invalid_argument("Animation graph value must be an object");
 		for (const auto& item : value.items())
 		{
 			const bool known = std::any_of(allowed.begin(), allowed.end(),
 				[&](const char* field) { return item.key() == field; });
 			if (!known)
-				throw std::invalid_argument("Unknown procedural property: " + item.key());
+				throw std::invalid_argument("Unknown animation graph field: " + item.key());
 		}
 	}
 
@@ -1791,7 +2048,7 @@ namespace VansGraphics
 		nlohmann::json props = nlohmann::json::object();
 		switch (node->GetType())
 		{
-		case AnimGraphNodeType::Clip:
+		case VansAnimGraphNodeType::Clip:
 		{
 			auto* n = static_cast<const AnimGraphClipNode*>(node);
 			props["clipName"] = n->m_ClipName;
@@ -1800,7 +2057,7 @@ namespace VansGraphics
 			props["rootMotion"] = n->m_RootMotion;
 			break;
 		}
-		case AnimGraphNodeType::Blend:
+		case VansAnimGraphNodeType::Blend:
 		{
 			auto* n = static_cast<const AnimGraphBlendNode*>(node);
 			props["paramName"]  = n->m_ParamName;
@@ -1808,14 +2065,14 @@ namespace VansGraphics
 			props["useParam"]   = n->m_UseParam;
 			break;
 		}
-		case AnimGraphNodeType::Blend1D:
+		case VansAnimGraphNodeType::Blend1D:
 		{
 			auto* n = static_cast<const AnimGraphBlend1DNode*>(node);
 			props["paramName"]  = n->m_ParamName;
 			props["thresholds"] = n->m_Thresholds;
 			break;
 		}
-		case AnimGraphNodeType::BlendSpace2D:
+		case VansAnimGraphNodeType::BlendSpace2D:
 		{
 			auto* n = static_cast<const AnimGraphBlendSpace2DNode*>(node);
 			props["xParamName"] = n->m_XParamName;
@@ -1825,7 +2082,7 @@ namespace VansGraphics
 				props["samples"].push_back({ { "x", sample.x }, { "y", sample.y } });
 			break;
 		}
-		case AnimGraphNodeType::IfCondition:
+		case VansAnimGraphNodeType::IfCondition:
 		{
 			auto* n = static_cast<const AnimGraphIfConditionNode*>(node);
 			props["paramName"] = n->m_ParamName;
@@ -1835,14 +2092,14 @@ namespace VansGraphics
 			props["intVal"]    = n->m_IntVal;
 			break;
 		}
-		case AnimGraphNodeType::Switch:
+		case VansAnimGraphNodeType::Switch:
 		{
 			auto* n = static_cast<const AnimGraphSwitchNode*>(node);
 			props["paramName"] = n->m_ParamName;
 			props["caseCount"] = n->m_CaseCount;
 			break;
 		}
-		case AnimGraphNodeType::AdditiveBlend:
+		case VansAnimGraphNodeType::AdditiveBlend:
 		{
 			auto* n = static_cast<const AnimGraphAdditiveBlendNode*>(node);
 			props["paramName"]   = n->m_ParamName;
@@ -1850,7 +2107,7 @@ namespace VansGraphics
 			props["useParam"]    = n->m_UseParam;
 			break;
 		}
-		case AnimGraphNodeType::SpeedScale:
+		case VansAnimGraphNodeType::SpeedScale:
 		{
 			auto* n = static_cast<const AnimGraphSpeedScaleNode*>(node);
 			props["paramName"]  = n->m_ParamName;
@@ -1858,7 +2115,7 @@ namespace VansGraphics
 			props["useParam"]   = n->m_UseParam;
 			break;
 		}
-		case AnimGraphNodeType::StateMachine:
+		case VansAnimGraphNodeType::StateMachine:
 		{
 			auto* n = static_cast<const AnimGraphStateMachineNode*>(node);
 			props["defaultState"] = n->m_DefaultStateName;
@@ -1869,7 +2126,9 @@ namespace VansGraphics
 				statesJson.push_back({
 					{ "name", s.name },
 					{ "clip", s.clipName },
+					{ "poseNodeId", s.poseNodeId },
 					{ "speed", s.speed },
+					{ "speedParameter", s.speedParameter },
 					{ "loop", s.loop },
 					{ "rootMotion", s.rootMotion },
 					{ "startTime", s.startTime },
@@ -1905,26 +2164,26 @@ namespace VansGraphics
 			props["transitions"] = transJson;
 			break;
 		}
-		case AnimGraphNodeType::MotionMatching:
+		case VansAnimGraphNodeType::MotionMatching:
 		{
 			auto* n = static_cast<const AnimGraphMotionMatchingNode*>(node);
 			props["enableFallbackInput"] = n->m_EnableFallbackInput;
 			break;
 		}
-		case AnimGraphNodeType::Slot:
+		case VansAnimGraphNodeType::Slot:
 		{
 			auto* n = static_cast<const AnimGraphSlotNode*>(node);
 			props["slotId"] = n->m_SlotId;
 			props["enableFallbackInput"] = n->m_EnableFallbackInput;
 			break;
 		}
-		case AnimGraphNodeType::SaveCachedPose:
+		case VansAnimGraphNodeType::SaveCachedPose:
 			props["cacheName"] = static_cast<const AnimGraphSaveCachedPoseNode*>(node)->m_CacheName;
 			break;
-		case AnimGraphNodeType::UseCachedPose:
+		case VansAnimGraphNodeType::UseCachedPose:
 			props["cacheName"] = static_cast<const AnimGraphUseCachedPoseNode*>(node)->m_CacheName;
 			break;
-		case AnimGraphNodeType::LayeredBlendPerBone:
+		case VansAnimGraphNodeType::LayeredBlendPerBone:
 		{
 			const auto* n = static_cast<const AnimGraphLayeredBlendPerBoneNode*>(node);
 			props["blendMode"] = n->m_BlendMode == VansLayerBlendMode::Additive ? "additive" : "override";
@@ -1951,17 +2210,17 @@ namespace VansGraphics
 				});
 			break;
 		}
-		case AnimGraphNodeType::PoseCheckpoint:
+		case VansAnimGraphNodeType::PoseCheckpoint:
 		{
 			const auto* n = static_cast<const AnimGraphPoseCheckpointNode*>(node);
 			props = { { "checkpoint", n->m_CheckpointId }, { "bones", n->m_Bones } };
 			break;
 		}
-		case AnimGraphNodeType::TargetPoseInput:
+		case VansAnimGraphNodeType::TargetPoseInput:
 			break;
-		case AnimGraphNodeType::Goal:
+		case VansAnimGraphNodeType::Goal:
 			props["goal"] = SerializeGoal(static_cast<const AnimGraphGoalNode*>(node)->m_Goal); break;
-		case AnimGraphNodeType::AimConstraint:
+		case VansAnimGraphNodeType::AimConstraint:
 		{
 			const auto* n = static_cast<const AnimGraphAimConstraintNode*>(node);
 			props = { { "chain", n->m_ChainId }, { "target", SerializeGoal(n->m_Target) },
@@ -1978,7 +2237,7 @@ namespace VansGraphics
 				{ "weight", n->m_Settings.weight } };
 			break;
 		}
-		case AnimGraphNodeType::Grounding:
+		case VansAnimGraphNodeType::Grounding:
 		{
 			const auto& s = static_cast<const AnimGraphGroundingNode*>(node)->m_Settings;
 			props = { { "contacts", s.contacts }, { "plantSignal", s.plantSignal }, { "weight", s.weight },
@@ -2006,7 +2265,7 @@ namespace VansGraphics
 					{ "halfLife", s.pelvis.halfLife } } } };
 			break;
 		}
-		case AnimGraphNodeType::LimbIK:
+		case VansAnimGraphNodeType::LimbIK:
 		{
 			const auto* n = static_cast<const AnimGraphLimbIKNode*>(node);
 			const char* rotationMode = nullptr;
@@ -2022,10 +2281,10 @@ namespace VansGraphics
 				{ "commitClampedPose", n->m_Settings.commitClampedPose } };
 			break;
 		}
-		case AnimGraphNodeType::RotationDistribution:
+		case VansAnimGraphNodeType::RotationDistribution:
 			props = {{"profile", static_cast<const AnimGraphRotationDistributionNode*>(node)->m_RotationProfileId}};
 			break;
-		case AnimGraphNodeType::ChainIK:
+		case VansAnimGraphNodeType::ChainIK:
 		{
 			const auto* n = static_cast<const AnimGraphChainIKNode*>(node);
 			props = { { "chains", n->m_ChainIds }, { "maxIterations", n->m_Settings.maxIterations },
@@ -2044,8 +2303,13 @@ namespace VansGraphics
 	{
 		switch (node->GetType())
 		{
-		case AnimGraphNodeType::Clip:
+		case VansAnimGraphNodeType::Entry:
+		case VansAnimGraphNodeType::Output:
+			RequireOnlyFields(props, {});
+			break;
+		case VansAnimGraphNodeType::Clip:
 		{
+			RequireOnlyFields(props, { "clipName", "speed", "loop", "rootMotion" });
 			auto* n = static_cast<AnimGraphClipNode*>(node);
 			if (props.contains("clipName")) n->m_ClipName = props["clipName"].get<std::string>();
 			if (props.contains("speed"))    n->m_Speed    = props["speed"].get<float>();
@@ -2053,22 +2317,24 @@ namespace VansGraphics
 			if (props.contains("rootMotion")) n->m_RootMotion = props["rootMotion"].get<bool>();
 			break;
 		}
-		case AnimGraphNodeType::Blend:
+		case VansAnimGraphNodeType::Blend:
 		{
+			RequireOnlyFields(props, { "paramName", "fixedAlpha", "useParam" });
 			auto* n = static_cast<AnimGraphBlendNode*>(node);
 			if (props.contains("paramName"))  n->m_ParamName  = props["paramName"].get<std::string>();
 			if (props.contains("fixedAlpha")) n->m_FixedAlpha = props["fixedAlpha"].get<float>();
 			if (props.contains("useParam"))   n->m_UseParam   = props["useParam"].get<bool>();
 			break;
 		}
-		case AnimGraphNodeType::Blend1D:
+		case VansAnimGraphNodeType::Blend1D:
 		{
+			RequireOnlyFields(props, { "paramName", "thresholds" });
 			auto* n = static_cast<AnimGraphBlend1DNode*>(node);
 			if (props.contains("paramName"))  n->m_ParamName  = props["paramName"].get<std::string>();
 			if (props.contains("thresholds")) n->m_Thresholds = props["thresholds"].get<std::vector<float>>();
 			break;
 		}
-		case AnimGraphNodeType::BlendSpace2D:
+		case VansAnimGraphNodeType::BlendSpace2D:
 		{
 			auto* n = static_cast<AnimGraphBlendSpace2DNode*>(node);
 			RequireOnlyFields(props, { "xParamName", "yParamName", "samples" });
@@ -2082,8 +2348,9 @@ namespace VansGraphics
 			}
 			break;
 		}
-		case AnimGraphNodeType::IfCondition:
+		case VansAnimGraphNodeType::IfCondition:
 		{
+			RequireOnlyFields(props, { "paramName", "op", "floatVal", "boolVal", "intVal" });
 			auto* n = static_cast<AnimGraphIfConditionNode*>(node);
 			if (props.contains("paramName")) n->m_ParamName = props["paramName"].get<std::string>();
 			if (props.contains("op"))        n->m_CompareOp = StringToCompareOp(props["op"].get<std::string>());
@@ -2092,31 +2359,35 @@ namespace VansGraphics
 			if (props.contains("intVal"))    n->m_IntVal    = props["intVal"].get<int>();
 			break;
 		}
-		case AnimGraphNodeType::Switch:
+		case VansAnimGraphNodeType::Switch:
 		{
+			RequireOnlyFields(props, { "paramName", "caseCount" });
 			auto* n = static_cast<AnimGraphSwitchNode*>(node);
 			if (props.contains("paramName")) n->m_ParamName = props["paramName"].get<std::string>();
 			if (props.contains("caseCount")) n->m_CaseCount = props["caseCount"].get<int>();
 			break;
 		}
-		case AnimGraphNodeType::AdditiveBlend:
+		case VansAnimGraphNodeType::AdditiveBlend:
 		{
+			RequireOnlyFields(props, { "paramName", "fixedWeight", "useParam" });
 			auto* n = static_cast<AnimGraphAdditiveBlendNode*>(node);
 			if (props.contains("paramName"))   n->m_ParamName   = props["paramName"].get<std::string>();
 			if (props.contains("fixedWeight")) n->m_FixedWeight = props["fixedWeight"].get<float>();
 			if (props.contains("useParam"))    n->m_UseParam    = props["useParam"].get<bool>();
 			break;
 		}
-		case AnimGraphNodeType::SpeedScale:
+		case VansAnimGraphNodeType::SpeedScale:
 		{
+			RequireOnlyFields(props, { "paramName", "fixedSpeed", "useParam" });
 			auto* n = static_cast<AnimGraphSpeedScaleNode*>(node);
 			if (props.contains("paramName"))  n->m_ParamName  = props["paramName"].get<std::string>();
 			if (props.contains("fixedSpeed")) n->m_FixedSpeed = props["fixedSpeed"].get<float>();
 			if (props.contains("useParam"))   n->m_UseParam   = props["useParam"].get<bool>();
 			break;
 		}
-		case AnimGraphNodeType::StateMachine:
+		case VansAnimGraphNodeType::StateMachine:
 		{
+			RequireOnlyFields(props, { "defaultState", "states", "transitions" });
 			auto* n = static_cast<AnimGraphStateMachineNode*>(node);
 			if (props.contains("defaultState"))
 				n->m_DefaultStateName = props["defaultState"].get<std::string>();
@@ -2125,10 +2396,14 @@ namespace VansGraphics
 			{
 				for (const auto& sj : props["states"])
 				{
+					RequireOnlyFields(sj, { "name", "clip", "poseNodeId", "speed",
+						"speedParameter", "loop", "rootMotion", "startTime", "endTime" });
 					AnimatorState s;
 					if (sj.contains("name"))       s.name       = sj["name"].get<std::string>();
 					if (sj.contains("clip"))        s.clipName   = sj["clip"].get<std::string>();
+					if (sj.contains("poseNodeId")) s.poseNodeId  = sj["poseNodeId"].get<int>();
 					if (sj.contains("speed"))       s.speed      = sj["speed"].get<float>();
+					if (sj.contains("speedParameter")) s.speedParameter = sj["speedParameter"].get<std::string>();
 					if (sj.contains("loop"))        s.loop       = sj["loop"].get<bool>();
 					if (sj.contains("rootMotion"))  s.rootMotion = sj["rootMotion"].get<bool>();
 					if (sj.contains("startTime"))   s.startTime  = sj["startTime"].get<float>();
@@ -2141,6 +2416,8 @@ namespace VansGraphics
 			{
 				for (const auto& tj : props["transitions"])
 				{
+					RequireOnlyFields(tj, { "from", "to", "blendDuration", "hasExitTime",
+						"exitTime", "conditions" });
 					AnimatorTransition t;
 					if (tj.contains("from"))          t.fromState     = tj["from"].get<std::string>();
 					if (tj.contains("to"))            t.toState       = tj["to"].get<std::string>();
@@ -2152,6 +2429,7 @@ namespace VansGraphics
 					{
 						for (const auto& cj : tj["conditions"])
 						{
+							RequireOnlyFields(cj, { "param", "op", "floatVal", "boolVal", "intVal" });
 							TransitionCondition cond;
 							if (cj.contains("param"))    cond.paramName = cj["param"].get<std::string>();
 							if (cj.contains("op"))       cond.op = StringToCompareOp(cj["op"].get<std::string>());
@@ -2166,40 +2444,56 @@ namespace VansGraphics
 			}
 			break;
 		}
-		case AnimGraphNodeType::MotionMatching:
+		case VansAnimGraphNodeType::MotionMatching:
 		{
+			RequireOnlyFields(props, { "enableFallbackInput" });
 			auto* n = static_cast<AnimGraphMotionMatchingNode*>(node);
 			if (props.contains("enableFallbackInput"))
 				n->m_EnableFallbackInput = props["enableFallbackInput"].get<bool>();
 			break;
 		}
-		case AnimGraphNodeType::Slot:
+		case VansAnimGraphNodeType::Slot:
 		{
+			RequireOnlyFields(props, { "slotId", "enableFallbackInput" });
 			auto* n = static_cast<AnimGraphSlotNode*>(node);
 			if (props.contains("slotId")) n->m_SlotId = props["slotId"].get<std::string>();
 			if (props.contains("enableFallbackInput"))
 				n->m_EnableFallbackInput = props["enableFallbackInput"].get<bool>();
 			break;
 		}
-		case AnimGraphNodeType::SaveCachedPose:
+		case VansAnimGraphNodeType::SaveCachedPose:
 		{
+			RequireOnlyFields(props, { "cacheName" });
 			auto* n = static_cast<AnimGraphSaveCachedPoseNode*>(node);
 			if (props.contains("cacheName")) n->m_CacheName = props["cacheName"].get<std::string>();
 			break;
 		}
-		case AnimGraphNodeType::UseCachedPose:
+		case VansAnimGraphNodeType::UseCachedPose:
 		{
+			RequireOnlyFields(props, { "cacheName" });
 			auto* n = static_cast<AnimGraphUseCachedPoseNode*>(node);
 			if (props.contains("cacheName")) n->m_CacheName = props["cacheName"].get<std::string>();
 			break;
 		}
-		case AnimGraphNodeType::LayeredBlendPerBone:
+		case VansAnimGraphNodeType::LayeredBlendPerBone:
 		{
+			RequireOnlyFields(props, { "blendMode", "rotationSpace", "weightParameter",
+				"fixedWeight", "useWeightParameter", "applyAdditiveInput", "mask" });
 			auto* n = static_cast<AnimGraphLayeredBlendPerBoneNode*>(node);
-			if (props.contains("blendMode") && props["blendMode"].get<std::string>() == "additive")
-				n->m_BlendMode = VansLayerBlendMode::Additive;
-			if (props.contains("rotationSpace") && props["rotationSpace"].get<std::string>() == "local")
-				n->m_RotationSpace = VansRotationBlendSpace::Local;
+			if (props.contains("blendMode"))
+			{
+				const std::string value = props["blendMode"].get<std::string>();
+				if (value == "additive") n->m_BlendMode = VansLayerBlendMode::Additive;
+				else if (value == "override") n->m_BlendMode = VansLayerBlendMode::Override;
+				else throw std::invalid_argument("Unknown layered blend mode: " + value);
+			}
+			if (props.contains("rotationSpace"))
+			{
+				const std::string value = props["rotationSpace"].get<std::string>();
+				if (value == "local") n->m_RotationSpace = VansRotationBlendSpace::Local;
+				else if (value == "mesh") n->m_RotationSpace = VansRotationBlendSpace::Mesh;
+				else throw std::invalid_argument("Unknown layered blend rotation space: " + value);
+			}
 			if (props.contains("weightParameter")) n->m_WeightParameter = props["weightParameter"].get<std::string>();
 			if (props.contains("fixedWeight")) n->m_FixedWeight = props["fixedWeight"].get<float>();
 			if (props.contains("useWeightParameter")) n->m_UseWeightParameter = props["useWeightParameter"].get<bool>();
@@ -2207,6 +2501,7 @@ namespace VansGraphics
 			if (props.contains("mask"))
 			{
 				const auto& mask = props["mask"];
+				RequireOnlyFields(mask, { "id", "name", "defaultWeight", "branchRules", "explicitWeights" });
 				n->m_Mask.id = mask.value("id", "inline-layer-mask");
 				n->m_Mask.name = mask.value("name", "Inline Layer Mask");
 				n->m_Mask.defaultWeight = mask.value("defaultWeight", 0.0f);
@@ -2214,23 +2509,30 @@ namespace VansGraphics
 				if (mask.contains("branchRules"))
 					for (const auto& r : mask["branchRules"])
 					{
+						RequireOnlyFields(r, { "id", "mode", "rootBone", "includeDescendants",
+							"maxDepth", "rootWeight", "endWeight", "falloff" });
 						VansBoneMaskBranchRule rule;
 						rule.id = r.value("id", "inline-rule");
-						rule.mode = r.value("mode", "include") == "exclude" ? VansBoneMaskRuleMode::Exclude : VansBoneMaskRuleMode::Include;
+						const std::string mode = r.value("mode", "include");
+						if (mode == "exclude") rule.mode = VansBoneMaskRuleMode::Exclude;
+						else if (mode == "include") rule.mode = VansBoneMaskRuleMode::Include;
+						else throw std::invalid_argument("Unknown inline Bone Mask rule mode: " + mode);
 						rule.rootBone = r.value("rootBone", "");
 						rule.includeDescendants = r.value("includeDescendants", true);
 						rule.maxDepth = r.value("maxDepth", -1);
 						rule.rootWeight = r.value("rootWeight", 1.0f);
 						rule.endWeight = r.value("endWeight", 1.0f);
 						const std::string falloff = r.value("falloff", "constant");
-						rule.falloff = falloff == "smoothStep" ? VansBoneMaskFalloff::SmoothStep :
-							falloff == "linear" ? VansBoneMaskFalloff::Linear : VansBoneMaskFalloff::Constant;
+						if (falloff == "smoothStep") rule.falloff = VansBoneMaskFalloff::SmoothStep;
+						else if (falloff == "linear") rule.falloff = VansBoneMaskFalloff::Linear;
+						else if (falloff == "constant") rule.falloff = VansBoneMaskFalloff::Constant;
+						else throw std::invalid_argument("Unknown inline Bone Mask falloff: " + falloff);
 						n->m_Mask.branchRules.push_back(std::move(rule));
 					}
 			}
 			break;
 		}
-		case AnimGraphNodeType::PoseCheckpoint:
+		case VansAnimGraphNodeType::PoseCheckpoint:
 		{
 			RequireOnlyFields(props, { "checkpoint", "bones" });
 			auto* n = static_cast<AnimGraphPoseCheckpointNode*>(node);
@@ -2238,13 +2540,13 @@ namespace VansGraphics
 			n->m_Bones = props.at("bones").get<std::vector<std::string>>();
 			break;
 		}
-		case AnimGraphNodeType::TargetPoseInput:
+		case VansAnimGraphNodeType::TargetPoseInput:
 			RequireOnlyFields(props, {});
 			break;
-		case AnimGraphNodeType::Goal:
+		case VansAnimGraphNodeType::Goal:
 			RequireOnlyFields(props, { "goal" });
 			DeserializeGoal(props.at("goal"), static_cast<AnimGraphGoalNode*>(node)->m_Goal); break;
-		case AnimGraphNodeType::AimConstraint:
+		case VansAnimGraphNodeType::AimConstraint:
 		{
 			RequireOnlyFields(props, { "chain", "target", "yawLimitDegrees",
 				"pitchLimitDegrees", "targetHalfLife", "maxAngularSpeedDegrees", "weight",
@@ -2270,7 +2572,7 @@ namespace VansGraphics
 			n->m_Settings.weight = props.at("weight").get<float>();
 			break;
 		}
-		case AnimGraphNodeType::Grounding:
+		case VansAnimGraphNodeType::Grounding:
 		{
 			RequireOnlyFields(props, { "contacts", "plantSignal", "weight", "query", "plant", "alignment", "pelvis" });
 			auto& s = static_cast<AnimGraphGroundingNode*>(node)->m_Settings;
@@ -2317,7 +2619,7 @@ namespace VansGraphics
 			s.pelvis.halfLife = pelvis.at("halfLife").get<float>();
 			break;
 		}
-		case AnimGraphNodeType::LimbIK:
+		case VansAnimGraphNodeType::LimbIK:
 		{
 			RequireOnlyFields(props, { "chains", "tipRotationMode", "positionTolerance",
 				"weight", "commitClampedPose" });
@@ -2337,11 +2639,11 @@ namespace VansGraphics
 			n->m_Settings.commitClampedPose = props.at("commitClampedPose").get<bool>();
 			break;
 		}
-		case AnimGraphNodeType::RotationDistribution:
+		case VansAnimGraphNodeType::RotationDistribution:
 			RequireOnlyFields(props, {"profile"});
 			static_cast<AnimGraphRotationDistributionNode*>(node)->m_RotationProfileId = props.at("profile").get<std::string>();
 			break;
-		case AnimGraphNodeType::ChainIK:
+		case VansAnimGraphNodeType::ChainIK:
 		{
 			RequireOnlyFields(props, { "chains", "maxIterations", "positionTolerance",
 				"weight", "commitClampedPose" });
@@ -2354,11 +2656,11 @@ namespace VansGraphics
 			break;
 		}
 		default:
-			break;
+			throw std::invalid_argument("Unknown animation graph node type");
 		}
 	}
 
-	void VansAnimGraph::SerializeToJsonObject(AnimGraphJson& outJson) const
+	void VansAnimGraph::SerializeToJsonObject(nlohmann::json& outJson) const
 	{
 		outJson = nlohmann::json::object();
 
@@ -2379,8 +2681,8 @@ namespace VansGraphics
 			nj["id"]       = node->GetNodeId();
 			nj["type"]     = VansAnimGraphNode::TypeToString(node->GetType());
 			nj["name"]     = node->GetName();
-			nj["posX"]     = node->m_EditorPosX;
-			nj["posY"]     = node->m_EditorPosY;
+			nj["posX"]     = node->m_EditorLayout.x;
+			nj["posY"]     = node->m_EditorLayout.y;
 			nj["properties"] = SerializeNodeProperties(node);
 			nodesJson.push_back(nj);
 		}
@@ -2411,7 +2713,7 @@ namespace VansGraphics
 		outJson["links"] = linksJson;
 	}
 
-	std::unique_ptr<VansAnimGraph> VansAnimGraph::DeserializeFromJsonObject(const AnimGraphJson& j)
+	std::unique_ptr<VansAnimGraph> VansAnimGraph::DeserializeFromJsonObject(const nlohmann::json& j)
 	{
 		if (!j.is_object() || !j.contains("nodes") || !j["nodes"].is_array()
 		    || !j.contains("links") || !j["links"].is_array())
@@ -2438,6 +2740,7 @@ namespace VansGraphics
 				    || !nj.contains("type") || !nj["type"].is_string()
 				    || !nj.contains("properties") || !nj["properties"].is_object())
 					return nullptr;
+				RequireOnlyFields(nj, { "id", "type", "name", "posX", "posY", "properties" });
 
 				const int nodeId = nj["id"].get<int>();
 				if (nodeId <= 0 || !nodeIds.insert(nodeId).second)
@@ -2448,16 +2751,16 @@ namespace VansGraphics
 					return nullptr;
 				node->m_NodeId = nodeId;
 				if (nj.contains("name")) node->SetName(nj["name"].get<std::string>());
-				if (nj.contains("posX")) node->m_EditorPosX = nj["posX"].get<float>();
-				if (nj.contains("posY")) node->m_EditorPosY = nj["posY"].get<float>();
+				if (nj.contains("posX")) node->m_EditorLayout.x = nj["posX"].get<float>();
+				if (nj.contains("posY")) node->m_EditorLayout.y = nj["posY"].get<float>();
 				DeserializeNodeProperties(node.get(), nj["properties"]);
 
-				if (node->GetType() == AnimGraphNodeType::Entry)
+				if (node->GetType() == VansAnimGraphNodeType::Entry)
 				{
 					++entryCount;
 					graph->m_EntryNodeId = nodeId;
 				}
-				else if (node->GetType() == AnimGraphNodeType::Output)
+				else if (node->GetType() == VansAnimGraphNodeType::Output)
 				{
 					++outputCount;
 					graph->m_OutputNodeId = nodeId;
@@ -2478,6 +2781,7 @@ namespace VansGraphics
 				    || !lj.contains("toNode") || !lj["toNode"].is_number_integer()
 				    || !lj.contains("toPin") || !lj["toPin"].is_number_integer())
 					return nullptr;
+				RequireOnlyFields(lj, { "id", "fromNode", "fromPin", "toNode", "toPin" });
 
 				const int linkId = lj["id"].get<int>();
 				if (linkId <= 0 || !linkIds.insert(linkId).second)
@@ -2494,7 +2798,7 @@ namespace VansGraphics
 			if (!graph->GetInputNode(graph->m_OutputNodeId, 0))
 				return nullptr;
 		}
-		catch (const nlohmann::json::exception&)
+		catch (const std::exception&)
 		{
 			return nullptr;
 		}
@@ -2509,42 +2813,10 @@ namespace VansGraphics
 	//  IK Node 实现
 	// ═════════════════════════════════════════════════════════════
 
-	// 在输入 Pose 上构建临时全局变换（拓扑顺序）
-	static void BuildTempGlobals(
-		const std::vector<glm::mat4>& localMatrices,
-		const Skeleton&      skeleton,
-		std::vector<glm::mat4>& outGlobals)
-	{
-		outGlobals.resize(localMatrices.size(), glm::mat4(1.0f));
-		auto updateBone = [&](int boneIndex)
-		{
-			if (boneIndex < 0 || boneIndex >= static_cast<int>(localMatrices.size()))
-				return;
-			const int parentIndex = skeleton.bones[static_cast<std::size_t>(boneIndex)].parentIndex;
-			outGlobals[static_cast<std::size_t>(boneIndex)] = parentIndex >= 0
-				&& parentIndex < static_cast<int>(outGlobals.size())
-				? outGlobals[static_cast<std::size_t>(parentIndex)]
-					* localMatrices[static_cast<std::size_t>(boneIndex)]
-				: localMatrices[static_cast<std::size_t>(boneIndex)];
-		};
-		if (!skeleton.topologicalOrder.empty())
-			for (int boneIndex : skeleton.topologicalOrder) updateBone(boneIndex);
-		else
-			for (std::size_t boneIndex = 0; boneIndex < localMatrices.size(); ++boneIndex)
-				updateBone(static_cast<int>(boneIndex));
-	}
-
-	static int ResolveGraphBoneIndex(const Skeleton& skeleton, const std::string& boneName)
-	{
-		if (boneName.empty()) return -1;
-		const auto found = skeleton.boneNameToIndex.find(boneName);
-		return found == skeleton.boneNameToIndex.end() ? -1 : found->second;
-	}
-
 	// 从 ctx.parameters 读取 Vector3 参数
 	AnimGraphMotionMatchingNode::AnimGraphMotionMatchingNode()
 	{
-		m_Type = AnimGraphNodeType::MotionMatching;
+		m_Type = VansAnimGraphNodeType::MotionMatching;
 		m_Name = "MotionMatching";
 	}
 
@@ -2562,7 +2834,7 @@ namespace VansGraphics
 		if (ctx.motionMatching && ctx.skeleton && ctx.clips && ctx.parameters)
 		{
 			AnimGraphPose pose;
-			if (ctx.motionMatching->Update(ctx.deltaTime,
+			if (ctx.motionMatching->Evaluate(ctx.deltaTime,
 			                               *ctx.skeleton,
 			                               *ctx.clips,
 			                               *ctx.parameters,
@@ -2578,18 +2850,18 @@ namespace VansGraphics
 		if (!m_EnableFallbackInput)
 			return {};
 
-		return instance.EvaluateInput(m_NodeId, 0, ctx);
+		return EvaluateInputPose(instance, m_NodeId, 0, ctx);
 	}
 
 	AnimGraphSlotNode::AnimGraphSlotNode()
 	{
-		m_Type = AnimGraphNodeType::Slot;
+		m_Type = VansAnimGraphNodeType::Slot;
 		m_Name = "Slot";
 	}
 
 	AnimGraphSaveCachedPoseNode::AnimGraphSaveCachedPoseNode()
 	{
-		m_Type = AnimGraphNodeType::SaveCachedPose;
+		m_Type = VansAnimGraphNodeType::SaveCachedPose;
 		m_Name = "Save Cached Pose";
 	}
 
@@ -2604,15 +2876,15 @@ namespace VansGraphics
 	AnimGraphPose AnimGraphSaveCachedPoseNode::Evaluate(
 		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
 	{
-		AnimGraphPose pose = instance.EvaluateInput(GetNodeId(), 0, ctx);
+		AnimGraphPose pose = EvaluateInputPose(instance, GetNodeId(), 0, ctx);
 		if (!m_CacheName.empty())
-			instance.SetCachedPose(m_CacheName, pose);
+			StoreCachedPose(instance, m_CacheName, pose);
 		return pose;
 	}
 
 	AnimGraphUseCachedPoseNode::AnimGraphUseCachedPoseNode()
 	{
-		m_Type = AnimGraphNodeType::UseCachedPose;
+		m_Type = VansAnimGraphNodeType::UseCachedPose;
 		m_Name = "Use Cached Pose";
 	}
 
@@ -2624,13 +2896,13 @@ namespace VansGraphics
 	AnimGraphPose AnimGraphUseCachedPoseNode::Evaluate(
 		const AnimGraphContext&, VansAnimGraphInstance& instance) const
 	{
-		const AnimGraphPose* pose = instance.FindCachedPose(m_CacheName);
+		const AnimGraphPose* pose = ResolveCachedPose(instance, m_CacheName);
 		return pose ? *pose : AnimGraphPose{};
 	}
 
 	AnimGraphLayeredBlendPerBoneNode::AnimGraphLayeredBlendPerBoneNode()
 	{
-		m_Type = AnimGraphNodeType::LayeredBlendPerBone;
+		m_Type = VansAnimGraphNodeType::LayeredBlendPerBone;
 		m_Name = "Layered Blend Per Bone";
 		m_Mask.id = "inline-layer-mask";
 		m_Mask.defaultWeight = 0.0f;
@@ -2649,8 +2921,8 @@ namespace VansGraphics
 	AnimGraphPose AnimGraphLayeredBlendPerBoneNode::Evaluate(
 		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
 	{
-		AnimGraphPose base = instance.EvaluateInput(GetNodeId(), 0, ctx);
-		AnimGraphPose overlay = instance.EvaluateInput(GetNodeId(), 1, ctx);
+		AnimGraphPose base = EvaluateInputPose(instance, GetNodeId(), 0, ctx);
+		AnimGraphPose overlay = EvaluateInputPose(instance, GetNodeId(), 1, ctx);
 		if (!base.valid || !overlay.valid || !ctx.skeleton)
 			return base;
 		const float weight = m_UseWeightParameter && ctx.parameters
@@ -2658,27 +2930,27 @@ namespace VansGraphics
 				return it != ctx.parameters->end() && it->second.type == AnimatorParamType::Float
 					? it->second.floatVal : 0.0f; }()
 			: m_FixedWeight;
-		VansCompiledBoneMask mask = VansBoneMaskCompiler::Compile(m_Mask, *ctx.skeleton);
+		const auto& runtime = instance.ResolveLayeredBlendRuntime(
+			GetNodeId(), m_Mask, *ctx.skeleton);
 		VansAnimationLayerDefinition definition;
 		definition.id = "graph-layered-blend-per-bone";
 		definition.kind = VansAnimationLayerKind::Overlay;
 		definition.blendMode = m_BlendMode;
 		definition.rotationSpace = m_RotationSpace;
 		definition.rootMotion = VansLayerRootMotionMode::Ignore;
-		VansAnimationFrameVector<VansBoneTransform> reference;
-		VansAnimationLayerMixer::BuildBindPose(*ctx.skeleton, reference);
 		AnimGraphPose result = VansAnimationLayerMixer::ApplyLayer(
-			base, overlay, definition, mask, *ctx.skeleton, reference, weight);
+			base, overlay, definition, runtime.mask, *ctx.skeleton, runtime.bindPose, weight);
 		if (m_ApplyAdditiveInput)
 		{
-			AnimGraphPose additive = instance.EvaluateInput(GetNodeId(), 2, ctx);
+			AnimGraphPose additive = EvaluateInputPose(instance, GetNodeId(), 2, ctx);
 			if (additive.valid)
 			{
 				VansAnimationLayerDefinition additiveDefinition = definition;
 				additiveDefinition.blendMode = VansLayerBlendMode::Additive;
 				additiveDefinition.rotationSpace = VansRotationBlendSpace::Mesh;
 				result = VansAnimationLayerMixer::ApplyLayer(
-					result, additive, additiveDefinition, mask, *ctx.skeleton, reference, weight);
+					result, additive, additiveDefinition, runtime.mask,
+					*ctx.skeleton, runtime.bindPose, weight);
 			}
 		}
 		return result;
@@ -2698,7 +2970,7 @@ namespace VansGraphics
 	{
 		AnimGraphPose fallback;
 		if (m_EnableFallbackInput)
-			fallback = instance.EvaluateInput(m_NodeId, 0, ctx);
+			fallback = EvaluateInputPose(instance, m_NodeId, 0, ctx);
 		if (!ctx.slotPayloads)
 			return fallback;
 		auto slot = ctx.slotPayloads->find(m_SlotId);
@@ -2740,7 +3012,7 @@ namespace VansGraphics
 
 	AnimGraphTargetPoseInputNode::AnimGraphTargetPoseInputNode()
 	{
-		m_Type = AnimGraphNodeType::TargetPoseInput;
+		m_Type = VansAnimGraphNodeType::TargetPoseInput;
 		m_Name = "Target Pose Input";
 	}
 
@@ -2767,30 +3039,23 @@ namespace VansGraphics
 			};
 		}
 
-		AnimGraphPose AppendProceduralNode(
-			int nodeId, const AnimGraphContext& ctx, VansAnimGraphInstance& instance)
-		{
-			AnimGraphPose pose = instance.EvaluateInput(nodeId, 0, ctx);
-			if (pose.valid) pose.proceduralNodeIds.push_back(nodeId);
-			return pose;
-		}
 	}
 
 	AnimGraphPoseCheckpointNode::AnimGraphPoseCheckpointNode()
 	{
-		m_Type = AnimGraphNodeType::PoseCheckpoint;
+		m_Type = VansAnimGraphNodeType::PoseCheckpoint;
 		m_Name = "Pose Checkpoint";
 	}
 	std::vector<AnimGraphPin> AnimGraphPoseCheckpointNode::GetPins() const { return ProceduralPosePins(); }
 	AnimGraphPose AnimGraphPoseCheckpointNode::Evaluate(
 		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
 	{
-		return AppendProceduralNode(m_NodeId, ctx, instance);
+		return AppendProceduralPose(instance, m_NodeId, ctx);
 	}
 
 	AnimGraphGoalNode::AnimGraphGoalNode()
 	{
-		m_Type = AnimGraphNodeType::Goal;
+		m_Type = VansAnimGraphNodeType::Goal;
 		m_Name = "Goal";
 	}
 
@@ -2799,12 +3064,12 @@ namespace VansGraphics
 	AnimGraphPose AnimGraphGoalNode::Evaluate(
 		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
 	{
-		return AppendProceduralNode(m_NodeId, ctx, instance);
+		return AppendProceduralPose(instance, m_NodeId, ctx);
 	}
 
 	AnimGraphAimConstraintNode::AnimGraphAimConstraintNode()
 	{
-		m_Type = AnimGraphNodeType::AimConstraint;
+		m_Type = VansAnimGraphNodeType::AimConstraint;
 		m_Name = "Aim Constraint";
 	}
 
@@ -2813,12 +3078,12 @@ namespace VansGraphics
 	AnimGraphPose AnimGraphAimConstraintNode::Evaluate(
 		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
 	{
-		return AppendProceduralNode(m_NodeId, ctx, instance);
+		return AppendProceduralPose(instance, m_NodeId, ctx);
 	}
 
 	AnimGraphGroundingNode::AnimGraphGroundingNode()
 	{
-		m_Type = AnimGraphNodeType::Grounding;
+		m_Type = VansAnimGraphNodeType::Grounding;
 		m_Name = "Grounding";
 	}
 
@@ -2827,12 +3092,12 @@ namespace VansGraphics
 	AnimGraphPose AnimGraphGroundingNode::Evaluate(
 		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
 	{
-		return AppendProceduralNode(m_NodeId, ctx, instance);
+		return AppendProceduralPose(instance, m_NodeId, ctx);
 	}
 
 	AnimGraphLimbIKNode::AnimGraphLimbIKNode()
 	{
-		m_Type = AnimGraphNodeType::LimbIK;
+		m_Type = VansAnimGraphNodeType::LimbIK;
 		m_Name = "Limb IK";
 	}
 
@@ -2841,12 +3106,12 @@ namespace VansGraphics
 	AnimGraphPose AnimGraphLimbIKNode::Evaluate(
 		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
 	{
-		return AppendProceduralNode(m_NodeId, ctx, instance);
+		return AppendProceduralPose(instance, m_NodeId, ctx);
 	}
 
 	AnimGraphRotationDistributionNode::AnimGraphRotationDistributionNode()
 	{
-		m_Type = AnimGraphNodeType::RotationDistribution;
+		m_Type = VansAnimGraphNodeType::RotationDistribution;
 		m_Name = "Rotation Distribution";
 	}
 
@@ -2854,12 +3119,12 @@ namespace VansGraphics
 	AnimGraphPose AnimGraphRotationDistributionNode::Evaluate(
 		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
 	{
-		return AppendProceduralNode(m_NodeId, ctx, instance);
+		return AppendProceduralPose(instance, m_NodeId, ctx);
 	}
 
 	AnimGraphChainIKNode::AnimGraphChainIKNode()
 	{
-		m_Type = AnimGraphNodeType::ChainIK;
+		m_Type = VansAnimGraphNodeType::ChainIK;
 		m_Name = "Chain IK";
 	}
 
@@ -2868,7 +3133,7 @@ namespace VansGraphics
 	AnimGraphPose AnimGraphChainIKNode::Evaluate(
 		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
 	{
-		return AppendProceduralNode(m_NodeId, ctx, instance);
+		return AppendProceduralPose(instance, m_NodeId, ctx);
 	}
 
 }  // namespace VansGraphics

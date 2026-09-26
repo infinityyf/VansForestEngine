@@ -1,21 +1,25 @@
 #include "VansPcgBatchPlan.h"
+#include "VansPcgInfluence.h"
+#include "VansPcgRuntimePolicy.h"
 #include <algorithm>
 #include <cmath>
 namespace Vans
 {
+VansPcgUpdateScope ResolvePcgUpdateScope(const VansPcgLayer& layer)
+{
+    return layer.source==VansPcgSourceMode::Density && layer.addedInstances.empty() &&
+        layer.overrides.empty() && layer.placement.rootOffset==0
+        ? VansPcgUpdateScope::LocalCoverage : VansPcgUpdateScope::WholeRegion;
+}
+
 std::optional<VansPcgBounds> PcgMaskUpdateCoverage(const VansPcgRegion& region,
     const VansPcgLayer& layer,const VansPlantTypeAsset& plant,const VansPcgMask& mask,
     const VansPcgPixelRect& changed)
 {
     // 数量补齐、人工覆盖和偏移后的区块归属具有整层依赖，不能截断后替换局部批次。
-    if (layer.source!=VansPcgSourceMode::Density || !layer.addedInstances.empty() ||
-        !layer.overrides.empty() || layer.placement.rootOffset!=0 || !mask.IsValid() ||
+    if (ResolvePcgUpdateScope(layer)==VansPcgUpdateScope::WholeRegion || !mask.IsValid() ||
         changed.Empty() || !std::isfinite(region.cellSize) || region.cellSize<=0) return std::nullopt;
-    double radius=0;
-    for (const auto& variant : plant.variants)
-        radius=std::max(radius,static_cast<double>(variant.footprintRadius)*
-            std::max(layer.placement.scaleMax[0],layer.placement.scaleMax[2]));
-    const double halo=std::max(static_cast<double>(layer.placement.minimumSpacing),radius*2);
+    const double halo=PcgMaskHalo(layer.placement,plant);
     VansPcgBounds bounds;
     const std::uint32_t lo[2]={changed.minX,changed.minY},hi[2]={changed.maxX,changed.maxY};
     const std::uint32_t dimensions[2]={mask.width,mask.height};
@@ -34,7 +38,7 @@ bool PcgCellCoordinate(float position,float cellSize,std::int64_t& cell)
 {
     if (!std::isfinite(position) || !std::isfinite(cellSize) || cellSize<=0) return false;
     const double value=std::floor(static_cast<double>(position)/cellSize);
-    if (!std::isfinite(value) || std::abs(value)>4503599627370495.0) return false;
+    if (!std::isfinite(value) || std::abs(value)>MaximumExactPcgCellCoordinate) return false;
     cell=static_cast<std::int64_t>(value);
     return true;
 }

@@ -2,8 +2,10 @@
 
 #include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../../AssetCore/VansAssetGuid.h"
-#include "../VansAssetDocumentEditService.h"
-#include "../VansAssetDocumentRegistry.h"
+#include "../../AuthoringCore/VansAssetDocumentEditService.h"
+#include "../../AuthoringCore/VansAssetDocumentRegistry.h"
+#include "../../EngineAPILayer/Public/IAnimationEditorAPI.h"
+#include "../../EngineAPILayer/Public/IAssetEditorAPI.h"
 #include "../VansEditorAssetSaveService.h"
 #include "../../Util/VansLog.h"
 
@@ -19,10 +21,10 @@
 
 namespace VansGraphics
 {
-using VansBoneMaskRuleMode = Vans::EditorAPI::BoneMaskRuleMode;
-using VansBoneMaskFalloff = Vans::EditorAPI::BoneMaskFalloff;
-using VansBoneMaskDiagnosticSeverity = Vans::EditorAPI::BoneMaskDiagnosticSeverity;
-using VansBoneMaskBranchRule = Vans::EditorAPI::BoneMaskRuleDTO;
+using VansBoneMaskRuleMode = Vans::EditorAPI::VansBoneMaskRuleModeDTO;
+using VansBoneMaskFalloff = Vans::EditorAPI::VansBoneMaskFalloffDTO;
+using VansBoneMaskDiagnosticSeverity = Vans::EditorAPI::VansBoneMaskDiagnosticSeverityDTO;
+using VansBoneMaskBranchRule = Vans::EditorAPI::VansBoneMaskRuleDTO;
 
 namespace
 {
@@ -119,7 +121,8 @@ void VansBoneMaskEditorWindow::Close()
 	m_WorkingDirty = false;
 	m_Path.clear();
 	m_Document.reset();
-	m_ActiveAPI = nullptr;
+	m_AnimationAPI = nullptr;
+	m_AssetAPI = nullptr;
 	m_DocumentStateId = 0;
 	m_Asset = {};
 	m_Compiled = {};
@@ -132,14 +135,14 @@ bool VansBoneMaskEditorWindow::DecodeDocument()
 {
 	if (!m_Document || !m_Document->sourceDocument.IsLoaded())
 		return false;
-	if (!m_ActiveAPI)
+	if (!m_AnimationAPI)
 	{
 		m_LastError = "Bone Mask authoring API is not available";
 		return false;
 	}
 	const nlohmann::json root = Vans::EncodeSerializedValueJson<nlohmann::json>(
 		m_Document->sourceDocument.SerializedRootSnapshot());
-	auto decoded = m_ActiveAPI->DecodeBoneMaskDocument(root.dump());
+	auto decoded = m_AnimationAPI->DecodeBoneMaskDocument(root.dump());
 	if (!decoded.success)
 	{
 		m_LastError = decoded.message;
@@ -151,7 +154,7 @@ bool VansBoneMaskEditorWindow::DecodeDocument()
 	m_WorkingDirty = false;
 	if (m_SelectedRule >= static_cast<int>(m_Asset.branchRules.size()))
 		m_SelectedRule = m_Asset.branchRules.empty() ? -1 : static_cast<int>(m_Asset.branchRules.size()) - 1;
-	if (m_ActiveAPI)
+	if (m_AnimationAPI)
 		RefreshSkeleton();
 	return true;
 }
@@ -165,12 +168,12 @@ bool VansBoneMaskEditorWindow::CommitDocument()
 		m_LastError = "Bone Mask document is not available";
 		return false;
 	}
-	if (!m_ActiveAPI)
+	if (!m_AnimationAPI)
 	{
 		m_LastError = "Bone Mask authoring API is not available";
 		return false;
 	}
-	const auto encoded = m_ActiveAPI->EncodeBoneMaskDocument(m_Asset);
+	const auto encoded = m_AnimationAPI->EncodeBoneMaskDocument(m_Asset);
 	if (!encoded.success)
 	{
 		m_LastError = encoded.message;
@@ -191,16 +194,16 @@ bool VansBoneMaskEditorWindow::CommitDocument()
 	return true;
 }
 
-bool VansBoneMaskEditorWindow::Save()
+bool VansBoneMaskEditorWindow::Save(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
 	if (!CommitDocument())
 		return false;
-	if (!m_Document || !m_ActiveAPI)
+	if (!m_Document)
 	{
 		m_LastError = "Bone Mask save API is not available";
 		return false;
 	}
-	const auto result = Vans::VansEditorAssetSaveService::Get().SaveAsset(*m_ActiveAPI, m_Document);
+	const auto result = Vans::VansEditorAssetSaveService::Get().SaveAsset(editorAPI, m_Document);
 	if (!result)
 	{
 		m_LastError = result.message.empty() ? "Bone Mask save failed" : result.message;
@@ -248,12 +251,12 @@ void VansBoneMaskEditorWindow::RefreshSkeleton()
 {
 	m_Skeleton = {};
 	m_SelectedBones.clear();
-	if (!m_ActiveAPI || m_Asset.previewSkeletonGuid.empty())
+	if (!m_AnimationAPI || m_Asset.previewSkeletonGuid.empty())
 	{
 		Recompile();
 		return;
 	}
-	m_Skeleton = m_ActiveAPI->GetAssetSkeletonSnapshot(m_Asset.previewSkeletonGuid);
+	m_Skeleton = m_AnimationAPI->GetAssetSkeletonSnapshot(m_Asset.previewSkeletonGuid);
 	if (!m_Skeleton.available && !m_Skeleton.error.empty())
 		m_LastError = m_Skeleton.error;
 	Recompile();
@@ -266,12 +269,12 @@ void VansBoneMaskEditorWindow::Recompile()
 		m_Compiled = {};
 		return;
 	}
-	if (!m_ActiveAPI)
+	if (!m_AnimationAPI)
 	{
 		m_Compiled = {};
 		return;
 	}
-	m_Compiled = m_ActiveAPI->CompileBoneMaskDocument(m_Asset, m_Skeleton);
+	m_Compiled = m_AnimationAPI->CompileBoneMaskDocument(m_Asset, m_Skeleton);
 }
 
 void VansBoneMaskEditorWindow::SelectBone(int boneIndex)
@@ -542,8 +545,8 @@ void VansBoneMaskEditorWindow::DrawRulesPanel()
 	if (EditString("Name", m_Asset.name)) MarkEdited();
 	if (ImGui::SliderFloat("Default Weight", &m_Asset.defaultWeight, 0.0f, 1.0f)) MarkEdited();
 
-	const auto models = m_ActiveAPI
-		? m_ActiveAPI->QueryAssets({ Vans::EditorAPI::AssetType::Model, false })
+	const auto models = m_AssetAPI
+		? m_AssetAPI->QueryAssets({ Vans::EditorAPI::AssetType::Model, false })
 		: std::vector<Vans::EditorAPI::AssetEntry>{};
 	const char* currentModel = m_Asset.previewSkeletonPathHint.empty()
 		? "Choose Model..." : m_Asset.previewSkeletonPathHint.c_str();
@@ -704,11 +707,11 @@ void VansBoneMaskEditorWindow::DrawDiagnostics()
 	}
 }
 
-void VansBoneMaskEditorWindow::DrawToolbar()
+void VansBoneMaskEditorWindow::DrawToolbar(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
 	const bool canUndo = m_Document && Vans::VansAssetDocumentEditService::CanUndo(m_Document->sourceDocument);
 	const bool canRedo = m_Document && Vans::VansAssetDocumentEditService::CanRedo(m_Document->sourceDocument);
-	if (ImGui::Button("Save")) Save();
+	if (ImGui::Button("Save")) Save(editorAPI);
 	ImGui::SameLine();
 	ImGui::BeginDisabled(!canUndo);
 	if (ImGui::Button("Undo")) Undo();
@@ -729,7 +732,8 @@ void VansBoneMaskEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& edi
 {
 	if (!m_IsOpen)
 		return;
-	m_ActiveAPI = &editorAPI;
+	m_AnimationAPI = &editorAPI;
+	m_AssetAPI = &editorAPI;
 	if (m_NeedsDecode && !DecodeDocument())
 	{
 		m_IsOpen = false;
@@ -752,7 +756,7 @@ void VansBoneMaskEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& edi
 	{
 		if (ImGui::BeginMenu("File"))
 		{
-			if (ImGui::MenuItem("Save", "Ctrl+S")) Save();
+			if (ImGui::MenuItem("Save", "Ctrl+S")) Save(editorAPI);
 			if (ImGui::MenuItem("Close")) Close();
 			ImGui::EndMenu();
 		}
@@ -768,11 +772,11 @@ void VansBoneMaskEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& edi
 	}
 	if (ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantTextInput)
 	{
-		if (ImGui::IsKeyPressed(ImGuiKey_S, false)) Save();
+		if (ImGui::IsKeyPressed(ImGuiKey_S, false)) Save(editorAPI);
 		else if (ImGui::IsKeyPressed(ImGuiKey_Z, false)) Undo();
 		else if (ImGui::IsKeyPressed(ImGuiKey_Y, false)) Redo();
 	}
-	DrawToolbar();
+	DrawToolbar(editorAPI);
 	ImGui::Separator();
 	if (ImGui::BeginTable("BoneMaskWorkspace", 3,
 		ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV,
@@ -804,7 +808,7 @@ void VansBoneMaskEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& edi
 		ImGui::TextUnformatted("The Bone Mask has unsaved changes.");
 		if (ImGui::Button("Save and Close"))
 		{
-			if (Save())
+			if (Save(editorAPI))
 			{
 				m_WorkingDirty = false;
 				m_Document.reset();

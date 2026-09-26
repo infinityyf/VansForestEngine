@@ -3,7 +3,6 @@
 #include "../VansMaterial.h"
 #include "../VansShaderManager.h"
 #include "../../Util/VansLog.h"
-#include "../../Configration/VansConfigration.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <random>
 #include <cmath>
@@ -64,6 +63,8 @@ void VansVegetationSystem::Init(VkDevice device, std::vector<GrassInstance> gras
 	m_Device = device;
 	m_GrassInstancesCPU = std::move(grass);
 	m_TreeInstancesCPU = std::move(trees);
+	if (!m_TreeInstancesCPU.empty() && !m_TreeLodSettings)
+		throw std::invalid_argument("Tree instances require explicit Plant LOD settings.");
 	m_InstanceCount = static_cast<uint32_t>(m_GrassInstancesCPU.size());
 	m_BoneCountPerInstance = boneCountPerInstance;
 	if (m_InstanceCount > 0)
@@ -739,7 +740,8 @@ void VansVegetationSystem::DispatchTreeCullPass(
 	TreeCullPushConstants pc = {};
 	pc.shadowDistance=m_CullDistance;
     pc.cullingEnabled=m_CullEnabled?1u:0u;
-    pc.lodMidDistance=m_TreeLodMidDistance;pc.lodFarDistance=m_TreeLodFarDistance;pc.hysteresis=m_TreeLodHysteresis;
+	const auto& lodSettings=m_TreeLodSettings.value();
+	pc.lodMidDistance=lodSettings.midDistance;pc.lodFarDistance=lodSettings.farDistance;pc.hysteresis=lodSettings.hysteresis;
 	pc.instanceCount = static_cast<uint32_t>(m_TreeInstancesCPU.size());
 	pc.lodCount = m_TreeLodCount;
 	pc.hizEnabled = (m_HiZEnabled && m_HiZView != VK_NULL_HANDLE) ? 1u : 0u;
@@ -1186,7 +1188,7 @@ void VansVegetationSystem::BuildTreeResources()
 	if (count == 0 || m_TreeParts.empty()) return;
 	m_TreeLodCount=1;
     for(const auto& part:m_TreeParts)m_TreeLodCount=std::max(m_TreeLodCount,part.lod+1);
-    if(m_TreeLodCount>3 || uint64_t(count)*m_TreeLodCount*2>std::numeric_limits<uint32_t>::max())
+    if(m_TreeLodCount>Vans::MaximumModelLodLevelCount+1 || uint64_t(count)*m_TreeLodCount*2>std::numeric_limits<uint32_t>::max())
         throw std::invalid_argument("Tree LOD instance capacity exceeded.");
     m_TreeSpeciesInfosCPU.clear();
     for(uint32_t lod=0;lod<m_TreeLodCount;++lod)m_TreeSpeciesInfosCPU.push_back(TreeSpeciesCullInfo{lod*count,count,{0,0}});

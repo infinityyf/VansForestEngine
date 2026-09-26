@@ -1,4 +1,6 @@
 #include "VansPcgPointGenerator.h"
+#include "VansPcgDeterminism.h"
+#include "VansPcgInfluence.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -34,32 +36,6 @@ std::vector<std::string> ValidatePcgPlacement(const VansPcgPlacementSettings& se
 
 namespace
 {
-std::uint64_t Mix(std::uint64_t value)
-{
-	value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ull;
-	value = (value ^ (value >> 27)) * 0x94d049bb133111ebull;
-	return value ^ (value >> 31);
-}
-
-std::uint64_t TextHash(const std::string& text)
-{
-	std::uint64_t value = 14695981039346656037ull;
-	for (unsigned char ch : text) { value ^= ch; value *= 1099511628211ull; }
-	return value;
-}
-
-double Random(std::uint64_t id, std::uint64_t channel)
-{
-	return static_cast<double>(Mix(id ^ Mix(channel + 0x9e3779b97f4a7c15ull)) >> 11) * (1.0 / 9007199254740992.0);
-}
-
-double RadicalInverse(std::uint64_t index, std::uint32_t base)
-{
-	double result = 0, scale = 1.0 / base;
-	while (index) { result += (index % base) * scale; index /= base; scale /= base; }
-	return result;
-}
-
 bool Nonnegative(float value) { return std::isfinite(value) && value >= 0; }
 
 bool Owns(const VansPcgMask& mask, const VansPcgDistributionSettings& settings)
@@ -98,7 +74,7 @@ struct BucketHash
 {
 	std::size_t operator()(const Bucket& key) const
 	{
-		return static_cast<std::size_t>(Mix(static_cast<std::uint64_t>(key.x)) ^ Mix(static_cast<std::uint64_t>(key.z) + 31));
+		return static_cast<std::size_t>(PcgMix64(static_cast<std::uint64_t>(key.x)) ^ PcgMix64(static_cast<std::uint64_t>(key.z) + 31));
 	}
 };
 
@@ -117,7 +93,7 @@ bool MakeTransform(const VansPcgDistributionSettings& settings, const VansPcgSur
 	glm::vec3 axis = glm::cross(glm::vec3(0, 1, 0), n);
 	axis = glm::length(axis) > 0.000001f ? glm::normalize(axis) : glm::vec3(1, 0, 0);
 	const float yaw = static_cast<float>(settings.yawMinDegrees +
-		(static_cast<double>(settings.yawMaxDegrees) - settings.yawMinDegrees) * Random(candidate.point.id, 5));
+		(static_cast<double>(settings.yawMaxDegrees) - settings.yawMinDegrees) * PcgRandom01(candidate.point.id, 5));
 	const glm::quat rotation = glm::angleAxis(angle, axis) * glm::angleAxis(glm::radians(yaw), glm::vec3(0, 1, 0));
 	candidate.point.rotation = { rotation.x, rotation.y, rotation.z, rotation.w };
 	return true;
@@ -153,9 +129,8 @@ bool PrepareGeneration(const VansPcgDistributionSettings& settings,
 			return fail("PCG model variants require unique stable IDs and valid weights/footprints");
 		result.variantIds.push_back(variant.id);
 		weightSum += variant.weight;
-		if (variant.weight > 0) largestRadius = std::max(largestRadius,
-			static_cast<double>(variant.footprintRadius) * std::max(settings.scaleMax[0], settings.scaleMax[2]));
 	}
+	largestRadius = PcgInfluenceRadius(settings, settings.variants, VansPcgVariantInfluence::PositiveWeight);
 	return true;
 }
 
@@ -169,7 +144,7 @@ Evaluation EvaluateCandidate(const VansPcgDistributionSettings& settings, const 
 	if (!VansPcgPointGenerator::PassesMask(settings, densityMask, exclusionMask,
 		candidate.anchorX, candidate.anchorZ, candidate.point.id, acceptance))
 	{ ++result.stats.maskRejected; return Evaluation::Rejected; }
-	const double choice = Random(candidate.point.id, 3) * weightSum;
+	const double choice = PcgRandom01(candidate.point.id, 3) * weightSum;
 	double cumulative = 0;
 	for (std::size_t v = 0; v < variants.size(); ++v)
 	{
@@ -179,14 +154,14 @@ Evaluation EvaluateCandidate(const VansPcgDistributionSettings& settings, const 
 	for (std::size_t axis = 0; axis < 3; ++axis)
 		candidate.point.scale[axis] = static_cast<float>(settings.scaleMin[axis] +
 			(static_cast<double>(settings.scaleMax[axis]) - settings.scaleMin[axis]) *
-			Random(candidate.point.id, settings.uniformScale ? 4 : 4 + axis * 11));
+			PcgRandom01(candidate.point.id, settings.uniformScale ? 4 : 4 + axis * 11));
 	candidate.radius = settings.variants[variants[candidate.point.variantIndex]].footprintRadius *
 		std::max(candidate.point.scale[0], candidate.point.scale[2]);
 	VansPcgSurfacePoint sample;
 	if (!surface(candidate.anchorX, candidate.anchorZ, sample)) { ++result.stats.surfaceRejected; return Evaluation::Rejected; }
 	if (!MakeTransform(settings, sample, candidate))
 	{ result.error = "PCG surface returned an invalid height or normal"; return Evaluation::Error; }
-	candidate.priority = Mix(candidate.point.id ^ 0xa0761d6478bd642full);
+	candidate.priority = PcgMix64(candidate.point.id ^ 0xa0761d6478bd642full);
 	return Evaluation::Ready;
 }
 
@@ -203,7 +178,7 @@ bool VansPcgPointGenerator::PassesMask(const VansPcgPlacementSettings& settings,
 	maskValue = std::clamp(maskValue * settings.maskMultiplier, 0.0, 1.0);
 	if (maskValue < settings.maskThreshold) maskValue = 0;
 	if (exclusionMask) maskValue *= 1 - exclusionMask->Sample(x, z);
-	return Random(id, 2) < acceptance * maskValue;
+	return PcgRandom01(id, 2) < acceptance * maskValue;
 }
 
 VansPcgGenerationResult VansPcgPointGenerator::GenerateDensity(const VansPcgDistributionSettings& settings,
@@ -229,8 +204,8 @@ VansPcgGenerationResult VansPcgPointGenerator::GenerateDensity(const VansPcgDist
 	VansPcgBounds owned{ { std::max(outputBounds.min[0], settings.bounds.min[0]), std::max(outputBounds.min[1], settings.bounds.min[1]) },
 		{ std::min(outputBounds.max[0], settings.bounds.max[0]), std::min(outputBounds.max[1], settings.bounds.max[1]) } };
 	if (!owned.IsValid()) return result;
-	const double spacingDistance = std::max(static_cast<double>(settings.minimumSpacing), largestRadius * 2);
-	const double halo = spacingDistance + std::abs(static_cast<double>(settings.rootOffset)) * 2;
+	const double spacingDistance = PcgSpacingHalo(settings, largestRadius);
+	const double halo = PcgGenerationHalo(settings, largestRadius);
 	const auto minX = static_cast<std::int32_t>(std::floor(std::max(static_cast<double>(settings.bounds.min[0]), owned.min[0] - halo)));
 	const auto minZ = static_cast<std::int32_t>(std::floor(std::max(static_cast<double>(settings.bounds.min[1]), owned.min[1] - halo)));
 	const auto maxX = static_cast<std::int32_t>(std::ceil(std::min(static_cast<double>(settings.bounds.max[0]), owned.max[0] + halo)));
@@ -239,7 +214,8 @@ VansPcgGenerationResult VansPcgPointGenerator::GenerateDensity(const VansPcgDist
 	const double required = static_cast<double>(static_cast<std::int64_t>(maxX) - minX) *
 		(static_cast<std::int64_t>(maxZ) - minZ) * ranks;
 	if (required > static_cast<double>(budget.maxCandidates)) return fail("PCG candidate work budget exceeded; no partial result was published");
-	const std::uint64_t identity = Mix(settings.seed) ^ Mix(TextHash(settings.regionId)) ^ Mix(TextHash(settings.layerId) + 17);
+	const std::uint64_t identity = PcgMix64(settings.seed) ^ PcgMix64(PcgTextHash(settings.regionId)) ^
+		PcgMix64(PcgTextHash(settings.layerId) + 17);
 	std::vector<Candidate> candidates;
 	for (std::int32_t cz = minZ; cz < maxZ; ++cz) for (std::int32_t cx = minX; cx < maxX; ++cx)
 		for (std::uint32_t rank = 0; rank < ranks; ++rank)
@@ -249,11 +225,12 @@ VansPcgGenerationResult VansPcgPointGenerator::GenerateDensity(const VansPcgDist
 			candidate.cellX = cx;
 			candidate.cellZ = cz;
 			candidate.rank = rank;
-			candidate.point.id = Mix(identity ^ Mix(static_cast<std::uint64_t>(cx)) ^
-				Mix(static_cast<std::uint64_t>(cz) + 0x9e3779b97f4a7c15ull) ^ Mix(static_cast<std::uint64_t>(rank) + 701));
+			candidate.point.id = PcgMix64(identity ^ PcgMix64(static_cast<std::uint64_t>(cx)) ^
+				PcgMix64(static_cast<std::uint64_t>(cz) + 0x9e3779b97f4a7c15ull) ^
+				PcgMix64(static_cast<std::uint64_t>(rank) + 701));
 			const auto coordinate = [&](std::uint32_t base, std::uint64_t channel) {
-				return RadicalInverse(static_cast<std::uint64_t>(rank) + 1, base) * (1 - settings.positionJitter) +
-					Random(candidate.point.id, channel) * settings.positionJitter;
+				return PcgRadicalInverse(static_cast<std::uint64_t>(rank) + 1, base) * (1 - settings.positionJitter) +
+					PcgRandom01(candidate.point.id, channel) * settings.positionJitter;
 			};
 			candidate.anchorX = static_cast<float>(cx + coordinate(2, 0));
 			candidate.anchorZ = static_cast<float>(cz + coordinate(3, 1));
@@ -326,7 +303,7 @@ VansPcgGenerationResult VansPcgPointGenerator::GenerateCount(const VansPcgDistri
 		return fail("PCG target count requires a candidate budget and must fit the hard instance budget");
 	if (largestRadius > 1073741824.0 || weightSum <= 0 || !std::isfinite(weightSum))
 		return fail("PCG count generation requires valid weighted variants and bounded footprints");
-	const double spacingDistance = std::max(static_cast<double>(settings.minimumSpacing), largestRadius * 2);
+	const double spacingDistance = PcgSpacingHalo(settings, largestRadius);
 	const double bucketSize = std::max(spacingDistance, 0.0001);
 	const auto bucketFor = [&](const Candidate& candidate) {
 		return Bucket{ static_cast<std::int64_t>(std::floor(candidate.point.position[0] / bucketSize)),
@@ -334,16 +311,16 @@ VansPcgGenerationResult VansPcgPointGenerator::GenerateCount(const VansPcgDistri
 	};
 	std::unordered_map<Bucket, std::vector<std::size_t>, BucketHash> buckets;
 	std::vector<Candidate> accepted;
-	const std::uint64_t identity = Mix(settings.seed) ^ Mix(TextHash(settings.regionId)) ^
-		Mix(TextHash(settings.layerId) + 17) ^ 0xe7037ed1a0b428dbull;
+	const std::uint64_t identity = PcgMix64(settings.seed) ^ PcgMix64(PcgTextHash(settings.regionId)) ^
+		PcgMix64(PcgTextHash(settings.layerId) + 17) ^ 0xe7037ed1a0b428dbull;
 	for (std::uint64_t ordinal = 0; ordinal < budget.maxCandidates && accepted.size() < targetCount; ++ordinal)
 	{
 		++result.stats.candidates;
 		Candidate candidate;
-		candidate.point.id = Mix(identity ^ Mix(ordinal + 701));
+		candidate.point.id = PcgMix64(identity ^ PcgMix64(ordinal + 701));
 		const auto coordinate = [&](std::size_t axis, std::uint32_t base, std::uint64_t channel) {
-			const double t = RadicalInverse(ordinal + 1, base) * (1 - settings.positionJitter) +
-				Random(candidate.point.id, channel) * settings.positionJitter;
+			const double t = PcgRadicalInverse(ordinal + 1, base) * (1 - settings.positionJitter) +
+				PcgRandom01(candidate.point.id, channel) * settings.positionJitter;
 			return static_cast<float>(settings.bounds.min[axis] +
 				(static_cast<double>(settings.bounds.max[axis]) - settings.bounds.min[axis]) * t);
 		};
@@ -384,7 +361,8 @@ VansPcgGenerationResult VansPcgPointGenerator::GenerateCount(const VansPcgDistri
 
 std::uint64_t VansPcgPointGenerator::AuthoredInstanceId(const std::string& region, const std::string& layer, const std::string& instance)
 {
-	return Mix(TextHash(region) ^ Mix(TextHash(layer)) ^ Mix(TextHash(instance)) ^ 0x8ebc6af09c88c6e3ull);
+	return PcgMix64(PcgTextHash(region) ^ PcgMix64(PcgTextHash(layer)) ^
+		PcgMix64(PcgTextHash(instance)) ^ 0x8ebc6af09c88c6e3ull);
 }
 
 std::string VansPcgPointGenerator::PointIdText(std::uint64_t id)

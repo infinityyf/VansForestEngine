@@ -1,7 +1,10 @@
 #include "VansParticleEmitterJsonCodec.h"
+#include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
+#include "../../AssetCore/VansAssetDocumentJson.h"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <memory>
 #include <cmath>
 #include <stdexcept>
@@ -10,19 +13,24 @@
 #include <array>
 #include <unordered_set>
 
+namespace
+{
+using ParticleJsonValue = Vans::AssetDocumentJson;
+}
+
 namespace VansGraphics
 {
 namespace
 {
-Vans::ParticleJson EncodeCurveKeys(const std::vector<CurveKey>& curve)
+ParticleJsonValue EncodeCurveKeys(const std::vector<CurveKey>& curve)
 {
-    auto keys = Vans::ParticleJson::array();
+    auto keys = ParticleJsonValue::array();
     for (const auto& key : curve)
         keys.push_back({ {"t", key.t}, {"value", key.value} });
     return keys;
 }
 
-void DecodeCurveKeys(const Vans::ParticleJson& root, std::vector<CurveKey>& curve)
+void DecodeCurveKeys(const ParticleJsonValue& root, std::vector<CurveKey>& curve)
 {
     curve.clear();
     if (!root.is_array())
@@ -32,7 +40,7 @@ void DecodeCurveKeys(const Vans::ParticleJson& root, std::vector<CurveKey>& curv
         curve.push_back({ key.value("t", 0.0f), key.value("value", 0.0f) });
 }
 
-void ValidateNormalizedCurve(const std::vector<CurveKey>& curve,
+void ValidateOrderedCurve(const std::vector<CurveKey>& curve,
     const char* field, bool requireNonNegativeValues)
 {
     if (curve.empty())
@@ -42,8 +50,7 @@ void ValidateNormalizedCurve(const std::vector<CurveKey>& curve,
     {
         const bool validValue = std::isfinite(key.value) &&
             (!requireNonNegativeValues || key.value >= 0.0f);
-        if (!std::isfinite(key.t) || key.t < 0.0f || key.t > 1.0f ||
-            key.t <= previousTime || !validValue)
+        if (key.t <= previousTime || !validValue)
         {
             throw std::invalid_argument(std::string(field) +
                 " keys must use strictly increasing normalized t values and valid values");
@@ -66,8 +73,7 @@ void ValidateColorGradient(const VansColorGradient& gradient)
         const bool validColor = glm::all(glm::greaterThanEqual(
             glm::vec3(stop.color), glm::vec3(0.0f))) &&
             stop.color.a >= 0.0f && stop.color.a <= 1.0f;
-        if (!std::isfinite(stop.t) || stop.t < 0.0f || stop.t > 1.0f ||
-            stop.t <= previousTime || !finiteColor || !validColor)
+        if (stop.t <= previousTime || !finiteColor || !validColor)
         {
             throw std::invalid_argument(
                 "UpdateColorOverLifetime.gradient stops must be ordered in normalized time with non-negative RGB and alpha in [0,1]");
@@ -91,7 +97,7 @@ void ValidateNonNegativeFloatCurve(const VansFloatCurve& curve,
     const auto requireKeys = [field, minimumValue](
         const std::vector<CurveKey>& keys)
     {
-        ValidateNormalizedCurve(keys, field, true);
+        ValidateOrderedCurve(keys, field, true);
         for (const CurveKey& key : keys)
             if (key.value < minimumValue)
                 throw std::invalid_argument(std::string(field) +
@@ -115,7 +121,7 @@ void ValidateNonNegativeFloatCurve(const VansFloatCurve& curve,
     }
 }
 
-Vans::ParticleJson EncodeFloatCurve(const VansFloatCurve& curve)
+ParticleJsonValue EncodeFloatCurve(const VansFloatCurve& curve)
 {
     const char* mode = "Constant";
     switch (curve.m_Mode)
@@ -130,7 +136,7 @@ Vans::ParticleJson EncodeFloatCurve(const VansFloatCurve& curve)
         {"maxKeys", EncodeCurveKeys(curve.m_MaxKeys)}};
 }
 
-void DecodeFloatCurve(const Vans::ParticleJson& root, VansFloatCurve& curve)
+void DecodeFloatCurve(const ParticleJsonValue& root, VansFloatCurve& curve)
 {
     const std::string mode = root.value("mode", "Constant");
     if (mode == "Constant") curve.m_Mode = FloatCurveMode::Constant;
@@ -146,9 +152,9 @@ void DecodeFloatCurve(const Vans::ParticleJson& root, VansFloatCurve& curve)
     if (root.contains("maxKeys")) DecodeCurveKeys(root["maxKeys"], curve.m_MaxKeys);
 }
 
-Vans::ParticleJson EncodeColorGradient(const VansColorGradient& gradient)
+ParticleJsonValue EncodeColorGradient(const VansColorGradient& gradient)
 {
-    auto stops = Vans::ParticleJson::array();
+    auto stops = ParticleJsonValue::array();
     for (const auto& stop : gradient.m_Stops)
     {
         stops.push_back({
@@ -156,10 +162,10 @@ Vans::ParticleJson EncodeColorGradient(const VansColorGradient& gradient)
             {"color", { stop.color.r, stop.color.g, stop.color.b, stop.color.a }}
         });
     }
-    return Vans::ParticleJson{ {"stops", std::move(stops)} };
+    return ParticleJsonValue{ {"stops", std::move(stops)} };
 }
 
-void DecodeColorGradient(const Vans::ParticleJson& root, VansColorGradient& gradient)
+void DecodeColorGradient(const ParticleJsonValue& root, VansColorGradient& gradient)
 {
     gradient.m_Stops.clear();
     if (!root.contains("stops"))
@@ -181,16 +187,16 @@ void DecodeColorGradient(const Vans::ParticleJson& root, VansColorGradient& grad
     }
 }
 
-Vans::ParticleJson EncodeSpawnConfig(const VansParticleSpawnConfig& config)
+ParticleJsonValue EncodeSpawnConfig(const VansParticleSpawnConfig& config)
 {
-    auto bursts = Vans::ParticleJson::array();
+    auto bursts = ParticleJsonValue::array();
     for (const auto& burst : config.m_Bursts)
         bursts.push_back({{"time", burst.time}, {"count", burst.count}, {"cycles", burst.cycles}, {"interval", burst.interval}});
     return {{"type", config.m_Type == VansSpawnType::Burst ? "Burst" : "RateOverTime"},
         {"rate", config.m_Rate}, {"bursts", bursts}};
 }
 
-void DecodeSpawnConfig(const Vans::ParticleJson& root, VansParticleSpawnConfig& config)
+void DecodeSpawnConfig(const ParticleJsonValue& root, VansParticleSpawnConfig& config)
 {
     const std::string type = root.value("type", "RateOverTime");
     if (type != "Burst" && type != "RateOverTime") throw std::invalid_argument("Unsupported spawn.type: " + type);
@@ -221,9 +227,9 @@ void DecodeSpawnConfig(const Vans::ParticleJson& root, VansParticleSpawnConfig& 
     }
 }
 
-Vans::ParticleJson EncodeSixWayLighting(const VansParticleSixWayLightingConfig& config)
+ParticleJsonValue EncodeSixWayLighting(const VansParticleSixWayLightingConfig& config)
 {
-    Vans::ParticleJson root;
+    ParticleJsonValue root;
     root["positiveAxesTextureGuid"] = config.m_PositiveAxesTextureGuid;
     root["negativeAxesTextureGuid"] = config.m_NegativeAxesTextureGuid;
     root["lightIntensity"] = config.m_LightIntensity;
@@ -235,7 +241,7 @@ Vans::ParticleJson EncodeSixWayLighting(const VansParticleSixWayLightingConfig& 
     return root;
 }
 
-void DecodeSixWayLighting(const Vans::ParticleJson& root, VansParticleSixWayLightingConfig& config)
+void DecodeSixWayLighting(const ParticleJsonValue& root, VansParticleSixWayLightingConfig& config)
 {
     for (const char* field : {"enabled", "positiveAxesTexture", "negativeAxesTexture", "columns", "rows", "fps", "alphaFromPositiveA", "emissiveFromNegativeA"})
         if (root.contains(field)) throw std::invalid_argument(std::string("Removed sixWayLighting field: ") + field);
@@ -249,7 +255,7 @@ void DecodeSixWayLighting(const Vans::ParticleJson& root, VansParticleSixWayLigh
     config.m_LightmapRemapMax = root.value("lightmapRemapMax", 1.0f);
 }
 
-Vans::ParticleJson EncodeVolumetricConfig(const VansParticleVolumetricConfig& config)
+ParticleJsonValue EncodeVolumetricConfig(const VansParticleVolumetricConfig& config)
 {
     return {
         { "enabled", config.m_Enabled },
@@ -275,7 +281,7 @@ Vans::ParticleJson EncodeVolumetricConfig(const VansParticleVolumetricConfig& co
 }
 
 void DecodeVolumetricConfig(
-    const Vans::ParticleJson& root, VansParticleVolumetricConfig& config)
+    const ParticleJsonValue& root, VansParticleVolumetricConfig& config)
 {
     if (root.contains("keepSurfaceRenderer")) throw std::invalid_argument("Use renderer.type=None for volume-only particles");
     config.m_Enabled = root.value("enabled", false);
@@ -289,7 +295,7 @@ void DecodeVolumetricConfig(
     config.m_SkyLightingScale = root.value("skyLightingScale", 1.0f);
     config.m_ReceiveCloudShadows = root.value("receiveCloudShadows", true);
     config.m_InjectionPriority = root.value("injectionPriority", 128u);
-    auto readVec3 = [](const Vans::ParticleJson& value, glm::vec3 fallback)
+    auto readVec3 = [](const ParticleJsonValue& value, glm::vec3 fallback)
     {
         if (!value.is_array() || value.size() < 3)
             return fallback;
@@ -334,7 +340,7 @@ void DecodeVolumetricConfig(
         throw std::invalid_argument("renderer.volumetric contains invalid medium parameters");
 }
 
-Vans::ParticleJson EncodeRendererConfig(const VansParticleRendererConfig& config)
+ParticleJsonValue EncodeRendererConfig(const VansParticleRendererConfig& config)
 {
     auto typeToString = [](VansParticleRendererType type) -> std::string {
         switch (type)
@@ -344,13 +350,12 @@ Vans::ParticleJson EncodeRendererConfig(const VansParticleRendererConfig& config
         default: return "Billboard";
         }
     };
-    auto sortToString = [](VansParticleSortMode sort) -> std::string {
-        switch (sort)
+    auto simulationOrderToString = [](VansParticleSimulationOrder order) -> std::string {
+        switch (order)
         {
-        case VansParticleSortMode::ByDistance: return "ByDistance";
-        case VansParticleSortMode::OldestFirst: return "OldestFirst";
-        case VansParticleSortMode::NewestFirst: return "NewestFirst";
-        default: return "None";
+        case VansParticleSimulationOrder::OldestFirst: return "OldestFirst";
+        case VansParticleSimulationOrder::NewestFirst: return "NewestFirst";
+        default: return "Stable";
         }
     };
     auto lightingToString = [](VansParticleLightingMode mode) -> std::string {
@@ -361,7 +366,7 @@ Vans::ParticleJson EncodeRendererConfig(const VansParticleRendererConfig& config
         }
     };
 
-    Vans::ParticleJson root;
+    ParticleJsonValue root;
     root["type"] = typeToString(config.m_Type);
     root["textureGuid"] = config.m_TextureGuid;
     root["spriteSheet"] = {
@@ -369,7 +374,12 @@ Vans::ParticleJson EncodeRendererConfig(const VansParticleRendererConfig& config
         {"columns", config.m_SpriteColumns},
         {"rows", config.m_SpriteRows}
     };
-    root["sortMode"] = sortToString(config.m_SortMode);
+    if (config.m_SimulationOrder != VansParticleSimulationOrder::Stable &&
+        config.m_RenderSortMode != VansParticleRenderSortMode::None)
+        throw std::invalid_argument("Particle renderer cannot combine simulation ordering and render depth sorting");
+    root["simulationOrder"] = simulationOrderToString(config.m_SimulationOrder);
+    root["renderSortMode"] = config.m_RenderSortMode == VansParticleRenderSortMode::ByDistance
+        ? "ByDistance" : "None";
     root["lightingMode"] = lightingToString(config.m_LightingMode);
     root["sixWayLighting"] = EncodeSixWayLighting(config.m_SixWayLighting);
     root["volumetric"] = EncodeVolumetricConfig(config.m_Volumetric);
@@ -387,7 +397,7 @@ Vans::ParticleJson EncodeRendererConfig(const VansParticleRendererConfig& config
     return root;
 }
 
-void DecodeRendererConfig(const Vans::ParticleJson& root, VansParticleRendererConfig& config)
+void DecodeRendererConfig(const ParticleJsonValue& root, VansParticleRendererConfig& config)
 {
     const std::string type = root.value("type", "Billboard");
     if (type == "None") config.m_Type = VansParticleRendererType::None;
@@ -410,12 +420,20 @@ void DecodeRendererConfig(const Vans::ParticleJson& root, VansParticleRendererCo
         config.m_SpriteRows = spriteSheet.value("rows", 4);
     }
 
-    const std::string sort = root.value("sortMode", "None");
-    if (sort == "ByDistance") config.m_SortMode = VansParticleSortMode::ByDistance;
-    else if (sort == "OldestFirst") config.m_SortMode = VansParticleSortMode::OldestFirst;
-    else if (sort == "NewestFirst") config.m_SortMode = VansParticleSortMode::NewestFirst;
-    else if (sort == "None") config.m_SortMode = VansParticleSortMode::None;
-    else throw std::invalid_argument("Invalid sortMode");
+    if (root.contains("sortMode"))
+        throw std::invalid_argument("Removed renderer.sortMode; use simulationOrder and renderSortMode");
+    const std::string simulationOrder = root.value("simulationOrder", "Stable");
+    if (simulationOrder == "Stable") config.m_SimulationOrder = VansParticleSimulationOrder::Stable;
+    else if (simulationOrder == "OldestFirst") config.m_SimulationOrder = VansParticleSimulationOrder::OldestFirst;
+    else if (simulationOrder == "NewestFirst") config.m_SimulationOrder = VansParticleSimulationOrder::NewestFirst;
+    else throw std::invalid_argument("Invalid simulationOrder");
+    const std::string renderSortMode = root.value("renderSortMode", "None");
+    if (renderSortMode == "None") config.m_RenderSortMode = VansParticleRenderSortMode::None;
+    else if (renderSortMode == "ByDistance") config.m_RenderSortMode = VansParticleRenderSortMode::ByDistance;
+    else throw std::invalid_argument("Invalid renderSortMode");
+    if (config.m_SimulationOrder != VansParticleSimulationOrder::Stable &&
+        config.m_RenderSortMode != VansParticleRenderSortMode::None)
+        throw std::invalid_argument("Particle renderer cannot combine simulation ordering and render depth sorting");
 
     const std::string lightingMode = root.value("lightingMode", "UnlitFlipbook");
     if (lightingMode == "SixWayLit") config.m_LightingMode = VansParticleLightingMode::SixWayLit;
@@ -443,7 +461,7 @@ void DecodeRendererConfig(const Vans::ParticleJson& root, VansParticleRendererCo
         throw std::invalid_argument("Ribbon requires UnlitFlipbook lighting and disabled spriteSheet");
     // 未启用的配置也要往返保留，切换渲染类型不会丢失调好的参数。
     {
-        const auto ribbon = root.value("ribbon", Vans::ParticleJson::object());
+        const auto ribbon = root.value("ribbon", ParticleJsonValue::object());
         auto& target = config.m_Ribbon;
         const std::string rootMode = ribbon.value("rootMode", "None");
         if (rootMode != "None" && rootMode != "FollowSource") throw std::invalid_argument("Invalid ribbon.rootMode");
@@ -472,333 +490,377 @@ void DecodeRendererConfig(const Vans::ParticleJson& root, VansParticleRendererCo
     }
 }
 
-Vans::ParticleJson EncodeModule(const VansParticleModule& module)
+VansParticleFieldRule ChoiceRule(std::string path, std::vector<std::string> choices)
 {
-    if (const auto* initLifetime = dynamic_cast<const VansInitLifetimeModule*>(&module))
+    return {std::move(path), std::move(choices)};
+}
+
+VansParticleFieldRule RangeRule(
+    std::string path, double minimum, double maximum, double step = 0.01)
+{
+    minimum = std::min(minimum, double(float(minimum)));
+    maximum = std::max(maximum, double(float(maximum)));
+    return {std::move(path), {}, true, minimum, maximum, step};
+}
+
+std::vector<VansParticleFieldRule> CurveRules(const std::string& path)
+{
+    std::vector<VansParticleFieldRule> rules;
+    rules.push_back(ChoiceRule(path + "/mode",
+        {"Constant", "RandomBetween", "Curve", "RandomBetweenCurves"}));
+    for (const char* keys : {"keys", "minKeys", "maxKeys"})
+        rules.push_back(RangeRule(path + "/" + keys + "/*/t", 0.0, 1.0));
+    return rules;
+}
+
+ParticleJsonValue EncodeInitLifetime(const VansInitLifetimeModule& module)
+{
+    return {{"module", "InitLifetime"}, {"lifetime", EncodeFloatCurve(module.m_Lifetime)}};
+}
+
+void DecodeInitLifetime(const ParticleJsonValue& root, VansInitLifetimeModule& module)
+{
+    if (!root.contains("lifetime")) return;
+    DecodeFloatCurve(root["lifetime"], module.m_Lifetime);
+    ValidateNonNegativeFloatCurve(module.m_Lifetime, "InitLifetime.lifetime", 0.01f);
+}
+
+ParticleJsonValue EncodeInitVelocity(const VansInitVelocityModule& module)
+{
+    return {{"module", "InitVelocity"},
+        {"mode", module.m_VelocityMode == VansInitVelocityMode::Cone ? "Cone" : "Random"},
+        {"angle", module.m_ConeAngle}, {"speed", module.m_Speed}};
+}
+
+void DecodeInitVelocity(const ParticleJsonValue& root, VansInitVelocityModule& module)
+{
+    module.m_VelocityMode = root.value("mode", "Cone") == "Random"
+        ? VansInitVelocityMode::Random : VansInitVelocityMode::Cone;
+    module.m_ConeAngle = root.value("angle", 25.0f);
+    module.m_Speed = root.value("speed", 2.0f);
+}
+
+ParticleJsonValue EncodeInitSize(const VansInitSizeModule& module)
+{
+    return {{"module", "InitSize"}, {"size", EncodeFloatCurve(module.m_Size)}};
+}
+
+void DecodeInitSize(const ParticleJsonValue& root, VansInitSizeModule& module)
+{
+    if (!root.contains("size")) return;
+    DecodeFloatCurve(root["size"], module.m_Size);
+    ValidateNonNegativeFloatCurve(module.m_Size, "InitSize.size", 0.0f);
+}
+
+ParticleJsonValue EncodeInitColor(const VansInitColorModule& module)
+{
+    return {{"module", "InitColor"},
+        {"color", {module.m_Color.r, module.m_Color.g, module.m_Color.b, module.m_Color.a}}};
+}
+
+void DecodeInitColor(const ParticleJsonValue& root, VansInitColorModule& module)
+{
+    if (!root.contains("color") || !root["color"].is_array() || root["color"].size() < 4) return;
+    module.m_Color = glm::vec4(root["color"][0].get<float>(), root["color"][1].get<float>(),
+        root["color"][2].get<float>(), root["color"][3].get<float>());
+}
+
+ParticleJsonValue EncodeInitRotation(const VansInitRotationModule& module)
+{
+    return {{"module", "InitRotation"}, {"angle", EncodeFloatCurve(module.m_Angle)}};
+}
+
+void DecodeInitRotation(const ParticleJsonValue& root, VansInitRotationModule& module)
+{
+    if (root.contains("angle")) DecodeFloatCurve(root["angle"], module.m_Angle);
+}
+
+ParticleJsonValue EncodeInitPosition(const VansInitPositionModule& module)
+{
+    const char* shape = "Cone";
+    switch (module.m_Shape)
     {
-        return {
-            {"module", "InitLifetime"},
-            {"lifetime", EncodeFloatCurve(initLifetime->m_Lifetime)}
-        };
+    case VansEmitterShape::Sphere: shape = "Sphere"; break;
+    case VansEmitterShape::Box: shape = "Box"; break;
+    case VansEmitterShape::Disk: shape = "Disk"; break;
+    case VansEmitterShape::Edge: shape = "Edge"; break;
+    default: break;
     }
-    if (const auto* initVelocity = dynamic_cast<const VansInitVelocityModule*>(&module))
-    {
-        return {
-            {"module", "InitVelocity"},
-            {"mode", initVelocity->m_VelocityMode == VansInitVelocityMode::Cone ? "Cone" : "Random"},
-            {"angle", initVelocity->m_ConeAngle},
-            {"speed", initVelocity->m_Speed}
-        };
-    }
-    if (const auto* initSize = dynamic_cast<const VansInitSizeModule*>(&module))
-    {
-        return {
-            {"module", "InitSize"},
-            {"size", EncodeFloatCurve(initSize->m_Size)}
-        };
-    }
-    if (const auto* initColor = dynamic_cast<const VansInitColorModule*>(&module))
-    {
-        return {
-            {"module", "InitColor"},
-            {"color", { initColor->m_Color.r, initColor->m_Color.g, initColor->m_Color.b, initColor->m_Color.a }}
-        };
-    }
-    if (const auto* initRotation = dynamic_cast<const VansInitRotationModule*>(&module))
-    {
-        return {
-            {"module", "InitRotation"},
-            {"angle", EncodeFloatCurve(initRotation->m_Angle)}
-        };
-    }
-    if (const auto* initPosition = dynamic_cast<const VansInitPositionModule*>(&module))
-    {
-        auto shapeToString = [](VansEmitterShape shape) -> std::string {
-            switch (shape)
-            {
-            case VansEmitterShape::Sphere: return "Sphere";
-            case VansEmitterShape::Box: return "Box";
-            case VansEmitterShape::Cone: return "Cone";
-            case VansEmitterShape::Disk: return "Disk";
-            case VansEmitterShape::Edge: return "Edge";
-            default: return "Cone";
-            }
-        };
-        return {
-            {"module", "InitPositionShape"},
-            {"shape", shapeToString(initPosition->m_Shape)},
-            {"radius", initPosition->m_Radius},
-            {"arc", initPosition->m_Arc}
-        };
-    }
-    if (const auto* updateGravity = dynamic_cast<const VansUpdateGravityModule*>(&module))
-    {
-        return {
-            {"module", "UpdateGravity"},
-            {"gravity", { updateGravity->m_Gravity.x, updateGravity->m_Gravity.y, updateGravity->m_Gravity.z }}
-        };
-    }
-    if (const auto* updateColor = dynamic_cast<const VansUpdateColorOverLifetime*>(&module))
-    {
-        return {
-            {"module", "UpdateColorOverLifetime"},
-            {"gradient", EncodeColorGradient(updateColor->m_Gradient)}
-        };
-    }
-    if (const auto* updateSize = dynamic_cast<const VansUpdateSizeOverLifetime*>(&module))
-    {
-        return {
-            {"module", "UpdateSizeOverLifetime"},
-            {"curve", EncodeCurveKeys(updateSize->m_Curve)}
-        };
-    }
-    if (const auto* updateVelocity = dynamic_cast<const VansUpdateVelocityOverLifetime*>(&module))
-    {
-        return {
-            {"module", "UpdateVelocityOverLifetime"},
-            {"drag", updateVelocity->m_Drag},
-            {"turbulence", {
-                {"enabled", updateVelocity->m_TurbulenceEnabled},
-                {"strength", updateVelocity->m_TurbulenceStrength},
-                {"frequency", updateVelocity->m_TurbulenceFrequency},
-                {"scrollSpeed", updateVelocity->m_TurbulenceScrollSpeed}
-            }}
-        };
-    }
-    if (const auto* updateRotation = dynamic_cast<const VansUpdateRotationOverLifetime*>(&module))
-    {
-        return {
-            {"module", "UpdateRotationOverLifetime"},
-            {"angularVelocity", EncodeFloatCurve(updateRotation->m_AngularVelocity)}
-        };
-    }
-    if (const auto* updateSprite = dynamic_cast<const VansUpdateSpriteAnimModule*>(&module))
-    {
-        return {
-            {"module", "UpdateSpriteAnim"},
-            {"columns", updateSprite->m_Columns},
-            {"rows", updateSprite->m_Rows},
-            {"fps", updateSprite->m_FPS}
-        };
-    }
-    return {};
+    return {{"module", "InitPositionShape"}, {"shape", shape},
+        {"radius", module.m_Radius}, {"arc", module.m_Arc}};
+}
+
+void DecodeInitPosition(const ParticleJsonValue& root, VansInitPositionModule& module)
+{
+    const std::string shape = root.value("shape", "Cone");
+    if (shape == "Sphere") module.m_Shape = VansEmitterShape::Sphere;
+    else if (shape == "Box") module.m_Shape = VansEmitterShape::Box;
+    else if (shape == "Disk") module.m_Shape = VansEmitterShape::Disk;
+    else if (shape == "Edge") module.m_Shape = VansEmitterShape::Edge;
+    else module.m_Shape = VansEmitterShape::Cone;
+    module.m_Radius = root.value("radius", 0.2f);
+    module.m_Arc = root.value("arc", 360.0f);
+}
+
+ParticleJsonValue EncodeUpdateGravity(const VansUpdateGravityModule& module)
+{
+    return {{"module", "UpdateGravity"},
+        {"gravity", {module.m_Gravity.x, module.m_Gravity.y, module.m_Gravity.z}}};
+}
+
+void DecodeUpdateGravity(const ParticleJsonValue& root, VansUpdateGravityModule& module)
+{
+    if (!root.contains("gravity") || !root["gravity"].is_array() || root["gravity"].size() < 3) return;
+    module.m_Gravity = glm::vec3(root["gravity"][0].get<float>(),
+        root["gravity"][1].get<float>(), root["gravity"][2].get<float>());
+}
+
+ParticleJsonValue EncodeUpdateColor(const VansUpdateColorOverLifetime& module)
+{
+    return {{"module", "UpdateColorOverLifetime"},
+        {"gradient", EncodeColorGradient(module.m_Gradient)}};
+}
+
+void DecodeUpdateColor(const ParticleJsonValue& root, VansUpdateColorOverLifetime& module)
+{
+    if (!root.contains("gradient")) return;
+    DecodeColorGradient(root["gradient"], module.m_Gradient);
+    ValidateColorGradient(module.m_Gradient);
+}
+
+ParticleJsonValue EncodeUpdateSize(const VansUpdateSizeOverLifetime& module)
+{
+    return {{"module", "UpdateSizeOverLifetime"}, {"curve", EncodeCurveKeys(module.m_Curve)}};
+}
+
+void DecodeUpdateSize(const ParticleJsonValue& root, VansUpdateSizeOverLifetime& module)
+{
+    if (!root.contains("curve")) return;
+    DecodeCurveKeys(root["curve"], module.m_Curve);
+    ValidateOrderedCurve(module.m_Curve, "UpdateSizeOverLifetime.curve", true);
+}
+
+ParticleJsonValue EncodeUpdateVelocity(const VansUpdateVelocityOverLifetime& module)
+{
+    return {{"module", "UpdateVelocityOverLifetime"}, {"drag", module.m_Drag},
+        {"turbulence", {{"enabled", module.m_TurbulenceEnabled},
+            {"strength", module.m_TurbulenceStrength},
+            {"frequency", module.m_TurbulenceFrequency},
+            {"scrollSpeed", module.m_TurbulenceScrollSpeed}}}};
+}
+
+void DecodeUpdateVelocity(const ParticleJsonValue& root, VansUpdateVelocityOverLifetime& module)
+{
+    module.m_Drag = root.value("drag", 0.1f);
+    if (!root.contains("turbulence")) return;
+    const auto& turbulence = root["turbulence"];
+    module.m_TurbulenceEnabled = turbulence.value("enabled", false);
+    module.m_TurbulenceStrength = turbulence.value("strength", 0.5f);
+    module.m_TurbulenceFrequency = turbulence.value("frequency", 1.0f);
+    module.m_TurbulenceScrollSpeed = turbulence.value("scrollSpeed", 0.2f);
+}
+
+ParticleJsonValue EncodeUpdateRotation(const VansUpdateRotationOverLifetime& module)
+{
+    return {{"module", "UpdateRotationOverLifetime"},
+        {"angularVelocity", EncodeFloatCurve(module.m_AngularVelocity)}};
+}
+
+void DecodeUpdateRotation(const ParticleJsonValue& root, VansUpdateRotationOverLifetime& module)
+{
+    if (root.contains("angularVelocity"))
+        DecodeFloatCurve(root["angularVelocity"], module.m_AngularVelocity);
+}
+
+ParticleJsonValue EncodeUpdateSprite(const VansUpdateSpriteAnimModule& module)
+{
+    return {{"module", "UpdateSpriteAnim"}, {"columns", module.m_Columns},
+        {"rows", module.m_Rows}, {"fps", module.m_FPS}};
+}
+
+void DecodeUpdateSprite(const ParticleJsonValue& root, VansUpdateSpriteAnimModule& module)
+{
+    module.m_Columns = root.value("columns", 4);
+    module.m_Rows = root.value("rows", 4);
+    module.m_FPS = root.value("fps", 0.0f);
 }
 
 struct ModuleEntry
 {
-    const char* name;
-    bool initialize;
+    VansParticleModuleSchema schema;
     std::unique_ptr<VansParticleModule> (*create)();
+    bool (*matches)(const VansParticleModule&);
+    ParticleJsonValue (*encode)(const VansParticleModule&);
+    void (*decode)(const ParticleJsonValue&, VansParticleModule&);
 };
-template<class T> std::unique_ptr<VansParticleModule> MakeModule() { return std::make_unique<T>(); }
-const std::array<ModuleEntry, 12> ModuleCatalog{{
-    {"InitLifetime", true, MakeModule<VansInitLifetimeModule>},
-    {"InitVelocity", true, MakeModule<VansInitVelocityModule>},
-    {"InitSize", true, MakeModule<VansInitSizeModule>},
-    {"InitColor", true, MakeModule<VansInitColorModule>},
-    {"InitRotation", true, MakeModule<VansInitRotationModule>},
-    {"InitPositionShape", true, MakeModule<VansInitPositionModule>},
-    {"UpdateGravity", false, MakeModule<VansUpdateGravityModule>},
-    {"UpdateColorOverLifetime", false, MakeModule<VansUpdateColorOverLifetime>},
-    {"UpdateSizeOverLifetime", false, MakeModule<VansUpdateSizeOverLifetime>},
-    {"UpdateVelocityOverLifetime", false, MakeModule<VansUpdateVelocityOverLifetime>},
-    {"UpdateRotationOverLifetime", false, MakeModule<VansUpdateRotationOverLifetime>},
-    {"UpdateSpriteAnim", false, MakeModule<VansUpdateSpriteAnimModule>}
-}};
 
-std::unique_ptr<VansParticleModule> CreateModule(const Vans::ParticleJson& root, bool initialize)
+template<class T>
+std::unique_ptr<VansParticleModule> MakeModule()
+{
+    return std::make_unique<T>();
+}
+
+template<class T>
+bool MatchesModule(const VansParticleModule& module)
+{
+    return dynamic_cast<const T*>(&module) != nullptr;
+}
+
+template<class T, ParticleJsonValue (*Encode)(const T&)>
+ParticleJsonValue EncodeTypedModule(const VansParticleModule& module)
+{
+    return Encode(static_cast<const T&>(module));
+}
+
+template<class T, void (*Decode)(const ParticleJsonValue&, T&)>
+void DecodeTypedModule(const ParticleJsonValue& root, VansParticleModule& module)
+{
+    Decode(root, static_cast<T&>(module));
+}
+
+template<class T, ParticleJsonValue (*Encode)(const T&),
+    void (*Decode)(const ParticleJsonValue&, T&)>
+ModuleEntry MakeModuleEntry(const char* name, VansParticleModulePhase phase,
+    std::vector<VansParticleFieldRule> fields = {})
+{
+    return {{name, phase, std::move(fields)}, MakeModule<T>, MatchesModule<T>,
+        EncodeTypedModule<T, Encode>, DecodeTypedModule<T, Decode>};
+}
+
+const std::array<ModuleEntry, 12>& ModuleCatalog()
+{
+    static const std::array<ModuleEntry, 12> entries{{
+        MakeModuleEntry<VansInitLifetimeModule, EncodeInitLifetime, DecodeInitLifetime>(
+            "InitLifetime", VansParticleModulePhase::Initialize, CurveRules("/lifetime")),
+        MakeModuleEntry<VansInitVelocityModule, EncodeInitVelocity, DecodeInitVelocity>(
+            "InitVelocity", VansParticleModulePhase::Initialize,
+            {ChoiceRule("/mode", {"Cone", "Random"}), RangeRule("/angle", 0.0, 180.0, 0.25),
+                RangeRule("/speed", 0.0, 10000.0)}),
+        MakeModuleEntry<VansInitSizeModule, EncodeInitSize, DecodeInitSize>(
+            "InitSize", VansParticleModulePhase::Initialize, CurveRules("/size")),
+        MakeModuleEntry<VansInitColorModule, EncodeInitColor, DecodeInitColor>(
+            "InitColor", VansParticleModulePhase::Initialize),
+        MakeModuleEntry<VansInitRotationModule, EncodeInitRotation, DecodeInitRotation>(
+            "InitRotation", VansParticleModulePhase::Initialize, CurveRules("/angle")),
+        MakeModuleEntry<VansInitPositionModule, EncodeInitPosition, DecodeInitPosition>(
+            "InitPositionShape", VansParticleModulePhase::Initialize,
+            {ChoiceRule("/shape", {"Sphere", "Box", "Cone", "Disk", "Edge"}),
+                RangeRule("/radius", 0.0, 10000.0), RangeRule("/arc", 0.0, 360.0, 0.25)}),
+        MakeModuleEntry<VansUpdateGravityModule, EncodeUpdateGravity, DecodeUpdateGravity>(
+            "UpdateGravity", VansParticleModulePhase::Update),
+        MakeModuleEntry<VansUpdateColorOverLifetime, EncodeUpdateColor, DecodeUpdateColor>(
+            "UpdateColorOverLifetime", VansParticleModulePhase::Update,
+            {RangeRule("/gradient/stops/*/t", 0.0, 1.0)}),
+        MakeModuleEntry<VansUpdateSizeOverLifetime, EncodeUpdateSize, DecodeUpdateSize>(
+            "UpdateSizeOverLifetime", VansParticleModulePhase::Update,
+            {RangeRule("/curve/*/t", 0.0, 1.0)}),
+        MakeModuleEntry<VansUpdateVelocityOverLifetime, EncodeUpdateVelocity, DecodeUpdateVelocity>(
+            "UpdateVelocityOverLifetime", VansParticleModulePhase::Update,
+            {RangeRule("/drag", 0.0, 100.0),
+                RangeRule("/turbulence/strength", 0.0, 100.0),
+                RangeRule("/turbulence/frequency", 0.0, 100.0),
+                RangeRule("/turbulence/scrollSpeed", 0.0, 100.0)}),
+        MakeModuleEntry<VansUpdateRotationOverLifetime, EncodeUpdateRotation, DecodeUpdateRotation>(
+            "UpdateRotationOverLifetime", VansParticleModulePhase::Update,
+            CurveRules("/angularVelocity")),
+        MakeModuleEntry<VansUpdateSpriteAnimModule, EncodeUpdateSprite, DecodeUpdateSprite>(
+            "UpdateSpriteAnim", VansParticleModulePhase::Update,
+            {RangeRule("/columns", 1.0, 256.0, 1.0), RangeRule("/rows", 1.0, 256.0, 1.0),
+                RangeRule("/fps", 0.0, 1000.0, 0.1)})
+    }};
+    return entries;
+}
+
+ParticleJsonValue EncodeModule(const VansParticleModule& module)
+{
+    for (const ModuleEntry& entry : ModuleCatalog())
+        if (entry.matches(module)) return entry.encode(module);
+    throw std::invalid_argument("Unsupported particle module type during encode");
+}
+
+std::unique_ptr<VansParticleModule> DecodeModule(
+    const ParticleJsonValue& root, VansParticleModulePhase phase)
 {
     const std::string name = root.value("module", "");
-    for (const auto& entry : ModuleCatalog)
-        if (name == entry.name && entry.initialize == initialize) return entry.create();
+    for (const ModuleEntry& entry : ModuleCatalog())
+    {
+        if (entry.schema.name != name || entry.schema.phase != phase) continue;
+        auto module = entry.create();
+        module->m_Enabled = root.value("enabled", true);
+        entry.decode(root, *module);
+        return module;
+    }
     throw std::invalid_argument("Unknown particle module or incorrect phase: " + name);
 }
-
-void DecodeModule(const Vans::ParticleJson& root, VansParticleModule& module)
-{
-    module.m_Enabled = root.value("enabled", true);
-    if (auto* initLifetime = dynamic_cast<VansInitLifetimeModule*>(&module))
-    {
-        if (root.contains("lifetime"))
-        {
-            DecodeFloatCurve(root["lifetime"], initLifetime->m_Lifetime);
-            ValidateNonNegativeFloatCurve(
-                initLifetime->m_Lifetime, "InitLifetime.lifetime", 0.01f);
-        }
-    }
-    else if (auto* initVelocity = dynamic_cast<VansInitVelocityModule*>(&module))
-    {
-        const std::string mode = root.value("mode", "Cone");
-        initVelocity->m_VelocityMode = mode == "Random" ? VansInitVelocityMode::Random : VansInitVelocityMode::Cone;
-        initVelocity->m_ConeAngle = root.value("angle", 25.0f);
-        initVelocity->m_Speed = root.value("speed", 2.0f);
-        if (!std::isfinite(initVelocity->m_ConeAngle) ||
-            initVelocity->m_ConeAngle < 0.0f || initVelocity->m_ConeAngle > 180.0f ||
-            !std::isfinite(initVelocity->m_Speed) || initVelocity->m_Speed < 0.0f)
-        {
-            throw std::invalid_argument(
-                "InitVelocity angle must be in [0,180] and speed must be non-negative");
-        }
-    }
-    else if (auto* initSize = dynamic_cast<VansInitSizeModule*>(&module))
-    {
-        if (root.contains("size"))
-        {
-            DecodeFloatCurve(root["size"], initSize->m_Size);
-            ValidateNonNegativeFloatCurve(initSize->m_Size, "InitSize.size", 0.0f);
-        }
-    }
-    else if (auto* initColor = dynamic_cast<VansInitColorModule*>(&module))
-    {
-        if (root.contains("color") && root["color"].is_array() && root["color"].size() >= 4)
-        {
-            initColor->m_Color = glm::vec4(
-                root["color"][0].get<float>(),
-                root["color"][1].get<float>(),
-                root["color"][2].get<float>(),
-                root["color"][3].get<float>());
-        }
-    }
-    else if (auto* initRotation = dynamic_cast<VansInitRotationModule*>(&module))
-    {
-        if (root.contains("angle"))
-            DecodeFloatCurve(root["angle"], initRotation->m_Angle);
-    }
-    else if (auto* initPosition = dynamic_cast<VansInitPositionModule*>(&module))
-    {
-        const std::string shape = root.value("shape", "Cone");
-        if (shape == "Sphere") initPosition->m_Shape = VansEmitterShape::Sphere;
-        else if (shape == "Box") initPosition->m_Shape = VansEmitterShape::Box;
-        else if (shape == "Disk") initPosition->m_Shape = VansEmitterShape::Disk;
-        else if (shape == "Edge") initPosition->m_Shape = VansEmitterShape::Edge;
-        else initPosition->m_Shape = VansEmitterShape::Cone;
-
-        initPosition->m_Radius = root.value("radius", 0.2f);
-        initPosition->m_Arc = root.value("arc", 360.0f);
-    }
-    else if (auto* updateGravity = dynamic_cast<VansUpdateGravityModule*>(&module))
-    {
-        if (root.contains("gravity") && root["gravity"].is_array() && root["gravity"].size() >= 3)
-        {
-            updateGravity->m_Gravity = glm::vec3(
-                root["gravity"][0].get<float>(),
-                root["gravity"][1].get<float>(),
-                root["gravity"][2].get<float>());
-        }
-    }
-    else if (auto* updateColor = dynamic_cast<VansUpdateColorOverLifetime*>(&module))
-    {
-        if (root.contains("gradient"))
-        {
-            DecodeColorGradient(root["gradient"], updateColor->m_Gradient);
-            ValidateColorGradient(updateColor->m_Gradient);
-        }
-    }
-    else if (auto* updateSize = dynamic_cast<VansUpdateSizeOverLifetime*>(&module))
-    {
-        if (root.contains("curve"))
-        {
-            DecodeCurveKeys(root["curve"], updateSize->m_Curve);
-            ValidateNormalizedCurve(updateSize->m_Curve,
-                "UpdateSizeOverLifetime.curve", true);
-        }
-    }
-    else if (auto* updateVelocity = dynamic_cast<VansUpdateVelocityOverLifetime*>(&module))
-    {
-        updateVelocity->m_Drag = root.value("drag", 0.1f);
-        if (root.contains("turbulence"))
-        {
-            const auto& turbulence = root["turbulence"];
-            updateVelocity->m_TurbulenceEnabled = turbulence.value("enabled", false);
-            updateVelocity->m_TurbulenceStrength = turbulence.value("strength", 0.5f);
-            updateVelocity->m_TurbulenceFrequency = turbulence.value("frequency", 1.0f);
-            updateVelocity->m_TurbulenceScrollSpeed = turbulence.value("scrollSpeed", 0.2f);
-        }
-        if (!std::isfinite(updateVelocity->m_Drag) || updateVelocity->m_Drag < 0.0f ||
-            !std::isfinite(updateVelocity->m_TurbulenceStrength) ||
-            updateVelocity->m_TurbulenceStrength < 0.0f ||
-            !std::isfinite(updateVelocity->m_TurbulenceFrequency) ||
-            updateVelocity->m_TurbulenceFrequency < 0.0f ||
-            !std::isfinite(updateVelocity->m_TurbulenceScrollSpeed) ||
-            updateVelocity->m_TurbulenceScrollSpeed < 0.0f)
-        {
-            throw std::invalid_argument(
-                "UpdateVelocityOverLifetime parameters must be finite and non-negative");
-        }
-    }
-    else if (auto* updateRotation = dynamic_cast<VansUpdateRotationOverLifetime*>(&module))
-    {
-        if (root.contains("angularVelocity"))
-            DecodeFloatCurve(root["angularVelocity"], updateRotation->m_AngularVelocity);
-    }
-    else if (auto* updateSprite = dynamic_cast<VansUpdateSpriteAnimModule*>(&module))
-    {
-        updateSprite->m_Columns = root.value("columns", 4);
-        updateSprite->m_Rows = root.value("rows", 4);
-        updateSprite->m_FPS = root.value("fps", 0.0f);
-    }
-}
 }
 
-Vans::ParticleJson VansParticleEmitterJsonCodec::ModuleDefaults()
+const std::vector<VansParticleModuleSchema>& VansParticleEmitterJsonCodec::ModuleSchemas()
 {
-    auto result = Vans::ParticleJson::array();
-    for (const auto& entry : ModuleCatalog)
+    static const std::vector<VansParticleModuleSchema> schemas = []
+    {
+        std::vector<VansParticleModuleSchema> result;
+        result.reserve(ModuleCatalog().size());
+        for (const ModuleEntry& entry : ModuleCatalog()) result.push_back(entry.schema);
+        return result;
+    }();
+    return schemas;
+}
+
+Vans::VansSerializedValue VansParticleEmitterJsonCodec::ModuleDefaults()
+{
+    auto result = ParticleJsonValue::array();
+    for (const ModuleEntry& entry : ModuleCatalog())
     {
         auto module = entry.create();
         auto definition = EncodeModule(*module);
         definition["enabled"] = module->m_Enabled;
-        result.push_back({{"phase", entry.initialize ? "initialize" : "update"}, {"definition", definition}});
+        const char* phase = entry.schema.phase == VansParticleModulePhase::Initialize
+            ? "initialize" : "update";
+        result.push_back({{"phase", phase}, {"definition", definition}});
     }
-    return result;
+    return Vans::DecodeSerializedValueJson(result);
 }
 
-Vans::ParticleJson VansParticleEmitterJsonCodec::EncodeEmitter(const VansParticleEmitter& emitter)
+Vans::VansSerializedValue VansParticleEmitterJsonCodec::EncodeEmitter(const VansParticleEmitter& emitter)
 {
-    Vans::ParticleJson root;
+    ParticleJsonValue root;
     root["name"] = emitter.m_Name;
     root["enabled"] = emitter.m_Enabled;
     root["maxParticles"] = emitter.m_MaxParticles;
     root["spawn"] = EncodeSpawnConfig(emitter.m_SpawnConfig);
 
-    auto initialize = Vans::ParticleJson::array();
+    auto initialize = ParticleJsonValue::array();
     for (const auto& module : emitter.m_InitModules)
     {
-        if (module)
-        {
-            auto encoded = EncodeModule(*module);
-            if (!encoded.empty())
-            {
-                encoded["enabled"] = module->m_Enabled;
-                initialize.push_back(std::move(encoded));
-            }
-        }
+        if (!module)
+            throw std::invalid_argument("Null particle module in initialize phase");
+        auto encoded = EncodeModule(*module);
+        encoded["enabled"] = module->m_Enabled;
+        initialize.push_back(std::move(encoded));
     }
     root["initialize"] = std::move(initialize);
 
-    auto update = Vans::ParticleJson::array();
+    auto update = ParticleJsonValue::array();
     for (const auto& module : emitter.m_UpdateModules)
     {
-        if (module)
-        {
-            auto encoded = EncodeModule(*module);
-            if (!encoded.empty())
-            {
-                encoded["enabled"] = module->m_Enabled;
-                update.push_back(std::move(encoded));
-            }
-        }
+        if (!module)
+            throw std::invalid_argument("Null particle module in update phase");
+        auto encoded = EncodeModule(*module);
+        encoded["enabled"] = module->m_Enabled;
+        update.push_back(std::move(encoded));
     }
     root["update"] = std::move(update);
 
     root["renderer"] = EncodeRendererConfig(emitter.m_RendererConfig);
-    return root;
+    return Vans::DecodeSerializedValueJson(root);
 }
 
 void VansParticleEmitterJsonCodec::DecodeEmitter(
-    const Vans::ParticleJson& root,
+    const Vans::VansSerializedValue& serializedRoot,
     VansParticleEmitter& emitter)
 {
+    const ParticleJsonValue root =
+        Vans::EncodeSerializedValueJson<ParticleJsonValue>(serializedRoot);
     emitter.m_Name = root.value("name", "Emitter");
     emitter.m_Enabled = root.value("enabled", true);
     emitter.m_MaxParticles = root.value("maxParticles", 1000u);
@@ -816,12 +878,8 @@ void VansParticleEmitterJsonCodec::DecodeEmitter(
         {
             if (!names.insert(moduleJson.value("module", "")).second)
                 throw std::invalid_argument("Duplicate particle module in initialize");
-            auto module = CreateModule(moduleJson, true);
-            if (module)
-            {
-                DecodeModule(moduleJson, *module);
-                emitter.m_InitModules.push_back(std::move(module));
-            }
+            emitter.m_InitModules.push_back(
+                DecodeModule(moduleJson, VansParticleModulePhase::Initialize));
         }
     }
 
@@ -833,12 +891,8 @@ void VansParticleEmitterJsonCodec::DecodeEmitter(
         {
             if (!names.insert(moduleJson.value("module", "")).second)
                 throw std::invalid_argument("Duplicate particle module in update");
-            auto module = CreateModule(moduleJson, false);
-            if (module)
-            {
-                DecodeModule(moduleJson, *module);
-                emitter.m_UpdateModules.push_back(std::move(module));
-            }
+            emitter.m_UpdateModules.push_back(
+                DecodeModule(moduleJson, VansParticleModulePhase::Update));
         }
     }
 

@@ -1,9 +1,21 @@
 #include "VansSurfaceImpact.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include <cmath>
+#include <utility>
 
 namespace Vans
 {
+VansSurfaceImpact VansToSurfaceImpact(VansTargetHitResult hit,
+    VansSurfaceImpactKind kind, std::string layerName)
+{
+    return {kind, std::move(hit), std::move(layerName)};
+}
+
+VansTargetHitResult VansToTargetHitResult(const VansSurfaceImpact& impact)
+{
+    return impact.hit;
+}
+
 VansSerializedValue VansEncodeSurfaceImpact(const VansSurfaceImpact& impact)
 {
     const auto vector = [](const std::array<double, 3>& v) {
@@ -20,18 +32,23 @@ VansSerializedValue VansEncodeSurfaceImpact(const VansSurfaceImpact& impact)
         {"layer", VansSerializedValue::String(impact.layerName)},
         {"componentGuid", VansSerializedValue::String(impact.hit.componentGuid)},
         {"position", vector(impact.hit.position)}, {"normal", vector(impact.hit.normal)},
-        {"distance", VansSerializedValue::Float(impact.hit.distance)}
+        {"distance", VansSerializedValue::Float(impact.hit.distance)},
+        {"surface", VansSerializedValue::String(std::to_string(impact.hit.surface.value))}
     });
 }
 
 bool VansDecodeSurfaceImpact(const VansSerializedValue& value, VansSurfaceImpact& impact, std::string& error)
 {
-    impact = {};
+    VansSurfaceImpact decoded;
     const auto kind = ReadSerializedIntField(value, "kind", -1);
     if (kind < 0 || kind > static_cast<int>(VansSurfaceImpactKind::Render))
     { error = "Surface impact kind is invalid"; return false; }
-    impact.kind = static_cast<VansSurfaceImpactKind>(kind);
-    if (impact.kind == VansSurfaceImpactKind::None) return true;
+    decoded.kind = static_cast<VansSurfaceImpactKind>(kind);
+    if (decoded.kind == VansSurfaceImpactKind::None)
+    {
+        impact = {};
+        return true;
+    }
     const auto readVector = [&](const char* name, std::array<double, 3>& v) {
         const auto* field = FindObjectField(value, name);
         if (!field || field->kind != VansSerializedValue::Kind::Array || field->arrayItems.size() != 3) return false;
@@ -47,27 +64,33 @@ bool VansDecodeSurfaceImpact(const VansSerializedValue& value, VansSurfaceImpact
     const auto index = ReadSerializedIntField(value, "entityIndex", -1);
     const auto generation = ReadSerializedIntField(value, "entityGeneration", -1);
     if (index < 0 || index > UINT32_MAX || generation < 0 || generation > UINT32_MAX ||
-        !readVector("position", impact.hit.position) || !readVector("normal", impact.hit.normal))
+        !readVector("position", decoded.hit.position) || !readVector("normal", decoded.hit.normal))
     { error = "Surface impact identity or vectors are invalid"; return false; }
-    impact.hit.hitEntity = {static_cast<uint32_t>(index), static_cast<uint32_t>(generation)};
+    decoded.hit.hitEntity = {static_cast<uint32_t>(index), static_cast<uint32_t>(generation)};
     const auto targetIndex = ReadSerializedIntField(value, "targetIndex", -1);
     const auto targetGeneration = ReadSerializedIntField(value, "targetGeneration", -1);
     if (targetIndex < 0 || targetIndex > UINT32_MAX || targetGeneration < 0 || targetGeneration > UINT32_MAX)
     { error = "Surface impact target identity is invalid"; return false; }
-    impact.hit.entity = {static_cast<uint32_t>(targetIndex), static_cast<uint32_t>(targetGeneration)};
-    impact.hit.region = ReadSerializedStringField(value, "region");
-    impact.layerName = ReadSerializedStringField(value, "layer");
-    impact.hit.componentGuid = ReadSerializedStringField(value, "componentGuid");
+    decoded.hit.entity = {static_cast<uint32_t>(targetIndex), static_cast<uint32_t>(targetGeneration)};
+    decoded.hit.region = ReadSerializedStringField(value, "region");
+    decoded.layerName = ReadSerializedStringField(value, "layer");
+    decoded.hit.componentGuid = ReadSerializedStringField(value, "componentGuid");
     const auto* distance = FindObjectField(value, "distance");
-    impact.hit.distance = distance ? ReadSerializedNumber(*distance, -1) : -1;
+    decoded.hit.distance = distance ? ReadSerializedNumber(*distance, -1) : -1;
+    const auto* surface = FindObjectField(value, "surface");
+    std::uint64_t surfaceId = 0;
+    if (!surface || !ReadSerializedUnsigned(*surface, surfaceId))
+    { error = "Surface impact tag is invalid"; return false; }
+    decoded.hit.surface = VansGameplayTagId{surfaceId};
     double normalLength = 0;
-    for (double c : impact.hit.normal) normalLength += c*c;
-    if (!std::isfinite(impact.hit.distance) || impact.hit.distance < 0 || impact.hit.distance > 1000000 ||
+    for (double c : decoded.hit.normal) normalLength += c*c;
+    if (!std::isfinite(decoded.hit.distance) || decoded.hit.distance < 0 || decoded.hit.distance > 1000000 ||
         normalLength < 0.99 || normalLength > 1.01 ||
-        ((impact.kind == VansSurfaceImpactKind::Rigid || impact.kind == VansSurfaceImpactKind::Regional ||
-          impact.kind == VansSurfaceImpactKind::Render) &&
-         (!impact.hit.hitEntity.IsValid() || impact.hit.componentGuid.empty())))
+        ((decoded.kind == VansSurfaceImpactKind::Rigid || decoded.kind == VansSurfaceImpactKind::Regional ||
+          decoded.kind == VansSurfaceImpactKind::Render) &&
+         (!decoded.hit.hitEntity.IsValid() || decoded.hit.componentGuid.empty())))
     { error = "Surface impact distance, normal or collider identity is invalid"; return false; }
+    impact = std::move(decoded);
     return true;
 }
 }

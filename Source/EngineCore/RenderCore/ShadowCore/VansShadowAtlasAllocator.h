@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VansPunctualShadowTypes.h"
+#include "../VansRenderBootstrapSettings.h"
 
 #include <array>
 #include <cstdint>
@@ -11,7 +12,9 @@ namespace VansGraphics
 	class VansShadowAtlasAllocator
 	{
 	public:
-		VansShadowAtlasAllocator(uint32_t atlasSize = 4096, uint32_t basePageSize = 128, uint32_t gutter = 2);
+		VansShadowAtlasAllocator(
+			uint32_t atlasSize = kVansRenderBootstrapSettings.punctualShadowAtlasWidth,
+			uint32_t basePageSize = 128, uint32_t gutter = 2);
 
 		void Reset(uint32_t atlasSize, uint32_t basePageSize, uint32_t gutter);
 		bool Allocate(uint32_t resolution, VansShadowAtlasBlock& outBlock);
@@ -54,7 +57,7 @@ namespace VansGraphics
 		void TryCoalesce(uint32_t nodeIndex);
 		static bool IsPowerOfTwo(uint32_t value);
 
-		uint32_t m_AtlasSize = 4096;
+		uint32_t m_AtlasSize = kVansRenderBootstrapSettings.punctualShadowAtlasWidth;
 		uint32_t m_BasePageSize = 128;
 		uint32_t m_Gutter = 2;
 		uint32_t m_TotalPages = 1024;

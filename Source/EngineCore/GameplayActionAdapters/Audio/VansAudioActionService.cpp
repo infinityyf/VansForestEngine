@@ -71,13 +71,14 @@ VansActionCommandResult VansAudioActionService::Execute(const VansActionCommand&
 			return {};
 		}
 		auto source = std::make_unique<VansEngine::VansAudioSourceBinding>();
-		if (!source->Bind(&m_Audio, sound) || !source->UsesIndependentPlayback()) return Failure("Audio loop could not bind: " + sound);
-		source->SetSpatial(false);
-		source->SetLoop(true);
-		source->SetVolume(asset->GetVolume() * volume);
-		source->SetPitch(asset->GetPitch() * pitch);
-		source->SetBusGain(m_Audio.GetEffectiveBusGain(source->GetBusName()));
-		source->Play();
+		if (!source->Bind(&m_Audio, sound)) return Failure("Audio loop could not bind: " + sound);
+		auto* voice = source->GetVoice();
+		voice->SetSpatial(false);
+		voice->SetLoop(true);
+		voice->SetVolume(asset->GetVolume() * volume);
+		voice->SetPitch(asset->GetPitch() * pitch);
+		voice->SetBusGain(m_Audio.GetEffectiveBusGain(voice->GetBusName()));
+		voice->Play();
 		return { VansActionError::None, m_Loops.Emplace(Loop{ std::move(source) }) };
 	}
 	if (is("Audio.Update") || is("Audio.Stop"))
@@ -88,8 +89,8 @@ VansActionCommandResult VansAudioActionService::Execute(const VansActionCommand&
 		if (!loop || loop->fadeRemaining > 0.0f) return Failure("Audio resource is stale or stopping");
 		if (is("Audio.Update"))
 		{
-			loop->source->SetVolume(Number(command.payload, "volume", 1.0f));
-			loop->source->SetPitch(Number(command.payload, "pitch", 1.0f));
+			loop->source->GetVoice()->SetVolume(Number(command.payload, "volume", 1.0f));
+			loop->source->GetVoice()->SetPitch(Number(command.payload, "pitch", 1.0f));
 		}
 		else
 		{
@@ -101,7 +102,7 @@ VansActionCommandResult VansAudioActionService::Execute(const VansActionCommand&
 				Loop fading = std::move(*loop);
 				m_Loops.Release(handle);
 				fading.fadeDuration = fading.fadeRemaining = fade;
-				fading.fadeVolume = fading.source->GetVolume();
+				fading.fadeVolume = fading.source->GetVoice()->GetVolume();
 				m_Loops.Emplace(std::move(fading));
 			}
 		}
@@ -121,15 +122,16 @@ void VansAudioActionService::Tick(double deltaSeconds)
 	std::vector<VansGenerationHandle> completed;
 	m_Loops.ForEach([&](VansGenerationHandle handle, Loop& loop)
 	{
-		loop.source->Tick();
-		const auto& bus = loop.source->GetBusName();
-		loop.source->SetBusGain(m_Audio.GetEffectiveBusGain(bus));
-		loop.source->SetBusLowpassHighFrequencyGain(m_Audio.GetBusState("Master").lowpassHighFrequencyGain *
-			(bus == "Master" ? 1.0f : m_Audio.GetBusState(bus).lowpassHighFrequencyGain));
+		auto* voice = loop.source->GetVoice();
+		voice->Tick();
+		const auto& bus = voice->GetBusName();
+		voice->SetBusGain(m_Audio.GetEffectiveBusGain(bus));
+		voice->SetBusLowpassHighFrequencyGain(
+			m_Audio.GetEffectiveBusLowpassHighFrequencyGain(bus));
 		if (loop.fadeRemaining > 0.0f)
 		{
 			loop.fadeRemaining = std::max(0.0f, loop.fadeRemaining - static_cast<float>(std::max(0.0, deltaSeconds)));
-			loop.source->SetVolume(loop.fadeVolume * loop.fadeRemaining / loop.fadeDuration);
+			voice->SetVolume(loop.fadeVolume * loop.fadeRemaining / loop.fadeDuration);
 			if (loop.fadeRemaining == 0.0f) completed.push_back(handle);
 		}
 	});

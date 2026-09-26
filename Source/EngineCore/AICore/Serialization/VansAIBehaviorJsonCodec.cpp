@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_set>
 
 namespace Vans
@@ -105,6 +106,9 @@ bool VansAIBehaviorJsonCodec::Decode(const nlohmann::json& root,
 	if (!root.is_object() || root.value("magic", std::string()) != "VAI_BEHAVIOR" ||
 		!root.contains("name") || !root["name"].is_string() ||
 		!root.contains("blackboard") || !root["blackboard"].is_array() ||
+		!root.contains("bindings") || !root["bindings"].is_object() ||
+		!root.contains("maxTransitionsPerUpdate") ||
+		!root["maxTransitionsPerUpdate"].is_number_integer() ||
 		!root.contains("initialState") || !root["initialState"].is_string() ||
 		!root.contains("states") || !root["states"].is_array())
 	{
@@ -127,6 +131,30 @@ bool VansAIBehaviorJsonCodec::Decode(const nlohmann::json& root,
 		}
 		asset.blackboard.push_back(std::move(entry));
 	}
+	const nlohmann::json& bindings = root["bindings"];
+	if (!bindings.contains("activationRequested") ||
+		!bindings["activationRequested"].is_string() ||
+		!bindings.contains("gameplayReleased") ||
+		!bindings["gameplayReleased"].is_string() ||
+		!bindings.contains("target") || !bindings["target"].is_string())
+	{
+		error = "AI Behavior bindings require activationRequested, gameplayReleased, and target";
+		return false;
+	}
+	asset.bindings.activationRequested = bindings["activationRequested"].get<std::string>();
+	asset.bindings.gameplayReleased = bindings["gameplayReleased"].get<std::string>();
+	asset.bindings.target = bindings["target"].get<std::string>();
+	const nlohmann::json& transitionLimitValue = root["maxTransitionsPerUpdate"];
+	const std::uint64_t transitionLimit = transitionLimitValue.is_number_unsigned()
+		? transitionLimitValue.get<std::uint64_t>()
+		: static_cast<std::uint64_t>((std::max)(
+			std::int64_t{ 0 }, transitionLimitValue.get<std::int64_t>()));
+	if (transitionLimit < 1u || transitionLimit > 64u)
+	{
+		error = "AI Behavior maxTransitionsPerUpdate must be in [1, 64]";
+		return false;
+	}
+	asset.maxTransitionsPerUpdate = static_cast<std::uint32_t>(transitionLimit);
 
 	std::unordered_set<std::string> stateIds;
 	for (const nlohmann::json& stateJson : root["states"])
@@ -165,8 +193,14 @@ bool VansAIBehaviorJsonCodec::Decode(const nlohmann::json& root,
 				return false;
 			}
 			VansAIPatrolTaskConfig patrol;
-			patrol.radius = (std::max)(0.0f, config["radius"].get<float>());
-			patrol.waitSeconds = (std::max)(0.0f, config["waitSeconds"].get<float>());
+			patrol.radius = config["radius"].get<float>();
+			patrol.waitSeconds = config["waitSeconds"].get<float>();
+			if (!std::isfinite(patrol.radius) || patrol.radius <= 0.0f ||
+				!std::isfinite(patrol.waitSeconds) || patrol.waitSeconds < 0.0f)
+			{
+				error = "Patrol taskConfig requires radius > 0 and waitSeconds >= 0";
+				return false;
+			}
 			state.patrol = patrol;
 		}
 		else
@@ -194,6 +228,29 @@ bool VansAIBehaviorJsonCodec::Decode(const nlohmann::json& root,
 	if (!asset.FindState(asset.initialState))
 	{
 		error = "AI Behavior initialState does not resolve: " + asset.initialState;
+		return false;
+	}
+	const auto requireBinding = [&](const std::string& name,
+		VansAIValueType type, const char* semantic) -> bool
+	{
+		const auto definition = std::find_if(asset.blackboard.begin(), asset.blackboard.end(),
+			[&](const VansAIBlackboardEntryDefinition& entry)
+			{ return entry.name == name; });
+		if (name.empty() || definition == asset.blackboard.end() || definition->type != type)
+		{
+			error = std::string("AI Behavior binding '") + semantic +
+				"' does not reference the required Blackboard type: " + name;
+			return false;
+		}
+		return true;
+	};
+	if (!requireBinding(asset.bindings.activationRequested,
+			VansAIValueType::Bool, "activationRequested") ||
+		!requireBinding(asset.bindings.gameplayReleased,
+			VansAIValueType::Bool, "gameplayReleased") ||
+		!requireBinding(asset.bindings.target,
+			VansAIValueType::Entity, "target"))
+	{
 		return false;
 	}
 	for (const VansAIStateDefinition& state : asset.states)
@@ -231,6 +288,12 @@ bool VansAIBehaviorJsonCodec::Encode(const VansAIBehaviorAsset& asset,
 		{ "magic", "VAI_BEHAVIOR" },
 		{ "name", asset.name },
 		{ "blackboard", nlohmann::json::array() },
+		{ "bindings", {
+			{ "activationRequested", asset.bindings.activationRequested },
+			{ "gameplayReleased", asset.bindings.gameplayReleased },
+			{ "target", asset.bindings.target }
+		} },
+		{ "maxTransitionsPerUpdate", asset.maxTransitionsPerUpdate },
 		{ "initialState", asset.initialState },
 		{ "states", nlohmann::json::array() }
 	};

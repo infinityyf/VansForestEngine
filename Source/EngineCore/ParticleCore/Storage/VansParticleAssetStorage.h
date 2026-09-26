@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../VansParticleAsset.h"
+#include "../../AssetCore/Storage/VansStagedFileTransaction.h"
 
 #include <filesystem>
 #include <string>
@@ -11,6 +12,11 @@ class VansParticleAssetStorage
 {
 public:
     static bool Load(const std::filesystem::path& filePath, VansParticleAsset& asset, std::string& error);
+    static bool StageWrite(
+        const std::filesystem::path& filePath,
+        const VansParticleAsset& asset,
+        Vans::VansStagedFile& stage,
+        std::string& error);
     static bool SaveAtomic(const std::filesystem::path& filePath, const VansParticleAsset& asset, std::string& error);
 };
 }

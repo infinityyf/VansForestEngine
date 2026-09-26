@@ -3,6 +3,7 @@
 #include "../VansScene.h"
 
 #include <functional>
+#include <string>
 #include "../../SceneCore/VansSceneCameraMediaComponentConfig.h"
 
 class VansScriptAudioComponent;
@@ -11,6 +12,17 @@ class VansScriptVideoComponent;
 
 namespace VansGraphics
 {
+	struct VansSceneCameraMediaDependencies
+	{
+		bool success = true;
+		std::string error;
+		VansCamera* camera = nullptr;
+		VansEngine::VansAudioManager* audioManager = nullptr;
+		VansEngine::VansAudioNode* audioNode = nullptr;
+		VansVideoManager* videoManager = nullptr;
+		VansVideoTexture* videoTexture = nullptr;
+	};
+
 	struct VansSceneCameraMediaBuildResult
 	{
 		VansScriptCameraComponent* camera = nullptr;
@@ -21,11 +33,14 @@ namespace VansGraphics
 	class VansSceneCameraMediaComponentBuilder
 	{
 	public:
-		static VansSceneCameraMediaBuildResult BuildCameraAudioVideo(
+		static VansSceneCameraMediaDependencies ResolveDependencies(
 			VansScene& scene,
+			const Vans::VansSceneCameraMediaComponentConfig& components);
+
+		static VansSceneCameraMediaBuildResult Build(
 			VansScriptObject& object,
 			const Vans::VansSceneCameraMediaComponentConfig& components,
+			const VansSceneCameraMediaDependencies& dependencies,
 			const std::function<void()>& ensureObjectTransform);
-
 	};
 }

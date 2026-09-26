@@ -1,10 +1,13 @@
+#include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "VansScene.h"
 
 #include "SceneBuild/VansScenePhysicsComponentBuilder.h"
 
 #include "../PhysicsCore/VansPhysics.h"
+#include "../PhysicsCore/VansPhysicsNativeAccess.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
+
 #include "../PhysicsCore/VansClothNode.h"
 #include "../PhysicsCore/VansClothSystem.h"
 #include "../AssetCore/VansClothProfile.h"
@@ -12,10 +15,10 @@
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../PhysicsCore/VansCollisionLayerManager.h"
-#include "../Configration/VansConfigration.h"
 #include "../ScriptCore/VansScriptContext.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../RuntimeCore/VansFramePhase.h"
+#include "../RuntimeCore/VansThreadContract.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -23,6 +26,11 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <memory>
+
+using namespace physx;
+using namespace physx::vehicle2;
+
 
 namespace
 {
@@ -54,54 +62,47 @@ void ApplyColliderType(const std::string& colliderType, VansEngine::PhysicsNodeP
     else if (colliderType == "convex")
         properties.colliderType = VansEngine::PhysicsColliderType::ConvexMesh;
 }
+
 }
 
 // ===========================================================================
 // Vehicle initialization
 // ===========================================================================
 
-void VansGraphics::VansScene::InitVehicle(VansEngine::VansPhysicsSystem* physicsSystem, const glm::vec3& position,
+VansEngine::VansPhysicsVehicle* VansGraphics::VansScene::BuildVehicleRuntime(
+    VansEngine::VansPhysicsSystem* physicsSystem, const glm::vec3& position,
     const std::string& bodyRenderNodeName, const std::vector<std::string>& tireRenderNodeNames,
     uint32_t bodyTransformID, const std::vector<uint32_t>& tireTransformIDs,
     const VansEngine::VansVehicleTuning& tuning,
-    const std::vector<std::vector<VansEngine::VansVehicleVisualBinding>>& wheelVisualBindings)
+    const std::vector<std::vector<VansEngine::VansVehicleVisualBinding>>& wheelVisualBindings,
+    std::string& error)
 {
-    if (m_Vehicle) return; // Already initialized
-
-    m_Vehicle = new VansEngine::VansPhysicsVehicle();
-    m_Vehicle->SetTuning(tuning);
-    m_Vehicle->SetBodyRenderNodeName(bodyRenderNodeName);
-    m_Vehicle->SetTireRenderNodeNames(tireRenderNodeNames);
-    m_Vehicle->SetBodyTransformID(bodyTransformID);
-    m_Vehicle->SetTireTransformIDs(tireTransformIDs);
-    m_Vehicle->SetWheelVisualBindings(wheelVisualBindings);
-    auto vehicleAxisToVec3 = [](PxVehicleAxes::Enum axis) -> PxVec3
+    error.clear();
+    if (m_Vehicle)
     {
-        switch (axis)
-        {
-        case PxVehicleAxes::ePosX: return PxVec3(1.0f, 0.0f, 0.0f);
-        case PxVehicleAxes::eNegX: return PxVec3(-1.0f, 0.0f, 0.0f);
-        case PxVehicleAxes::ePosY: return PxVec3(0.0f, 1.0f, 0.0f);
-        case PxVehicleAxes::eNegY: return PxVec3(0.0f, -1.0f, 0.0f);
-        case PxVehicleAxes::ePosZ: return PxVec3(0.0f, 0.0f, 1.0f);
-        case PxVehicleAxes::eNegZ: return PxVec3(0.0f, 0.0f, -1.0f);
-        default: return PxVec3(0.0f, 1.0f, 0.0f);
-        }
-    };
+        error = "Scene already owns a vehicle runtime";
+        return nullptr;
+    }
+    if (!tuning.IsValid(error))
+        return nullptr;
 
-    const PxVec3 upAxis = vehicleAxisToVec3(tuning.verticalAxis);
+    auto vehicle = std::make_unique<VansEngine::VansPhysicsVehicle>();
+    vehicle->SetTuning(tuning);
+    vehicle->SetBodyRenderNodeName(bodyRenderNodeName);
+    vehicle->SetTireRenderNodeNames(tireRenderNodeNames);
+    vehicle->SetBodyTransformID(bodyTransformID);
+    vehicle->SetTireTransformIDs(tireTransformIDs);
+    vehicle->SetWheelVisualBindings(wheelVisualBindings);
+
+    const PxVec3 upAxis = tuning.BuildFrame().getVrtAxis();
     const PxVec3 startPosition(position.x, position.y, position.z);
     PxTransform startPose(startPosition + upAxis * tuning.startHeightOffset, PxQuat(PxIdentity));
 
-    // Initialize with default parameters (empty path triggers built-in defaults)
-    m_Vehicle->Initialize(physicsSystem, "", startPose);
+    if (!vehicle->Initialize(physicsSystem, startPose, error))
+        return nullptr;
 
-    VANS_LOG("[VansScene] Vehicle initialized at " << position.x << ", " << position.y << ", " << position.z
-              << ", startHeightOffset=" << tuning.startHeightOffset
-              << ", bodyNode='" << bodyRenderNodeName << "', bodyTransformID=" << bodyTransformID
-              << ", tires=" << tireRenderNodeNames.size()
-              << ", tireTransformIDs=" << tireTransformIDs.size()
-              << ", wheelVisualGroups=" << wheelVisualBindings.size());
+    m_Vehicle = vehicle.release();
+    return m_Vehicle;
 }
 
 void VansGraphics::VansScene::RegisterPhysicsNode(VansEngine::VansPhysicsNode* physicsNode)
@@ -110,31 +111,57 @@ void VansGraphics::VansScene::RegisterPhysicsNode(VansEngine::VansPhysicsNode* p
         m_PhysicsNodes.push_back(physicsNode);
 }
 
-void VansGraphics::VansScene::RegisterClothNode(VansEngine::VansClothNode* clothNode, VansRenderNode* renderNodeForStaging)
+bool VansGraphics::VansScene::RegisterClothNode(
+	VansEngine::VansClothNode* clothNode,
+	VansRenderNode* renderNodeForStaging,
+	std::string& error)
 {
-    if (!clothNode)
-        return;
+	error.clear();
+	if (!clothNode || !renderNodeForStaging || !renderNodeForStaging->m_Mesh)
+	{
+		error = "Cloth registration requires a node and render mesh";
+		return false;
+	}
+	auto runtime = std::make_unique<VansSceneClothRuntime>();
+	runtime->node = clothNode;
+	runtime->renderNode = renderNodeForStaging;
 
-    m_ClothNodes.push_back(clothNode);
-
-    VkDeviceSize stagingSize =
-        static_cast<VkDeviceSize>(renderNodeForStaging && renderNodeForStaging->m_Mesh
-            ? renderNodeForStaging->m_Mesh->GetMeshVertexCount() : 0)
-        * static_cast<VkDeviceSize>(renderNodeForStaging && renderNodeForStaging->m_Mesh
-            ? renderNodeForStaging->m_Mesh->GetMeshVertexStride() : 8 * sizeof(uint16_t));
+	const VkDeviceSize meshVertexBytes =
+		static_cast<VkDeviceSize>(renderNodeForStaging->m_Mesh->GetMeshVertexCount()) *
+		static_cast<VkDeviceSize>(renderNodeForStaging->m_Mesh->GetMeshVertexStride());
+	const VansEngine::VansClothVertexView clothVertices = clothNode->GetRenderData();
+	const VkDeviceSize stagingSize = static_cast<VkDeviceSize>(clothVertices.ByteSize());
     VansVKDevice* vkDev = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VkDevice nativeDev = vkDev ? vkDev->GetLogicDevice() : VK_NULL_HANDLE;
-    m_ClothStagingBuffers.emplace_back();
-    if (stagingSize > 0 && nativeDev != VK_NULL_HANDLE)
+	if (stagingSize == 0 || meshVertexBytes == 0 || nativeDev == VK_NULL_HANDLE)
+	{
+		error = "Cloth registration requires a non-empty mesh and Vulkan device";
+		return false;
+	}
+	if (stagingSize != meshVertexBytes ||
+		stagingSize != renderNodeForStaging->m_Mesh->GetBLASVertexBuffer().GetBufferSize())
+	{
+		error = "Cloth render payload does not match the target mesh vertex buffer ABI";
+		return false;
+	}
+	if (!runtime->stagingBuffer.CreatVulkanBuffer(
+		nativeDev,
+		stagingSize,
+		VK_FORMAT_UNDEFINED,
+		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
     {
-        m_ClothStagingBuffers.back().CreatVulkanBuffer(
-            nativeDev,
-            stagingSize,
-            VK_FORMAT_UNDEFINED,
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        m_ClothStagingBuffers.back().PersistentMap();
+		error = "Cloth staging buffer creation failed";
+		return false;
     }
+	if (!runtime->stagingBuffer.PersistentMap())
+	{
+		runtime->stagingBuffer.DestroyVulkanBuffer(nativeDev);
+		error = "Cloth staging buffer mapping failed";
+		return false;
+	}
+	m_ClothRuntimes.push_back(std::move(runtime));
+	return true;
 }
 
 void VansGraphics::VansScene::RegisterCharacterControllerNode(VansEngine::VansCharacterControllerNode* controllerNode)
@@ -144,83 +171,62 @@ void VansGraphics::VansScene::RegisterCharacterControllerNode(VansEngine::VansCh
 }
 
 // ===========================================================================
-// Physics node loading from typed scene component config
+// Physics node creation from typed scene component config
 // ===========================================================================
 
 // ===========================================================================
-// Single cloth node loading
+// Single cloth node creation
 // ===========================================================================
 
-VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadClothNode(
+std::unique_ptr<VansEngine::VansClothNode>
+VansGraphics::VansScenePhysicsComponentBuilder::CreateClothNode(
     VansScene& scene,
 	const Vans::VansSceneClothNodeConfig& config,
 	VansRenderNode* associatedRenderNode,
-	std::string* outProfileGuid)
+	std::string& profileGuidText,
+	std::string& error)
 {
-    using namespace VansEngine;
-
-    VansRenderNode* renderNode = associatedRenderNode;
-
-    if (!renderNode)
-    {
-        VANS_LOG_WARN("[VansScenePhysicsComponentBuilder] LoadClothNode: no valid render node, skipping.");
-        return nullptr;
-    }
-
-    ClothNodeProperties clothProps;
+	using namespace VansEngine;
+	error.clear();
+	VansRenderNode* renderNode = associatedRenderNode;
+	if (!renderNode || !renderNode->m_Mesh)
+	{
+		error = "Cloth component requires a render node with retained CPU mesh data";
+		return {};
+	}
 	if (!config.profileGuid)
 	{
-		VANS_LOG_ERROR("[VansScenePhysicsComponentBuilder] LoadClothNode: Cloth component requires a Profile asset GUID.");
-		return nullptr;
+		error = "Cloth component requires a Profile asset GUID";
+		return {};
 	}
 
 	Vans::VansAssetGuid profileGuid;
 	if (!Vans::VansAssetGuid::TryParse(*config.profileGuid, profileGuid))
 	{
-		VANS_LOG_ERROR("[VansScenePhysicsComponentBuilder] LoadClothNode: invalid Cloth Profile GUID: "
-			<< *config.profileGuid);
-		return nullptr;
+		error = "Cloth component has an invalid Profile asset GUID: " + *config.profileGuid;
+		return {};
 	}
 	const auto profile = Vans::VansProjectManager::Get().GetAssetObjectRepository()
 		.ResolveLatest<VansClothProfile>(profileGuid);
 	if (!profile)
 	{
-		VANS_LOG_ERROR("[VansScenePhysicsComponentBuilder] LoadClothNode: Cloth Profile is not loaded in memory: "
-			<< *config.profileGuid);
-		return nullptr;
+		error = "Cloth Profile is not loaded in memory: " + *config.profileGuid;
+		return {};
 	}
-	{
-		// 通过 profile 局部坐标近邻匹配填充 props
-		VansMesh* mesh = renderNode->m_Mesh;
-		if (mesh)
-		{
-			// 骨骼蒙皮数据将在 Pass5（所有 AnimationNode 加载完毕后）通过
-			// LateBindBonesFromProfile() 延迟解析，此处传入 nullptr 即可。
-			clothProps = ClothNodeProperties::FromProfile(
-				*profile,
-				mesh->GetMeshRawPositionData(),
-				mesh->GetMeshVertexCount(),
-				nullptr);
-		}
-		else
-		{
-			VANS_LOG_WARN("[VansScenePhysicsComponentBuilder] LoadClothNode: RenderNode 无 Mesh，无法解析固定点索引。");
-			clothProps.stiffness     = profile->m_Stiffness;
-			clothProps.damping       = profile->m_Damping;
-			clothProps.friction      = profile->m_Friction;
-			clothProps.gravity       = profile->m_Gravity;
-			clothProps.selfCollision = profile->m_SelfCollision;
-			clothProps.enabled       = true;
-		}
-	}
-	if (outProfileGuid)
-		*outProfileGuid = *config.profileGuid;
+	VansClothNodeConfig clothConfig;
+	clothConfig.enabled = true;
+	clothConfig.simulation.stiffness = profile->m_Stiffness;
+	clothConfig.simulation.stiffnessFrequency = profile->m_StiffnessFrequency;
+	clothConfig.simulation.damping = profile->m_Damping;
+	clothConfig.simulation.friction = profile->m_Friction;
+	clothConfig.simulation.gravity = profile->m_Gravity;
+	clothConfig.followBones = profile->m_FollowBones;
 
     // physicsAttachOffsetY is component-local runtime tuning layered on the
     // immutable in-memory cloth profile.
     // 用于将布料固定点从颈部/领口向下对准角色肩膀位置（单位：米）
     if (config.physicsAttachOffsetY)
-        clothProps.attachOffsetY = *config.physicsAttachOffsetY;
+		clothConfig.attachOffsetY = *config.physicsAttachOffsetY;
 
     // 通过 objectRef 解析碰撞球实体。优先缓存渲染节点或 Transform ID；
     // sceneObjectName 仅用于实体尚未完成构建时的延迟 Transform 查找。
@@ -228,11 +234,11 @@ VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadC
     {
         for (const auto& collisionSphere : config.collisionSpheres)
         {
-            ClothNodeProperties::CollisionSphereRef ref;
+			VansClothCollisionBinding binding;
             if (!collisionSphere.objectRef.empty())
             {
                 std::string objectName = collisionSphere.objectRef;
-                ref.sceneObjectName = objectName;
+				binding.sceneObjectName = objectName;
 
                 VansScriptObject* refObj = scene.FindSceneObjectByName(objectName);
                 if (refObj)
@@ -240,44 +246,77 @@ VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadC
                     auto* rc = refObj->GetComponent<VansScriptRenderComponent>();
                     if (rc && rc->m_RenderNode)
                     {
-                        ref.renderNodeName = rc->m_RenderNode->m_NodeName;
+						binding.renderNodeName = rc->m_RenderNode->m_NodeName;
                     }
                     else if (refObj->m_TransformID != 0)
                     {
                         // 无 render 组件但 ScriptObject 有自己的 transformID
-                        ref.transformID = refObj->m_TransformID;
+						binding.transformId = refObj->m_TransformID;
                     }
                     // 否则保留实体名称，在运行时实体构建完成后解析其 Transform。
                 }
             }
             if (collisionSphere.radius)
-                ref.radius = *collisionSphere.radius;
+				binding.radius = *collisionSphere.radius;
             // 三种解析路径任意满足其一即加入列表
-            if (!ref.renderNodeName.empty() || ref.transformID != UINT32_MAX || !ref.sceneObjectName.empty())
-                clothProps.collisionSphereRefs.push_back(ref);
+			if (!binding.renderNodeName.empty() || binding.transformId != UINT32_MAX ||
+				!binding.sceneObjectName.empty())
+			{
+				clothConfig.collisionBindings.push_back(std::move(binding));
+			}
         }
     }
 
-    VansClothNode* clothNode = new VansClothNode();
-    clothNode->Initialize(clothProps, renderNode);
-    // AnimationNode 绑定延迟至 Pass5（VansSceneLoader::LoadSceneObjects 末尾）完成，
-    // 届时 m_AnimationNodes 已由 Pass4 完全填充。
+	VansMesh* mesh = renderNode->m_Mesh;
+	VansClothMeshSource meshSource;
+	meshSource.positionsAndNormals = &mesh->GetMeshRawPositionData();
+	meshSource.texCoords = &mesh->GetMeshRawTexCoordData();
+	meshSource.triangleIndices = &mesh->GetMeshTriangleIndex();
+	meshSource.vertexCount = mesh->GetMeshVertexCount();
+	meshSource.vertexStrideBytes = mesh->GetMeshVertexStride();
+	meshSource.modelMatrix = Vans::VansTransformStore::Read(
+		renderNode->m_TransformID).GetModelMatrix();
+	VansClothMeshData meshData;
+	if (!VansClothMeshPrep::Build(
+		meshSource,
+		profile->m_WeldTolerance,
+		profile->m_PinnedMatchTolerance,
+		clothConfig.attachOffsetY,
+		profile->m_PinnedLocalPositions,
+		meshData,
+		error))
+	{
+		error = "Cloth mesh preparation failed for '" + renderNode->m_NodeName + "': " + error;
+		return {};
+	}
 
-    scene.RegisterClothNode(clothNode, renderNode);
-    VANS_LOG("[VansScene] Cloth node created for render node '" << renderNode->m_NodeName << "'");
-
-    return clothNode;
+	auto clothNode = std::make_unique<VansClothNode>();
+	if (!clothNode->Initialize(
+		clothConfig,
+		std::move(meshData),
+		renderNode->m_TransformID,
+		renderNode->m_NodeName,
+		error))
+	{
+		error = "Cloth runtime initialization failed for '" +
+			renderNode->m_NodeName + "': " + error;
+		return {};
+	}
+	profileGuidText = *config.profileGuid;
+	return clothNode;
 }
 
 // ===========================================================================
-// Single physics node loading
+// Single physics node creation
 // ===========================================================================
 
-VansEngine::VansPhysicsNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadPhysicsNode(
+std::unique_ptr<VansEngine::VansPhysicsNode>
+VansGraphics::VansScenePhysicsComponentBuilder::CreatePhysicsNode(
     VansScene& scene,
 	const Vans::VansScenePhysicsNodeConfig& config,
     VansRenderNode* associatedRenderNode,
-    uint32_t standaloneTransformID)
+	uint32_t standaloneTransformID,
+	std::string& error)
 {
     using namespace VansEngine;
 
@@ -324,7 +363,14 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScenePhysicsComponentBuilder::Loa
     // 解析碰撞 Layer
     if (config.layer)
         properties.layerName = *config.layer;
-    properties.layerIndex = VansEngine::VansCollisionLayerManager::Get().GetLayerIndex(properties.layerName);
+    int physicsLayerIndex = -1;
+    if (!VansEngine::VansCollisionLayerManager::Get().TryGetLayerIndex(
+        properties.layerName, physicsLayerIndex))
+    {
+        error = "Physics component references unknown collision layer '" +
+            properties.layerName + "'";
+        return {};
+    }
 
     // 解析 Trigger 标志
     if (config.isTrigger)
@@ -334,8 +380,8 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScenePhysicsComponentBuilder::Loa
 
 	if (associatedRenderNode == nullptr && standaloneTransformID == UINT32_MAX)
     {
-		VANS_LOG_WARN("[VansScene] Physics component has no transform, skipping.");
-        return nullptr;
+		error = "Physics component requires an entity transform";
+		return {};
     }
 
 	uint32_t transformID = associatedRenderNode ? associatedRenderNode->m_TransformID : standaloneTransformID;
@@ -354,20 +400,16 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScenePhysicsComponentBuilder::Loa
         }
     }
 
-    VansPhysicsNode* physicsNode = new VansPhysicsNode();
+	auto physicsNode = std::make_unique<VansPhysicsNode>();
 	if (config.name)
 		physicsNode->SetName(*config.name);
     physicsNode->Initialize(properties, transformID, mesh);
-	if (properties.enabled && (!physicsNode->IsEnabled() || physicsNode->GetActor() == nullptr))
+	if (properties.enabled && (!physicsNode->IsEnabled() || !physicsNode->HasActor()))
 	{
-		VANS_LOG_ERROR("[VansScene] Failed to initialize physics component '"
-			<< physicsNode->GetName() << "'");
-		delete physicsNode;
-		return nullptr;
+		error = "Physics runtime initialization failed for component '" +
+			physicsNode->GetName() + "'";
+		return {};
 	}
-    scene.RegisterPhysicsNode(physicsNode);
-	VANS_LOG("[VansScene] Created physics node '" << physicsNode->GetName()
-		<< "' transformID=" << transformID);
     return physicsNode;
 }
 
@@ -377,6 +419,7 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScenePhysicsComponentBuilder::Loa
 
 void VansGraphics::VansScene::UpdatePhysicsTransforms()
 {
+	VANS_ASSERT_MAIN_THREAD();
     VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
 
     using namespace VansEngine;
@@ -390,7 +433,7 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
     // Use std::lock_guard or std::unique_lock with the mutex
     std::lock_guard<std::mutex> simLock(physics.GetSimulationMutex());
 
-    PxScene* scene = physics.GetScene();
+    PxScene* scene = VansPhysicsNativeAccess::Scene(physics);
     if (!scene)
         return;
     
@@ -405,8 +448,7 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
                 continue;
 
             uint32_t transformID = physicsNode->GetTransformID();
-            auto dirtyIt = VansGraphics::VansTransformStore::TransformIDToTransformDirty.find(transformID);
-            if (dirtyIt == VansGraphics::VansTransformStore::TransformIDToTransformDirty.end() || !dirtyIt->second)
+            if (!Vans::VansTransformStore::IsDirty(transformID))
                 continue;
 
             const auto& properties = physicsNode->GetProperties();
@@ -415,14 +457,14 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
 			if (properties.bodyType == PhysicsBodyType::Dynamic && !properties.isTrigger)
                 continue;
 
-            // const VansTransform& transformData = VansTransformStore::GetTransform(transformID);
+            // const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(transformID);
             // VANS_LOG("[PhysX Sync] Push transform -> physics: tid=" << transformID
             //          << " pos=(" << transformData.m_Position.x << ", " << transformData.m_Position.y << ", " << transformData.m_Position.z << ")"
             //          << " rot=(" << transformData.m_Rotation.x << ", " << transformData.m_Rotation.y << ", " << transformData.m_Rotation.z << ")"
             //          << " bodyType=" << static_cast<int>(properties.bodyType)
             //          << " isTrigger=" << properties.isTrigger);
 
-            physicsNode->UpdatePhysicsFromTransform();
+            physicsNode->SyncActorFromTransformLocked();
         }
     }
 
@@ -434,13 +476,13 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
     {
         if (physicsNode && physicsNode->IsEnabled())
         {
-            if (physicsNode->UpdateTransformFromPhysics())
+            if (physicsNode->SyncTransformFromActorLocked())
             {
                 // Record the transform ID if it has changed
                 uint32_t transformID = physicsNode->GetTransformID();
                 if (transformID != 0) // Invalid ID check
                 {
-					VansGraphics::VansTransformStore::TransformIDToTransformDirty.insert({ transformID, true });
+					Vans::VansTransformStore::MarkDirty(transformID);
                 }
             }
         }
@@ -449,7 +491,7 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
     // ── Update vehicle render node transforms ────────────────────────────────
     if (m_Vehicle)
     {
-        // Helper: convert PxQuat to Euler angles in degrees for VansTransform
+        // Helper: convert PxQuat to Euler angles in degrees for Vans::VansTransform
         auto PxQuatToEulerDeg = [](const PxQuat& q) -> glm::vec3
         {
             glm::quat gq(q.w, q.x, q.y, q.z);
@@ -458,15 +500,15 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
 
         auto writeTransform = [&](uint32_t transformID, const PxTransform& pose, const PxVec3& pivotLocal = PxVec3(0.0f))
         {
-            if (transformID == UINT32_MAX ||
-                transformID >= static_cast<uint32_t>(VansTransformStore::GlobalTransforms.size()))
+            if (!Vans::VansTransformStore::IsAllocated(transformID))
                 return false;
 
-            VansTransform& t = VansTransformStore::GetTransform(transformID);
+            Vans::VansTransform t = Vans::VansTransformStore::Read(transformID);
             const PxVec3 correctedPosition = pose.p - pose.q.rotate(pivotLocal);
             t.m_Position = glm::vec3(correctedPosition.x, correctedPosition.y, correctedPosition.z);
             t.m_Rotation = PxQuatToEulerDeg(pose.q);
-            VansTransformStore::TransformIDToTransformDirty[transformID] = true;
+            Vans::VansTransformStore::Write(transformID, t);
+            Vans::VansTransformStore::MarkDirty(transformID);
 			m_TransformGraph.MarkWorldDirty(transformID);
             return true;
         };
@@ -525,6 +567,7 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
 
 void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 {
+	VANS_ASSERT_MAIN_THREAD();
 	VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
 	for (VansEngine::VansCharacterControllerNode* cct : m_CharControllerNodes)
 	{
@@ -562,14 +605,15 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 		if (!hasConfiguredMotionModel && animationRoutesOwnerMotion)
 		{
 			motionSettings.driveMode = Vans::VansLocomotionDriveMode::RootMotion;
-			if (cct->GetTransformID() < VansTransformStore::GlobalTransforms.size())
+			if (Vans::VansTransformStore::IsAllocated(cct->GetTransformID()))
 				animationToWorldScale =
-					VansTransformStore::GetTransform(cct->GetTransformID()).m_Scale;
+					Vans::VansTransformStore::Read(cct->GetTransformID()).m_Scale;
 		}
 
 		cct->PrepareLocomotion(deltaTime, motionSettings);
 		bool rootMotionValid = false;
 		bool rootMotionPreferred = false;
+		bool motionMatchingUsed = false;
 		glm::vec3 rootDelta(0.0f);
 		glm::quat rootRotation(1.0f, 0.0f, 0.0f, 0.0f);
 		if (animation && controller)
@@ -581,40 +625,37 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 			rootRotation = animation->GetRootRotationDelta();
 			rootMotionValid = animationRoutesOwnerMotion && animation->HasRootMotionDelta();
 			rootMotionPreferred = controller->CharacterMotionPrefersRootMotion();
+			motionMatchingUsed = controller->IsMotionMatchingUsedThisFrame();
 			if (hasConfiguredMotionModel && !controller->IsMotionMatchingConfigured())
 				rootMotionPreferred = true;
-			// Capsule-driven locomotion follows the UE contract, but an active
-			// Graph Set without a Motion Matching node (GAF attack/throw/vault,
-			// montage-like action) still owns its authored Root Motion. The frame
-			// usage test keeps that action path intact without letting a locomotion
-			// MM transition move the capsule a second time.
-			if (hasConfiguredMotionModel &&
-				motionSettings.driveMode == Vans::VansLocomotionDriveMode::Capsule)
-			{
-				rootMotionPreferred = !controller->IsMotionMatchingUsedThisFrame();
-			}
 		}
+		const Vans::VansLocomotionAuthority authority = Vans::SelectLocomotionAuthority(
+			motionSettings, rootMotionValid, motionMatchingUsed, rootMotionPreferred);
 		cct->ResolveLocomotion(
-			rootDelta, rootRotation, rootMotionValid, rootMotionPreferred,
+			rootDelta, rootRotation, rootMotionValid, authority,
 			motionSettings, animationToWorldScale);
 	}
 }
 
 void VansGraphics::VansScene::SyncAnimatedHurtBodies()
 {
+	VANS_ASSERT_MAIN_THREAD();
+	VANS_ASSERT_FRAME_PHASE(VansFramePhase::RenderPrep);
     auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
     std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
-    if (!physics.GetScene()) return;
-    PxSceneWriteLock sceneLock(*physics.GetScene());
+    PxScene* scene = VansEngine::VansPhysicsNativeAccess::Scene(physics);
+    if (!scene) return;
+    PxSceneWriteLock sceneLock(*scene);
     // 动画最终姿态与 Transform Graph 已完成，立即更新骨骼受击体的查询姿态。
     for (auto* node : m_PhysicsNodes)
         if (node && node->IsEnabled() && !node->GetProperties().hitRegion.empty() &&
             m_TransformGraph.HasParent(node->GetTransformID()))
-            node->UpdatePhysicsFromTransform();
+            node->SyncActorFromTransformLocked();
 }
 
 void VansGraphics::VansScene::UpdateCharControllerTransforms()
 {
+	VANS_ASSERT_MAIN_THREAD();
     VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
 
     using namespace VansEngine;
@@ -633,15 +674,15 @@ void VansGraphics::VansScene::UpdateCharControllerTransforms()
 }
 
 // ===========================================================================
-// Load a single CharacterController from typed scene component config
+// Create a single CharacterController from typed scene component config
 // ===========================================================================
 
-VansEngine::VansCharacterControllerNode*
-VansGraphics::VansScenePhysicsComponentBuilder::LoadCharacterControllerNode(
-    VansScene& scene,
+std::unique_ptr<VansEngine::VansCharacterControllerNode>
+VansGraphics::VansScenePhysicsComponentBuilder::CreateCharacterControllerNode(
     const Vans::VansSceneCharacterControllerConfig& config,
     VansRenderNode* associatedRenderNode,
-    uint32_t standaloneTransformID)
+	uint32_t standaloneTransformID,
+	std::string& error)
 {
     using namespace VansEngine;
 
@@ -658,17 +699,21 @@ VansGraphics::VansScenePhysicsComponentBuilder::LoadCharacterControllerNode(
     if (config.contactOffset)
         props.m_ContactOffset = *config.contactOffset;
     if (config.layer)
-    {
         props.m_LayerName  = *config.layer;
-        props.m_LayerIndex = VansCollisionLayerManager::Get()
-                                 .GetLayerIndex(props.m_LayerName);
+    int controllerLayerIndex = -1;
+    if (!VansCollisionLayerManager::Get().TryGetLayerIndex(
+        props.m_LayerName, controllerLayerIndex))
+    {
+        error = "CharacterController references unknown collision layer '" +
+            props.m_LayerName + "'";
+        return {};
     }
     if (config.climbingMode)
     {
         std::string cm = *config.climbingMode;
         props.m_ClimbingMode = (cm == "constrained")
-            ? PxCapsuleClimbingMode::eCONSTRAINED
-            : PxCapsuleClimbingMode::eEASY;
+            ? VansCharacterClimbingMode::Constrained
+            : VansCharacterClimbingMode::Easy;
     }
     if (config.positionOffset)
         props.m_PositionOffset = ToVec3(*config.positionOffset);
@@ -679,30 +724,21 @@ VansGraphics::VansScenePhysicsComponentBuilder::LoadCharacterControllerNode(
     if (associatedRenderNode)
     {
         transformID = associatedRenderNode->m_TransformID;
-        const VansTransform& t = VansTransformStore::GetTransform(transformID);
+        const Vans::VansTransform& t = Vans::VansTransformStore::Read(transformID);
         spawnPos = t.m_Position + props.m_PositionOffset;
     }
     else if (standaloneTransformID != UINT32_MAX)
     {
         transformID = standaloneTransformID;
-        const VansTransform& t = VansTransformStore::GetTransform(transformID);
+        const Vans::VansTransform& t = Vans::VansTransformStore::Read(transformID);
         spawnPos = t.m_Position + props.m_PositionOffset;
     }
 
-    VansPhysicsSystem& physSys = VansPhysicsSystem::GetInstance();
-    PxControllerManager* manager = physSys.GetControllerManager();
-    if (!manager)
+	auto node = std::make_unique<VansCharacterControllerNode>();
+    if (!node->Initialize(props, transformID, spawnPos))
     {
-        VANS_LOG_ERROR("[VansScene] CharController: PxControllerManager 未初始化");
-        return nullptr;
-    }
-
-    VansCharacterControllerNode* node = new VansCharacterControllerNode();
-    if (!node->Initialize(props, transformID, manager,
-                          physSys.GetDefaultMaterial(), spawnPos))
-    {
-        delete node;
-        return nullptr;
+		error = "CharacterController runtime initialization failed";
+		return {};
     }
 
     // ── 延迟绑定标志：ragdoll 在第二阶段加载，先记录意图 ──────────────
@@ -712,8 +748,6 @@ VansGraphics::VansScenePhysicsComponentBuilder::LoadCharacterControllerNode(
         node->SetPendingFollowRagdoll(true, bone);
     }
 
-    scene.RegisterCharacterControllerNode(node);
-    VANS_LOG("[VansScene] CharController 节点已创建，transformID=" << transformID);
     return node;
 }
 
@@ -721,95 +755,94 @@ VansGraphics::VansScenePhysicsComponentBuilder::LoadCharacterControllerNode(
 // Cloth simulation update
 // ===========================================================================
 
-void VansGraphics::VansScene::UpdateClothSimulation(float dt)
+void VansGraphics::VansScene::UpdateClothSimulation(float dt, std::uint32_t substeps)
 {
-    if (m_ClothNodes.empty()) return;
+	VANS_ASSERT_MAIN_THREAD();
+	VANS_ASSERT_FRAME_PHASE(VansFramePhase::RenderPrep);
+	if (m_ClothRuntimes.empty() || substeps == 0u) return;
 
     // ── 子步参数 ──────────────────────────────────────────────────────────────
-    // 将每帧仿真拆分为 kSubSteps 个子步：
-    //   1. 每子步时间步长缩小为 dt/kSubSteps，约束冲量成比例缩小，避免数值爆炸。
+    // 将每帧仿真拆分为配置的 substeps 个子步：
+    //   1. 每子步时间步长缩小为 dt/substeps，约束冲量成比例缩小，避免数值爆炸。
     //   2. 固定点位置在上一帧目标与本帧目标之间线性插值，消除瞬间大位移引发的
     //      约束违反（骨骼动画过渡时尤为重要）。
     // 角色快速移动时 8 步提供足够稳定性；静态场景可降至 4 步节省 CPU。
-    static constexpr int kSubSteps = 8;
-    const float subDt = dt / static_cast<float>(kSubSteps);
+	const float subDt = dt / static_cast<float>(substeps);
 
     // 第一步：计算本帧所有固定点的目标世界坐标（不写入粒子缓冲区）
-    for (auto* clothNode : m_ClothNodes)
-        if (clothNode && clothNode->IsEnabled()) clothNode->ComputePinnedTargets();
+	for (const auto& runtime : m_ClothRuntimes)
+		if (runtime && runtime->node && runtime->node->IsEnabled())
+			runtime->node->ComputePinnedTargets();
 
     // 第二步：更新碰撞球（每帧一次，不需要随子步变化）
-    static bool loggedOnce = false;
-    for (auto* clothNode : m_ClothNodes)
+	for (const auto& runtime : m_ClothRuntimes)
     {
+		VansEngine::VansClothNode* clothNode = runtime ? runtime->node : nullptr;
         if (!clothNode || !clothNode->IsEnabled()) continue;
-        auto& sphereRefs = clothNode->GetCollisionSphereRefs();
-        if (sphereRefs.empty()) continue;
+		const auto& bindings = clothNode->GetCollisionBindings();
+		if (bindings.empty()) continue;
 
-        std::vector<physx::PxVec4> spheres;
-        spheres.reserve(sphereRefs.size());
-        for (auto& ref : sphereRefs)
+		std::vector<glm::vec4> spheres;
+		spheres.reserve(bindings.size());
+		for (std::size_t bindingIndex = 0; bindingIndex < bindings.size(); ++bindingIndex)
         {
+			const auto& binding = bindings[bindingIndex];
+			std::uint32_t transformId = binding.transformId;
             // 延迟解析场景实体；骨骼/Socket 挂接已经由 Transform Graph 更新实体世界变换。
-            if (ref.renderNodeName.empty() && ref.transformID == UINT32_MAX
-                && !ref.sceneObjectName.empty())
+			if (binding.renderNodeName.empty() && transformId == UINT32_MAX &&
+				!binding.sceneObjectName.empty())
             {
-				if (VansScriptObject* object = FindObjectByName(ref.sceneObjectName))
-					ref.transformID = object->m_TransformID;
+				if (VansScriptObject* object = FindObjectByName(binding.sceneObjectName))
+				{
+					transformId = object->m_TransformID;
+					clothNode->CacheCollisionTransform(bindingIndex, transformId);
+				}
             }
 
             glm::vec3 pos(0.0f);
             bool valid = false;
 
-            if (!ref.renderNodeName.empty())
+			if (!binding.renderNodeName.empty())
             {
                 // 优先路径：通过 render 节点名查找位置
-                VansRenderNode* rn = FindRenderNodeByName(ref.renderNodeName);
+				VansRenderNode* rn = FindRenderNodeByName(binding.renderNodeName);
                 if (rn)
                 {
-                    pos   = VansTransformStore::GetTransform(rn->m_TransformID).m_Position;
+                    pos   = Vans::VansTransformStore::Read(rn->m_TransformID).m_Position;
                     valid = true;
                 }
             }
-            else if (ref.transformID != UINT32_MAX
-                     && ref.transformID < static_cast<uint32_t>(VansTransformStore::GlobalTransforms.size()))
+			else if (Vans::VansTransformStore::IsAllocated(transformId))
             {
                 // 回退路径：直接读取 TransformStore（骨骼绑定的纯物理碰撞体）
-                pos   = VansTransformStore::GetTransform(ref.transformID).m_Position;
+				pos = Vans::VansTransformStore::Read(transformId).m_Position;
                 valid = true;
             }
 
             if (!valid) continue;
 
-            spheres.push_back(physx::PxVec4(pos.x, pos.y, pos.z, ref.radius));
-            if (!loggedOnce)
-            {
-                VANS_LOG("[VansScene] Cloth collision sphere (world): node='"
-                          << (ref.renderNodeName.empty()
-                                  ? (ref.sceneObjectName + " tid=" + std::to_string(ref.transformID))
-                                  : ref.renderNodeName)
-                          << "' pos=(" << pos.x << "," << pos.y << "," << pos.z
-                          << ") radius=" << ref.radius);
-            }
+			spheres.emplace_back(pos.x, pos.y, pos.z, binding.radius);
         }
         clothNode->SetCollisionSpheres(spheres);
     }
-    loggedOnce = true;
 
     // 第三步：子步循环——每步写入插值固定点位置，然后推进仿真
-    for (int s = 0; s < kSubSteps; ++s)
+	for (std::uint32_t stepIndex = 0; stepIndex < substeps; ++stepIndex)
     {
         // alpha: 第 1 步=1/N, 第 2 步=2/N, ..., 最后一步=1.0
-        const float alpha = static_cast<float>(s + 1) / static_cast<float>(kSubSteps);
-        for (auto* clothNode : m_ClothNodes)
-            if (clothNode && clothNode->IsEnabled()) clothNode->WritePinnedParticlesLerped(alpha);
+		const float alpha = static_cast<float>(stepIndex + 1u) /
+			static_cast<float>(substeps);
+		for (const auto& runtime : m_ClothRuntimes)
+			if (runtime && runtime->node && runtime->node->IsEnabled())
+				runtime->node->WritePinnedParticlesLerped(alpha);
 
         VansEngine::VansClothSystem::GetInstance().SimulateStep(subDt);
     }
 
     // 第四步：提交本帧目标为"上一帧"，供下帧插值使用
-    for (auto* clothNode : m_ClothNodes)
-        if (clothNode && clothNode->IsEnabled()) clothNode->CommitPinnedTargets();
+	for (const auto& runtime : m_ClothRuntimes)
+		if (runtime && runtime->node && runtime->node->IsEnabled())
+			runtime->node->CommitPinnedTargets();
 }
 
 void VansGraphics::VansScene::WriteClothResultsToStagingBuffers(
@@ -817,9 +850,11 @@ void VansGraphics::VansScene::WriteClothResultsToStagingBuffers(
 {
 	for (const VansRenderClothFrameData& cloth : snapshot.cloth)
     {
-		if (cloth.clothNodeIndex >= m_ClothStagingBuffers.size())
+		if (cloth.clothRuntimeIndex >= m_ClothRuntimes.size())
 			continue;
-		VansVKBuffer& staging = m_ClothStagingBuffers[cloth.clothNodeIndex];
+		const auto& runtime = m_ClothRuntimes[cloth.clothRuntimeIndex];
+		if (!runtime) continue;
+		VansVKBuffer& staging = runtime->stagingBuffer;
 		if (!staging.IsMapped()) continue;
 
 		const size_t byteSize = cloth.simulatedVertices.size() * sizeof(uint16_t);
@@ -840,24 +875,29 @@ void VansGraphics::VansScene::RecordClothVertexUploads(
 {
 	for (const VansRenderClothFrameData& cloth : snapshot.cloth)
 	{
-		if (cloth.clothNodeIndex >= m_ClothNodes.size() ||
-			cloth.clothNodeIndex >= m_ClothStagingBuffers.size())
+		if (cloth.clothRuntimeIndex >= m_ClothRuntimes.size())
 		{
 			continue;
 		}
-		VansEngine::VansClothNode* clothNode = m_ClothNodes[cloth.clothNodeIndex];
-		if (!clothNode) continue;
-
-		VansVKBuffer& staging = m_ClothStagingBuffers[cloth.clothNodeIndex];
+		const auto& runtime = m_ClothRuntimes[cloth.clothRuntimeIndex];
+		if (!runtime) continue;
+		VansVKBuffer& staging = runtime->stagingBuffer;
 		if (!staging.IsMapped()) continue;
 
-        VansGraphics::VansRenderNode* renderNode = clothNode->GetTargetRenderNode();
+		VansGraphics::VansRenderNode* renderNode = runtime->renderNode;
         if (!renderNode || !renderNode->m_Mesh) continue;
 
         VkBuffer dstBuffer = renderNode->m_Mesh->GetBLASVertexBuffer().GetNativeBuffer();
 		VkDeviceSize size = static_cast<VkDeviceSize>(
 			cloth.simulatedVertices.size() * sizeof(uint16_t));
         if (size == 0) continue;
+		const VkDeviceSize destinationSize =
+			renderNode->m_Mesh->GetBLASVertexBuffer().GetBufferSize();
+		if (size != staging.GetBufferSize() || size != destinationSize)
+		{
+			VANS_LOG_ERROR("[VansScene] Cloth upload payload no longer matches its vertex buffers.");
+			continue;
+		}
 
         cmd.CopyBuffer(staging.GetNativeBuffer(), dstBuffer, 0, 0, size);
 

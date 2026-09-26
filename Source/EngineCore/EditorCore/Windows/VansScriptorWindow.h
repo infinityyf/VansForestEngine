@@ -1,5 +1,6 @@
 #pragma once
 #include "VansBaseWindowComponent.h"
+#include "../../EngineAPILayer/Public/IScriptLifecycleEditorAPI.h"
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -20,10 +21,10 @@ namespace VansGraphics
         static std::filesystem::path m_SelectedScript;
 
     private:
-        void DrawScriptorContents(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+        void DrawScriptorContents(Vans::EditorAPI::IScriptLifecycleEditorAPI& scriptLifecycleAPI);
         void RefreshFileList();
         void LoadSelectedFile();
-        void SaveCurrentFile(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+        void SaveCurrentFile(Vans::EditorAPI::IScriptLifecycleEditorAPI& scriptLifecycleAPI);
 
         std::vector<std::filesystem::path> m_LuaFiles;
         bool m_NeedsRefresh = true;

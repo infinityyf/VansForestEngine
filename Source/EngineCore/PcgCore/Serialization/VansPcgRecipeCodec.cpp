@@ -1,5 +1,5 @@
 #include "VansPcgRecipeCodec.h"
-#include "VansPcgValueCodec.h"
+#include "VansPcgConfigurationFieldCodec.h"
 
 namespace Vans
 {
@@ -7,13 +7,6 @@ namespace
 {
 using Value = VansSerializedValue;
 using Fields = std::vector<std::pair<std::string, Value>>;
-const std::pair<const char*, float VansPcgPlacementSettings::*> PlacementFloats[] = {
-	{ "density", &VansPcgPlacementSettings::density }, { "positionJitter", &VansPcgPlacementSettings::positionJitter },
-	{ "minimumSpacing", &VansPcgPlacementSettings::minimumSpacing }, { "yawMinDegrees", &VansPcgPlacementSettings::yawMinDegrees },
-	{ "yawMaxDegrees", &VansPcgPlacementSettings::yawMaxDegrees }, { "normalAlignment", &VansPcgPlacementSettings::normalAlignment },
-	{ "maximumTiltDegrees", &VansPcgPlacementSettings::maximumTiltDegrees }, { "rootOffset", &VansPcgPlacementSettings::rootOffset },
-	{ "maskThreshold", &VansPcgPlacementSettings::maskThreshold }, { "maskMultiplier", &VansPcgPlacementSettings::maskMultiplier }
-};
 
 template <typename Instance> void ReadTransform(PcgValue::Reader& reader, Instance& instance)
 {
@@ -109,11 +102,7 @@ bool VansPcgRecipeCodec::Decode(const Value& root, VansPcgRecipeAsset& recipe, s
 			budget.IntegerField("maxInstances", layer.budget.maxInstances);
 			budget.Finish();
 			auto placement = layerReader.Object("placement");
-			for (const auto& field : PlacementFloats) placement.Float(field.first, layer.placement.*field.second);
-			placement.Vector("scaleMin", layer.placement.scaleMin);
-			placement.Vector("scaleMax", layer.placement.scaleMax);
-			placement.Bool("uniformScale", layer.placement.uniformScale);
-			placement.Bool("invertMask", layer.placement.invertMask);
+			ReadPcgConfigurationFields(placement, layer.placement, VansPcgPlacementConfigurationFields, false);
 			placement.Finish();
 			ReadInstances(layerReader, "fixedInstances", layerPath, layer.fixedInstances, error);
 			ReadInstances(layerReader, "addedInstances", layerPath, layer.addedInstances, error);
@@ -154,11 +143,7 @@ bool VansPcgRecipeCodec::Encode(const VansPcgRecipeAsset& recipe, Value& root, s
 		for (const auto& layer : region.layers)
 		{
 			Fields placement;
-			for (const auto& field : PlacementFloats) placement.emplace_back(field.first, Value::Float(layer.placement.*field.second));
-			placement.emplace_back("scaleMin", PcgValue::Vector(layer.placement.scaleMin));
-			placement.emplace_back("scaleMax", PcgValue::Vector(layer.placement.scaleMax));
-			placement.emplace_back("uniformScale", Value::Bool(layer.placement.uniformScale));
-			placement.emplace_back("invertMask", Value::Bool(layer.placement.invertMask));
+			WritePcgConfigurationFields(placement, layer.placement, VansPcgPlacementConfigurationFields, false);
 			std::vector<Value> overrides;
 			for (const auto& edit : layer.overrides)
 			{

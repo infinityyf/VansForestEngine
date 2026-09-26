@@ -4,20 +4,36 @@
 
 namespace Vans
 {
-bool VansTimelinePreAnimatedState::Store(VansTimelineRestoreToken token)
+VansTimelinePreAnimatedStoreResult VansTimelinePreAnimatedState::Store(VansTimelineRestoreToken token)
 {
 	if (!token.handle.IsValid() || !token.writer.IsValid() ||
-		token.applier == VansInvalidTimelineApplierSlot) return false;
+		token.applier == VansInvalidTimelineApplierSlot) return {};
 	const auto existing = std::find_if(m_Tokens.begin(), m_Tokens.end(), [&](const auto& current)
 	{
 		return current.token.handle == token.handle && current.token.applier == token.applier;
 	});
 	if (existing == m_Tokens.end())
 	{
+		VansTimelineWriterHandle overlappingWriter;
+		if (token.resource)
+		{
+			const auto stack = m_ResourceStacks.find(token.resource);
+			if (stack != m_ResourceStacks.end() && !stack->second.empty())
+			{
+				const TokenKey top = stack->second.back();
+				const auto active = std::find_if(m_Tokens.begin(), m_Tokens.end(), [&](const auto& current)
+				{
+					return current.token.handle == top.handle && current.token.applier == top.applier;
+				});
+				if (active != m_Tokens.end() && active->token.writer != token.writer)
+					overlappingWriter = active->token.writer;
+			}
+		}
 		m_Tokens.push_back({ token });
 		if (token.resource) m_ResourceStacks[token.resource].push_back({ token.handle, token.applier });
+		return { true, overlappingWriter };
 	}
-	return true;
+	return { true, {} };
 }
 
 bool VansTimelinePreAnimatedState::ReleaseWriter(

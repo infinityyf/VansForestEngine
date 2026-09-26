@@ -1,4 +1,7 @@
 #include "VansPcgWindow.h"
+#include "../../EngineAPILayer/Public/IAssetEditorAPI.h"
+#include "../../EngineAPILayer/Public/IPcgEditorAPI.h"
+#include "../../EngineAPILayer/Public/IRenderEditorAPI.h"
 #include "imgui.h"
 #include <algorithm>
 #include <cstring>
@@ -7,21 +10,24 @@ namespace VansGraphics
 {
 void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::EditorAPI::PcgSplineKind kind)
 {
-    using namespace Vans::EditorAPI;
-    auto snapshot=api.GetPcgSplineSnapshot();
+	using namespace Vans::EditorAPI;
+	IAssetEditorAPI& assetAPI=api;
+	IPcgEditorAPI& pcgAPI=api;
+	IRenderEditorAPI& renderAPI=api;
+	auto snapshot=pcgAPI.GetPcgSplineSnapshot();
     const auto report=[&](const PcgEditorOperationResult& result){m_Message=result.message;};
     const auto command=[&](PcgSplineCommand action) {
         PcgSplineCommandRequest request;request.command=action;request.splineId=snapshot.selectedSpline;
         request.pointId=snapshot.selectedPoint;request.materialGuid=m_RoadMaterial;request.position=m_NewSplinePosition;
-        report(api.ExecutePcgSplineCommand(request));
+		report(pcgAPI.ExecutePcgSplineCommand(request));
     };
     if (ImGui::BeginCombo("Spline asset",snapshot.assetGuid.empty()?"Choose asset":snapshot.assetGuid.c_str()))
     {
-        for (const auto& asset:api.QueryAssets({AssetType::PcgSpline}))
-            if (ImGui::Selectable((asset.name+"##"+asset.guid).c_str(),asset.guid==snapshot.assetGuid)) report(api.BindPcgSplineAsset(asset.guid));
+        for (const auto& asset:assetAPI.QueryAssets({AssetType::PcgSpline}))
+			if (ImGui::Selectable((asset.name+"##"+asset.guid).c_str(),asset.guid==snapshot.assetGuid)) report(pcgAPI.BindPcgSplineAsset(asset.guid));
         ImGui::EndCombo();
     }
-    if (ImGui::Button("Create scene spline asset")) report(api.CreatePcgSplineAsset("Scene splines"));
+	if (ImGui::Button("Create scene spline asset")) report(pcgAPI.CreatePcgSplineAsset("Scene splines"));
     if (!snapshot.available) {ImGui::TextWrapped("Bind a spline asset to the scene terrain to start editing.");return;}
     ImGui::SameLine();ImGui::BeginDisabled(!snapshot.editable);
     if (ImGui::Button("Save splines")) command(PcgSplineCommand::Save);
@@ -45,13 +51,13 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
         ImGui::InputFloat("Water height warning (m)",&m_SplineFieldSettings[3]);
         ImGui::BeginDisabled(!snapshot.editable);
         if (ImGui::Button("Apply field quality"))
-        {PcgSplineCommandRequest request;request.command=PcgSplineCommand::ConfigureFields;request.fieldSettings=m_SplineFieldSettings;report(api.ExecutePcgSplineCommand(request));}
+		{PcgSplineCommandRequest request;request.command=PcgSplineCommand::ConfigureFields;request.fieldSettings=m_SplineFieldSettings;report(pcgAPI.ExecutePcgSplineCommand(request));}
         ImGui::EndDisabled();
     }
     if (ImGui::CollapsingHeader("Runtime control textures"))
     {
         RenderTextureFilter filter;filter.category="pcg_splines";
-        for(const auto& preview:api.QueryRenderTexturePreviews(filter)) if(preview.texture&&preview.width&&preview.height)
+        for(const auto& preview:renderAPI.QueryRenderTexturePreviews(filter)) if(preview.texture&&preview.width&&preview.height)
         {
             ImGui::TextUnformatted(preview.name.c_str());
             const float width=std::min(ImGui::GetContentRegionAvail().x,600.f);
@@ -62,13 +68,13 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
     ImGui::BeginDisabled(!snapshot.canUndo);if (ImGui::Button("Undo spline edit")) command(PcgSplineCommand::Undo);ImGui::EndDisabled();
     ImGui::SameLine();ImGui::BeginDisabled(!snapshot.canRedo);if (ImGui::Button("Redo spline edit")) command(PcgSplineCommand::Redo);ImGui::EndDisabled();
     bool tool=snapshot.toolEnabled;
-    if (ImGui::Checkbox("Edit splines in Scene",&tool)) report(api.SelectPcgSpline(snapshot.selectedSpline,snapshot.selectedPoint,tool));
+	if (ImGui::Checkbox("Edit splines in Scene",&tool)) report(pcgAPI.SelectPcgSpline(snapshot.selectedSpline,snapshot.selectedPoint,tool));
     ImGui::TextDisabled("Select points or handles in Scene. Drag the gizmo to move. Esc cancels the drag.");
     if (kind==PcgSplineKind::River) ImGui::TextDisabled("Extend an endpoint: Ctrl+click terrain. New points keep the endpoint water level.");
     else ImGui::TextDisabled("Extend an endpoint: Ctrl+click terrain. New road points take the ground height.");
     if (kind==PcgSplineKind::Road)
     {
-        const auto materials=api.QueryAssets({AssetType::Material});
+        const auto materials=assetAPI.QueryAssets({AssetType::Material});
         if (m_RoadMaterial.empty() && !materials.empty()) m_RoadMaterial=materials.front().guid;
         if (ImGui::BeginCombo("New road material",m_RoadMaterial.c_str()))
         {
@@ -89,7 +95,7 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
         {
             if (spline.kind!=kind) continue;
             if (ImGui::Selectable((spline.name+"##"+spline.id).c_str(),spline.id==snapshot.selectedSpline))
-                report(api.SelectPcgSpline(spline.id,{},snapshot.toolEnabled));
+				report(pcgAPI.SelectPcgSpline(spline.id,{},snapshot.toolEnabled));
         }
         ImGui::TableNextColumn();
         const auto selected=std::find_if(snapshot.splines.begin(),snapshot.splines.end(),[&](const auto& item){return item.id==snapshot.selectedSpline&&item.kind==kind;});
@@ -99,7 +105,7 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
             if (!m_SplinePropertyDrag) {m_SplineDraft=*selected;m_SplineDraftState=snapshot.documentState;}
             const auto submit=[&](PcgSplineEditPhase phase) {
                 PcgSplineEditRequest request;request.phase=phase;request.documentState=m_SplineDraftState;request.spline=m_SplineDraft;
-                const auto result=api.ApplyPcgSplineEdit(request);report(result);return result.success;
+				const auto result=pcgAPI.ApplyPcgSplineEdit(request);report(result);return result.success;
             };
             const auto live=[&](bool changed) {
                 if (changed)
@@ -127,7 +133,7 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
             {
                 if (ImGui::BeginCombo("PBR material",m_SplineDraft.materialGuid.c_str()))
                 {
-                    for (const auto& asset:api.QueryAssets({AssetType::Material}))
+                    for (const auto& asset:assetAPI.QueryAssets({AssetType::Material}))
                         if (ImGui::Selectable((asset.name+"##"+asset.guid).c_str(),asset.guid==m_SplineDraft.materialGuid))
                         {m_SplineDraft.materialGuid=asset.guid;submit(PcgSplineEditPhase::Apply);}
                     ImGui::EndCombo();
@@ -135,7 +141,7 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
                 // 切换模式前也可设置独立材质，避免未赋材质的投影模式无法提交。
                 if (ImGui::BeginCombo("Road decal material",m_SplineDraft.roadDecalMaterialGuid.empty()?"Choose PBR material":m_SplineDraft.roadDecalMaterialGuid.c_str()))
                 {
-                    for (const auto& asset:api.QueryAssets({AssetType::Material}))
+                    for (const auto& asset:assetAPI.QueryAssets({AssetType::Material}))
                         if (ImGui::Selectable((asset.name+"##road-decal-"+asset.guid).c_str(),asset.guid==m_SplineDraft.roadDecalMaterialGuid))
                         {m_SplineDraft.roadDecalMaterialGuid=asset.guid;submit(PcgSplineEditPhase::Apply);}
                     ImGui::EndCombo();
@@ -171,7 +177,7 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
                 if (ImGui::Checkbox("Carve riverbed",&m_SplineDraft.carveRiverbed)) submit(PcgSplineEditPhase::Apply);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Disable when the riverbed is sculpted directly into the terrain.");
                 live(ImGui::DragFloat("Wet bank width (m)",&m_SplineDraft.wetBankWidthMeters,.1f,
-                    std::max(4.f*snapshot.fieldTexelSize,.2f),1000));
+                    std::max(snapshot.minimumRiverTransitionWidth,.2f),1000));
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Terrain stays fully wet below the river and fades to dry across this distance beyond each bank.");
                 live(ImGui::SliderFloat("Wetness strength",&m_SplineDraft.wetnessStrength,0,1,"%.2f"));
                 if (ImGui::Checkbox("Reverse water flow",&reverse)) {m_SplineDraft.flowSign=reverse?-1.f:1.f;submit(PcgSplineEditPhase::Apply);}
@@ -179,6 +185,15 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
                 live(ImGui::DragFloat("Downstream fade (m)",&m_SplineDraft.fadeOutDistance,.1f,0,10000));
                 if (ImGui::Checkbox("Normal flow",&m_SplineDraft.normalFlowEnabled)) submit(PcgSplineEditPhase::Apply);
             }
+			if (ImGui::CollapsingHeader("Continuity diagnostics"))
+			{
+				ImGui::Text("Coordinate: offset %.3f m, sign %+.0f",
+					selected->coordinateOffset,selected->coordinateSign);
+				ImGui::Text("Continuation: %s",selected->continuation?"yes":"no");
+				ImGui::Text("Envelope: offset %.3f m, length %.3f m",
+					selected->envelopeOffset,selected->envelopeLength);
+				ImGui::TextDisabled("Read-only values maintained by spline split/import continuity.");
+			}
             if (ImGui::Button("Duplicate")) command(PcgSplineCommand::Duplicate);
             ImGui::SameLine();if (ImGui::Button("Reverse point order")) command(PcgSplineCommand::Reverse);
             ImGui::SameLine();if (ImGui::Button("Delete spline")) command(PcgSplineCommand::Remove);
@@ -187,7 +202,7 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
             {
                 auto& point=m_SplineDraft.points[i];
                 if (ImGui::Selectable(("Point "+std::to_string(i+1)+"##"+point.id).c_str(),point.id==snapshot.selectedPoint))
-                    report(api.SelectPcgSpline(m_SplineDraft.id,point.id,snapshot.toolEnabled));
+					report(pcgAPI.SelectPcgSpline(m_SplineDraft.id,point.id,snapshot.toolEnabled));
                 if (point.id!=snapshot.selectedPoint) continue;
                 ImGui::PushID(point.id.c_str());
                 live(ImGui::DragFloat3("Position (m)",point.position.data(),.05f));
@@ -221,7 +236,7 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
                 if (i+1<m_SplineDraft.points.size() && ImGui::Button("Insert midpoint after"))
                 {
                     PcgSplineCommandRequest request;request.command=PcgSplineCommand::InsertPoint;request.splineId=m_SplineDraft.id;
-                    request.segment=static_cast<std::uint32_t>(i);report(api.ExecutePcgSplineCommand(request));
+					request.segment=static_cast<std::uint32_t>(i);report(pcgAPI.ExecutePcgSplineCommand(request));
                 }
                 ImGui::SameLine();if (ImGui::Button("Delete point")) command(PcgSplineCommand::RemovePoint);
                 ImGui::PopID();

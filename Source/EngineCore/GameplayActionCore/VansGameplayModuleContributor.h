@@ -57,6 +57,7 @@ public:
 	using ServiceFactory = std::function<std::shared_ptr<IVansActionService>(
 		const VansGameplayAssetLibrary&, std::string&)>;
 	using GraphNodeRegistrar = std::function<bool(VansActionGraphNodeRegistry&, std::string&)>;
+	using ExecutorRegistrar = std::function<bool(VansActionExecutorRegistry&, std::string&)>;
 	using TargetingHandlerRegistrar =
 		std::function<bool(VansTargetingHandlerRegistry&, std::string&)>;
 	using HostInitializer = std::function<bool(
@@ -72,26 +73,32 @@ public:
 		VansActionServiceRegistry& services,
 		VansActionGraphNodeRegistry& graphNodes,
 		VansActionDriverRegistry& drivers,
+		VansActionExecutorRegistry& executors,
 		VansTargetingHandlerRegistry& targetingHandlers,
 		std::shared_ptr<IVansActionExternalCostProvider>& externalCosts,
 		std::unordered_map<std::string, HostInitializer>& hostInitializers,
 		std::unordered_map<std::string, VansActionSetInitializerHandler>&
-			actionSetInitializers)
+			actionSetInitializers,
+		bool& sealed)
 		: m_Assets(assets)
 		, m_Services(services)
 		, m_GraphNodes(graphNodes)
 		, m_Drivers(drivers)
+		, m_Executors(executors)
 		, m_TargetingHandlers(targetingHandlers)
 		, m_ExternalCosts(externalCosts)
 		, m_HostInitializers(hostInitializers)
 		, m_ActionSetInitializers(actionSetInitializers)
+		, m_Sealed(sealed)
 	{
 	}
 
 	const VansGameplayAssetLibrary& Assets() const { return m_Assets; }
+	bool Seal(std::string& error);
 	bool RegisterService(std::shared_ptr<IVansActionService> service, std::string& error);
 	bool InstantiateService(const ServiceFactory& factory, std::string& error);
 	bool RegisterGraphNodes(const GraphNodeRegistrar& registrar, std::string& error);
+	bool RegisterExecutors(const ExecutorRegistrar& registrar, std::string& error);
 	bool RegisterExecutorOwnedDriver(std::string typeId, std::string& error);
 	bool RegisterSidecarDriver(
 		std::string typeId, VansActionDriverRegistry::Factory factory, std::string& error);
@@ -109,15 +116,19 @@ public:
 		std::string& error);
 
 private:
+	bool EnsureOpen(std::string& error) const;
+
 	const VansGameplayAssetLibrary& m_Assets;
 	VansActionServiceRegistry& m_Services;
 	VansActionGraphNodeRegistry& m_GraphNodes;
 	VansActionDriverRegistry& m_Drivers;
+	VansActionExecutorRegistry& m_Executors;
 	VansTargetingHandlerRegistry& m_TargetingHandlers;
 	std::shared_ptr<IVansActionExternalCostProvider>& m_ExternalCosts;
 	std::unordered_map<std::string, HostInitializer>& m_HostInitializers;
 	std::unordered_map<std::string, VansActionSetInitializerHandler>&
 		m_ActionSetInitializers;
+	bool& m_Sealed;
 };
 
 class IVansGameplayModuleContributor

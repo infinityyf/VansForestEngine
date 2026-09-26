@@ -4,53 +4,26 @@
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../../GameplayActionAdapters/VansActionServiceAdapter.h"
-#include "../../GameplayActionAdapters/VansGameplayPrimitivesContributor.h"
-#include "../../GameplayActionAdapters/Audio/VansAudioActionCapability.h"
-#include "../../GameplayActionAdapters/Camera/VansCameraActionService.h"
-#include "../../GameplayActionAdapters/Character/VansCharacterActionServices.h"
-#include "../../GameplayActionAdapters/Combat/VansCombatActionService.h"
-#include "../../GameplayActionAdapters/Decal/VansDecalActionService.h"
-#include "../../GameplayActionAdapters/Physics/VansPhysicsQueryActionCapability.h"
-#include "../../GameplayActionAdapters/Projectile/VansProjectileActionCapability.h"
-#include "../../GameplayActionAdapters/Projectile/VansProjectileActionService.h"
-#include "../../GameplayActionAdapters/Character/VansAnimationEventActionService.h"
-#include "../../GameplayActionAdapters/UI/VansUIActionCapability.h"
-#include "../../GameplayActionAdapters/VFX/VansVFXActionCapability.h"
+#include "../../GameplayActionAdapters/VansSceneGameplayContributors.h"
 #include "../../GameplayActionCore/VansGameplayRuntime.h"
+#include "../../GameplayActionDebug/VansGameplayActionDebug.h"
 #include "../../GameplayActionSchema/VansGAFProjectConfiguration.h"
 #include "../../ProjectSystem/VansProjectManager.h"
+#include "../../Timeline/VansEngineTimelineRegistry.h"
+#include "../../TimelineRuntime/VansTimelineRuntimeSystem.h"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <optional>
 #include <sstream>
 
 namespace Vans::EditorAPI
 {
 namespace
 {
-std::vector<std::shared_ptr<VansFakeActionService>> CreateSimulationActionServices()
-{
-	std::vector<std::shared_ptr<VansFakeActionService>> services;
-	for (const VansActionServiceCapability* capability : {
-		&VansAnimationActionCapability(),
-		&VansAudioActionCapability(),
-		&VansVFXActionCapability(),
-		&VansCombatActionCapability(),
-		&VansDecalActionCapability(),
-		&VansPhysicsQueryActionCapability(),
-		&VansProjectileActionCapability(),
-		&VansAnimationEventActionCapability(),
-		&VansAttachmentActionCapability(),
-		&VansCameraActionCapability(),
-		&VansNavigationActionCapability(),
-		&VansUIActionCapability() })
-		services.push_back(std::make_shared<VansFakeActionService>(*capability));
-	return services;
-}
-
 const char* ActionState(VansActionInstanceState state)
 {
 	switch (state)
@@ -97,32 +70,6 @@ std::string Handle(VansGenerationHandle handle)
 	return handle ? std::to_string(handle.index) + ":" + std::to_string(handle.generation) : "None";
 }
 
-std::string TargetValue(const VansTargetDataValue& value)
-{
-	std::ostringstream stream;
-	if (const auto* entity = std::get_if<VansEntityHandle>(&value))
-		stream << "Entity " << entity->index << ':' << entity->generation;
-	else if (const auto* location = std::get_if<VansTargetLocation>(&value))
-		stream << "Location " << location->value[0] << ", " << location->value[1]
-			<< ", " << location->value[2];
-	else if (const auto* direction = std::get_if<VansTargetDirection>(&value))
-		stream << "Direction " << direction->value[0] << ", " << direction->value[1]
-			<< ", " << direction->value[2];
-	else if (const auto* transform = std::get_if<VansTargetTransform>(&value))
-		stream << "Transform " << transform->position[0] << ", " << transform->position[1]
-			<< ", " << transform->position[2];
-	else if (const auto* ray = std::get_if<VansTargetRay>(&value))
-		stream << "Ray origin " << ray->origin[0] << ", " << ray->origin[1] << ", "
-			<< ray->origin[2] << " direction " << ray->direction[0] << ", "
-			<< ray->direction[1] << ", " << ray->direction[2] << " length " << ray->length;
-	else if (const auto* hit = std::get_if<VansTargetHitResult>(&value))
-		stream << "Hit Entity " << hit->entity.index << ':' << hit->entity.generation
-			<< " distance " << hit->distance;
-	else if (const auto* deferred = std::get_if<VansDeferredTargetQuery>(&value))
-		stream << "Deferred Query Service " << deferred->service.value;
-	return stream.str();
-}
-
 GAFDebugActionSnapshot ActionSnapshot(
 	const VansActionInstanceSnapshot& source,
 	const VansGameplayAssetLibrary& assets)
@@ -141,7 +88,7 @@ GAFDebugActionSnapshot ActionSnapshot(
 	result.waitingNodes = source.executor.waitingNodes;
 	if (source.hasTargetData)
 		for (const auto& target : source.targetData.values)
-			result.targets.push_back(TargetValue(target));
+			result.targets.push_back(VansFormatTargetDataValue(target));
 	for (const auto& variable : source.variables)
 	{
 		std::string name = std::to_string(variable.field.value);
@@ -184,11 +131,11 @@ GAFRuntimeDebugSnapshot BuildStep(
 	hostSnapshot.activeCueCount = host->Cues().ActiveCount();
 	for (const auto& [tag, count] : host->Tags().Snapshot())
 	{
-		const auto* definition = runtime.Assets().Tags().Resolve(tag);
-		hostSnapshot.tags.push_back({ definition ? definition->name : std::to_string(tag.value),
+		const std::optional<std::string> name = runtime.Assets().Tags().FindName(tag);
+		hostSnapshot.tags.push_back({ name ? *name : std::to_string(tag.value),
 			std::to_string(count) });
 	}
-	for (const auto& attribute : host->Attributes().Capture())
+	for (const auto& attribute : host->Attributes().Snapshot())
 	{
 		const auto* definition = runtime.Assets().Attributes().Resolve(attribute.attribute);
 		std::ostringstream value;
@@ -304,22 +251,23 @@ GAFSimulationResult GameplayActionSimulationBridge::Simulate(
 		result.message = "The current GAF document is not present in the project asset index";
 		return result;
 	}
-	auto fakeServices = CreateSimulationActionServices();
+	const VansEngineTimelineCatalog timelineCatalog = VansGetEngineTimelineCatalog();
+	if (!timelineCatalog)
+	{
+		result.message = "Gameplay Action Simulator Timeline catalog is unavailable: " +
+			std::string(timelineCatalog.error);
+		return result;
+	}
+	VansTimelineRuntimeSystem simulationTimeline(*timelineCatalog.clocks);
+	std::vector<std::shared_ptr<VansFakeActionService>> fakeServices;
 	VansGameplayRuntimeDependencies dependencies;
 	dependencies.sourceOverrides.push_back({ request.sourcePath, std::move(sourceDocument) });
-	dependencies.contributors.push_back(VansMakeGameplayPrimitivesGAFContributor());
-	dependencies.contributors.push_back(VansMakeGAFModuleContributor(
-		VansMakeGAFModuleDescriptor("Simulation", "GAF Action Simulation",
-			{ "Core" }, {}, VansGAFModuleSource::Engine),
-		{}, {},
-		[fakeServices = std::move(fakeServices)](
-			VansGAFRuntimeRegistry& contribution,
-			std::string& contributionError)
-		{
-			for (const auto& service : fakeServices)
-				if (!contribution.RegisterService(service, contributionError)) return false;
-			return true;
-		}));
+	if (!VansDiscoverSimulationGameplayContributors(
+		*configuration, simulationTimeline, dependencies, fakeServices, error))
+	{
+		result.message = "Gameplay Action Simulator module discovery failed: " + error;
+		return result;
+	}
 	VansGameplayRuntime runtime;
 	if (!runtime.Initialize(records, projectManager.GetAssetObjectRepository(),
 		configuration->settings, dependencies, error))
@@ -407,8 +355,12 @@ GAFSimulationResult GameplayActionSimulationBridge::Simulate(
 			std::get<VansEntityHandle>(targetData.values.front()));
 		break;
 	}
-	if (!targetData.values.empty()) context.SetTargetData(
-		VansActionContextSlots::TargetData, host->StoreTargetData(std::move(targetData)));
+	VansTargetDataHandle inputTargetData;
+	if (!targetData.values.empty())
+	{
+		inputTargetData = host->StoreTargetData(std::move(targetData));
+		context.SetTargetData(VansActionContextSlots::TargetData, inputTargetData);
+	}
 	VansActionActivationRequest activation;
 	activation.spec = grant->handle;
 	activation.context = std::move(context);
@@ -419,11 +371,13 @@ GAFSimulationResult GameplayActionSimulationBridge::Simulate(
 	result.message = canActivate.message;
 	result.disposition = result.canActivate ? "Allowed" : "Rejected";
 	VansActionHandle actionHandle;
+	bool targetDataTransferred = false;
 	if (request.mode == GAFSimulationMode::Execute && result.canActivate)
 	{
 		const VansActionResult activated = host->Activate(activation);
 		result.activated = static_cast<bool>(activated);
 		actionHandle = activated.action;
+		targetDataTransferred = static_cast<bool>(activated.action);
 		result.error = ActionError(activated.error);
 		result.reasonCode = activated.StableReasonCode();
 		result.message = activated.message;
@@ -441,6 +395,8 @@ GAFSimulationResult GameplayActionSimulationBridge::Simulate(
 		}
 	}
 	else result.steps.push_back(BuildStep(runtime, host, {}, 0, 0.0));
+	if (inputTargetData && !targetDataTransferred)
+		host->ReleaseTargetData(inputTargetData);
 	for (const auto& service : fakeServices)
 		result.serviceActivity.push_back({ service->Capability().stableName,
 			"commands=" + std::to_string(service->ExecutedCommandCount()) +

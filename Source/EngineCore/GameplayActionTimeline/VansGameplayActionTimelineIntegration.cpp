@@ -8,6 +8,7 @@
 #include "../TimelineRuntime/VansTimelineModuleApplierState.h"
 #include "../TimelineRuntime/VansTimelineSampleExtension.h"
 #include "../TimelineRuntime/VansTimelineRuntimeSystem.h"
+#include "../Util/VansLog.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -96,7 +97,7 @@ public:
 		return StartSessions(error);
 	}
 
-	bool Tick(VansActionExecutionContext& context, std::string& error) override
+	bool TickFrame(VansActionExecutionContext& context, std::string& error) override
 	{
 		if (!m_Started)
 		{
@@ -120,6 +121,18 @@ public:
 			}
 		}
 		return true;
+	}
+
+	bool OnEvent(VansActionExecutionContext&,
+		const VansActionEvent&, std::string&) override
+	{
+		// Timeline input is authored in Timeline tracks; Action events do not advance time.
+		return true;
+	}
+
+	void OnCancel(VansActionExecutionContext&, VansActionCancelReason) override
+	{
+		// Finish owns the single Timeline stop/release path.
 	}
 
 	void Finish(VansActionExecutionContext&, VansActionEndReason reason) override
@@ -153,8 +166,10 @@ private:
 	{
 		for (VansTimelineSessionHandle session : m_Sessions)
 		{
-			m_Runtime.Sessions().Stop(session, reason);
-			m_Runtime.Sessions().Release(session);
+			if (!m_Runtime.Sessions().Stop(session, reason))
+				VANS_LOG_ERROR("[GAF] Timeline Action Session stop failed");
+			if (!m_Runtime.Sessions().Release(session))
+				VANS_LOG_ERROR("[GAF] Timeline Action Session release failed");
 		}
 		m_Sessions.clear();
 	}
@@ -385,8 +400,9 @@ private:
 		if (state.closed) return;
 		if (auto host = state.host.lock())
 		{
-			std::string ignored;
-			SendEvent(*host, state.actions, state.closeEvent, state.payload, ignored);
+			std::string closeError;
+			if (!SendEvent(*host, state.actions, state.closeEvent, state.payload, closeError))
+				VANS_LOG_ERROR("[GAF] Timeline Action.Window close cleanup failed: " << closeError);
 		}
 		state.closed = true;
 	}
@@ -442,8 +458,10 @@ public:
 			for (std::size_t index = 0; index < actions.size(); ++index)
 			{
 				const VansGameplayCueKey key{ ActionCorrelation(actions[index]), cue,
+					VansTimelineHandleKey(context.writer),
 					static_cast<std::uint32_t>(((context.order.sequence + index) % UINT32_MAX) + 1u) };
-				if (!host->Cues().Execute(key, CueScope(StringAt(context, 3)), parameters, error))
+				if (host->Cues().Execute(key, CueScope(StringAt(context, 3)), parameters, error) ==
+					VansGameplayCueExecuteStatus::Failed)
 					return Failed(std::move(error));
 			}
 			return { VansTimelineApplyStatus::Applied };
@@ -455,10 +473,10 @@ public:
 			for (std::size_t index = 0; index < actions.size(); ++index)
 			{
 				const VansGameplayCueKey key{ ActionCorrelation(actions[index]), cue,
+					VansTimelineHandleKey(context.writer),
 					static_cast<std::uint32_t>(((context.order.sequence + index) % UINT32_MAX) + 1u) };
 				const VansCueHandle handle = host->Cues().Add(key,
-					CueScope(StringAt(context, 3)), parameters,
-					VansTimelineHandleKey(context.writer), error);
+					CueScope(StringAt(context, 3)), parameters, error);
 				if (handle) created.cues.push_back(handle);
 				if (!error.empty()) break;
 			}
@@ -492,8 +510,12 @@ private:
 	{
 		if (auto host = state.host.lock())
 		{
-			std::string ignored;
-			for (VansCueHandle handle : state.cues) host->Cues().Remove(handle, ignored);
+			for (VansCueHandle handle : state.cues)
+			{
+				std::string removeError;
+				if (!host->Cues().Remove(handle, removeError))
+					VANS_LOG_ERROR("[GAF] Timeline Cue cleanup failed: " << removeError);
+			}
 		}
 		state.cues.clear();
 	}
@@ -581,9 +603,14 @@ private:
 	{
 		if (auto host = state.host.lock())
 		{
-			std::string ignored;
 			for (const ParameterPrevious& item : state.previous)
-				host->WriteVariable(item.action, state.variable, item.value, ignored);
+			{
+				std::string restoreError;
+				if (!host->WriteVariable(
+					item.action, state.variable, item.value, restoreError))
+					VANS_LOG_ERROR("[GAF] Timeline Action.Parameter restore failed: " <<
+						restoreError);
+			}
 		}
 		state.previous.clear();
 	}

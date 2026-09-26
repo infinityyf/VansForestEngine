@@ -16,11 +16,12 @@ namespace Vans
 		VansProjectNearMediaQualitySettings nearMediaQualitySettings;
 		VansProjectCloudShadowQualitySettings cloudShadowQualitySettings;
 		VansProjectMainCameraHiZCullSettings mainCameraHiZCullSettings;
+		VansCameraLensLimits cameraLensLimits;
 	};
 
 	struct VansProjectPhysicsSettingsData
 	{
-		float fixedTimeStep = 1.0f / 60.0f;
+		VansEngine::VansPhysicsTiming timing;
 		std::unordered_map<std::string, std::vector<std::string>> queryProfiles;
 	};
 }

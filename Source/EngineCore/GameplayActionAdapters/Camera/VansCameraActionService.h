@@ -39,7 +39,7 @@ private:
 		VansCameraRuntime& runtime,
 		TargetPositionResolver targetResolver);
 	bool InitializeProfiles(const VansGameplayAssetLibrary& assets, std::string& error);
-	VansActionCommandResult CreateContribution(VansCameraContribution contribution);
+	VansActionCommandResult CreateContribution(VansCameraContributionRequest contribution);
 	VansActionCommandResult ExecuteShot(const VansActionCommand& command);
 	VansActionCommandResult ExecuteLens(const VansActionCommand& command);
 	VansActionCommandResult ExecuteShake(const VansActionCommand& command);

@@ -14,7 +14,7 @@
 #include "VansAnimationTypes.h"
 #include "VansPoseTypes.h"
 #include "VansAnimationController.h"
-#include "VansAnimGraphJson.h"
+#include "VansAnimGraphNodeType.h"
 #include "Procedural/Grounding/VansGroundingTypes.h"
 #include "Procedural/Solvers/VansAimConstraintSolver.h"
 #include "Procedural/Solvers/VansChainIKSolver.h"
@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
+#include <nlohmann/json_fwd.hpp>
 
 namespace VansGraphics
 {
@@ -32,39 +33,36 @@ namespace VansGraphics
 	struct AnimatorParameter;
 	class VansAnimGraph;
 	class VansAnimGraphInstance;
+	class VansAnimationController;
 	class VansMotionMatchingRuntime;
+	class AnimGraphStateMachineNode;
+	struct VansAnimGraphClipRuntimeState;
+	struct VansAnimGraphStateMachineRuntimeState;
+
+	// Narrow graph capability for Motion Matching. Graph nodes can request a
+	// pose without acquiring the mutable runtime or its database/debug controls.
+	class VansAnimGraphMotionMatchingPort
+	{
+	public:
+		bool Evaluate(
+			float deltaTime,
+			const Skeleton& skeleton,
+			const std::unordered_map<std::string, VansAnimationClip>& clips,
+			const std::unordered_map<std::string, AnimatorParameter>& parameters,
+			const Vans::VansCharacterTrajectory* trajectory,
+			VansPosePayload& outPayload) const;
+
+	private:
+		explicit VansAnimGraphMotionMatchingPort(VansMotionMatchingRuntime* runtime)
+			: m_Runtime(runtime) {}
+
+		VansMotionMatchingRuntime* m_Runtime = nullptr;
+		friend class VansAnimationController;
+	};
 
 	// ─────────────────────────────────────────────────────────────
 	//  节点类型枚举
 	// ─────────────────────────────────────────────────────────────
-
-	enum class AnimGraphNodeType
-	{
-		Entry,           // 入口节点（图的起点，不产生 Pose）
-		Output,          // 输出节点（图的终点，收集最终 Pose）
-		Clip,            // 播放单个 AnimationClip，输出 Pose
-		Blend,           // 双输入线性混合（alpha 参数驱动）
-		Blend1D,         // 1D 混合空间（float 参数映射到多个 Clip 权重）
-		BlendSpace2D,    // 2D 混合空间（两个 float 参数映射到采样点三角插值）
-		IfCondition,     // 条件选择：根据参数比较结果选择两路 Pose 之一
-		Switch,          // 多路选择：根据 int 参数选择 N 路 Pose 之一
-		AdditiveBlend,   // 叠加混合：将相对参考姿态的 local TRS delta 施加到 base
-		SpeedScale,      // 播放速度缩放（套在 Clip 输入上）
-		StateMachine,    // 嵌入式状态机节点
-		MotionMatching,  // Motion Matching pose source with fallback input
-		Slot,            // Gameplay one-shot source with optional fallback input
-		TargetPoseInput, // Composed/retargeted target-skeleton pose entering a post-process Graph
-		Goal,            // 创建拥有型程序化 Goal
-		AimConstraint,   // 多骨朝向约束
-		Grounding,       // 场景批查询的 Gather/Resolve 节点
-		LimbIK,          // Rig 中三骨 Limb 链求解
-		ChainIK,         // Rig 中 CCD/FABRIK 链求解
-		PoseCheckpoint, // 显式记录本帧挂点姿态，供下游约束和附件共同读取
-		RotationDistribution, // 显式配置的骨段扭转分配
-		SaveCachedPose,   // UE Save Cached Pose equivalent
-		UseCachedPose,    // UE Use Cached Pose equivalent
-		LayeredBlendPerBone // Explicit regional layer composition
-	};
 
 	// ─────────────────────────────────────────────────────────────
 	//  Pin 定义（节点的输入/输出端口）
@@ -115,7 +113,7 @@ namespace VansGraphics
 		const Skeleton*                                            skeleton   = nullptr;
 		std::unordered_map<std::string, AnimatorParameter>*        parameters = nullptr;
 		const std::unordered_map<std::string, VansAnimationClip>*  clips      = nullptr;
-		VansMotionMatchingRuntime*                                 motionMatching = nullptr;
+		const VansAnimGraphMotionMatchingPort*                     motionMatching = nullptr;
 		const Vans::VansCharacterTrajectory*                       characterTrajectory = nullptr;
 		const std::unordered_map<std::string, VansPosePayload>*     slotPayloads = nullptr;
 		const VansPosePayload*                                     targetPoseInput = nullptr;
@@ -137,13 +135,12 @@ namespace VansGraphics
 		virtual ~VansAnimGraphNode() = default;
 
 		int                GetNodeId()  const { return m_NodeId; }
-		AnimGraphNodeType  GetType()    const { return m_Type; }
+		VansAnimGraphNodeType  GetType()    const { return m_Type; }
 		const std::string& GetName()    const { return m_Name; }
 		void               SetName(const std::string& name) { m_Name = name; }
 
-		// 节点在编辑器中的位置（仅编辑器用，不影响运行时）
-		float m_EditorPosX = 0.0f;
-		float m_EditorPosY = 0.0f;
+		// Editor-only authoring layout; runtime evaluation never reads it.
+		VansAnimGraphNodeLayout m_EditorLayout;
 
 		// 获取该节点的所有 Pin 定义
 		virtual std::vector<AnimGraphPin> GetPins() const = 0;
@@ -153,12 +150,39 @@ namespace VansGraphics
 		                               VansAnimGraphInstance& instance) const = 0;
 
 		// 获取节点类型名称字符串（序列化用）
-		static const char* TypeToString(AnimGraphNodeType type);
+		static const char* TypeToString(VansAnimGraphNodeType type);
 
 	protected:
+		static AnimGraphPose EvaluateInputPose(
+			VansAnimGraphInstance& instance,
+			int nodeId,
+			int inputPinIndex,
+			const AnimGraphContext& ctx);
+		static AnimGraphPose EvaluateNodePose(
+			VansAnimGraphInstance& instance,
+			int nodeId,
+			const AnimGraphContext& ctx);
+		static VansAnimGraphClipRuntimeState& ResolveClipState(
+			VansAnimGraphInstance& instance, int nodeId);
+		static VansAnimGraphStateMachineRuntimeState& ResolveStateMachineState(
+			VansAnimGraphInstance& instance,
+			int nodeId,
+			const AnimGraphStateMachineNode& definition);
+		static void StoreCachedPose(
+			VansAnimGraphInstance& instance,
+			const std::string& name,
+			const AnimGraphPose& pose);
+		static const AnimGraphPose* ResolveCachedPose(
+			const VansAnimGraphInstance& instance,
+			const std::string& name);
+		static AnimGraphPose AppendProceduralPose(
+			VansAnimGraphInstance& instance,
+			int nodeId,
+			const AnimGraphContext& ctx);
+
 		int               m_NodeId = -1;
 		std::string       m_Name;
-		AnimGraphNodeType m_Type   = AnimGraphNodeType::Entry;
+		VansAnimGraphNodeType m_Type   = VansAnimGraphNodeType::Entry;
 
 		friend class VansAnimGraph;
 	};
@@ -579,6 +603,9 @@ namespace VansGraphics
 
 		// 生成只包含 Output 可达节点的确定性拓扑执行计划。
 		bool BuildExecutionPlan(std::vector<int>& outPlan, std::string& outError) const;
+		// Typed definition copy used when one authored graph needs an independent
+		// runtime owner. This deliberately bypasses the persistence codec.
+		std::unique_ptr<VansAnimGraph> Clone() const;
 
 		// 获取所有节点
 		const std::unordered_map<int, std::unique_ptr<VansAnimGraphNode>>& GetNodes() const
@@ -588,12 +615,12 @@ namespace VansGraphics
 
 		// ─── 序列化 ─────────────────────────────────────────────
 		// Canonical JSON codec used by VansAnimatorIO.
-		void SerializeToJsonObject(AnimGraphJson& outJson) const;
-		static std::unique_ptr<VansAnimGraph> DeserializeFromJsonObject(const AnimGraphJson& j);
+		void SerializeToJsonObject(nlohmann::json& outJson) const;
+		static std::unique_ptr<VansAnimGraph> DeserializeFromJsonObject(const nlohmann::json& j);
 
 		// ─── 工厂辅助 ───────────────────────────────────────────
 		// 根据类型名创建空节点实例
-		static std::unique_ptr<VansAnimGraphNode> CreateNodeByType(AnimGraphNodeType type);
+		static std::unique_ptr<VansAnimGraphNode> CreateNodeByType(VansAnimGraphNodeType type);
 		static std::unique_ptr<VansAnimGraphNode> CreateNodeByTypeName(const std::string& typeName);
 
 	private:
@@ -643,14 +670,14 @@ namespace VansGraphics
 		const std::vector<int>& GetExecutionPlan() const { return m_ExecutionPlan; }
 
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx);
-		AnimGraphPose EvaluateNode(int nodeId, const AnimGraphContext& ctx);
-		AnimGraphPose EvaluateInput(int nodeId, int inputPinIndex, const AnimGraphContext& ctx);
-		void AdvanceTime(float deltaTime, const AnimGraphContext& ctx);
+		AnimGraphPose EvaluateFrame(const AnimGraphContext& ctx);
 		void Reset();
 		bool PlayState(const std::string& stateName);
-		void SetCachedPose(const std::string& name, const AnimGraphPose& pose);
-		const AnimGraphPose* FindCachedPose(const std::string& name) const;
 		std::string GetCurrentStateName() const;
+		// Returns every active embedded state machine in execution order. This
+		// lets debug/UI consumers distinguish grounded and airborne FSMs without
+		// guessing which one a graph exposes as its primary state.
+		std::string GetActiveStatePath() const;
 		float GetPrimaryPlaybackTime() const;
 		const std::string& GetPrimaryClipName() const;
 		bool SetPrimaryPlaybackTime(float time, const std::string& stateName = {});
@@ -660,11 +687,31 @@ namespace VansGraphics
 		VansAnimGraphRuntimeStateSnapshot CaptureRuntimeState() const;
 		bool RestoreRuntimeState(const VansAnimGraphRuntimeStateSnapshot& snapshot);
 
-		float GetClipTime(int nodeId) const;
+	private:
+		AnimGraphPose EvaluateNode(int nodeId, const AnimGraphContext& ctx);
+		AnimGraphPose EvaluateInput(int nodeId, int inputPinIndex, const AnimGraphContext& ctx);
+		void AdvanceTime(float deltaTime, const AnimGraphContext& ctx);
+		void SetCachedPose(const std::string& name, const AnimGraphPose& pose);
+		const AnimGraphPose* FindCachedPose(const std::string& name) const;
 		VansAnimGraphClipRuntimeState& GetClipState(int nodeId);
 		VansAnimGraphStateMachineRuntimeState& GetStateMachineState(
 			int nodeId, const AnimGraphStateMachineNode& definition);
-	private:
+
+		struct VansLayeredBlendRuntimeState
+		{
+			std::uint64_t skeletonSignature = 0;
+			VansCompiledBoneMask mask;
+			VansAnimationFrameVector<VansBoneTransform> bindPose{
+				std::pmr::new_delete_resource() };
+			bool initialized = false;
+		};
+
+		const VansLayeredBlendRuntimeState& ResolveLayeredBlendRuntime(
+			int nodeId, const VansBoneMaskAsset& mask, const Skeleton& skeleton);
+		friend class AnimGraphLayeredBlendPerBoneNode;
+		friend class VansAnimGraphNode;
+		friend class VansAnimationController;
+
 		const VansAnimGraph& m_Definition;
 		std::vector<int> m_ExecutionPlan;
 		std::string m_CompileError;
@@ -677,6 +724,7 @@ namespace VansGraphics
 		std::unordered_map<int, bool> m_PreviousActiveNodes;
 		std::unordered_map<int, float> m_ActiveTimeScales;
 		std::unordered_map<int, bool> m_HasActiveTimeScale;
+		std::unordered_map<int, VansLayeredBlendRuntimeState> m_LayeredBlendRuntimes;
 	};
 
 }  // namespace VansGraphics

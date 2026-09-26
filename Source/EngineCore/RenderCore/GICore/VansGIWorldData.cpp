@@ -1,5 +1,6 @@
 #include "VansGIWorldData.h"
 #include "../../TerrainCore/VansTerrainAsset.h"
+#include "../../TerrainCore/VansTerrainHeightEncoding.h"
 #include <glm/gtc/packing.hpp>
 #include <algorithm>
 #include <cmath>
@@ -106,7 +107,9 @@ namespace VansGraphics
         width = source.width; height = source.height;
         parameters = {source.settings.terrainSize, source.settings.maxHeight, source.settings.heightOffset, float(width)};
         heights.resize(source.heights.size());
-        for (size_t i = 0; i < heights.size(); ++i) heights[i] = float(source.heights[i]) / 65535.f * parameters.y + parameters.z;
+        for (size_t i = 0; i < heights.size(); ++i)
+            heights[i] = Vans::VansTerrainHeightEncoding::DecodeWorld(
+                source.heights[i], parameters.y, parameters.z);
         ranges.clear(); levels.clear();
         // 含边界钳制的 N+1 个采样单元，不遗漏两侧半 texel。
         uint32_t w = width + 1, h = height + 1;
@@ -149,7 +152,9 @@ namespace VansGraphics
             for(uint32_t col=0;col<w;++col)
             {
                 uint16_t value;std::memcpy(&value,pixels.data()+(size_t(row)*w+col)*2,2);
-                float& dst=heights[offset+col];const float next=float(value)/65535.f*parameters.y+parameters.z;
+                float& dst=heights[offset+col];
+                const float next=Vans::VansTerrainHeightEncoding::DecodeWorld(
+                    value, parameters.y, parameters.z);
                 low=std::min({low,dst,next});high=std::max({high,dst,next});dst=next;
             }
         }

@@ -8,11 +8,11 @@
 #include <string>
 #include <cstdint>
 
-using namespace physx;
-using namespace physx::vehicle2;
-
 namespace VansEngine
 {
+    using namespace physx;
+    using namespace physx::vehicle2;
+
     struct VansVehicleParams
     {
         // Base Params
@@ -34,7 +34,7 @@ namespace VansEngine
         PxVehicleAutoboxParams autoboxParams;
         PxVehicleClutchCommandResponseParams clutchCommandResponseParams;
         PxVehicleEngineParams engineParams;
-        PxVehicleGearboxParams gearBoxParams;
+        PxVehicleGearboxParams gearboxParams;
         PxVehicleFourWheelDriveDifferentialParams fourWheelDifferentialParams;
         PxVehicleClutchParams clutchParams;
 
@@ -47,7 +47,6 @@ namespace VansEngine
         PxTransform physxActorBoxShapeLocalPose;
         PxTransform physxWheelShapeLocalPoses[PxVehicleLimits::eMAX_NB_WHEELS];
         
-        bool isValid() const;
     };
 
     struct VansVehicleState
@@ -86,7 +85,13 @@ namespace VansEngine
         PxVehiclePhysXSteerState physxSteerState;
         PxVehiclePhysXConstraints physxConstraints;
 
-        void setToDefault();
+        void Reset();
+    };
+
+    struct VansVehicleCurvePoint
+    {
+        PxReal input = 0.0f;
+        PxReal output = 0.0f;
     };
 
     struct VansVehicleTuning
@@ -141,17 +146,78 @@ namespace VansEngine
 
         PxReal brakeMaxTorque = 1875.0f;
         PxReal handbrakeMaxTorque = 0.0f;
-        PxReal maxSteerAngleRad = 0.5235990285873413f;
+        PxReal maxSteerAngleRadians = 0.5235990285873413f;
         PxReal ackermannWheelBase = 2.863219976425171f;
         PxReal ackermannTrackWidth = 1.5510799884796143f;
         PxReal ackermannStrength = 1.0f;
 
         PxReal enginePeakTorque = 500.0f;
         PxReal engineMaxOmega = 600.0f;
+        PxReal engineMoi = 1.0f;
+        PxReal engineIdleOmega = 0.0f;
+        PxReal engineDampingFullThrottle = 0.15f;
+        PxReal engineDampingZeroThrottleClutchEngaged = 2.0f;
+        PxReal engineDampingZeroThrottleClutchDisengaged = 0.35f;
+        std::vector<VansVehicleCurvePoint> engineTorqueCurve = {
+            { 0.0f, 1.0f }, { 0.33f, 1.0f }, { 1.0f, 1.0f }
+        };
+
+        std::vector<PxReal> gearRatios = { -4.0f, 0.0f, 4.0f, 2.0f, 1.5f, 1.1f, 1.0f };
+        PxU32 neutralGear = 1;
         PxReal gearboxFinalRatio = 4.0f;
         PxReal gearboxSwitchTime = 0.5f;
+        std::vector<PxReal> autoboxUpRatios = { 0.65f, 0.15f, 0.65f, 0.65f, 0.65f, 0.65f, 0.65f };
+        std::vector<PxReal> autoboxDownRatios = { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
         PxReal autoboxLatency = 2.0f;
         PxReal clutchStrength = 10.0f;
+        PxU32 clutchEstimateIterations = 5;
+
+        PxReal tireLongitudinalStiffness = 24525.0f;
+        PxReal tireLateralStiffnessX = 0.009999999776482582f;
+        std::array<PxReal, 4> tireLateralStiffnessY = {
+            118699.637252138f, 118699.637252138f, 143930.84033118f, 143930.84033118f
+        };
+        PxReal tireCamberStiffness = 0.0f;
+        std::array<PxReal, 4> tireRestLoad = {
+            5628.72314453125f, 5628.72314453125f, 4604.3134765625f, 4604.3134765625f
+        };
+        std::array<VansVehicleCurvePoint, 3> tireFrictionVsSlip = {
+            VansVehicleCurvePoint{ 0.0f, 1.0f },
+            VansVehicleCurvePoint{ 0.1f, 1.0f },
+            VansVehicleCurvePoint{ 1.0f, 1.0f }
+        };
+        std::array<VansVehicleCurvePoint, 2> tireLoadFilter = {
+            VansVehicleCurvePoint{ 0.0f, 0.23080000281333924f },
+            VansVehicleCurvePoint{ 3.0f, 3.0f }
+        };
+
+        std::array<PxReal, 4> differentialTorqueRatios = { 0.25f, 0.25f, 0.25f, 0.25f };
+        std::array<PxReal, 4> differentialAverageWheelSpeedRatios = { 0.25f, 0.25f, 0.25f, 0.25f };
+        PxReal differentialCenterBias = 1.3f;
+        PxReal differentialCenterTarget = 1.29f;
+        PxReal differentialFrontBias = 1.3f;
+        PxReal differentialFrontTarget = 1.29f;
+        PxReal differentialRearBias = 1.3f;
+        PxReal differentialRearTarget = 1.29f;
+        PxReal differentialRate = 10.0f;
+
+        PxReal materialStaticFriction = 0.5f;
+        PxReal materialDynamicFriction = 0.5f;
+        PxReal materialRestitution = 0.6f;
+        PxReal tireFriction = 1.0f;
+        PxReal suspensionLimitRestitution = 0.0f;
+        PxU32 drivetrainSubsteps = 3;
+
+        PxVehicleFrame BuildFrame() const
+        {
+            PxVehicleFrame frame;
+            frame.lngAxis = longitudinalAxis;
+            frame.latAxis = lateralAxis;
+            frame.vrtAxis = verticalAxis;
+            return frame;
+        }
+
+        bool IsValid(std::string& error) const;
     };
 
     struct VansVehicleVisualBinding
@@ -178,14 +244,13 @@ namespace VansEngine
         VansPhysicsVehicle();
         ~VansPhysicsVehicle();
 
-        bool Initialize(VansPhysicsSystem* physicsSystem, const std::string& jsonPath, const PxTransform& startPose);
+        bool Initialize(VansPhysicsSystem* physicsSystem, const PxTransform& startPose, std::string& error);
         void Step(float dt);
-        void Shutdown();
 
         // Control
         void SetInputs(float throttle, float brake, float steer, float handbrake);
-        void SetGear(uint32_t gear);
-        void SetAutomaticGear(bool automatic);
+        bool SetGear(uint32_t gearIndex);
+        bool SetAutomaticGear(bool enabled);
         void SetTuning(const VansVehicleTuning& tuning) { m_Tuning = tuning; }
         const VansVehicleTuning& GetTuning() const { return m_Tuning; }
         PxVec3 GetBodyBoxHalfExtents() const { return m_Params.physxActorBoxShapeHalfExtents; }
@@ -444,6 +509,8 @@ namespace VansEngine
 
 
     private:
+        void Shutdown();
+
         VansVehicleParams m_Params;
         VansVehicleState m_State;
         VansVehicleTuning m_Tuning;
@@ -452,12 +519,12 @@ namespace VansEngine
         PxVehicleEngineDriveTransmissionCommandState m_TransmissionCommandState;
 
         PxVehicleComponentSequence m_ComponentSequence;
-        PxU8 m_ComponentSequenceSubstepGroupHandle;
+        PxU8 m_DrivetrainSubstepGroup = PxVehicleComponentSequence::eINVALID_SUBSTEP_GROUP;
         PxVehiclePhysXSimulationContext m_SimulationContext;
-        float m_DebugLogAccumulator = 0.0f;
+        PxMaterial* m_Material = nullptr;
         
         // PhysX Integration internal helper params
-        PxVehiclePhysXRoadGeometryQueryState m_PhysXRoadGeometryQueryState[PxVehicleLimits::eMAX_NB_WHEELS];
+        PxVehiclePhysXRoadGeometryQueryState m_RoadGeometryQueryStates[PxVehicleLimits::eMAX_NB_WHEELS];
 
         VansPhysicsSystem* m_PhysicsSystem = nullptr;
 

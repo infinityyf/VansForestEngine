@@ -4,7 +4,7 @@
 #include "VansVKCommandBuffer.h"
 #include "VansVKSurface.h"
 #include "VansRenderGraphVulkanSync.h"
-#include "../../Configration/VansConfigration.h"
+#include "../VansRenderBootstrapSettings.h"
 #include "../../Util/VansLog.h"
 #include <iostream>
 #include <algorithm>
@@ -896,9 +896,8 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 		}
 	};
 
-	auto vansConfigration = VansConfigration::GetInstance();
-	int cascadeCount = vansConfigration->GetCascadeCount();
-	uint32_t cascadeSize = (uint32_t)vansConfigration->GetCascadeShadowMapSize();
+	const uint32_t cascadeCount = kVansRenderBootstrapSettings.cascadeCount;
+	const uint32_t cascadeSize = kVansRenderBootstrapSettings.cascadeShadowMapSize;
 	VkExtent2D resolution = { cascadeSize, cascadeSize };
 
 	m_VansShadowPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
@@ -1099,10 +1098,9 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 		},
 	};
 
-	auto vansConfigration = VansConfigration::GetInstance();
 	VkExtent2D resolution = {
-		static_cast<uint32_t>((std::max)(vansConfigration->GetPunctualShadowMapWidth(), 1)),
-		static_cast<uint32_t>((std::max)(vansConfigration->GetPunctualShadowMapHeight(), 1))
+		kVansRenderBootstrapSettings.punctualShadowAtlasWidth,
+		kVansRenderBootstrapSettings.punctualShadowAtlasHeight
 	};
 
 	m_VansPunctualShadowPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);

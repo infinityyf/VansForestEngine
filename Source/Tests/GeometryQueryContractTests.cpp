@@ -20,6 +20,11 @@ namespace
     {
         VansGeometryTriangle t; t.a = a; t.b = b; t.c = c; t.normal = normal; t.owner = owner; return t;
     }
+    void BuildQuery(VansTriangleGeometryQuery& query, std::vector<VansGeometryTriangle> triangles)
+    {
+        std::string error;
+        Check(query.Build(std::move(triangles), error), error.c_str());
+    }
 }
 
 bool TestTriangleGeometryQueryContract()
@@ -33,11 +38,28 @@ bool TestTriangleGeometryQueryContract()
         Check(!query.IntersectsBox({-1, -1, -1}, {1, 1, 1}), "empty overlap query");
 
         // 开口单层地面位于负 Y，查询不能用高度阈值区分地上/地下。
-        query.Build({Triangle({0, -12, 0}, {4, -12, 0}, {0, -12, 4}, {0, 1, 0}, 7)});
+        BuildQuery(query, {Triangle({0, -12, 0}, {4, -12, 0}, {0, -12, 4}, {0, 1, 0}, 7)});
         Check(query.Raycast({1, -10, 1}, {0, -5, 0}, 2, hit), "front ray exactly at distance bound");
         Near(hit.distance, 2, "normalized ray distance");
         Check(!hit.backface && hit.owner == 7, "frontface and owner identity");
         Check(query.Raycast({1, -14, 1}, {0, 1, 0}, 2, hit) && hit.backface, "ground underside detection");
+        VansGeometryQueryOptions frontFacing;
+        frontFacing.backfaces = VansGeometryBackfacePolicy::RejectOneSided;
+        Check(!query.Raycast({1, -14, 1}, {0, 1, 0}, 2, hit, 0.0001f, frontFacing),
+            "one-sided backface policy accepted a backface");
+        auto doubleSided = Triangle({0, -12, 0}, {4, -12, 0}, {0, -12, 4}, {0, 1, 0}, 8);
+        doubleSided.twoSided = true;
+        BuildQuery(query, {doubleSided});
+        Check(query.Raycast({1, -14, 1}, {0, 1, 0}, 2, hit, 0.0001f, frontFacing) &&
+            hit.backface && hit.twoSided && hit.owner == 8,
+            "two-sided backface policy rejected a material-authorized side");
+        BuildQuery(query, {Triangle({0, -12, 0}, {4, -12, 0}, {0, -12, 4}, {0, 1, 0}, 9)});
+        frontFacing.twoSidedOverride = true;
+        Check(query.Raycast({1, -14, 1}, {0, 1, 0}, 2, hit, 0.0001f, frontFacing) &&
+            hit.twoSided && hit.owner == 9,
+            "instance sidedness override was not applied");
+        frontFacing.twoSidedOverride.reset();
+        BuildQuery(query, {Triangle({0, -12, 0}, {4, -12, 0}, {0, -12, 4}, {0, 1, 0}, 7)});
         Check(!query.Raycast({1, -10, 1}, {1, 0, 0}, 100, hit), "parallel ray");
         Check(!query.Raycast({1, -10, 1}, {}, 100, hit), "zero direction");
         Check(!query.Raycast({1, -10, 1}, {0, -1, 0}, 1.99f, hit), "finite ray segment");
@@ -52,7 +74,7 @@ bool TestTriangleGeometryQueryContract()
         Check(!query.IntersectsBox({2.9f, -12.1f, 2.9f}, {3.1f, -11.9f, 3.1f}), "reject empty part of triangle AABB");
 
         // 多层表面、薄墙与导入反 winding：最近的真实表面必须胜过更远的大片表面。
-        query.Build({
+        BuildQuery(query, {
             Triangle({-10, -14, -10}, {10, -14, -10}, {-10, -14, 10}, {0, 1, 0}, 1),
             Triangle({-10, -10, -10}, {10, -10, -10}, {-10, -10, 10}, {0, -1, 0}, 2),
             Triangle({0, -14, -10}, {0, -10, -10}, {0, -14, 10}, {-1, 0, 0}, 3)});
@@ -67,7 +89,7 @@ bool TestTriangleGeometryQueryContract()
             triangles.push_back(Triangle(center + glm::vec3(-1, 0, -1), center + glm::vec3(2, 0, -1),
                 center + glm::vec3(-1, 0, 2), {0, 1, 0}, i));
         }
-        query.Build(std::move(triangles));
+        BuildQuery(query, std::move(triangles));
         std::mt19937 random(70219);
         std::uniform_real_distribution<float> offset(-0.3f, 0.3f);
         for (uint32_t i = 0; i < 16384; ++i)
@@ -83,9 +105,9 @@ bool TestTriangleGeometryQueryContract()
         }
 
         auto degenerate = Triangle({}, {}, {}, {});
-        query.Build({degenerate, Triangle({10000, -10000, 10000}, {10004, -10000, 10000},
+        BuildQuery(query, {degenerate, Triangle({10000, -10000, 10000}, {10004, -10000, 10000},
             {10000, -10000, 10004}, {0, 1, 0}, 99)});
-        Check(query.GetDiscardedTriangleCount() == 1, "discard degenerate triangle");
+        Check(query.GetTriangles().size() == 1, "discard degenerate triangle");
         Check(query.Raycast({10001, -9998, 10001}, {0, -1, 0}, 3, hit) && hit.owner == 99, "large coordinate query");
         Near(hit.distance, 2, "large coordinate distance");
         const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -99,16 +121,20 @@ bool TestTriangleGeometryQueryContract()
         Check(!VansTriangleGeometryQuery::ClipSurfaceToBox(clipped, {2, 0, 2}, {2, 0, 2}, centroid, area), "zero-area touch generated receiver");
         Check(!VansTriangleGeometryQuery::ClipSurfaceToBox(Triangle({nan, 0, 0}, {1, 0, 0}, {0, 0, 1}, {}),
             {-2, -2, -2}, {2, 2, 2}, centroid, area), "non-finite clipped geometry accepted");
-        query.Build({clipped});
+        BuildQuery(query, {clipped});
         const auto measure = query.MeasureSurface({0,-1,0}, {1,1,1});
         Near(float(measure.area), 1.0f, "BVH clipped area measure");
         Near(float(measure.areaNormal.y), 1.0f, "area-weighted geometric normal measure");
         Near(float(query.MeasureSurface({3,-1,3}, {4,1,4}).area), 0.0f, "surface measure counted triangle AABB void");
         Check(!query.Raycast({nan, 0, 0}, {1, 0, 0}, 10, hit), "non-finite query rejected");
-        bool rejected = false;
-        try { query.Build({Triangle({nan, 0, 0}, {1, 0, 0}, {0, 1, 0}, {})}); }
-        catch (const std::invalid_argument&) { rejected = true; }
-        Check(rejected, "non-finite geometry rejected rather than silently omitted");
+        const auto previousTriangles = query.GetTriangles();
+        std::string buildError;
+        Check(!query.Build({Triangle({nan, 0, 0}, {1, 0, 0}, {0, 1, 0}, {})}, buildError) &&
+            buildError == "Geometry query requires finite triangle data",
+            "non-finite geometry did not return the explicit build error");
+        Check(query.GetTriangles().size() == previousTriangles.size() &&
+            query.Raycast({0.5f, 1.0f, 0.5f}, {0, -1, 0}, 2, hit),
+            "failed build replaced the last valid query");
         std::cout << "[GeometryQuery] PASS: 4096 triangles, 16384 analytic ray/nearest/box cases, thin walls, negative-Y rooms, winding, edges, degenerates\n";
         return true;
     }

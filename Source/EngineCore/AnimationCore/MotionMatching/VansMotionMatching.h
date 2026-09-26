@@ -2,6 +2,7 @@
 
 #include "../VansAnimationTypes.h"
 #include "../VansAnimationController.h"
+#include "../VansPoseTypes.h"
 #include "VansRootMotionSteering.h"
 #include "VansRootMotionReconciler.h"
 #include "VansTurnInPlaceWarping.h"
@@ -74,6 +75,7 @@ namespace VansGraphics
 	{
 		int idleState = 0;
 		int crouchState = 4;
+		int airborneState = 5;
 		float idleSpeedThreshold = 0.05f;
 		std::vector<int> movingStates = { 1, 2, 3, 4 };
 		std::vector<int> paceTransitionStates = { 1, 2, 3 };
@@ -423,8 +425,8 @@ namespace VansGraphics
 			glm::vec3 angularVelocity = glm::vec3(0.0f);
 		};
 		std::vector<InertialBoneState> m_InertialState;
-		std::vector<glm::mat4> m_LastOutputLocalPose;
-		std::vector<glm::mat4> m_PreviousOutputLocalPose;
+		std::vector<VansBoneTransform> m_LastOutputLocalPose;
+		std::vector<VansBoneTransform> m_PreviousOutputLocalPose;
 		std::vector<glm::mat4> m_PreviousQueryModelPose;
 		glm::vec3 m_CurrentLeftFootVelocity = glm::vec3(0.0f);
 		glm::vec3 m_CurrentRightFootVelocity = glm::vec3(0.0f);
@@ -487,7 +489,7 @@ namespace VansGraphics
 		                                     const Skeleton& skeleton,
 		                                     const MotionMatchingResolvedRig& rig) const;
 		FeatureVector BuildQueryFeature(const std::unordered_map<std::string, AnimatorParameter>& parameters,
-		                                const std::vector<glm::mat4>& currentLocalPose,
+		                                const std::vector<VansBoneTransform>& currentLocalPose,
 		                                const Skeleton& skeleton,
 		                                const MotionMatchingResolvedRig& rig,
 		                                const Vans::VansCharacterTrajectory* trajectory) const;
@@ -508,8 +510,8 @@ namespace VansGraphics
 		void SamplePose(const VansAnimationClip& clip,
 		                float time,
 		                const Skeleton& skeleton,
-		                std::vector<glm::mat4>& outLocalTransforms) const;
-		void BuildModelSpacePose(const std::vector<glm::mat4>& localTransforms,
+		                std::vector<VansBoneTransform>& outLocalPose) const;
+		bool BuildModelSpacePose(const std::vector<VansBoneTransform>& localPose,
 		                         const Skeleton& skeleton,
 		                         std::vector<glm::mat4>& outModelTransforms) const;
 		glm::vec3 TransformPointToRootSpace(const glm::mat4& rootModel, const glm::vec3& point) const;
@@ -524,12 +526,12 @@ namespace VansGraphics
 		bool SampleContactWeights(int sampleIndex, float time, float& outLeft, float& outRight) const;
 		void AdvanceContactWeights(float deltaTime, float targetLeft, float targetRight);
 		void BeginContactTransition(float sourceLeft, float sourceRight, float targetLeft, float targetRight);
-		void BeginInertialTransition(const std::vector<glm::mat4>& target,
-		                             const std::vector<glm::mat4>& targetFuture,
+		void BeginInertialTransition(const std::vector<VansBoneTransform>& target,
+		                             const std::vector<VansBoneTransform>& targetFuture,
 		                             float velocityDeltaTime);
 		void ApplyInertialization(float deltaTime,
-		                          const std::vector<glm::mat4>& target,
-		                          std::vector<glm::mat4>& out);
+		                          const std::vector<VansBoneTransform>& target,
+		                          std::vector<VansBoneTransform>& out);
 		void PushCandidateDebug(const MatchResult& result);
 	};
 }

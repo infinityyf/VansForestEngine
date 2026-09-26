@@ -4,6 +4,7 @@
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../Util/VansLog.h"
 #include "VansSceneEnvironmentNodeBuilder.h"
+#include "VansSceneAssembly.h"
 #include "VansSceneMaterialBuilder.h"
 #include "VansSceneRenderNodeBuilder.h"
 #include "../VulkanCore/VansVKDevice.h"
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <string>
+#include <utility>
 
 namespace VansGraphics
 {
@@ -29,13 +31,18 @@ void ApplyOptionalValue(const std::optional<T>& source, T& destination)
 
 }
 
-bool VansSceneContentBuildExecutor::BuildFromDocument(
+VansSceneContentBuildResult VansSceneContentBuildExecutor::BuildFromDocument(
 	VansScene& scene,
 	const Vans::VansSerializedValue& sceneDocument,
-	const std::filesystem::path& sceneSourcePath)
+	const std::filesystem::path& sceneSourcePath,
+	VansVKDevice& device)
 {
-	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-	VkDevice nativeDevice = vkDevice->GetLogicDevice();
+	const auto failure = [](VansSceneContentBuildFailure reason, std::string error)
+	{
+		return VansSceneContentBuildResult{ false, reason, std::move(error) };
+	};
+
+	VkDevice nativeDevice = device.GetLogicDevice();
 
 	const std::string projectRoot = ResolveProjectRootFromScenePath(sceneSourcePath);
 	Vans::VansSceneContentBuildPlan buildPlan;
@@ -47,20 +54,27 @@ bool VansSceneContentBuildExecutor::BuildFromDocument(
 		planError))
 	{
 		VANS_LOG_ERROR("[VansScene] " << planError << ": " << sceneSourcePath.string());
-		return false;
+		return failure(
+			VansSceneContentBuildFailure::ProjectionFailed,
+			std::move(planError));
 	}
 
-	return BuildFromPlan(scene, nativeDevice, vkDevice, buildPlan, sceneSourcePath, projectRoot);
+	return BuildFromPlan(scene, nativeDevice, device, buildPlan, sceneSourcePath, projectRoot);
 }
 
-bool VansSceneContentBuildExecutor::BuildFromPlan(
+VansSceneContentBuildResult VansSceneContentBuildExecutor::BuildFromPlan(
 	VansScene& scene,
 	VkDevice& nativeDevice,
-	VansVKDevice* vkDevice,
+	VansVKDevice& device,
 	const Vans::VansSceneContentBuildPlan& buildPlan,
 	const std::filesystem::path& sceneSourcePath,
 	const std::string& projectRoot)
 {
+	const auto failure = [](VansSceneContentBuildFailure reason, std::string error)
+	{
+		return VansSceneContentBuildResult{ false, reason, std::move(error) };
+	};
+
 	const std::string sceneSourcePathString = sceneSourcePath.string();
 	const Vans::VansSceneRenderSettingsConfig& renderSettings = buildPlan.renderSettings;
 	scene.SetEnvironmentSettings(renderSettings.environment);
@@ -68,9 +82,19 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 	ApplyMainCameraHiZCullSettings(scene, renderSettings.mainCameraHiZCulling);
 	if (Vans::VansProjectManager::Get().IsProjectLoaded())
 	{
+		const Vans::VansProjectSettings& projectSettings =
+			Vans::VansProjectManager::Get().GetProjectSettings();
 		ApplyProjectMainCameraHiZCullSettings(
 			scene,
-			Vans::VansProjectManager::Get().GetProjectSettings().GetMainCameraHiZCullSettings());
+			projectSettings.GetMainCameraHiZCullSettings());
+		std::string cameraSettingsError;
+		if (!scene.SetCameraLensLimits(
+			projectSettings.GetCameraLensLimits(), cameraSettingsError))
+		{
+			return failure(
+				VansSceneContentBuildFailure::ProjectCameraSettingsFailed,
+				"Project camera lens settings failed: " + cameraSettingsError);
+		}
 	}
 	scene.GetReflectionProbeSystem()->LoadFromSceneConfig(buildPlan.reflectionProbes, sceneSourcePathString);
 	ApplyGISettings(scene, renderSettings.globalIllumination);
@@ -78,11 +102,30 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 	if (!buildPlan.materials.empty())
 		VansSceneMaterialBuilder::LoadMaterials(scene, buildPlan.materials);
 
-	if (!scene.LoadSceneObjects(nativeDevice, buildPlan.objects, projectRoot))
-		return false;
+	const VansSceneObjectBuildResult objectBuild =
+		VansSceneAssembly::BuildObjects(
+			scene, nativeDevice, buildPlan.objects, projectRoot);
+	if (!objectBuild.m_Built)
+	{
+		return failure(
+			VansSceneContentBuildFailure::ObjectBuildFailed,
+			objectBuild.m_Error.empty()
+				? "Scene object build failed"
+				: objectBuild.m_Error);
+	}
 
 	if (!buildPlan.renderNodes.empty())
-		VansSceneRenderNodeBuilder::LoadRenderNodes(scene, nativeDevice, buildPlan.renderNodes);
+	{
+		std::string error;
+		if (!VansSceneRenderNodeBuilder::BuildRenderNodes(
+			scene, nativeDevice, buildPlan.renderNodes, error))
+		{
+			VANS_LOG_ERROR("[SceneBuild] Configured render-node build failed: " << error);
+			return failure(
+				VansSceneContentBuildFailure::ConfiguredRenderNodeBuildFailed,
+				std::move(error));
+		}
+	}
 
 	if (buildPlan.splines)
 	{
@@ -104,30 +147,79 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 			!scene.PublishSplineField(field, error))
 		{
 			VANS_LOG_ERROR("[PCG] Spline field build failed: " << error);
-			return false;
+			return failure(
+				VansSceneContentBuildFailure::SplineFieldBuildFailed,
+				std::move(error));
 		}
 		scene.SetSplineAssetGuid(buildPlan.splineAssetGuid);
 	}
+	std::shared_ptr<const Vans::VansTerrainAsset> effectiveTerrain;
 	if (buildPlan.terrain)
 	{
 		auto terrain = *buildPlan.terrain;
 		if (const auto& field = scene.GetSplineFieldSnapshot()) terrain.asset = field->effectiveTerrain;
-		VansSceneEnvironmentNodeBuilder::AddTerrainNode(scene, vkDevice, terrain);
+		effectiveTerrain = terrain.asset;
+		std::string error;
+		if (!VansSceneEnvironmentNodeBuilder::BuildTerrainNode(scene, device, terrain, error))
+		{
+			VANS_LOG_ERROR("[SceneBuild] Terrain node build failed: " << error);
+			return failure(
+				VansSceneContentBuildFailure::TerrainBuildFailed,
+				std::move(error));
+		}
 	}
 
 	// 空集合不分配植被 GPU 批次，允许随后在编辑器中绑定用户新建的配方。
-	if (!VansSceneEnvironmentNodeBuilder::AddVegetationNode(scene, nativeDevice,
-		buildPlan.vegetation ? *buildPlan.vegetation : Vans::VansPcgRecipeAsset{}))
-		return false;
+	{
+		std::string error;
+		if (!VansSceneEnvironmentNodeBuilder::BuildVegetationNode(scene, nativeDevice,
+			buildPlan.vegetation ? *buildPlan.vegetation : Vans::VansPcgRecipeAsset{}, error))
+		{
+			VANS_LOG_ERROR("[SceneBuild] Vegetation node build failed: " << error);
+			return failure(
+				VansSceneContentBuildFailure::VegetationBuildFailed,
+				std::move(error));
+		}
+	}
 
 	if (buildPlan.water)
-		VansSceneEnvironmentNodeBuilder::AddWaterNode(scene, nativeDevice, *buildPlan.water);
+	{
+		std::string error;
+		if (!VansSceneEnvironmentNodeBuilder::BuildWaterNode(
+			scene, device, *buildPlan.water, effectiveTerrain, error))
+		{
+			VANS_LOG_ERROR("[SceneBuild] Water node build failed: " << error);
+			return failure(
+				VansSceneContentBuildFailure::WaterBuildFailed,
+				std::move(error));
+		}
+	}
 
-	VansSceneRenderNodeBuilder::AddDeferredNode(scene, nativeDevice);
-	VansSceneRenderNodeBuilder::AddScreenSpaceFeatureNode(scene, nativeDevice);
+	{
+		std::string error;
+		if (!VansSceneRenderNodeBuilder::BuildDeferredNode(scene, nativeDevice, error))
+		{
+			VANS_LOG_ERROR("[SceneBuild] Deferred node build failed: " << error);
+			return failure(
+				VansSceneContentBuildFailure::DeferredNodeBuildFailed,
+				std::move(error));
+		}
+	}
+	{
+		std::string error;
+		if (!VansSceneRenderNodeBuilder::BuildScreenSpaceFeatureNodes(
+			scene, nativeDevice, error))
+		{
+			VANS_LOG_ERROR("[SceneBuild] Screen-space node build failed: " << error);
+			return failure(
+				VansSceneContentBuildFailure::ScreenSpaceNodeBuildFailed,
+				std::move(error));
+		}
+	}
 
 	VANS_LOG("[VansScene] Scene content loaded from: " << sceneSourcePathString);
-	return true;
+	return VansSceneContentBuildResult{
+		true, VansSceneContentBuildFailure::None, {} };
 }
 
 void VansSceneContentBuildExecutor::ApplyPostProcessSettings(

@@ -1,5 +1,5 @@
 #include "VansSceneEditService.h"
-#include "VansAssetDocumentRegistry.h"
+#include "../AuthoringCore/VansAssetDocumentRegistry.h"
 
 #include "VansSceneObjectReferenceResolver.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
@@ -242,21 +242,6 @@ struct EntityHierarchyRecord
     std::string parent;
     std::optional<VansSceneParentReference> parentReference;
 };
-
-SceneEditResult ValidatePointer(const std::string& path)
-{
-    if (path.empty() || path.front() != '/')
-        return { false, "Scene property address must be a non-root JSON Pointer" };
-    for (std::size_t index = 0; index < path.size(); ++index)
-    {
-        if (path[index] == '~' &&
-            (index + 1 >= path.size() || (path[index + 1] != '0' && path[index + 1] != '1')))
-        {
-            return { false, "Scene property address contains an invalid JSON Pointer escape" };
-        }
-    }
-    return { true, {} };
-}
 
 bool TryRead(
     const VansSerializedValue& root,
@@ -561,8 +546,12 @@ VansSetScenePropertyCommand::VansSetScenePropertyCommand(std::string propertyPoi
 
 SceneEditResult VansSetScenePropertyCommand::Execute(VansSceneDocument& document)
 {
-    if (auto validation = ValidatePointer(m_PropertyPointer); !validation)
-        return validation;
+    std::string pointerError;
+    if (!ValidateDocumentPropertyPointer(
+            m_PropertyPointer, false, &pointerError, "Scene property address"))
+    {
+        return { false, std::move(pointerError) };
+    }
     VansSerializedValue candidate = document.SerializedRootSnapshot();
     VansSerializedValue oldValue;
     m_HadOldValue = TryRead(candidate, m_PropertyPointer, oldValue);
@@ -616,8 +605,12 @@ VansRemoveScenePropertyCommand::VansRemoveScenePropertyCommand(
 
 SceneEditResult VansRemoveScenePropertyCommand::Execute(VansSceneDocument& document)
 {
-    if (auto validation = ValidatePointer(m_PropertyPointer); !validation)
-        return validation;
+    std::string pointerError;
+    if (!ValidateDocumentPropertyPointer(
+            m_PropertyPointer, false, &pointerError, "Scene property address"))
+    {
+        return { false, std::move(pointerError) };
+    }
     VansSerializedValue candidate = document.SerializedRootSnapshot();
     VansSerializedValue oldValue;
     if (!TryRead(candidate, m_PropertyPointer, oldValue))
@@ -886,8 +879,9 @@ SceneEditResult VansSceneEditService::Execute(std::unique_ptr<VansSceneEditComma
         command->authoringBefore = authoringBefore; command->authoringAfter = authoringAfter;
         command->authoringBeforeState = stateBefore; command->authoringAfterState = m_Document.CurrentStateId();
     }
-    m_Undo.push_back(std::move(command));
+	m_Undo.push_back({ std::move(command), VansAuthoringHistory::IssueEditSequence() });
     m_Redo.clear();
+	m_RedoRevision = 0;
     return result;
 }
 
@@ -958,8 +952,11 @@ SceneEditResult VansSceneEditService::AssignObjectReference(const ObjectReferenc
     if (!ValidateDocumentPropertyPath(assignment.targetPath, &pathError))
         return { false, pathError };
     const std::string propertyPointer = ToDocumentPropertyPointer(assignment.targetPath);
-    if (auto validation = ValidatePointer(propertyPointer); !validation)
-        return validation;
+    if (!ValidateDocumentPropertyPointer(
+            propertyPointer, false, &pathError, "Scene property address"))
+    {
+        return { false, std::move(pathError) };
+    }
 
     VansSerializedValue referenceValue;
     std::string assignmentError;
@@ -1032,51 +1029,61 @@ SceneEditResult VansSceneEditService::Undo()
 {
     if (m_Undo.empty())
         return { false, "No scene edit to undo" };
-    std::unique_ptr<VansSceneEditCommand> command = std::move(m_Undo.back());
+	DiscardStaleRedo();
+	HistoryEntry entry = std::move(m_Undo.back());
     m_Undo.pop_back();
     SceneEditResult result;
     try
     {
-        if (command->usesPrefabHistory)
+        if (entry.command->usesPrefabHistory)
         {
-            m_Document.RestoreAuthoringRoot(command->authoringBefore, command->authoringBeforeState);
+			m_Document.RestoreAuthoringRoot(entry.command->authoringBefore, entry.command->authoringBeforeState);
             if (m_PrefabPreviewRefresh && !m_PrefabPreviewRefresh())
-            { m_Document.RestoreAuthoringRoot(command->authoringAfter, command->authoringAfterState); m_PrefabPreviewRefresh(); result = {false, "Prefab undo preview failed"}; }
+			{ m_Document.RestoreAuthoringRoot(entry.command->authoringAfter, entry.command->authoringAfterState); m_PrefabPreviewRefresh(); result = {false, "Prefab undo preview failed"}; }
             else { result.success = true; result.runtimeChangeApplied = static_cast<bool>(m_PrefabPreviewRefresh); }
         }
-        else result = command->Undo(m_Document);
+		else result = entry.command->Undo(m_Document);
     }
     catch (const std::exception& error) { result = { false, error.what() }; }
     if (result)
-        m_Redo.push_back(std::move(command));
+	{
+		if (m_Redo.empty())
+			m_RedoRevision = VansAuthoringHistory::CurrentRevision();
+		m_Redo.push_back(std::move(entry));
+	}
     else
-        m_Undo.push_back(std::move(command));
+		m_Undo.push_back(std::move(entry));
     return result;
 }
 
 SceneEditResult VansSceneEditService::Redo()
 {
+	DiscardStaleRedo();
     if (m_Redo.empty())
         return { false, "No scene edit to redo" };
-    std::unique_ptr<VansSceneEditCommand> command = std::move(m_Redo.back());
+	HistoryEntry entry = std::move(m_Redo.back());
     m_Redo.pop_back();
     SceneEditResult result;
     try
     {
-        if (command->usesPrefabHistory)
+        if (entry.command->usesPrefabHistory)
         {
-            m_Document.RestoreAuthoringRoot(command->authoringAfter, command->authoringAfterState);
+			m_Document.RestoreAuthoringRoot(entry.command->authoringAfter, entry.command->authoringAfterState);
             if (m_PrefabPreviewRefresh && !m_PrefabPreviewRefresh())
-            { m_Document.RestoreAuthoringRoot(command->authoringBefore, command->authoringBeforeState); m_PrefabPreviewRefresh(); result = {false, "Prefab redo preview failed"}; }
+			{ m_Document.RestoreAuthoringRoot(entry.command->authoringBefore, entry.command->authoringBeforeState); m_PrefabPreviewRefresh(); result = {false, "Prefab redo preview failed"}; }
             else { result.success = true; result.runtimeChangeApplied = static_cast<bool>(m_PrefabPreviewRefresh); }
         }
-        else result = command->Redo(m_Document);
+		else result = entry.command->Redo(m_Document);
     }
     catch (const std::exception& error) { result = { false, error.what() }; }
     if (result)
-        m_Undo.push_back(std::move(command));
+	{
+		m_Undo.push_back(std::move(entry));
+		if (m_Redo.empty())
+			m_RedoRevision = 0;
+	}
     else
-        m_Redo.push_back(std::move(command));
+		m_Redo.push_back(std::move(entry));
     return result;
 }
 
@@ -1084,5 +1091,34 @@ void VansSceneEditService::ClearHistory()
 {
     m_Undo.clear();
     m_Redo.clear();
+	m_RedoRevision = 0;
+}
+
+void VansSceneEditService::DiscardStaleRedo() const
+{
+	if (!m_Redo.empty() && m_RedoRevision != VansAuthoringHistory::CurrentRevision())
+	{
+		m_Redo.clear();
+		m_RedoRevision = 0;
+	}
+}
+
+VansAuthoringHistorySnapshot VansSceneEditService::HistorySnapshot() const
+{
+	DiscardStaleRedo();
+	return {
+		m_Undo.empty() ? 0 : m_Undo.back().sequence,
+		m_Redo.empty() ? 0 : m_Redo.back().sequence
+	};
+}
+
+bool VansSceneEditService::CanUndo() const
+{
+	return HistorySnapshot().CanUndo();
+}
+
+bool VansSceneEditService::CanRedo() const
+{
+	return HistorySnapshot().CanRedo();
 }
 }

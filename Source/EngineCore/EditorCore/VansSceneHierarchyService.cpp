@@ -1,6 +1,6 @@
 #include "VansSceneHierarchyService.h"
 
-#include "VansEditorObjectReference.h"
+#include "../AuthoringCore/VansEditorObjectReference.h"
 #include "VansSceneEditService.h"
 #include "../AssetCore/Serialization/VansSerializedValue.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"

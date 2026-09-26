@@ -50,6 +50,32 @@ bool VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
 	return true;
 }
 
+bool VansDescriptorSetLayoutFactory::CreateAndAllocate_Atmosphere(
+	VkDescriptorSetLayout& outLayout,
+	std::vector<VkDescriptorSet>& outSets,
+	uint32_t setCount)
+{
+	static_assert(ATMOSPHERE_BINDING_AERIAL_CLEAR_SCATTERING_INPUT + 1 == ATMOSPHERE_BINDING_COUNT,
+		"Atmosphere descriptor bindings must stay contiguous");
+	constexpr VkShaderStageFlags compute = VK_SHADER_STAGE_COMPUTE_BIT;
+	const std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{ ATMOSPHERE_BINDING_TRANSMITTANCE_LUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
+		{ ATMOSPHERE_BINDING_MULTI_SCATTERING_LUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
+		{ ATMOSPHERE_BINDING_SKY_VIEW_LUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
+		{ ATMOSPHERE_BINDING_AERIAL_SCATTERING, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
+		{ ATMOSPHERE_BINDING_AERIAL_OPTICAL_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
+		{ ATMOSPHERE_BINDING_RAW_OPAQUE_SCENE_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr },
+		{ ATMOSPHERE_BINDING_SCENE_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr },
+		{ ATMOSPHERE_BINDING_SCENE_COLOR_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
+		{ ATMOSPHERE_BINDING_WATER_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr },
+		{ ATMOSPHERE_BINDING_WATER_POSITION_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr },
+		{ ATMOSPHERE_BINDING_AERIAL_CLEAR_SCATTERING_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
+		{ ATMOSPHERE_BINDING_AERIAL_CLEAR_SCATTERING_INPUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr },
+	};
+
+	return CreateAndAllocate_Custom(bindings, outLayout, outSets, setCount);
+}
+
 // ============================================================
 // Set 0: Global Layout (universal across all pipelines)
 // ============================================================

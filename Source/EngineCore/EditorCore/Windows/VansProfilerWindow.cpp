@@ -51,7 +51,7 @@ void VansGraphics::VansProfilerWindow::ShowWindow(Vans::EditorAPI::IEngineEditor
 
 void VansGraphics::VansProfilerWindow::DrawProfilerContents()
 {
-    if (!VansEditorWindow::m_ProfilerWindowOpen)
+    if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::Profiler))
         return;
 
 #if VANS_PROFILER_ENABLED

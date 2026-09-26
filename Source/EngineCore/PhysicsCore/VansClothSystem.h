@@ -28,7 +28,7 @@ namespace VansEngine
         void Shutdown();
 
         // Step the cloth solver for this frame.
-        // Call AFTER SyncPinnedParticlesToRenderNode on all cloth nodes and
+        // Call after the scene has written the current substep's pinned particles and
         // BEFORE WriteSimResultsToStagingBuffer.
         void SimulateStep(float dt);
 

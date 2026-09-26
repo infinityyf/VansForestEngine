@@ -1,6 +1,8 @@
 #pragma once
 
 #include "../AssetCore/Serialization/VansSerializedValue.h"
+#include "VansGAFDiagnosticsSettings.h"
+#include "VansGAFPerformanceBudget.h"
 #include "VansGameplaySchemaTypes.h"
 
 #include <cstdint>
@@ -24,15 +26,6 @@ enum class VansGAFValidationStage : std::uint8_t
 	CI
 };
 
-struct VansGAFPerformanceBudget
-{
-	std::uint32_t maximumActiveActionsPerHost = 64;
-	std::uint32_t maximumTasksPerAction = 64;
-	std::uint32_t maximumGraphTransitionsPerTick = 1024;
-	std::uint32_t maximumEffectsPerHost = 256;
-	std::uint32_t maximumPayloadBytes = 4096;
-};
-
 struct VansGAFSettings
 {
 	std::vector<std::string> defaultTagRoots;
@@ -40,6 +33,7 @@ struct VansGAFSettings
 	bool stripEditorMetadata = true;
 	bool treatCookWarningsAsErrors = false;
 	std::string templateDirectory = "EngineAssets/GAF/Templates";
+	VansGAFDiagnosticsSettings diagnostics;
 	VansGAFPerformanceBudget performance;
 };
 
@@ -72,6 +66,7 @@ struct VansGAFConfiguredInputField
 	std::string valueType;
 	bool required = false;
 	VansSerializedValue defaultValue;
+	std::vector<std::string> enumValues;
 };
 
 struct VansGAFConfiguredType

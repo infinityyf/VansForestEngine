@@ -42,14 +42,14 @@ VansPcgResourcePlan BuildPcgResourcePlan(const VansPcgRecipeAsset& recipe,
    for (const auto guid : {layer.densityMask,layer.exclusionMask}) {
     if (!guid.IsValid()) continue;
     if (!add(guid,VansAssetType::PcgMask)) return result;
-    const auto mask=repository.ResolveLatest<VansPcgMaskAsset>(guid);
-    if (!mask || !ValidatePcgMaskAsset(*mask,true).empty()) { result.error="PCG Mask snapshot is invalid: "+guid.ToString(); return result; }
-    if (mask->mask.target.regionId!=region.id || mask->mask.target.layerId!=layer.id ||
-        mask->mask.target.maskId!=guid.ToString() || !pixels.insert(mask->pixelAsset).second) {
-     result.error="PCG Mask or pixel texture ownership is shared or mismatched: "+guid.ToString(); return result;
-    }
-    if (!add(mask->pixelAsset,VansAssetType::Texture,false,true)) return result;
    }
+   VansPcgMaskBinding masks;
+   std::string maskError;
+   if (!ResolvePcgMaskBinding(region,layer,repository,true,pixels,masks,maskError)) {
+    result.error="PCG Mask binding is invalid: "+maskError; return result;
+   }
+   if (!add(masks.density->pixelAsset,VansAssetType::Texture,false,true) ||
+       (masks.exclusion && !add(masks.exclusion->pixelAsset,VansAssetType::Texture,false,true))) return result;
   }
  }
  for (const auto& item : resources) result.resources.push_back(item.second);

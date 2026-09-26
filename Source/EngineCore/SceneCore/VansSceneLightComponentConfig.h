@@ -47,7 +47,7 @@ struct VansScenePointLightComponentConfig
 	std::optional<std::array<float, 3>> color;
 	std::optional<float> intensity;
 	std::optional<float> radius;
-	std::optional<std::string> iesProfile;
+	std::optional<std::string> iesProfileGuid;
 	VansSceneLightShadowConfig shadow;
 };
 
@@ -59,7 +59,7 @@ struct VansSceneSpotLightComponentConfig
 	std::optional<float> radius;
 	std::optional<float> innerCutoffDegrees;
 	std::optional<float> outerCutoffDegrees;
-	std::optional<std::string> iesProfile;
+	std::optional<std::string> iesProfileGuid;
 	std::optional<float> iesIntensityScale;
 	VansSceneLightShadowConfig shadow;
 };
@@ -75,8 +75,7 @@ struct VansSceneRectLightComponentConfig
 	std::optional<bool> twoSided;
 	std::optional<float> attenuationExp;
 	std::optional<float> textureLodBias;
-	std::optional<std::string> emissiveTexture;
-	std::optional<std::string> emissiveVideo;
+	std::optional<std::string> emissiveTextureGuid;
 	VansSceneLightShadowConfig shadow;
 };
 

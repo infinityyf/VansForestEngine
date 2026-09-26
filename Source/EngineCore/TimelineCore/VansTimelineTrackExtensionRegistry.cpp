@@ -75,6 +75,22 @@ const VansTimelineTrackExtensionDescriptor* VansTimelineTrackExtensionRegistry::
 	return slot < m_Descriptors.size() ? &m_Descriptors[slot] : nullptr;
 }
 
+std::vector<VansTimelineOutputTypeId> VansTimelineTrackExtensionRegistry::DeclaredOutputTypes(
+	bool applierRequiredOnly) const
+{
+	std::vector<VansTimelineOutputTypeId> types;
+	for (const VansTimelineTrackExtensionDescriptor& descriptor : m_Descriptors)
+	{
+		for (const VansTimelineOutputDeclaration& output : descriptor.outputs)
+		{
+			if (applierRequiredOnly && !output.applierRequired) continue;
+			if (std::find(types.begin(), types.end(), output.typeId) == types.end())
+				types.push_back(output.typeId);
+		}
+	}
+	return types;
+}
+
 std::uint64_t VansTimelineTrackExtensionRegistry::ManifestHash() const
 {
 	std::vector<const VansTimelineTrackExtensionDescriptor*> ordered;

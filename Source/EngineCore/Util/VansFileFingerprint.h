@@ -7,6 +7,8 @@
 
 namespace Vans
 {
+inline constexpr std::uint64_t VANS_FNV1A64_OFFSET_BASIS = 14695981039346656037ull;
+
 struct VansFileFingerprint
 {
 	std::uint64_t size = 0;
@@ -20,4 +22,6 @@ bool ComputeFileFingerprint(
 	std::string* outError = nullptr);
 
 std::uint64_t ComputeMemoryFnv1a64(const void* data, std::size_t size);
+std::uint64_t ContinueMemoryFnv1a64(std::uint64_t hash, const void* data, std::size_t size);
+std::uint64_t ContinueUint64LittleEndianFnv1a64(std::uint64_t hash, std::uint64_t value);
 }

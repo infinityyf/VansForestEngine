@@ -1,8 +1,10 @@
 #pragma once
+#include "VansAudioDeviceConfig.h"
 #include "VansAudioReverbPreset.h"
 
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 // OpenAL 头文件仅在 .cpp 中引入，此处使用 void* 隔离
@@ -10,6 +12,16 @@
 
 namespace VansEngine
 {
+    enum class VansAudioSourceAcquireStatus
+    {
+        Acquired,
+        NotInitialized,
+        LimitReached,
+        BackendFailure
+    };
+
+    const char* VansAudioSourceAcquireStatusName(VansAudioSourceAcquireStatus status);
+
     // ===========================================================================
     // VansAudioSystem — OpenAL-Soft 设备/上下文的单例封装
     //
@@ -34,16 +46,23 @@ namespace VansEngine
         static VansAudioSystem& GetInstance();
 
         // ── 设备 / 上下文 ────────────────────────────────────────────────────
-        bool Initialize();
+        bool Initialize(const VansAudioDeviceConfig& config);
+        bool ApplyDeviceConfig(const VansAudioDeviceConfig& config, std::string& error);
         void Shutdown();
 
         bool IsInitialized() const { return m_Initialized; }
         bool IsEfxSupported() const { return m_EfxSupported; }
-        std::uint32_t GetDefaultReverbEffectSlot() const { return m_DefaultReverbSlot; }
-        std::uint32_t AcquireSource();
+        VansAudioSourceAcquireStatus TryAcquireSource(std::uint32_t& sourceId);
         void ReleaseSource(std::uint32_t& sourceId);
-        std::size_t GetActiveSourceLeaseCount() const { return m_ActiveSourceLeases; }
+        void SetSourceLimit(std::size_t sourceLimit);
+        const VansAudioDeviceConfig& GetDeviceConfig() const { return m_DeviceConfig; }
+        const std::string& GetActiveDeviceName() const { return m_ActiveDeviceName; }
+        const std::string& GetHrtfStatus() const { return m_HrtfStatus; }
+        std::size_t GetSourceLimit() const { return m_DeviceConfig.m_SourceLimit; }
+        std::size_t GetActiveSourceLeaseCount() const { return m_ActiveSources.size(); }
         std::size_t GetPooledSourceCount() const { return m_PooledSources.size(); }
+        std::size_t GetSourceLimitRejectionCount() const { return m_SourceLimitRejections; }
+        std::size_t GetSourceBackendFailureCount() const { return m_SourceBackendFailures; }
         bool ApplyDefaultReverbSend(std::uint32_t sourceId, float sendGain,
             std::uint32_t& sourceSendFilter) const;
         bool ApplySourceDirectLowpass(std::uint32_t sourceId, float highFrequencyGain,
@@ -71,7 +90,6 @@ namespace VansEngine
         // ── 主音量 ─────────────────────────────────────────────────────────
         // gain ∈ [0, 1]；0 = 静音，1 = 原始音量
         void  SetMasterVolume(float gain);
-        float GetMasterVolume() const;
 
     private:
         VansAudioSystem()  = default;
@@ -94,9 +112,13 @@ namespace VansEngine
         AudioReverbPresetParameters m_DefaultReverbParameters;
         AudioReverbPresetParameters m_LastCommittedDefaultReverbParameters;
         bool m_HasCommittedDefaultReverbParameters = false;
-        float  m_MasterVolume = 1.0f;
+        VansAudioDeviceConfig m_DeviceConfig;
+        std::string m_ActiveDeviceName;
+        std::string m_HrtfStatus = "unavailable";
         std::vector<std::uint32_t> m_PooledSources;
-        std::size_t m_ActiveSourceLeases = 0;
+        std::unordered_set<std::uint32_t> m_ActiveSources;
+        std::size_t m_SourceLimitRejections = 0;
+        std::size_t m_SourceBackendFailures = 0;
     };
 
 } // namespace VansEngine

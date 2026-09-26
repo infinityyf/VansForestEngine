@@ -1,37 +1,57 @@
 #pragma once
 
-#include <functional>
-
 namespace Vans
 {
-struct VansRuntimeGameplayFrame
+struct VansRuntimeFrameContext
 {
-    bool sceneReady = false;
-	bool simulationRunning = false;
-	bool gameplayActive = false;
-	bool cameraControlActive = false;
-	double deltaSeconds = 0.0;
-    std::function<void()> syncPhysicsTransforms;
-    std::function<void()> updateNonCameraScripts;
-	std::function<void(double)> updateActionsEarly;
-	std::function<void(double)> updateAI;
-	std::function<void(double)> prepareCharacterLocomotion;
-    std::function<void()> flushCharacterControllerTransforms;
-	std::function<void(double)> updateTimelinesPostScript;
-	std::function<void(double)> updateAdditionalPostScriptControllers;
-	std::function<void()> runTimelineLateContinuation;
-	std::function<void()> runActionLateContinuation;
-	std::function<void()> beginCameraControlFrame;
-    std::function<void()> updateCameraScripts;
-	std::function<void()> captureCameraControlBase;
-	std::function<void(double)> updateTimelinesCamera;
-	std::function<void(double)> updateAdditionalCameraControllers;
-	std::function<void()> resolveCameraControlFrame;
+	double m_DeltaSeconds = 0.0;
+};
+
+struct VansRuntimeFramePolicy
+{
+	bool m_IsSceneReady = false;
+	bool m_IsSimulationRunning = false;
+	bool m_IsGameplayActive = false;
+	bool m_IsCameraControlActive = false;
+};
+
+class IVansRuntimeFramePort
+{
+  public:
+	virtual ~IVansRuntimeFramePort() = default;
+
+	virtual void SyncPhysicsTransforms(const VansRuntimeFrameContext& context) = 0;
+	virtual void UpdateNonCameraScripts(const VansRuntimeFrameContext& context) = 0;
+	virtual void AdvanceCameraRuntime(const VansRuntimeFrameContext& context) = 0;
+	virtual void UpdateActionsEarly(const VansRuntimeFrameContext& context) = 0;
+	virtual void UpdateAI(const VansRuntimeFrameContext& context) = 0;
+	virtual void PrepareCharacterLocomotion(const VansRuntimeFrameContext& context) = 0;
+	virtual void FlushCharacterControllerTransforms(const VansRuntimeFrameContext& context) = 0;
+	virtual void UpdateTimelinesPostScript(const VansRuntimeFrameContext& context) = 0;
+	virtual void RunActionLateContinuation(const VansRuntimeFrameContext& context) = 0;
+	virtual void BeginCameraControlFrame(const VansRuntimeFrameContext& context) = 0;
+	virtual void UpdateCameraScripts(const VansRuntimeFrameContext& context) = 0;
+	virtual void CaptureCameraControlBase(const VansRuntimeFrameContext& context) = 0;
+	virtual void UpdateTimelinesCamera(const VansRuntimeFrameContext& context) = 0;
+	virtual void ResolveCameraControlFrame(const VansRuntimeFrameContext& context) = 0;
+};
+
+class IVansRuntimeFramePreviewPort
+{
+  public:
+	virtual ~IVansRuntimeFramePreviewPort() = default;
+
+	virtual void UpdatePostScriptControllers(const VansRuntimeFrameContext& context) = 0;
+	virtual void UpdateCameraControllers(const VansRuntimeFrameContext& context) = 0;
 };
 
 class VansRuntimeFrameScheduler
 {
-public:
-    static void RunGameplay(const VansRuntimeGameplayFrame& frame);
+  public:
+	static void RunGameplay(
+		IVansRuntimeFramePort& runtimePort,
+		IVansRuntimeFramePreviewPort* previewPort,
+		const VansRuntimeFramePolicy& policy,
+		const VansRuntimeFrameContext& context);
 };
-}
+} // namespace Vans

@@ -6,6 +6,66 @@
 
 namespace Vans
 {
+namespace
+{
+bool ValidLodRatios(const std::vector<float>& values)
+{
+	if (values.size() < MinimumModelLodLevelCount || values.size() > MaximumModelLodLevelCount)
+		return false;
+	float previous = 1;
+	for (float value : values)
+	{
+		if (!std::isfinite(value) || value <= 0 || value >= previous) return false;
+		previous = value;
+	}
+	return true;
+}
+
+bool ValidLodDistances(const std::vector<float>& values)
+{
+	if (values.size() < MinimumModelLodLevelCount || values.size() > MaximumModelLodLevelCount)
+		return false;
+	float previous = 0;
+	for (float value : values)
+	{
+		if (!std::isfinite(value) || value <= previous) return false;
+		previous = value;
+	}
+	return true;
+}
+}
+
+bool ResolvePlantTreeRuntimeBounds(
+	const VansPlantVariant& variant,
+	VansPlantTreeRuntimeBounds& result,
+	std::string& error)
+{
+	VansPlantTreeRuntimeBounds candidate;
+	if (variant.lod.levels.empty())
+	{
+		error = "requires baked LOD resources";
+		return false;
+	}
+	for (std::size_t axis = 0; axis < candidate.center.size(); ++axis)
+	{
+		candidate.center[axis] = variant.lod.centerRadius[axis];
+		if (!std::isfinite(candidate.center[axis]))
+		{
+			error = "has invalid baked LOD bounds";
+			return false;
+		}
+	}
+	candidate.radius = variant.lod.centerRadius[3];
+	if (!std::isfinite(candidate.radius) || candidate.radius <= 0)
+	{
+		error = "has invalid baked LOD bounds";
+		return false;
+	}
+	result = candidate;
+	error.clear();
+	return true;
+}
+
 std::vector<VansAssetGuid> VansPlantTypeAsset::Dependencies() const
 {
 	std::vector<VansAssetGuid> result;
@@ -37,8 +97,8 @@ std::vector<std::string> ValidatePlantTypeAsset(const VansPlantTypeAsset& asset,
 	if (asset.render.cullingEnabled && asset.render.cullDistance <= 0)
 		errors.push_back("Enabled plant culling requires a positive distance");
     if(asset.category==VansPlantCategory::Tree) {
-            if(!std::isfinite(asset.render.lodDistances[0])||!std::isfinite(asset.render.lodDistances[1])||asset.render.lodDistances[0]>=asset.render.lodDistances[1]||
-                asset.render.lodDistances[0]<=0||!std::isfinite(asset.render.lodHysteresis)||asset.render.lodHysteresis<0||asset.render.lodHysteresis>.3f)
+            if(!ValidLodDistances(asset.render.lodDistances)||!std::isfinite(asset.render.lodHysteresis)||
+                asset.render.lodHysteresis<0||asset.render.lodHysteresis>.3f)
                 errors.push_back("Tree render has invalid LOD distances or hysteresis");
     }
 	std::unordered_set<std::string> variantIds;
@@ -73,13 +133,17 @@ std::vector<std::string> ValidatePlantTypeAsset(const VansPlantTypeAsset& asset,
 		}
         if(asset.category==VansPlantCategory::Tree) {
             const auto& settings=variant.lodSettings;
-            if(!std::isfinite(settings.ratios[0])||!std::isfinite(settings.ratios[1])||settings.ratios[0]>=1||settings.ratios[1]<=0||settings.ratios[1]>=settings.ratios[0]||
+            if(!ValidLodRatios(settings.ratios)||settings.ratios.size()!=asset.render.lodDistances.size()||
                 !std::isfinite(settings.maximumError)||settings.maximumError<=0||settings.maximumError>.25f)
                 errors.push_back(label+" has invalid LOD build settings");
+            VansPlantTreeRuntimeBounds runtimeBounds;
+            std::string boundsError;
+            if((requireReady && variant.geometry==VansPlantGeometry::Mesh) || !variant.lod.levels.empty())
+                if(!ResolvePlantTreeRuntimeBounds(variant,runtimeBounds,boundsError))
+                    errors.push_back(label+" "+boundsError);
             if(!variant.lod.levels.empty()) {
-                if(variant.lod.levels.size()!=2||variant.lod.buildKey.empty()||variant.lod.centerRadius[3]<=0)
+                if(variant.lod.levels.size()!=settings.ratios.size()||variant.lod.buildKey.empty())
                     errors.push_back(label+" has incomplete LOD resources");
-                for(float f:variant.lod.centerRadius)if(!std::isfinite(f))errors.push_back(label+" has invalid LOD bounds");
                 for(const auto& level:variant.lod.levels) {
                     if(level.parts.size()!=variant.parts.size())errors.push_back(label+" LOD parts do not match source parts");
                     std::unordered_set<uint32_t> sources;

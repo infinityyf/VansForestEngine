@@ -195,6 +195,56 @@ bool VansAssetObjectRepository::Remove(VansAssetGuid guid)
 	return true;
 }
 
+bool VansAssetObjectRepository::ReplaceWith(VansAssetObjectRepository& stagedRepository, std::string& error)
+{
+	error.clear();
+	if (this == &stagedRepository)
+		return true;
+
+	std::scoped_lock lock(m_Mutex, stagedRepository.m_Mutex);
+	for (const auto& [guid, entry] : stagedRepository.m_Entries)
+	{
+		const auto previous = m_Entries.find(guid);
+		if (previous != m_Entries.end() && previous->second.assetType != VansAssetType::Unknown &&
+			previous->second.assetType != entry.assetType)
+		{
+			error = "An asset GUID cannot change its registered asset type";
+			return false;
+		}
+	}
+
+	auto previousEntries = std::move(m_Entries);
+	m_Entries = std::move(stagedRepository.m_Entries);
+
+	for (auto& [guid, entry] : m_Entries)
+	{
+		const auto previous = previousEntries.find(guid);
+		if (previous != previousEntries.end())
+		{
+			// 维持原 Clear + Publish 路径的 generation 推进语义。
+			std::uint64_t generation = NextGeneration(previous->second.generation);
+			for (std::uint64_t step = 0; step < entry.generation; ++step)
+				generation = NextGeneration(generation);
+			entry.generation = generation;
+		}
+	}
+
+	for (auto& [guid, entry] : previousEntries)
+	{
+		if (m_Entries.find(guid) != m_Entries.end())
+			continue;
+		entry.generation = NextGeneration(entry.generation);
+		entry.contentHash = 0;
+		entry.objectType = std::type_index(typeid(void));
+		entry.object.reset();
+		entry.views.clear();
+		entry.dependencies.clear();
+		m_Entries.emplace(guid, std::move(entry));
+	}
+	stagedRepository.m_Entries.clear();
+	return true;
+}
+
 void VansAssetObjectRepository::Clear()
 {
 	std::unique_lock lock(m_Mutex);

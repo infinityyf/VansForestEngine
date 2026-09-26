@@ -12,12 +12,11 @@
 namespace Vans
 {
     struct VansSceneAudioResourceRequest;
-    struct VansSceneAudioRuntimeOverride;
 }
 
 namespace VansEngine
 {
-    struct AudioMixConfig;
+    struct VansAudioMixConfig;
 
     struct AudioBusDebugEntry
     {
@@ -69,16 +68,12 @@ namespace VansEngine
     // 使用方式：
     //   VansScene 内嵌一个 VansAudioManager 成员，无需 new/delete。
     //
-    // 两阶段加载（对应 AudioSystem.md Section 10.2）：
-    //   1. Load()             — consumes the typed resource audio batch.
-    //                          逐条创建 VansAudioNode，并调用 Open() 加载解码。
-    //   2. ApplySceneConfig() — 场景级调用：按 typed runtime overrides
-    //                          调整单条节点的空间化、音量、自动播放等运行时参数，
-    //                          并触发 AutoPlay。
+    // 加载流程：Load() 消费 typed resource audio batch，逐条创建
+    // VansAudioNode 并调用 Open() 加载解码。运行时组件通过既有绑定接口控制实例。
     //
     // 卸载策略：
     //   UnLoadProject -> Clear()：停止后台线程 + 释放所有资源
-    //   UnLoadScene   -> StopAll()：仅停止播放，保留已解码资源（静态模式）
+    //   UnloadScene   -> StopAll()：仅停止播放，保留已解码资源（静态模式）
     // ===========================================================================
     class VansAudioManager
     {
@@ -95,10 +90,6 @@ namespace VansEngine
         // audioArray: generated descriptors containing resolved path/playback settings.
         void Load(const std::vector<Vans::VansSceneAudioResourceRequest>& audios);
 
-        // ── 场景级配置（LoadSceneObjects / LoadSceneContent 中调用） ────────
-        // Each record contains an asset GUID and optional runtime overrides.
-        void ApplySceneConfig(const std::vector<Vans::VansSceneAudioRuntimeOverride>& audioSources);
-
         // ── 按资产 GUID 查找，未找到返回 nullptr ─────────────────────────────
         VansAudioNode* Get(const std::string& assetGuid) const;
         // 按音频资产自身配置创建一次性播放实例；GAF 与脚本空间音效共用同一条路径。
@@ -114,7 +105,7 @@ namespace VansEngine
         bool StopOneShot(VansAudioOneShotHandle handle);
 
         // ── 每帧驱动（VansScene::Tick 中调用） ──────────────────────────────
-        // deltaTime : 本帧耗时（秒），当前未使用，为将来拓展保留
+        // deltaTime : 本帧耗时（秒），用于推进 Bus fade 与 ducking fade
         // camPosX/Y/Z : 主摄像机世界坐标（传给 OpenAL Listener）
         // camFwdX/Y/Z : 摄像机 Forward 方向（归一化）
         // camUpX/Y/Z  : 摄像机 Up 方向（归一化）
@@ -131,12 +122,13 @@ namespace VansEngine
         void FadeBusGain(const std::string& busName, float targetGain, float fadeSeconds);
         void ApplyBusSnapshot(const AudioBusSnapshot& snapshot);
         bool ApplyNamedBusSnapshot(const std::string& snapshotName);
-        void ApplyMixConfig(const AudioMixConfig& config);
+        void ApplyMixConfig(const VansAudioMixConfig& config);
         void AddDuckingRule(AudioDuckingRule rule);
         void ClearDuckingRules();
         void UpdateDucking(const std::vector<std::string>& activeBusNames);
         AudioBusState GetBusState(const std::string& busName) const;
         float GetEffectiveBusGain(const std::string& busName) const;
+        float GetEffectiveBusLowpassHighFrequencyGain(const std::string& busName) const;
         std::vector<AudioBusDebugEntry> GetBusDebugSnapshot() const;
         std::vector<AudioDuckingRuleDebugEntry> GetDuckingRuleDebugSnapshot() const;
         void BeginVoiceLeaseFrame();

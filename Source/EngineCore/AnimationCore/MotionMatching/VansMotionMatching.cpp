@@ -9,6 +9,7 @@
 #include <../../GLM/gtx/quaternion.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -21,21 +22,12 @@ namespace
 	constexpr float kEpsilon = 0.0001f;
 	constexpr float kLn2 = 0.6931471805599453f;
 
-	void DecomposeTransform(const glm::mat4& transform,
-	                        glm::vec3& position,
-	                        glm::quat& rotation,
-	                        glm::vec3& scale)
+	enum class VansRootYawCorrectionOwner
 	{
-		glm::vec3 skew;
-		glm::vec4 perspective;
-		if (!glm::decompose(transform, scale, rotation, position, skew, perspective))
-		{
-			position = glm::vec3(transform[3]);
-			rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-			scale = glm::vec3(1.0f);
-		}
-		rotation = glm::normalize(rotation);
-	}
+		None,
+		TurnInPlace,
+		Steering
+	};
 
 	glm::vec3 QuaternionLogVector(glm::quat rotation)
 	{
@@ -995,8 +987,7 @@ int VansMotionMatchingRuntime::ResolveBoneIndex(const Skeleton& skeleton, const 
 {
 	if (name.empty())
 		return -1;
-	auto it = skeleton.boneNameToIndex.find(name);
-	return it != skeleton.boneNameToIndex.end() ? it->second : -1;
+	return skeleton.FindBoneIndex(name);
 }
 
 MotionMatchingResolvedRig VansMotionMatchingRuntime::ResolveRig(const Skeleton& skeleton)
@@ -1035,55 +1026,40 @@ bool VansMotionMatchingRuntime::ValidateRig(const MotionMatchingResolvedRig& rig
 void VansMotionMatchingRuntime::SamplePose(const VansAnimationClip& clip,
                                            float time,
                                            const Skeleton& skeleton,
-                                           std::vector<glm::mat4>& outLocalTransforms) const
+	                                           std::vector<VansBoneTransform>& outLocalPose) const
 {
 	const uint32_t boneCount = static_cast<uint32_t>(skeleton.bones.size());
-	outLocalTransforms.resize(boneCount);
+	outLocalPose.resize(boneCount);
 	for (uint32_t b = 0; b < boneCount; ++b)
 	{
 		if (b >= clip.boneKeyframes.size() || clip.boneKeyframes[b].empty())
 		{
-			outLocalTransforms[b] = skeleton.bones[b].localTransform;
+			if (!VansPoseMath::TryDecompose(
+				skeleton.bones[b].localTransform, outLocalPose[b]))
+				outLocalPose[b] = {};
 			continue;
 		}
 
-		glm::vec3 pos;
-		glm::quat rot;
-		glm::vec3 scale;
-		InterpolateKeyframes(clip.boneKeyframes[b], time, pos, rot, scale);
-		outLocalTransforms[b] = glm::translate(glm::mat4(1.0f), pos) * glm::toMat4(rot) * glm::scale(glm::mat4(1.0f), scale);
+		InterpolateKeyframes(
+			clip.boneKeyframes[b], time,
+			outLocalPose[b].translation,
+			outLocalPose[b].rotation,
+			outLocalPose[b].scale);
 	}
 }
 
-void VansMotionMatchingRuntime::BuildModelSpacePose(const std::vector<glm::mat4>& localTransforms,
+bool VansMotionMatchingRuntime::BuildModelSpacePose(const std::vector<VansBoneTransform>& localPose,
                                                     const Skeleton& skeleton,
                                                     std::vector<glm::mat4>& outModelTransforms) const
 {
-	outModelTransforms = localTransforms;
-	const int boneCount = static_cast<int>(skeleton.bones.size());
-	if (outModelTransforms.size() != skeleton.bones.size())
-		outModelTransforms.resize(skeleton.bones.size(), glm::mat4(1.0f));
-
-	if (!skeleton.topologicalOrder.empty())
+	std::string error;
+	if (!VansPoseMath::BuildModelTransforms(
+		localPose, skeleton, outModelTransforms, &error))
 	{
-		for (int b : skeleton.topologicalOrder)
-		{
-			if (b < 0 || b >= boneCount)
-				continue;
-			const BoneInfo& bone = skeleton.bones[b];
-			if (bone.parentIndex >= 0 && bone.parentIndex < boneCount)
-				outModelTransforms[b] = outModelTransforms[bone.parentIndex] * outModelTransforms[b];
-		}
+		VANS_LOG_WARN("[MotionMatching] Pose hierarchy rejected: " << error);
+		return false;
 	}
-	else
-	{
-		for (int b = 0; b < boneCount; ++b)
-		{
-			const BoneInfo& bone = skeleton.bones[b];
-			if (bone.parentIndex >= 0 && bone.parentIndex < boneCount)
-				outModelTransforms[b] = outModelTransforms[bone.parentIndex] * outModelTransforms[b];
-		}
-	}
+	return true;
 }
 
 glm::vec3 VansMotionMatchingRuntime::TransformPointToRootSpace(const glm::mat4& rootModel, const glm::vec3& point) const
@@ -1233,27 +1209,31 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 	const MotionMatchingResolvedRig& rig) const
 {
 	FeatureVector f{};
-	std::vector<glm::mat4> local0;
+	std::vector<VansBoneTransform> local0;
 	std::vector<glm::mat4> model0;
 	SamplePose(clip, ResolveClipTime(clip, time, loopLike), skeleton, local0);
-	BuildModelSpacePose(local0, skeleton, model0);
+	if (!BuildModelSpacePose(local0, skeleton, model0))
+		return f;
 
 	glm::vec3 loopCycleDelta(0.0f);
 	if (loopLike && clip.duration > kEpsilon)
 	{
-		std::vector<glm::mat4> localStart, modelStart;
-		std::vector<glm::mat4> localEnd, modelEnd;
+		std::vector<VansBoneTransform> localStart;
+		std::vector<glm::mat4> modelStart;
+		std::vector<VansBoneTransform> localEnd;
+		std::vector<glm::mat4> modelEnd;
 		SamplePose(clip, 0.0f, skeleton, localStart);
 		SamplePose(clip, clip.duration, skeleton, localEnd);
-		BuildModelSpacePose(localStart, skeleton, modelStart);
-		BuildModelSpacePose(localEnd, skeleton, modelEnd);
+		if (!BuildModelSpacePose(localStart, skeleton, modelStart)
+			|| !BuildModelSpacePose(localEnd, skeleton, modelEnd))
+			return f;
 		loopCycleDelta = ExtractTranslation(modelEnd[rig.trajectoryRoot]) -
 		                 ExtractTranslation(modelStart[rig.trajectoryRoot]);
 	}
 
 	auto sampleUnwrappedModel = [&](float absoluteTime,
-	                                std::vector<glm::mat4>& outLocal,
-	                                std::vector<glm::mat4>& outModel)
+	                                std::vector<VansBoneTransform>& outLocal,
+	                                std::vector<glm::mat4>& outModel) -> bool
 	{
 		float sampleTime = ResolveClipTime(clip, absoluteTime, loopLike);
 		int cycle = 0;
@@ -1272,13 +1252,15 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 		}
 
 		SamplePose(clip, sampleTime, skeleton, outLocal);
-		BuildModelSpacePose(outLocal, skeleton, outModel);
+		if (!BuildModelSpacePose(outLocal, skeleton, outModel))
+			return false;
 		if (cycle != 0)
 		{
 			const glm::vec3 offset = loopCycleDelta * static_cast<float>(cycle);
 			for (glm::mat4& model : outModel)
 				model[3] += glm::vec4(offset, 0.0f);
 		}
+		return true;
 	};
 
 	const glm::mat4 rootModel0 = model0[rig.root];
@@ -1287,9 +1269,10 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 
 	for (float futureTime : m_Settings.schema.futureTimes)
 	{
-		std::vector<glm::mat4> localFuture;
+		std::vector<VansBoneTransform> localFuture;
 		std::vector<glm::mat4> modelFuture;
-		sampleUnwrappedModel(time + futureTime, localFuture, modelFuture);
+		if (!sampleUnwrappedModel(time + futureTime, localFuture, modelFuture))
+			return f;
 
 		const glm::vec3 futureRoot = ExtractTranslation(modelFuture[rig.trajectoryRoot]);
 		const glm::vec3 deltaRoot = TransformVectorToRootSpace(rootModel0, futureRoot - trajectoryRoot0);
@@ -1300,10 +1283,13 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 	for (float futureTime : m_Settings.schema.futureTimes)
 	{
 		constexpr float velocityWindow = 1.0f / 30.0f;
-		std::vector<glm::mat4> localBefore, modelBefore;
-		std::vector<glm::mat4> localAfter, modelAfter;
-		sampleUnwrappedModel(time + futureTime - velocityWindow, localBefore, modelBefore);
-		sampleUnwrappedModel(time + futureTime + velocityWindow, localAfter, modelAfter);
+		std::vector<VansBoneTransform> localBefore;
+		std::vector<glm::mat4> modelBefore;
+		std::vector<VansBoneTransform> localAfter;
+		std::vector<glm::mat4> modelAfter;
+		if (!sampleUnwrappedModel(time + futureTime - velocityWindow, localBefore, modelBefore)
+			|| !sampleUnwrappedModel(time + futureTime + velocityWindow, localAfter, modelAfter))
+			return f;
 		const glm::vec3 beforeRoot = ExtractTranslation(modelBefore[rig.trajectoryRoot]);
 		const glm::vec3 afterRoot = ExtractTranslation(modelAfter[rig.trajectoryRoot]);
 		const glm::vec3 velocityRoot = TransformVectorToRootSpace(
@@ -1314,9 +1300,10 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 
 	for (float futureTime : m_Settings.schema.futureTimes)
 	{
-		std::vector<glm::mat4> localFuture;
+		std::vector<VansBoneTransform> localFuture;
 		std::vector<glm::mat4> modelFuture;
-		sampleUnwrappedModel(time + futureTime, localFuture, modelFuture);
+		if (!sampleUnwrappedModel(time + futureTime, localFuture, modelFuture))
+			return f;
 
 		// Facing and travel direction are independent PoseSearch channels. A
 		// strafe clip can move left while continuing to face forward, while a
@@ -1329,10 +1316,13 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 	}
 
 	const float velocityDt = 0.10f;
-	std::vector<glm::mat4> localPrev, modelPrev;
-	std::vector<glm::mat4> localNext, modelNext;
-	sampleUnwrappedModel(time - velocityDt, localPrev, modelPrev);
-	sampleUnwrappedModel(time + velocityDt, localNext, modelNext);
+	std::vector<VansBoneTransform> localPrev;
+	std::vector<glm::mat4> modelPrev;
+	std::vector<VansBoneTransform> localNext;
+	std::vector<glm::mat4> modelNext;
+	if (!sampleUnwrappedModel(time - velocityDt, localPrev, modelPrev)
+		|| !sampleUnwrappedModel(time + velocityDt, localNext, modelNext))
+		return f;
 
 	const glm::vec3 pelvis0 = ExtractTranslation(model0[rig.pelvis]);
 	const glm::vec3 leftFoot0 = ExtractTranslation(model0[rig.leftFoot]);
@@ -1426,14 +1416,15 @@ void VansMotionMatchingRuntime::BuildFootContactPhases(const std::vector<int>& c
 
 VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::BuildQueryFeature(
 	const std::unordered_map<std::string, AnimatorParameter>& parameters,
-	const std::vector<glm::mat4>& currentLocalPose,
+	const std::vector<VansBoneTransform>& currentLocalPose,
 	const Skeleton& skeleton,
 	const MotionMatchingResolvedRig& rig,
 	const Vans::VansCharacterTrajectory* trajectory) const
 {
 	FeatureVector f{};
 	std::vector<glm::mat4> currentModel;
-	BuildModelSpacePose(currentLocalPose, skeleton, currentModel);
+	if (!BuildModelSpacePose(currentLocalPose, skeleton, currentModel))
+		return f;
 
 	const glm::mat4 rootModel = currentModel[rig.root];
 	const float speed01 = ReadSpeedParam(parameters);
@@ -1538,7 +1529,7 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::BuildQueryFe
 
 	glm::vec3 leftVelocity = m_CurrentLeftFootVelocity;
 	glm::vec3 rightVelocity = m_CurrentRightFootVelocity;
-	if (airborne || moveState == 5)
+	if (airborne || moveState == m_Settings.states.airborneState)
 	{
 		leftVelocity += desiredVelRoot;
 		rightVelocity += desiredVelRoot;
@@ -2140,8 +2131,8 @@ void VansMotionMatchingRuntime::PushCandidateDebug(const MatchResult& result)
 }
 
 void VansMotionMatchingRuntime::BeginInertialTransition(
-	const std::vector<glm::mat4>& target,
-	const std::vector<glm::mat4>& targetFuture,
+	const std::vector<VansBoneTransform>& target,
+	const std::vector<VansBoneTransform>& targetFuture,
 	float velocityDeltaTime)
 {
 	if (target.empty() || targetFuture.size() != target.size() ||
@@ -2159,29 +2150,25 @@ void VansMotionMatchingRuntime::BeginInertialTransition(
 
 	for (size_t i = 0; i < target.size(); ++i)
 	{
-		glm::vec3 sourcePos, sourceScale;
-		glm::quat sourceRot;
-		DecomposeTransform(m_LastOutputLocalPose[i], sourcePos, sourceRot, sourceScale);
-		glm::vec3 previousPos = sourcePos, previousScale;
-		glm::quat previousRot = sourceRot;
-		if (hasPrevious)
-			DecomposeTransform(m_PreviousOutputLocalPose[i], previousPos, previousRot, previousScale);
-
-		glm::vec3 targetPos, targetScale;
-		glm::quat targetRot;
-		DecomposeTransform(target[i], targetPos, targetRot, targetScale);
-		glm::vec3 futurePos, futureScale;
-		glm::quat futureRot;
-		DecomposeTransform(targetFuture[i], futurePos, futureRot, futureScale);
+		const VansBoneTransform& source = m_LastOutputLocalPose[i];
+		const VansBoneTransform& previous = hasPrevious
+			? m_PreviousOutputLocalPose[i] : source;
+		const VansBoneTransform& targetPose = target[i];
+		const VansBoneTransform& future = targetFuture[i];
 
 		InertialBoneState& state = m_InertialState[i];
-		state.positionOffset = sourcePos - targetPos;
-		state.positionVelocity = (sourcePos - previousPos) * invDt - (futurePos - targetPos) * invDt;
-		state.rotationOffset = QuaternionLogVector(sourceRot * glm::conjugate(targetRot));
+		state.positionOffset = source.translation - targetPose.translation;
+		state.positionVelocity =
+			(source.translation - previous.translation) * invDt
+			- (future.translation - targetPose.translation) * invDt;
+		state.rotationOffset = QuaternionLogVector(
+			source.rotation * glm::conjugate(targetPose.rotation));
 		const glm::vec3 sourceAngular = hasPrevious
-			? QuaternionLogVector(sourceRot * glm::conjugate(previousRot)) * invDt
+			? QuaternionLogVector(
+				source.rotation * glm::conjugate(previous.rotation)) * invDt
 			: glm::vec3(0.0f);
-		const glm::vec3 targetAngular = QuaternionLogVector(futureRot * glm::conjugate(targetRot)) * invDt;
+		const glm::vec3 targetAngular = QuaternionLogVector(
+			future.rotation * glm::conjugate(targetPose.rotation)) * invDt;
 		state.angularVelocity = sourceAngular - targetAngular;
 		hasMeaningfulOffset |= glm::dot(state.positionOffset, state.positionOffset) > 1e-8f ||
 		                       glm::dot(state.rotationOffset, state.rotationOffset) > 1e-8f;
@@ -2193,8 +2180,8 @@ void VansMotionMatchingRuntime::BeginInertialTransition(
 
 void VansMotionMatchingRuntime::ApplyInertialization(
 	float deltaTime,
-	const std::vector<glm::mat4>& target,
-	std::vector<glm::mat4>& out)
+	const std::vector<VansBoneTransform>& target,
+	std::vector<VansBoneTransform>& out)
 {
 	if (!m_Blending || m_InertialState.size() != target.size())
 	{
@@ -2213,13 +2200,10 @@ void VansMotionMatchingRuntime::ApplyInertialization(
 		DecayCriticalSpring(state.positionOffset, state.positionVelocity, halfLife, deltaTime);
 		DecayCriticalSpring(state.rotationOffset, state.angularVelocity, halfLife, deltaTime);
 
-		glm::vec3 targetPos, targetScale;
-		glm::quat targetRot;
-		DecomposeTransform(target[i], targetPos, targetRot, targetScale);
-		const glm::vec3 position = targetPos + state.positionOffset;
-		const glm::quat rotation = glm::normalize(QuaternionExpVector(state.rotationOffset) * targetRot);
-		out[i] = glm::translate(glm::mat4(1.0f), position) * glm::toMat4(rotation) *
-		         glm::scale(glm::mat4(1.0f), targetScale);
+		out[i].translation = target[i].translation + state.positionOffset;
+		out[i].rotation = glm::normalize(
+			QuaternionExpVector(state.rotationOffset) * target[i].rotation);
+		out[i].scale = target[i].scale;
 		maximumResidual = (std::max)(maximumResidual,
 			glm::length(state.positionOffset) + glm::length(state.rotationOffset));
 	}
@@ -2414,14 +2398,14 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	else
 		m_CurrentTrajectoryVelocityRoot = glm::mix(
 			m_CurrentTrajectoryVelocityRoot, sampledTrajectoryVelocity, trajectoryAlpha);
-	std::vector<glm::mat4> currentLocal;
+	std::vector<VansBoneTransform> currentLocal;
 	SamplePose(activeClipIt->second, m_CurrentTime, skeleton, currentLocal);
 	if (loopWrapped)
 	{
 		// Crossing an authored loop seam is still continuous playback, not an MM
 		// switch.  Preserve the outgoing pose and velocity while the first frames
 		// of the new cycle settle, which hides small non-seamless authoring errors.
-		std::vector<glm::mat4> seamFuture;
+		std::vector<VansBoneTransform> seamFuture;
 		const float velocityDt = 1.0f / (std::max)(m_Settings.sampleRate, 1.0f);
 		SamplePose(activeClipIt->second,
 		           ResolveClipTime(activeClipIt->second, m_CurrentTime + velocityDt, true),
@@ -2440,10 +2424,11 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	const bool activePivotInProgress =
 		activeSample->pivotLike && !activeTransitionComplete;
 
-	const std::vector<glm::mat4>& queryLocal =
+	const std::vector<VansBoneTransform>& queryLocal =
 		(m_LastOutputLocalPose.size() == skeleton.bones.size()) ? m_LastOutputLocalPose : currentLocal;
 	std::vector<glm::mat4> currentModel;
-	BuildModelSpacePose(queryLocal, skeleton, currentModel);
+	if (!BuildModelSpacePose(queryLocal, skeleton, currentModel))
+		return false;
 	if (!m_PreviousQueryModelPose.empty() && deltaTime > kEpsilon &&
 	    m_PreviousQueryModelPose.size() == currentModel.size())
 	{
@@ -2930,7 +2915,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 				return false;
 			}
 			SamplePose(activeClipIt->second, m_CurrentTime, skeleton, currentLocal);
-			std::vector<glm::mat4> targetFuture;
+			std::vector<VansBoneTransform> targetFuture;
 			const float velocityDt = 1.0f / (std::max)(m_Settings.sampleRate, 1.0f);
 			SamplePose(activeClipIt->second,
 			           ResolveClipTime(activeClipIt->second, m_CurrentTime + velocityDt, activeSample->loopLike),
@@ -2985,10 +2970,10 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		return false;
 	}
 
-	std::vector<glm::mat4> target;
+	std::vector<VansBoneTransform> target;
 	SamplePose(activeClipIt->second, m_CurrentTime, skeleton, target);
-	std::vector<glm::mat4> outputLocalTransforms;
-	ApplyInertialization(deltaTime, target, outputLocalTransforms);
+	std::vector<VansBoneTransform> outputLocalPose;
+	ApplyInertialization(deltaTime, target, outputLocalPose);
 
 	VansAnimationSampleRequest request;
 	// The pose switch happens after this frame's source clip was advanced.  A
@@ -3002,9 +2987,9 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	request.loop = activeSample->loopLike;
 	request.rootMotionBoneIndex = m_Rig.trajectoryRoot;
 	request.sourceNodeId = VansAnimationStableId("MotionMatching");
-	if (!VansAnimationSampler::Sample(activeClipIt->second, skeleton, request, outPayload) ||
-	    !VansPoseMath::FromMatrices(outputLocalTransforms, outPayload.localPose))
+	if (!VansAnimationSampler::Sample(activeClipIt->second, skeleton, request, outPayload))
 		return false;
+	outPayload.localPose.assign(outputLocalPose.begin(), outputLocalPose.end());
 	if (switchedThisFrame)
 	{
 		const auto outgoingClipIt = clips.find(playbackClipName);
@@ -3118,7 +3103,15 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		outPayload.rootMotion.valid && trajectory && trajectory->valid &&
 		(activeSample->turnLike || outgoingTurnOnSwitch) &&
 		!isMoving && !isAirborne && (!switchedThisFrame || outgoingTurnOnSwitch);
-	if (turnWarpFrame)
+	const bool steeringFrame =
+		outPayload.rootMotion.valid && trajectory && trajectory->valid &&
+		isMoving && !switchedThisFrame;
+	const VansRootYawCorrectionOwner rootYawCorrectionOwner = turnWarpFrame
+		? VansRootYawCorrectionOwner::TurnInPlace
+		: (steeringFrame
+			? VansRootYawCorrectionOwner::Steering
+			: VansRootYawCorrectionOwner::None);
+	if (rootYawCorrectionOwner == VansRootYawCorrectionOwner::TurnInPlace)
 	{
 		m_RootMotionSteering.Reset();
 		if (!m_Settings.turnInPlaceWarping.enabled)
@@ -3207,8 +3200,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			m_DebugData.turnWarpDisableReason = "NotTurn";
 	}
 
-	if (outPayload.rootMotion.valid && trajectory && trajectory->valid &&
-		isMoving && !switchedThisFrame)
+	if (rootYawCorrectionOwner == VansRootYawCorrectionOwner::Steering)
 	{
 		const float predictionTime = (std::max)(
 			m_Settings.steering.predictionTime, 0.0001f);
@@ -3270,6 +3262,9 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		m_DebugData.appliedRootYawDeltaDegrees =
 			ExtractRootMotionYawDegrees(outPayload.rootMotion.rotation);
 	}
+	// 每帧由上面的单一 owner 选择决定 Steering 或 TurnWarp。两者拥有独立
+	// 状态是因为适用场景不同，但不能在同一 Root Motion delta 上叠加。
+	assert(!(m_DebugData.turnWarpActive && m_DebugData.steeringActive));
 	outPayload.valid = outPayload.localPose.size() == skeleton.bones.size();
 	// 切换帧的 Root Motion Payload 来自源片段。Hybrid 的权威选择也必须
 	// 跟随同一源语义，否则 Turn -> Idle 的最后一小段端点修正会被误用 loop
@@ -3277,7 +3272,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_PrefersRootMotionThisFrame =
 		activeSample->transitionLike || activeSample->turnLike || outgoingTurnOnSwitch;
 	m_PreviousOutputLocalPose = m_LastOutputLocalPose;
-	m_LastOutputLocalPose = outputLocalTransforms;
+	m_LastOutputLocalPose = outputLocalPose;
 
 	m_DebugData.usedThisFrame = true;
 	m_DebugData.databaseReady = true;

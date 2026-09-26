@@ -1,4 +1,6 @@
 #include "VansGAFDebuggerWindow.h"
+#include "../../EngineAPILayer/Public/IGAFEditorAPI.h"
+#include "../../EngineAPILayer/Public/IPlayModeEditorAPI.h"
 
 #include "../VansEditorWindow.h"
 
@@ -48,10 +50,14 @@ bool VansGAFDebuggerWindow::ShowCombatHurtBodies() { return g_ShowCombatHurtBodi
 void VansGAFDebuggerWindow::ShowWindow(
 	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-	if (!VansEditorWindow::m_GAFDebuggerWindowOpen) return;
+	Vans::EditorAPI::IGAFEditorAPI& gafAPI = editorAPI;
+	Vans::EditorAPI::IPlayModeEditorAPI& playModeAPI = editorAPI;
+	const bool runtimePaused =
+		playModeAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Pause;
+	if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::GAFDebugger)) return;
 
 	ImGui::SetNextWindowSize(ImVec2(760.0f, 680.0f), ImGuiCond_FirstUseEver);
-	if (!ImGui::Begin("GAF Debugger", &VansEditorWindow::m_GAFDebuggerWindowOpen))
+	if (!ImGui::Begin("GAF Debugger", VansEditorWindow::WindowOpenState(VansEditorWindowId::GAFDebugger)))
 	{
 		ImGui::End();
 		return;
@@ -61,7 +67,7 @@ void VansGAFDebuggerWindow::ShowWindow(
 	{
 		if (ImGui::BeginTabItem("Runtime"))
 		{
-			DrawRuntimeDebugger(editorAPI);
+			DrawRuntimeDebugger(gafAPI, runtimePaused);
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("Simulator"))
@@ -71,7 +77,7 @@ void VansGAFDebuggerWindow::ShowWindow(
 			ImGui::InputTextWithHint("##simulation-source-path",
 				"Action, Action Set, or Action Graph source path",
 				m_SimulationSourcePath.data(), m_SimulationSourcePath.size());
-			DrawSimulator(editorAPI);
+			DrawSimulator(gafAPI);
 			ImGui::EndTabItem();
 		}
 		ImGui::EndTabBar();
@@ -80,7 +86,8 @@ void VansGAFDebuggerWindow::ShowWindow(
 }
 
 void VansGAFDebuggerWindow::DrawRuntimeDebugger(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI,
+	bool runtimePaused)
 {
 	m_DebugSnapshot = editorAPI.GetGAFRuntimeDebugSnapshot();
 	const Vans::EditorAPI::GAFCombatDebugSnapshot combatSnapshot =
@@ -199,7 +206,7 @@ void VansGAFDebuggerWindow::DrawRuntimeDebugger(
 	}
 	ImGui::SameLine();
 	Vans::EditorAPI::GAFDebugCommand playback;
-	if (editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Pause)
+	if (runtimePaused)
 	{
 		if (ImGui::Button("Resume"))
 		{
@@ -445,7 +452,7 @@ void VansGAFDebuggerWindow::DrawRuntimeDebugger(
 }
 
 void VansGAFDebuggerWindow::DrawSimulator(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI)
 {
 	using namespace Vans::EditorAPI;
 	ImGui::SeparatorText("Action");

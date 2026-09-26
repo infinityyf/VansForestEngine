@@ -31,10 +31,8 @@ struct VansAssetMeta
     std::string ReadStringSetting(const std::string& key, const std::string& fallback = {}) const;
     void SetStringSetting(const std::string& key, std::string value);
     bool ReadBoolSetting(const std::string& key, bool fallback) const;
-    bool ReadBoolSetting(const std::string& key, const std::string& legacyKey, bool fallback) const;
     int ReadIntSetting(const std::string& key, int fallback) const;
     float ReadFloatSetting(const std::string& key, float fallback) const;
-    float ReadFloatSetting(const std::string& key, const std::string& legacyKey, float fallback) const;
 
     static std::filesystem::path MetaPathFor(const std::filesystem::path& sourcePath);
 

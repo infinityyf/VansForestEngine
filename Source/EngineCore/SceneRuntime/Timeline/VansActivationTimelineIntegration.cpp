@@ -106,8 +106,7 @@ bool VansRegisterActivationTimelineExtension(
 			VansMakeTimelineSourceField("stateBefore", F::Enum, std::string("Restore"), false,
 				{ "Restore", "Active", "Inactive" }),
 			VansMakeTimelineSourceField("stateAfter", F::Enum, std::string("Restore"), false,
-				{ "Restore", "Active", "Inactive" }),
-			VansMakeTimelineSourceField("useCommandBuffer", F::Bool, true) }, {}, false, false }), error);
+				{ "Restore", "Active", "Inactive" }) }, {}, false, false }), error);
 }
 
 bool VansRegisterActivationTimelineIntegration(

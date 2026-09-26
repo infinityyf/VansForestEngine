@@ -117,7 +117,7 @@ namespace VansGraphics
             pool.AllocAngularVelocity();
             for (uint32_t i = startIndex; i < endIndex; ++i)
             {
-                uint32_t seed = static_cast<uint32_t>(i * 6364136223846793005ULL + 1442695040888963407ULL);
+                uint32_t& seed = pool.m_SeedRandom[i];
                 float r = RandFloat(seed);
                 pool.m_AngularVelocity[i] = m_AngularVelocity.Evaluate(0.f, r);
             }

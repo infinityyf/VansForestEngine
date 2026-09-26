@@ -10,6 +10,7 @@
 #include "../VansGraphicsBuffer.h"
 #include "../VansAsset.h"
 #include "../../AssetCore/VansSkeletalMeshImportSettings.h"
+#include "../../AssetCore/VansTriangleMeshData.h"
 #include "VansVKBuffer.h"
 #include "../../AnimationCore/VansAnimationTypes.h"
 #include "VansSubMesh.h"
@@ -109,6 +110,7 @@ namespace VansGraphics
 		const std::vector<float>& GetMeshRawPositionData() const { return m_MeshRawPositionData; }
 		const std::vector<int>& GetMeshTriangleIndex() const { return m_MeshTriangleIndex; }
 		const std::vector<float>& GetMeshRawTexCoordData() const { return m_MeshRawTexCoordData; }
+		bool CopyTriangleMeshData(Vans::VansTriangleMeshData& data, std::string& error) const;
 		bool HasLocalBounds() const { return m_HasLocalBounds; }
 		glm::vec3 GetLocalBoundsMin() const { return m_LocalBoundsMin; }
 		glm::vec3 GetLocalBoundsMax() const { return m_LocalBoundsMax; }

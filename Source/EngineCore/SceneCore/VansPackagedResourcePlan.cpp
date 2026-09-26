@@ -162,6 +162,7 @@ namespace
 		json["precision"] = request.precision;
 		json["importChannel"] = request.importChannel;
 		json["addressMode"] = request.addressMode;
+		json["retainRgba8Pixels"] = request.retainRgba8Pixels;
 		json["cookedOnly"] = request.cookedOnly;
 		return json;
 	}
@@ -180,6 +181,7 @@ namespace
 		request.precision = json.value("precision", request.precision);
 		request.importChannel = json.value("importChannel", request.importChannel);
 		request.addressMode = json.value("addressMode", request.addressMode);
+		request.retainRgba8Pixels = json.value("retainRgba8Pixels", request.retainRgba8Pixels);
 		request.cookedOnly = json.value("cookedOnly", request.cookedOnly);
 		return request;
 	}

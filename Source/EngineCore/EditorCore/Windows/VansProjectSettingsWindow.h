@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+namespace Vans::EditorAPI { class IGAFEditorAPI; }
+
 namespace VansGraphics
 {
 	class VansProjectSettingsWindow final : public VansBaseWindowComponent
@@ -14,10 +16,10 @@ namespace VansGraphics
 		void ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI) override;
 
 	private:
-		void ReloadGAF(Vans::EditorAPI::IEngineEditorAPI& editorAPI, const std::string& projectRoot);
+		void ReloadGAF(Vans::EditorAPI::IGAFEditorAPI& editorAPI, const std::string& projectRoot);
 		void SyncTemplateBuffer();
 		void SelectTemplate(std::size_t index);
-		void DrawGAFSettings(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+		void DrawGAFSettings(Vans::EditorAPI::IGAFEditorAPI& editorAPI);
 
 		std::string m_GAFProjectRoot;
 		Vans::EditorAPI::GAFProjectConfigurationSnapshot m_GAFConfiguration;

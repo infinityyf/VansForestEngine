@@ -3,9 +3,13 @@
 #include "../EngineCore/PcgCore/VansPcgMaskBrush.h"
 #include "../EngineCore/PcgCore/VansPcgPointGenerator.h"
 #include "../EngineCore/PcgCore/VansPcgBatchPlan.h"
+#include "../EngineCore/PcgCore/VansPcgDeterminism.h"
+#include "../EngineCore/PcgCore/VansPcgInfluence.h"
+#include "../EngineCore/PcgCore/VansPcgRuntimePolicy.h"
 #include "../EngineCore/PcgCore/VansPcgSplineField.h"
 #include "../EngineCore/PcgCore/Serialization/VansPcgSplineAssetCodec.h"
 #include "../EngineCore/PcgCore/Storage/VansPcgSplineFieldStorage.h"
+#include "../EngineCore/AssetCore/VansDerivedArtifactLayout.h"
 #include "../EngineCore/RenderCore/WaterCore/VansWaterGeometryClipmap.h"
 #include "../EngineCore/RenderCore/WaterCore/VansRiverWaveSimulation.h"
 #include "../EngineCore/RenderCore/VegetationCore/VansVegetationCollection.h"
@@ -187,6 +191,41 @@ bool SamePoints(const std::vector<VansPcgPoint>& a, const std::vector<VansPcgPoi
 	return true;
 }
 
+bool TestDeterminismAndInfluencePolicies()
+{
+	constexpr char abc[] = "abc";
+	if (!Check(ComputeMemoryFnv1a64(abc, 3) == 0xe71fa2190541574bull &&
+		PcgTextHash("region") == 0xc755a623f50a24ddull &&
+		PcgMix64(1) == 0x5692161d100b05e5ull &&
+		VansPcgPointGenerator::AuthoredInstanceId("region", "layer", "instance") == 0xc32424e40d633ae5ull,
+		"PCG deterministic hash or stable authored identity changed")) return false;
+	const std::array<unsigned char, 8> littleEndian{ 8, 7, 6, 5, 4, 3, 2, 1 };
+	if (!Check(ContinueUint64LittleEndianFnv1a64(VANS_FNV1A64_OFFSET_BASIS, 0x0102030405060708ull) ==
+		ComputeMemoryFnv1a64(littleEndian.data(), littleEndian.size()),
+		"PCG tile fingerprint no longer hashes integers in stable little-endian order")) return false;
+	VansPcgPlacementSettings placement;
+	placement.minimumSpacing = 2;
+	placement.scaleMax = { 2, 1, 3 };
+	placement.rootOffset = 1;
+	const std::vector<VansPcgVariantChoice> variants{ { "used", 1, .5f }, { "disabled", 0, 10 } };
+	if (!Check(PcgInfluenceRadius(placement, variants, VansPcgVariantInfluence::PositiveWeight) == 1.5 &&
+		PcgInfluenceRadius(placement, variants, VansPcgVariantInfluence::AllConfigured) == 30 &&
+		PcgSpacingHalo(placement, 1.5) == 3 && PcgGenerationHalo(placement, 1.5) == 5,
+		"PCG generation influence or root-offset halo policy changed")) return false;
+	VansPlantTypeAsset plant;
+	for (const auto& variant : variants)
+	{
+		VansPlantVariant item;
+		item.weight = variant.weight;
+		item.footprintRadius = variant.footprintRadius;
+		plant.variants.push_back(item);
+	}
+	return Check(PcgMaskHalo(placement, plant) == 60 &&
+		PcgSplineFieldChangeHalo(.5f, 100, 100) == 1 &&
+		MinimumPcgRiverTransitionWidth(.5f) == 2,
+		"PCG mask, spline-field or river transition influence policy changed");
+}
+
 bool TestDensityAndDeterminism()
 {
 	auto mask = MakeMask("first");
@@ -325,12 +364,19 @@ bool TestBatchReplacement()
 	same.points.front().scale[0]*=2;
 	if (!Check(!EqualPcgBatchSources(source,same),"Changed transforms were incorrectly retained")) return false;
 	layer.source=VansPcgSourceMode::Count;
-	if (!Check(!PcgMaskUpdateCoverage(region,layer,*plant,mask,edit.dirtyRect),"Count refill was incorrectly truncated")) return false;
+	if (!Check(ResolvePcgUpdateScope(layer)==VansPcgUpdateScope::WholeRegion &&
+		!PcgMaskUpdateCoverage(region,layer,*plant,mask,edit.dirtyRect),"Count refill was incorrectly truncated")) return false;
 	layer.source=VansPcgSourceMode::Density;layer.placement.rootOffset=1;
-	if (!Check(!PcgMaskUpdateCoverage(region,layer,*plant,mask,edit.dirtyRect),"Shifted cell ownership was incorrectly truncated")) return false;
+	if (!Check(ResolvePcgUpdateScope(layer)==VansPcgUpdateScope::WholeRegion &&
+		!PcgMaskUpdateCoverage(region,layer,*plant,mask,edit.dirtyRect),"Shifted cell ownership was incorrectly truncated")) return false;
 	std::int64_t cell=0;
+	float exitDistance=0;
 	return Check(PcgCellCoordinate(-.1f,4,cell) && cell==-1 &&
-		!PcgCellCoordinate(std::numeric_limits<float>::max(),.001f,cell),"Invalid or negative world-cell conversion");
+		MaximumExactPcgCellCoordinate==4503599627370495.0 &&
+		!PcgCellCoordinate(std::numeric_limits<float>::max(),.001f,cell) &&
+		ResolvePcgGrassResidencyExitDistance(100,16,exitDistance) && exitDistance==116 &&
+		!ResolvePcgGrassResidencyExitDistance(100,0,exitDistance),
+		"PCG cell coordinate or grass residency policy changed");
 }
 
 bool TestChunkSpacingAndLocality()
@@ -689,6 +735,15 @@ bool RunPcgCoreContractTests()
 		if (!Check(tile && tile->hasRiver && std::abs(tile->heights[center].y-10.85f)<1e-4f &&
 			glm::length(tile->velocities[center])<1e-5f && tile->riverProperties[center].x>0 && !merged->warnings.empty(),
 			"Overlapping rivers did not blend height, cancel opposing velocities, or retain river coverage")) return false;
+		const auto layoutGuid=VansAssetGuid::New();
+		const auto layoutRoot=std::filesystem::temp_directory_path()/"ForestPcgArtifactProject";
+		const auto splineLocation=VansDerivedArtifactLayout::PcgSplineRegenerableCache(layoutRoot,layoutGuid);
+		if(!Check(splineLocation&&splineLocation.artifactClass==VansDerivedArtifactClass::RegenerableCache&&
+			VansPcgSplineFieldStorage::CachePath(layoutRoot,layoutGuid)==splineLocation.path&&
+			splineLocation.path.parent_path().filename()=="Splines",
+			"Spline field cache lost its regenerable-cache layout classification"))return false;
+		if(!Check(!VansDerivedArtifactLayout::PcgSplineRegenerableCache(layoutRoot,{}),
+			"Spline artifact layout accepted an invalid GUID"))return false;
 		const auto cachePath=std::filesystem::temp_directory_path()/(VansAssetGuid::New().ToString()+".pcgfields");
 		struct CacheCleanup {std::filesystem::path path;~CacheCleanup(){std::error_code ignored;std::filesystem::remove(path,ignored);}} cleanup{cachePath};
 		if (!Check(VansPcgSplineFieldStorage::Save(cachePath,*merged,error),error)) return false;
@@ -745,7 +800,8 @@ bool RunPcgCoreContractTests()
 	if (!splineContracts()) return false;
 	const bool passed = TestBlankAndSampling() && TestIndependentStrokeAndUndo() &&
 		TestInputRateAndGaps() && TestGeometryAndModes() && TestTargetLockAndCancellation() &&
-		TestDensityAndDeterminism() && TestChunkSpacingAndLocality() && TestBatchReplacement();
+		TestDeterminismAndInfluencePolicies() && TestDensityAndDeterminism() &&
+		TestChunkSpacingAndLocality() && TestBatchReplacement();
 	if (passed) std::cout << "[PcgCore] Independent masks, world-space brushes and deterministic density generation passed\n";
 	return passed;
 }

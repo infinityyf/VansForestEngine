@@ -1,5 +1,7 @@
 #include "VansCameraCore.h"
 
+#include "../Util/VansLog.h"
+
 #include <algorithm>
 #include <cmath>
 #include <glm/gtc/quaternion.hpp>
@@ -45,18 +47,91 @@ glm::vec3 LookRotationDegrees(const glm::vec3& from, const glm::vec3& to,
 		glm::degrees(std::atan2(normalized.z, normalized.x)), 0.0f };
 }
 
-bool Before(const VansCameraContributionSnapshot& left,
-	const VansCameraContributionSnapshot& right)
-{
-	const auto& a = left.contribution.order;
-	const auto& b = right.contribution.order;
-	if (a.layer != b.layer) return a.layer < b.layer;
-	if (a.hierarchicalBias != b.hierarchicalBias)
-		return a.hierarchicalBias < b.hierarchicalBias;
-	if (a.priority != b.priority) return a.priority < b.priority;
-	if (a.stableSequence != b.stableSequence) return a.stableSequence < b.stableSequence;
-	return left.handle.value.index < right.handle.value.index;
 }
+
+bool VansValidateCameraLensLimits(
+	const VansCameraLensLimits& limits,
+	std::string& error)
+{
+	if (!std::isfinite(limits.minimumFieldOfView) ||
+		!std::isfinite(limits.maximumFieldOfView) ||
+		!std::isfinite(limits.minimumNearClip) ||
+		!std::isfinite(limits.minimumClipSeparation) ||
+		limits.minimumFieldOfView <= 0.0f ||
+		limits.maximumFieldOfView >= 180.0f ||
+		limits.maximumFieldOfView <= limits.minimumFieldOfView ||
+		limits.minimumNearClip <= 0.0f ||
+		limits.minimumClipSeparation <= 0.0f)
+	{
+		error = "Camera lens limits require finite FOV bounds within (0, 180), "
+			"an increasing FOV range, and positive near/separation limits";
+		return false;
+	}
+	error.clear();
+	return true;
+}
+
+bool VansValidateCameraView(
+	const VansCameraViewSnapshot& view,
+	const VansCameraLensLimits& limits,
+	std::string& error)
+{
+	if (!VansValidateCameraLensLimits(limits, error)) return false;
+	if (!Finite(view.pose.position) || !Finite(view.pose.rotationDegrees) ||
+		!std::isfinite(view.lens.fieldOfView) || !std::isfinite(view.lens.nearClip) ||
+		!std::isfinite(view.lens.farClip))
+	{
+		error = "Camera view contains a non-finite value";
+		return false;
+	}
+	if (view.lens.fieldOfView < limits.minimumFieldOfView ||
+		view.lens.fieldOfView > limits.maximumFieldOfView ||
+		view.lens.nearClip < limits.minimumNearClip ||
+		view.lens.farClip < view.lens.nearClip + limits.minimumClipSeparation)
+	{
+		error = "Camera view is outside the configured lens limits";
+		return false;
+	}
+	error.clear();
+	return true;
+}
+
+bool VansClampCameraView(
+	VansCameraViewSnapshot& view,
+	const VansCameraLensLimits& limits,
+	std::string& diagnostic)
+{
+	diagnostic.clear();
+	std::string error;
+	if (!VansValidateCameraLensLimits(limits, error))
+	{
+		diagnostic = std::move(error);
+		return false;
+	}
+	if (!Finite(view.pose.position) || !Finite(view.pose.rotationDegrees) ||
+		!std::isfinite(view.lens.fieldOfView) || !std::isfinite(view.lens.nearClip) ||
+		!std::isfinite(view.lens.farClip))
+	{
+		diagnostic = "Camera view contains a non-finite value";
+		return false;
+	}
+
+	const VansCameraLens original = view.lens;
+	view.lens.fieldOfView = std::clamp(
+		view.lens.fieldOfView,
+		limits.minimumFieldOfView,
+		limits.maximumFieldOfView);
+	view.lens.nearClip = std::max(view.lens.nearClip, limits.minimumNearClip);
+	view.lens.farClip = std::max(
+		view.lens.farClip,
+		view.lens.nearClip + limits.minimumClipSeparation);
+	if (view.lens.fieldOfView != original.fieldOfView ||
+		view.lens.nearClip != original.nearClip ||
+		view.lens.farClip != original.farClip)
+	{
+		diagnostic = "Camera lens was clamped to the configured FOV, near-clip, and clip-separation limits";
+	}
+	return true;
 }
 
 VansCameraViewId VansCameraRuntime::MainView()
@@ -76,34 +151,48 @@ std::size_t VansCameraRuntime::OwnerHash::operator()(
 	return static_cast<std::size_t>(hash);
 }
 
-bool VansCameraRuntime::ValidateView(VansCameraViewSnapshot& view, std::string& error)
+bool VansCameraRuntime::SetLensLimits(
+	VansCameraLensLimits limits,
+	std::string& error)
 {
-	if (!Finite(view.pose.position) || !Finite(view.pose.rotationDegrees) ||
-		!std::isfinite(view.lens.fieldOfView) || !std::isfinite(view.lens.nearClip) ||
-		!std::isfinite(view.lens.farClip))
+	if (!VansValidateCameraLensLimits(limits, error)) return false;
+	m_LensLimits = limits;
+	m_ReportedLensClamps.clear();
+	error.clear();
+	return true;
+}
+
+bool VansCameraRuntime::ClampView(
+	VansCameraViewSnapshot& view,
+	std::string_view source,
+	std::string& error) const
+{
+	std::string diagnostic;
+	if (!VansClampCameraView(view, m_LensLimits, diagnostic))
 	{
-		error = "Camera view contains a non-finite value";
+		error = std::move(diagnostic);
 		return false;
 	}
-	view.lens.fieldOfView = std::clamp(view.lens.fieldOfView, 1.0f, 179.0f);
-	view.lens.nearClip = std::max(view.lens.nearClip, 0.001f);
-	view.lens.farClip = std::max(view.lens.farClip, view.lens.nearClip + 0.001f);
+	if (!diagnostic.empty())
+		VANS_LOG_WARN("[CameraCore] " << source << ": " << diagnostic);
+	error.clear();
 	return true;
 }
 
 bool VansCameraRuntime::ValidateContribution(
-	VansCameraContribution& contribution,
-	std::string& error)
+	VansCameraContributionRequest& request,
+	std::string& error) const
 {
-	if (!contribution.view) contribution.view = MainView();
-	if (!contribution.owner.IsValid() || contribution.channels == 0 ||
-		!std::isfinite(contribution.weight))
+	if (!request.view) request.view = MainView();
+	if (!request.owner.IsValid() || request.channels == 0 ||
+		!std::isfinite(request.weight) || !std::isfinite(request.shakeScale) ||
+		(request.hasShakeOrigin && !Finite(request.shakeOrigin)))
 	{
-		error = "Camera contribution identity, channels or weight is invalid";
+		error = "Camera contribution identity, channels, weight or shake input is invalid";
 		return false;
 	}
-	contribution.weight = std::clamp(contribution.weight, 0.0f, 1.0f);
-	return ValidateView(contribution.value, error);
+	request.weight = std::clamp(request.weight, 0.0f, 1.0f);
+	return ClampView(request.value, "contribution", error);
 }
 
 VansCameraRigHandle VansCameraRuntime::RegisterRig(
@@ -113,7 +202,7 @@ VansCameraRigHandle VansCameraRuntime::RegisterRig(
 	if (!definition.id || definition.stableName.empty() ||
 		definition.id != VansMakeStableId<VansCameraRigIdTag>(definition.stableName) ||
 		m_RigIds.find(definition.id) != m_RigIds.end() ||
-		!ValidateView(definition.initialView, error) ||
+		!ClampView(definition.initialView, "rig initial view", error) ||
 		!std::isfinite(definition.follow.positionDamping) ||
 		!std::isfinite(definition.lookAt.rotationDamping) ||
 		!std::isfinite(definition.collision.radius) ||
@@ -163,9 +252,9 @@ bool VansCameraRuntime::UnregisterRig(VansCameraRigHandle rig)
 	}
 	std::vector<VansCameraContributionHandle> active;
 	m_Contributions.ForEach([&](VansGenerationHandle handle,
-		const VansCameraContribution& contribution)
+		const ContributionState& state)
 	{
-		if (contribution.rig == rig) active.push_back({ handle });
+		if (state.request.rig == rig) active.push_back({ handle });
 	});
 	for (VansCameraContributionHandle handle : active) ReleaseContribution(handle);
 	m_RigIds.erase(id);
@@ -207,7 +296,7 @@ bool VansCameraRuntime::SetBaseView(
 	VansCameraViewSnapshot snapshot,
 	std::string& error)
 {
-	if (!view || !ValidateView(snapshot, error))
+	if (!view || !ClampView(snapshot, "base view", error))
 	{
 		if (error.empty()) error = "Camera base view identity is invalid";
 		return false;
@@ -255,9 +344,9 @@ bool VansCameraRuntime::UnregisterShake(VansCameraShakeHandle shake)
 	if (!definition) return false;
 	const VansCameraShakeId id = definition->id;
 	std::vector<VansCameraContributionHandle> active;
-	m_Contributions.ForEach([&](VansGenerationHandle handle, const VansCameraContribution& contribution)
+	m_Contributions.ForEach([&](VansGenerationHandle handle, const ContributionState& state)
 	{
-		if (contribution.shake == shake) active.push_back({ handle });
+		if (state.request.shake == shake) active.push_back({ handle });
 	});
 	for (VansCameraContributionHandle handle : active) ReleaseContribution(handle);
 	m_ShakeIds.erase(id);
@@ -290,154 +379,182 @@ void VansCameraRuntime::Advance(double deltaSeconds)
 			state.collisionDistance, deltaSeconds);
 	}
 	std::vector<VansCameraContributionHandle> expired;
-	m_Contributions.ForEach([&](VansGenerationHandle handle, VansCameraContribution& contribution)
+	m_Contributions.ForEach([&](VansGenerationHandle handle, ContributionState& state)
 	{
-		if (contribution.rig)
+		const VansCameraContributionRequest& request = state.request;
+		if (request.rig)
 		{
-			const VansCameraRigDefinition* rig = ResolveRig(contribution.rig);
+			const VansCameraRigDefinition* rig = ResolveRig(request.rig);
 			if (!rig)
 			{
 				expired.push_back({ handle });
 				return;
 			}
-			contribution.value = SolveRig(*rig, contribution.bindingContext,
-				contribution.value, contribution.rigSolveInitialized,
-				contribution.hasCollisionDistance, contribution.collisionDistance,
+			state.value = SolveRig(*rig, request.bindingContext,
+				state.value, state.rigSolveInitialized,
+				state.hasCollisionDistance, state.collisionDistance,
 				deltaSeconds);
 		}
-		if (contribution.kind != VansCameraContributionKind::Shake || !contribution.shake)
+		if (request.kind != VansCameraContributionKind::Shake || !request.shake)
 			return;
-		const VansCameraShakeDefinition* shake = ResolveShake(contribution.shake);
+		const VansCameraShakeDefinition* shake = ResolveShake(request.shake);
 		if (!shake)
 		{
 			expired.push_back({ handle });
 			return;
 		}
-		contribution.shakeElapsedSeconds += deltaSeconds;
+		state.shakeElapsedSeconds += deltaSeconds;
 		const double attackEnd = shake->attackSeconds;
 		const double sustainEnd = attackEnd + shake->sustainSeconds;
 		const double end = sustainEnd + shake->releaseSeconds;
-		if (contribution.shakeElapsedSeconds > end + 1e-12)
+		if (state.shakeElapsedSeconds > end + 1e-12)
 		{
 			expired.push_back({ handle });
 			return;
 		}
 		float envelope = 1.0f;
-		if (shake->attackSeconds > 0.0f && contribution.shakeElapsedSeconds < attackEnd)
-			envelope = static_cast<float>(contribution.shakeElapsedSeconds / shake->attackSeconds);
-		else if (shake->releaseSeconds > 0.0f && contribution.shakeElapsedSeconds > sustainEnd)
-			envelope = static_cast<float>((end - contribution.shakeElapsedSeconds) /
+		if (shake->attackSeconds > 0.0f && state.shakeElapsedSeconds < attackEnd)
+			envelope = static_cast<float>(state.shakeElapsedSeconds / shake->attackSeconds);
+		else if (shake->releaseSeconds > 0.0f && state.shakeElapsedSeconds > sustainEnd)
+			envelope = static_cast<float>((end - state.shakeElapsedSeconds) /
 				shake->releaseSeconds);
 		envelope = std::clamp(envelope, 0.0f, 1.0f);
 		float distanceScale = 1.0f;
-		if (contribution.hasShakeOrigin && shake->maximumDistance > shake->minimumDistance)
+		if (request.hasShakeOrigin && shake->maximumDistance > shake->minimumDistance)
 		{
 			const float distance = glm::length(
-				BaseFor(contribution.view).pose.position - contribution.shakeOrigin);
+				BaseFor(request.view).pose.position - request.shakeOrigin);
 			const float normalized = std::clamp((distance - shake->minimumDistance) /
 				(shake->maximumDistance - shake->minimumDistance), 0.0f, 1.0f);
 			distanceScale = std::pow(1.0f - normalized, shake->falloffExponent);
 		}
-		const std::uint64_t seed = contribution.shakeSeed != 0
-			? contribution.shakeSeed : shake->seed;
+		const std::uint64_t seed = request.shakeSeed != 0
+			? request.shakeSeed : shake->seed;
 		const float seedPhase = static_cast<float>((seed % 104729ull) * 0.000060001f);
-		const float phase = static_cast<float>(contribution.shakeElapsedSeconds) *
+		const float phase = static_cast<float>(state.shakeElapsedSeconds) *
 			shake->frequency * 6.28318530718f + seedPhase;
 		const glm::vec3 noise{
 			std::sin(phase), std::sin(phase * 1.371f + 1.7f),
 			std::sin(phase * 1.917f + 3.1f) };
-		const float scale = contribution.shakeScale * envelope * distanceScale;
-		contribution.value.pose.position = shake->translationAmplitude * noise * scale;
-		contribution.value.pose.rotationDegrees = shake->rotationAmplitude *
+		const float scale = request.shakeScale * envelope * distanceScale;
+		state.value.pose.position = shake->translationAmplitude * noise * scale;
+		state.value.pose.rotationDegrees = shake->rotationAmplitude *
 			glm::vec3(noise.z, noise.x, noise.y) * scale;
 	});
 	for (VansCameraContributionHandle handle : expired) ReleaseContribution(handle);
 }
 
 VansCameraContributionHandle VansCameraRuntime::AddContribution(
-	VansCameraContribution contribution,
+	VansCameraContributionRequest request,
 	std::string& error)
 {
-	if (!ValidateContribution(contribution, error)) return {};
-	if (contribution.kind == VansCameraContributionKind::Shake &&
-		(!contribution.shake || !ResolveShake(contribution.shake)))
+	if (!ValidateContribution(request, error)) return {};
+	if (request.kind == VansCameraContributionKind::Shake &&
+		(!request.shake || !ResolveShake(request.shake)))
 	{
 		error = "Camera shake contribution references an invalid profile";
 		return {};
 	}
-	if (contribution.rig && !ResolveRig(contribution.rig))
+	if (request.rig && !ResolveRig(request.rig))
 	{
 		error = "Camera contribution references an invalid rig";
 		return {};
 	}
-	if (m_Owners.find(contribution.owner) != m_Owners.end())
+	if (m_Owners.find(request.owner) != m_Owners.end())
 	{
 		error = "Camera contribution owner is already registered";
 		return {};
 	}
-	if (contribution.order.stableSequence == 0)
-		contribution.order.stableSequence = m_NextSequence++;
-	const VansCameraContributionOwner owner = contribution.owner;
-	const VansCameraContributionHandle handle{ m_Contributions.Emplace(std::move(contribution)) };
+	if (request.order.stableSequence == 0)
+		request.order.stableSequence = m_NextSequence++;
+	const VansCameraContributionOwner owner = request.owner;
+	ContributionState state;
+	state.value = request.value;
+	state.request = std::move(request);
+	const VansCameraContributionHandle handle{ m_Contributions.Emplace(std::move(state)) };
 	m_Owners.emplace(owner, handle);
 	return handle;
 }
 
 VansCameraContributionHandle VansCameraRuntime::UpsertContribution(
-	VansCameraContribution contribution,
+	VansCameraContributionRequest request,
 	std::string& error)
 {
-	const auto found = m_Owners.find(contribution.owner);
-	if (found == m_Owners.end()) return AddContribution(std::move(contribution), error);
-	if (!UpdateContribution(found->second, std::move(contribution), error)) return {};
+	const auto found = m_Owners.find(request.owner);
+	if (found == m_Owners.end()) return AddContribution(std::move(request), error);
+	if (!UpdateContribution(found->second, std::move(request), error)) return {};
 	return found->second;
 }
 
 bool VansCameraRuntime::UpdateContribution(
 	VansCameraContributionHandle handle,
-	VansCameraContribution contribution,
+	VansCameraContributionRequest request,
 	std::string& error)
 {
-	VansCameraContribution* existing = m_Contributions.Resolve(handle.value);
+	ContributionState* existing = m_Contributions.Resolve(handle.value);
 	if (!existing)
 	{
 		error = "Camera contribution handle is stale";
 		return false;
 	}
-	if (contribution.owner != existing->owner)
+	if (request.owner != existing->request.owner)
 	{
 		error = "Camera contribution owner cannot change during update";
 		return false;
 	}
-	if (!ValidateContribution(contribution, error)) return false;
-	if (contribution.kind == VansCameraContributionKind::Shake &&
-		(!contribution.shake || !ResolveShake(contribution.shake)))
+	if (!ValidateContribution(request, error)) return false;
+	if (request.kind == VansCameraContributionKind::Shake &&
+		(!request.shake || !ResolveShake(request.shake)))
 	{
 		error = "Camera shake contribution references an invalid profile";
 		return false;
 	}
-	if (contribution.rig && !ResolveRig(contribution.rig))
+	if (request.rig && !ResolveRig(request.rig))
 	{
 		error = "Camera contribution references an invalid rig";
 		return false;
 	}
-	if (contribution.order.stableSequence == 0)
-		contribution.order.stableSequence = existing->order.stableSequence;
-	*existing = std::move(contribution);
+	if (request.order.stableSequence == 0)
+		request.order.stableSequence = existing->request.order.stableSequence;
+	const bool sameRig = request.rig && request.rig == existing->request.rig &&
+		request.bindingContext == existing->request.bindingContext;
+	const bool sameShake = request.kind == VansCameraContributionKind::Shake &&
+		existing->request.kind == VansCameraContributionKind::Shake &&
+		request.shake && request.shake == existing->request.shake;
+	ContributionState updated;
+	updated.request = std::move(request);
+	updated.value = updated.request.value;
+	if (sameRig)
+	{
+		updated.value = existing->value;
+		updated.rigSolveInitialized = existing->rigSolveInitialized;
+		updated.hasCollisionDistance = existing->hasCollisionDistance;
+		updated.collisionDistance = existing->collisionDistance;
+	}
+	if (sameShake)
+	{
+		updated.value = existing->value;
+		updated.shakeElapsedSeconds = existing->shakeElapsedSeconds;
+	}
+	*existing = std::move(updated);
 	return true;
 }
 
-const VansCameraContribution* VansCameraRuntime::ResolveContribution(
-	VansCameraContributionHandle handle) const
+bool VansCameraRuntime::ReadContribution(
+	VansCameraContributionHandle handle,
+	VansCameraContributionRequest& outRequest) const
 {
-	return m_Contributions.Resolve(handle.value);
+	const ContributionState* state = m_Contributions.Resolve(handle.value);
+	if (!state) return false;
+	outRequest = state->request;
+	return true;
 }
 
 bool VansCameraRuntime::ReleaseContribution(VansCameraContributionHandle handle)
 {
-	const VansCameraContribution* contribution = m_Contributions.Resolve(handle.value);
-	if (!contribution) return false;
-	m_Owners.erase(contribution->owner);
+	const ContributionState* state = m_Contributions.Resolve(handle.value);
+	if (!state) return false;
+	m_Owners.erase(state->request.owner);
 	return m_Contributions.Release(handle.value);
 }
 
@@ -471,6 +588,7 @@ void VansCameraRuntime::Clear()
 	m_RigIds.clear();
 	m_ShakeIds.clear();
 	m_Views.clear();
+	m_ReportedLensClamps.clear();
 }
 
 VansCameraViewSnapshot VansCameraRuntime::BaseFor(VansCameraViewId view) const
@@ -502,7 +620,7 @@ VansCameraViewSnapshot VansCameraRuntime::SolveRig(
 	if (hasFollowTarget)
 	{
 		glm::vec3 offset = definition.follow.localOffset;
-		if (definition.follow.mode != "Fixed")
+		if (definition.follow.mode != VansCameraFollowMode::Fixed)
 			offset = glm::quat(glm::radians(followTarget.pose.rotationDegrees)) * offset;
 		const glm::vec3 desired = followTarget.pose.position + offset;
 		const float alpha = DampingAlpha(
@@ -576,58 +694,88 @@ VansCameraViewSnapshot VansCameraRuntime::SolveRig(
 	}
 	initialized = true;
 	std::string ignored;
-	ValidateView(solved, ignored);
+	ClampView(solved, "rig solve", ignored);
 	return solved;
 }
 
-VansResolvedCameraView VansCameraRuntime::ResolveView(VansCameraViewId view) const
+void VansCameraRuntime::ReportResolvedClamp(
+	VansCameraViewId view,
+	const std::string& diagnostic)
+{
+	if (diagnostic.empty())
+	{
+		m_ReportedLensClamps.erase(view);
+		return;
+	}
+	const auto found = m_ReportedLensClamps.find(view);
+	if (found != m_ReportedLensClamps.end() && found->second == diagnostic) return;
+	m_ReportedLensClamps[view] = diagnostic;
+	VANS_LOG_WARN("[CameraCore] resolved view: " << diagnostic);
+}
+
+VansResolvedCameraView VansCameraRuntime::ResolveView(VansCameraViewId view)
 {
 	if (!view) view = MainView();
 	VansResolvedCameraView result;
 	result.view = view;
 	result.snapshot = BaseFor(view);
-	std::vector<VansCameraContributionSnapshot> contributions = Contributions(view);
-	std::stable_sort(contributions.begin(), contributions.end(), Before);
-	for (const VansCameraContributionSnapshot& item : contributions)
-	{
-		const VansCameraContribution& contribution = item.contribution;
-		if (!contribution.enabled || contribution.weight <= 0.0f) continue;
-		const float weight = contribution.blendMode == VansCameraBlendMode::Exclusive
-			? 1.0f : contribution.weight;
-		auto blend = [weight](auto base, auto value) { return base + (value - base) * weight; };
-		if (contribution.channels & VansCameraChannel_Position)
+	std::vector<ContributionSnapshot> contributions = SnapshotContributions(view);
+	std::stable_sort(contributions.begin(), contributions.end(),
+		[](const ContributionSnapshot& left, const ContributionSnapshot& right)
 		{
-			glm::vec3 position = contribution.value.pose.position;
-			if (contribution.blendMode == VansCameraBlendMode::Additive &&
-				contribution.space == VansCameraSpace::CameraLocal)
+			const VansCameraContributionSortKey& a = left.order;
+			const VansCameraContributionSortKey& b = right.order;
+			if (a.layer != b.layer) return a.layer < b.layer;
+			if (a.hierarchicalBias != b.hierarchicalBias)
+				return a.hierarchicalBias < b.hierarchicalBias;
+			if (a.priority != b.priority) return a.priority < b.priority;
+			if (a.stableSequence != b.stableSequence)
+				return a.stableSequence < b.stableSequence;
+			return left.handle.value.index < right.handle.value.index;
+		});
+	for (const ContributionSnapshot& item : contributions)
+	{
+		if (!item.enabled || item.weight <= 0.0f) continue;
+		const float weight = item.blendMode == VansCameraBlendMode::Exclusive
+			? 1.0f : item.weight;
+		auto blend = [weight](auto base, auto value) { return base + (value - base) * weight; };
+		if (item.channels & VansCameraChannel_Position)
+		{
+			glm::vec3 position = item.value.pose.position;
+			if (item.blendMode == VansCameraBlendMode::Additive &&
+				item.space == VansCameraSpace::CameraLocal)
 			{
 				position = glm::quat(glm::radians(result.snapshot.pose.rotationDegrees)) * position;
 			}
-			result.snapshot.pose.position = contribution.blendMode == VansCameraBlendMode::Additive
+			result.snapshot.pose.position = item.blendMode == VansCameraBlendMode::Additive
 				? result.snapshot.pose.position + position * weight
 				: blend(result.snapshot.pose.position, position);
 		}
-		if (contribution.channels & VansCameraChannel_Rotation)
+		if (item.channels & VansCameraChannel_Rotation)
 		{
 			result.snapshot.pose.rotationDegrees =
-				contribution.blendMode == VansCameraBlendMode::Additive
-				? result.snapshot.pose.rotationDegrees + contribution.value.pose.rotationDegrees * weight
+				item.blendMode == VansCameraBlendMode::Additive
+				? result.snapshot.pose.rotationDegrees + item.value.pose.rotationDegrees * weight
 				: BlendRotation(result.snapshot.pose.rotationDegrees,
-					contribution.value.pose.rotationDegrees, weight);
+					item.value.pose.rotationDegrees, weight);
 		}
-		if (contribution.channels & VansCameraChannel_FieldOfView)
+		if (item.channels & VansCameraChannel_FieldOfView)
 			result.snapshot.lens.fieldOfView = blend(
-				result.snapshot.lens.fieldOfView, contribution.value.lens.fieldOfView);
-		if (contribution.channels & VansCameraChannel_NearClip)
+				result.snapshot.lens.fieldOfView, item.value.lens.fieldOfView);
+		if (item.channels & VansCameraChannel_NearClip)
 			result.snapshot.lens.nearClip = blend(
-				result.snapshot.lens.nearClip, contribution.value.lens.nearClip);
-		if (contribution.channels & VansCameraChannel_FarClip)
+				result.snapshot.lens.nearClip, item.value.lens.nearClip);
+		if (item.channels & VansCameraChannel_FarClip)
 			result.snapshot.lens.farClip = blend(
-				result.snapshot.lens.farClip, contribution.value.lens.farClip);
+				result.snapshot.lens.farClip, item.value.lens.farClip);
 		result.appliedContributions.push_back(item.handle);
 	}
-	std::string ignored;
-	ValidateView(result.snapshot, ignored);
+	std::string diagnostic;
+	if (!VansClampCameraView(result.snapshot, m_LensLimits, diagnostic))
+	{
+		VANS_LOG_ERROR("[CameraCore] Failed to resolve camera view: " << diagnostic);
+	}
+	ReportResolvedClamp(view, diagnostic);
 	return result;
 }
 
@@ -637,22 +785,25 @@ VansResolvedCameraView VansCameraRuntime::ResolveAndConsumeView(VansCameraViewId
 	std::vector<VansCameraContributionHandle> consumed;
 	for (VansCameraContributionHandle handle : result.appliedContributions)
 	{
-		const VansCameraContribution* contribution = m_Contributions.Resolve(handle.value);
-		if (contribution && contribution->consumeAfterResolve) consumed.push_back(handle);
+		const ContributionState* state = m_Contributions.Resolve(handle.value);
+		if (state && state->request.lifetime == VansCameraContributionLifetime::ResolveOnce)
+			consumed.push_back(handle);
 	}
 	for (VansCameraContributionHandle handle : consumed) ReleaseContribution(handle);
 	return result;
 }
 
-std::vector<VansCameraContributionSnapshot> VansCameraRuntime::Contributions(
+std::vector<VansCameraRuntime::ContributionSnapshot> VansCameraRuntime::SnapshotContributions(
 	VansCameraViewId view) const
 {
-	std::vector<VansCameraContributionSnapshot> result;
+	std::vector<ContributionSnapshot> result;
 	m_Contributions.ForEach([&](VansGenerationHandle handle,
-		const VansCameraContribution& contribution)
+		const ContributionState& state)
 	{
-		if (!view || contribution.view == view)
-			result.push_back({ { handle }, contribution });
+		if (!view || state.request.view == view)
+			result.push_back({ { handle }, state.value, state.request.blendMode,
+				state.request.space, state.request.order, state.request.weight,
+				state.request.channels, state.request.enabled });
 	});
 	return result;
 }
@@ -662,10 +813,10 @@ bool VansCameraRuntime::IsUserLookSuppressed(VansCameraViewId view) const
 	if (!view) view = MainView();
 	bool suppressed = false;
 	m_Contributions.ForEach([&](VansGenerationHandle,
-		const VansCameraContribution& contribution)
+		const ContributionState& state)
 	{
-		if (contribution.view == view && contribution.enabled &&
-			contribution.suppressUserLook)
+		if (state.request.view == view && state.request.enabled &&
+			state.request.suppressUserLook)
 			suppressed = true;
 	});
 	return suppressed;

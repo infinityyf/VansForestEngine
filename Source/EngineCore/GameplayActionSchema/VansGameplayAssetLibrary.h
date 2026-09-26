@@ -4,6 +4,7 @@
 
 #include "../AssetCore/VansAssetDatabase.h"
 
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -79,7 +80,8 @@ public:
 	const VansEffectRegistry* Effects() const { return m_Effects.IsSealed() ? &m_Effects : nullptr; }
 	const VansTargetingPolicyRegistry* TargetingPolicies() const
 		{ return m_TargetingPolicies.IsSealed() ? &m_TargetingPolicies : nullptr; }
-	const VansPayloadSchemaRegistry& PayloadSchemas() const { return m_PayloadSchemas; }
+	std::shared_ptr<const VansTimelinePayloadSchemaRegistry> PayloadSchemas() const
+		{ return m_PayloadSchemas; }
 	const std::vector<VansCompiledGameplayCueDefinition>& Cues() const { return m_Cues; }
 
 private:
@@ -105,7 +107,8 @@ private:
 	VansAttributeRegistry m_Attributes;
 	VansEffectRegistry m_Effects;
 	VansTargetingPolicyRegistry m_TargetingPolicies;
-	VansPayloadSchemaRegistry m_PayloadSchemas;
+	std::shared_ptr<VansTimelinePayloadSchemaRegistry> m_PayloadSchemas =
+		std::make_shared<VansTimelinePayloadSchemaRegistry>();
 	std::uint64_t m_ContentManifestHash = 0;
 	bool m_Loaded = false;
 };

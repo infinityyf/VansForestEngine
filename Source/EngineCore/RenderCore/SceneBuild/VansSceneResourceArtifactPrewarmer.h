@@ -31,7 +31,7 @@ struct VansSceneResourceArtifactPrewarmResult
 
     bool Succeeded() const
     {
-        return meshFailed == 0 && textureFailed == 0;
+        return errors.empty() && meshFailed == 0 && textureFailed == 0;
     }
 };
 

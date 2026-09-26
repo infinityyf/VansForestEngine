@@ -25,16 +25,6 @@ bool VansPcgMaskAssetCodec::DecodeDefinition(const VansSerializedValue& root, Va
 	bounds.Finish();
 	reader.IntegerField("width", decoded.mask.width);
 	reader.IntegerField("height", decoded.mask.height);
-	auto brush = reader.Object("brush");
-	brush.EnumField("operation", decoded.brush.operation, { { "add", VansPcgBrushOperation::Add },
-		{ "subtract", VansPcgBrushOperation::Subtract }, { "set", VansPcgBrushOperation::Set },
-		{ "smooth", VansPcgBrushOperation::Smooth }, { "erase", VansPcgBrushOperation::Erase } });
-	brush.Float("radius", decoded.brush.radius);
-	brush.Float("strength", decoded.brush.strength);
-	brush.Float("hardness", decoded.brush.hardness);
-	brush.Float("targetValue", decoded.brush.targetValue);
-	brush.Float("spacingFraction", decoded.brush.spacingFraction);
-	brush.Finish();
 	if (!reader.Finish()) return false;
 	const auto diagnostics = ValidatePcgMaskAsset(decoded, false);
 	if (!diagnostics.empty()) { error = diagnostics.front(); return false; }
@@ -53,20 +43,20 @@ bool VansPcgMaskAssetCodec::EncodeDefinition(const VansPcgMaskAsset& asset, Vans
 		{ "owner", Value::Object({ { "region", Value::String(asset.mask.target.regionId) },
 			{ "layer", Value::String(asset.mask.target.layerId) }, { "mask", Value::String(asset.mask.target.maskId) } }) },
 		{ "bounds", Value::Object({ { "min", PcgValue::Vector(asset.mask.bounds.min) }, { "max", PcgValue::Vector(asset.mask.bounds.max) } }) },
-		{ "width", Value::Int(asset.mask.width) }, { "height", Value::Int(asset.mask.height) },
-		{ "brush", Value::Object({ { "operation", Value::String(asset.brush.operation == VansPcgBrushOperation::Add ? "add" :
-			asset.brush.operation == VansPcgBrushOperation::Subtract ? "subtract" : asset.brush.operation == VansPcgBrushOperation::Set ? "set" :
-			asset.brush.operation == VansPcgBrushOperation::Smooth ? "smooth" : "erase") },
-			{ "radius", Value::Float(asset.brush.radius) }, { "strength", Value::Float(asset.brush.strength) },
-			{ "hardness", Value::Float(asset.brush.hardness) }, { "targetValue", Value::Float(asset.brush.targetValue) },
-			{ "spacingFraction", Value::Float(asset.brush.spacingFraction) } }) }
+		{ "width", Value::Int(asset.mask.width) }, { "height", Value::Int(asset.mask.height) }
 	});
 	return true;
 }
 
 namespace
 {
-bool DecodeImage(const std::string& bytes, std::uint32_t channel, bool canonical,
+enum class MaskImageDecodeMode
+{
+	CanonicalAsset,
+	ImportedSource
+};
+
+bool DecodeImage(const std::string& bytes, std::uint32_t channel, MaskImageDecodeMode mode,
 	VansPcgMaskAsset& asset, std::string& error)
 {
 	error.clear();
@@ -78,9 +68,15 @@ bool DecodeImage(const std::string& bytes, std::uint32_t channel, bool canonical
 	const auto size = static_cast<int>(bytes.size());
 	int width = 0, height = 0, channels = 0;
 	if (!stbi_info_from_memory(source, size, &width, &height, &channels) || width <= 0 || height <= 0 ||
-		static_cast<std::uint32_t>(width) != asset.mask.width || static_cast<std::uint32_t>(height) != asset.mask.height ||
-		channel >= static_cast<std::uint32_t>(channels))
-	{ error = "PCG Mask image dimensions/channel do not match the selected layer"; return false; }
+		static_cast<std::uint32_t>(width) > MaximumPcgMaskDimension ||
+		static_cast<std::uint32_t>(height) > MaximumPcgMaskDimension)
+	{ error = "Image dimensions must be in [1,8192]."; return false; }
+	if (channel >= static_cast<std::uint32_t>(channels))
+	{ error = "PCG Mask image channel is unavailable"; return false; }
+	const bool canonical = mode == MaskImageDecodeMode::CanonicalAsset;
+	if (canonical && (static_cast<std::uint32_t>(width) != asset.mask.width ||
+		static_cast<std::uint32_t>(height) != asset.mask.height))
+	{ error = "PCG Mask image dimensions do not match the selected layer"; return false; }
 	const bool highPrecision = stbi_is_16_bit_from_memory(source, size) != 0;
 	if (canonical && (!highPrecision || channels != 1))
 	{ error = "PCG Mask pixel asset must be a single-channel 16-bit image"; return false; }
@@ -101,6 +97,11 @@ bool DecodeImage(const std::string& bytes, std::uint32_t channel, bool canonical
 		for (std::size_t i = 0; i < count; ++i) decoded[i] = static_cast<std::uint16_t>(pixels[i * channels + channel] * 257u);
 		stbi_image_free(pixels);
 	}
+	if (!canonical)
+	{
+		asset.mask.width = static_cast<std::uint32_t>(width);
+		asset.mask.height = static_cast<std::uint32_t>(height);
+	}
 	asset.mask.pixels = std::move(decoded);
 	return true;
 }
@@ -108,7 +109,7 @@ bool DecodeImage(const std::string& bytes, std::uint32_t channel, bool canonical
 
 bool VansPcgMaskAssetCodec::DecodePixels(const std::string& bytes, VansPcgMaskAsset& asset, std::string& error)
 {
-	return DecodeImage(bytes, 0, true, asset, error);
+	return DecodeImage(bytes, 0, MaskImageDecodeMode::CanonicalAsset, asset, error);
 }
 
 bool VansPcgMaskAssetCodec::EncodePixels(const VansPcgMaskAsset& asset, std::string& bytes, std::string& error)
@@ -121,6 +122,6 @@ bool VansPcgMaskAssetCodec::EncodePixels(const VansPcgMaskAsset& asset, std::str
 
 bool VansPcgMaskAssetCodec::ImportPixels(const std::string& bytes, std::uint32_t channel, VansPcgMaskAsset& asset, std::string& error)
 {
-	return DecodeImage(bytes, channel, false, asset, error);
+	return DecodeImage(bytes, channel, MaskImageDecodeMode::ImportedSource, asset, error);
 }
 }

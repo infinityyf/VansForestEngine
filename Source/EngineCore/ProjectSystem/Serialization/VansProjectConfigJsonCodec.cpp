@@ -23,14 +23,17 @@ namespace Vans
 
 			config.assetsRoot = "Assets";
 			config.importedArtifactRoot = "Library/Artifacts";
-			config.metaExtension = ".meta";
 			config.runtimeAssetBindings.clear();
 			if (root.contains("assetDatabase") && root["assetDatabase"].is_object())
 			{
 				const nlohmann::json& database = root["assetDatabase"];
+				if (database.contains("metaExtension"))
+				{
+					error = "assetDatabase.metaExtension was removed; asset metadata uses the fixed .meta suffix";
+					return false;
+				}
 				config.assetsRoot = database.value("assetsRoot", "Assets");
 				config.importedArtifactRoot = database.value("importedArtifactRoot", "Library/Artifacts");
-				config.metaExtension = database.value("metaExtension", ".meta");
 			}
 
 			if (root.contains("runtimeAssetBindings") && root["runtimeAssetBindings"].is_object())
@@ -44,6 +47,7 @@ namespace Vans
 
 			config.renderSettings = root.at("renderSettings").get<std::string>();
 			config.physicsSettings = root.at("physicsSettings").get<std::string>();
+			config.navigationSettings = root.at("navigationSettings").get<std::string>();
 			config.audioSettings = root.at("audioSettings").get<std::string>();
 			config.collisionLayerSettings =
 				root.at("collisionLayerSettings").get<std::string>();
@@ -80,12 +84,12 @@ namespace Vans
 		root["defaultScene"] = config.defaultScene;
 		root["assetDatabase"] = {
 			{ "assetsRoot", config.assetsRoot },
-			{ "importedArtifactRoot", config.importedArtifactRoot },
-			{ "metaExtension", config.metaExtension }
+			{ "importedArtifactRoot", config.importedArtifactRoot }
 		};
 		root["runtimeAssetBindings"] = config.runtimeAssetBindings;
 		root["renderSettings"] = config.renderSettings;
 		root["physicsSettings"] = config.physicsSettings;
+		root["navigationSettings"] = config.navigationSettings;
 		root["audioSettings"] = config.audioSettings;
 		root["collisionLayerSettings"] = config.collisionLayerSettings;
 

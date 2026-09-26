@@ -10,7 +10,7 @@ namespace Vans
 struct VansTimelineValidationContext
 {
 	const VansTimelineTrackExtensionRegistry* extensions = nullptr;
-	bool runtimeValidation = true;
+	bool requireRuntimeCapabilities = true;
 	bool preview = false;
 	bool rollbackCapable = false;
 	std::function<bool(VansTimelineOutputTypeId)> hasOutputApplier;

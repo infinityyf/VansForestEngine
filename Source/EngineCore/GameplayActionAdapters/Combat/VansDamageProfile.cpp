@@ -11,7 +11,8 @@ bool VansRegisterCombatGameplayAssetSchemas(VansGameplayAssetSchemaRegistry& reg
     VansGameplayAssetSchemaDescriptor schema;
     schema.assetType = VansAssetType::DamageProfile;
     schema.assetKind = "DamageProfile";
-    schema.extension = ".vdamage";
+    if (const VansAssetTypeDescriptor* assetType = VansAssetDatabase::Describe(schema.assetType))
+        schema.extension = assetType->canonicalExtension;
     const auto field = [](std::string path, K kind, V value)
     {
         VansGameplayPropertySchema f;

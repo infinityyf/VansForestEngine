@@ -6,6 +6,11 @@
 
 #include <string>
 
+namespace Vans::EditorAPI
+{
+    class IUIEditorAPI;
+}
+
 namespace VansGraphics
 {
     class VansUIEditorWindow : public VansBaseWindowComponent
@@ -15,11 +20,11 @@ namespace VansGraphics
         void ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api) override;
 
     private:
-        void DrawUIEditorContents(Vans::EditorAPI::IEngineEditorAPI& api);
-        void LoadPreview(Vans::EditorAPI::IEngineEditorAPI& api);
-        void UnloadPreview(Vans::EditorAPI::IEngineEditorAPI& api);
-        void DrawMetaPanel(Vans::EditorAPI::IEngineEditorAPI& api);
-        void DrawPreviewViewport(Vans::EditorAPI::IEngineEditorAPI& api);
+        void DrawUIEditorContents(Vans::EditorAPI::IUIEditorAPI& api);
+        void LoadPreview(Vans::EditorAPI::IUIEditorAPI& api);
+        void UnloadPreview(Vans::EditorAPI::IUIEditorAPI& api);
+        void DrawMetaPanel(Vans::EditorAPI::IUIEditorAPI& api);
+        void DrawPreviewViewport(Vans::EditorAPI::IUIEditorAPI& api);
 
         char m_XamlPathBuf[512] = {};
         Vans::EditorAPI::UIDocumentId m_PreviewDocumentId = 0;

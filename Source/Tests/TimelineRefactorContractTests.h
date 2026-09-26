@@ -1,6 +1,7 @@
 #pragma once
 
 bool TestTimelineRegistryContract();
+bool TestTimelinePropertyTransformContract();
 bool TestTimelineSerializationContract();
 bool TestTimelineCompileEvaluateContract();
 bool TestTimelineSessionContract();
@@ -13,5 +14,5 @@ bool TestTimelineSubTimelineContract();
 bool TestTimelineGenericExtensionContract();
 bool TestTimelinePointAndRangeContract();
 bool TestTimelineExternalClockContract();
-bool TestTimelineDemoHallAssetContract();
 bool TestTimelineEditorInteractionContract();
+bool TestEventDispatchMutationContract();

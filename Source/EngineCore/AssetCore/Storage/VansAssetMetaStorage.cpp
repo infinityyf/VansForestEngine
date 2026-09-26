@@ -1,6 +1,7 @@
 #include "VansAssetMetaStorage.h"
 
 #include "../Serialization/VansAssetMetaJsonCodec.h"
+#include "../Serialization/VansSerializedValueJsonAdapter.h"
 #include "VansJsonFileStorage.h"
 
 #include <nlohmann/json.hpp>
@@ -19,7 +20,8 @@ bool VansAssetMetaStorage::Load(
         nlohmann::ordered_json root;
         if (!VansJsonFileStorage::Read(metaPath, root, error))
             return false;
-        return VansAssetMetaJsonCodec::Decode(root, metaPath, result, error);
+        return VansAssetMetaJsonCodec::Decode(
+            DecodeSerializedValueJson(root), metaPath, result, error);
     }
     catch (const std::exception& exception)
     {
@@ -33,9 +35,12 @@ bool VansAssetMetaStorage::SaveAtomic(
     const VansAssetMeta& meta,
     std::string& error)
 {
-    nlohmann::ordered_json root;
-    if (!VansAssetMetaJsonCodec::Encode(meta, root, error))
+    VansSerializedValue serialized;
+    if (!VansAssetMetaJsonCodec::Encode(meta, serialized, error))
         return false;
+
+    const nlohmann::ordered_json root =
+        EncodeSerializedValueJson<nlohmann::ordered_json>(serialized);
 
     if (!VansJsonFileStorage::WriteAtomic(metaPath, root, error))
         return false;
@@ -56,9 +61,11 @@ bool VansAssetMetaStorage::StageSave(
     VansStagedFile& stage,
     std::string& error)
 {
-    nlohmann::ordered_json root;
-    if (!VansAssetMetaJsonCodec::Encode(meta, root, error))
+    VansSerializedValue serialized;
+    if (!VansAssetMetaJsonCodec::Encode(meta, serialized, error))
         return false;
+    const nlohmann::ordered_json root =
+        EncodeSerializedValueJson<nlohmann::ordered_json>(serialized);
     return VansJsonFileStorage::StageWrite(metaPath, root, stage, error);
 }
 }

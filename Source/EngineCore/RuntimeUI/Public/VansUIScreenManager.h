@@ -101,7 +101,6 @@ namespace VansRuntime
         void UnloadScreen(const std::shared_ptr<VansUIScreen>& screen);
 
         VansUISystem& m_UISystem;
-        VansUIHandleId m_NextHandle = 1;
         std::vector<std::shared_ptr<VansUIScreen>> m_Screens;
         std::vector<std::shared_ptr<VansUIScreen>> m_ConfigScreenStack;
         std::unordered_map<std::string, std::shared_ptr<VansUIScreen>> m_PreloadedScreens;

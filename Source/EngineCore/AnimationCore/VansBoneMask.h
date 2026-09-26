@@ -62,6 +62,5 @@ namespace VansGraphics
 	public:
 		static VansCompiledBoneMask Compile(const VansBoneMaskAsset& asset,
 		                                    const Skeleton& skeleton);
-		static std::uint64_t ComputeSkeletonSignature(const Skeleton& skeleton);
 	};
 }

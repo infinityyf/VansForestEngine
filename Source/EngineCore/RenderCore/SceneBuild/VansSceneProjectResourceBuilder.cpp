@@ -7,6 +7,7 @@
 #include "../VulkanCore/VansVKDevice.h"
 #include "../../Util/VansLog.h"
 #include "../../AssetCore/VansAssetDatabase.h"
+#include "../../AssetCore/VansDerivedArtifactLayout.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 
 #include <algorithm>
@@ -46,7 +47,8 @@ VansTexture::TextureLoadDesc BuildTextureLoadDesc(
     const std::string& precision = "low8",
     int importChannel = 4,
     const std::string& addressMode = "repeat",
-    const std::string& cookedPath = {})
+    const std::string& cookedPath = {},
+	bool retainRgba8Pixels = false)
 {
     VansTexture::TextureLoadDesc desc{};
     desc.path = path;
@@ -57,6 +59,7 @@ VansTexture::TextureLoadDesc BuildTextureLoadDesc(
     desc.precision = ParseTexturePrecision(precision, LOW_PRES_8);
     desc.importChannel = importChannel;
     desc.addressMode = ParseSamplerAddressMode(addressMode, VK_SAMPLER_ADDRESS_MODE_REPEAT);
+	desc.retainRgba8Pixels = retainRgba8Pixels;
     return desc;
 }
 
@@ -269,7 +272,7 @@ bool VansSceneProjectResourceBuilder::LoadMeshes(VansScene& scene,
 	return success;
 }
 
-void VansSceneProjectResourceBuilder::LoadShadersFromRegistry(VansScene& scene,
+bool VansSceneProjectResourceBuilder::LoadShadersFromRegistry(VansScene& scene,
     const std::string& pathPrefix,
     VkDevice& device)
 {
@@ -279,20 +282,28 @@ void VansSceneProjectResourceBuilder::LoadShadersFromRegistry(VansScene& scene,
     // This correctly handles Graphics / Compute / RayTracing shader types
     // and populates the manager's internal records so that FindGraphicsShader /
     // FindComputeShader / FindRayTracingShader return valid pointers.
-    manager.LoadAll(pathPrefix, device);
+	const Vans::VansDerivedArtifactLocation shaderCache =
+		Vans::VansDerivedArtifactLayout::EngineShaderCache(pathPrefix);
+	const bool loaded = manager.LoadAll(pathPrefix, shaderCache.path, device);
+	if (!loaded)
+		return false;
 
     // Populate VansScene shader assets for backward compatibility with
     // scene shader lookups used by material-pass binding.
     scene.SyncShaderAssetsFromShaderManager();
+	return true;
 }
 
-void VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
+bool VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
     const std::vector<Vans::VansSceneShaderResourceRequest>& shaders,
     const Vans::VansSceneResourceLoadContext& loadContext,
     VkDevice& device,
     bool loadRegisteredShaders)
 {
     auto& manager = VansGraphics::VansShaderManager::Get();
+	bool valid = true;
+	std::vector<VansShaderEntry> resolvedEntries;
+	resolvedEntries.reserve(shaders.size());
 
     for (const Vans::VansSceneShaderResourceRequest& shaderRequest : shaders)
     {
@@ -300,7 +311,8 @@ void VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
         entry.name = shaderRequest.name;
         if (entry.name.empty())
         {
-            VANS_LOG_WARN("[VansScene] Skipping shader asset without name");
+			VANS_LOG_ERROR("[VansScene] Shader asset is missing its required name");
+			valid = false;
             continue;
         }
 
@@ -309,10 +321,12 @@ void VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
 		{
 			VANS_LOG_ERROR("[VansScene] Shader asset '" << entry.name
 				<< "' cannot be resolved from asset index: " << resolved.error);
+			valid = false;
 			continue;
 		}
 
 		entry.relativePath = resolved.sourcePath.string();
+		entry.artifactRoot = shaderRequest.artifactRoot;
         entry.kind = shaderRequest.kind == "compute"
             ? VansManagedShaderKind::Compute
             : (shaderRequest.kind == "rayTracing" || shaderRequest.kind == "raytracing"
@@ -344,19 +358,27 @@ void VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
             VkShaderStageFlagBits stage = ParseShaderStageName(stageName);
             if (stage == 0)
             {
-                VANS_LOG_WARN("[VansScene] Shader '" << entry.name
+				VANS_LOG_ERROR("[VansScene] Shader '" << entry.name
                     << "' has unknown stage '" << stageName << "'");
+				valid = false;
                 continue;
             }
             entry.explicitStageFiles[stage] = stageFile;
         }
 
-        manager.RegisterShader(std::move(entry));
+		resolvedEntries.push_back(std::move(entry));
     }
+	if (!valid)
+		return false;
 
-    if (loadRegisteredShaders)
-        manager.LoadAll("", device);
+	for (VansShaderEntry& entry : resolvedEntries)
+		manager.RegisterShader(std::move(entry));
+
+	const bool loaded = !loadRegisteredShaders || manager.LoadAll("", {}, device);
+	if (!loaded)
+		return false;
     scene.SyncShaderAssetsFromShaderManager();
+	return true;
 }
 
 bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
@@ -402,7 +424,8 @@ bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
                 sceneTexture.precision,
                 sceneTexture.importChannel,
                 sceneTexture.addressMode,
-                resolved.artifactPath.string());
+                resolved.artifactPath.string(),
+				sceneTexture.retainRgba8Pixels);
             auto pending = std::make_unique<PendingCookedTexture>();
             pending->texture = texture;
             pending->assetGuid = sceneTexture.assetGuid;
@@ -440,7 +463,10 @@ bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
 
         if (!vkDevice->SubmitTextureMipChainUploadBatch(vkDevice->GetCommandBuffer(), uploads))
         {
-            VANS_LOG_ERROR("[TextureBatchUpload] Batch upload failed; prepared textures may be incomplete");
+			VANS_LOG_ERROR("[TextureBatchUpload] Batch upload failed; texture batch will not be published");
+			for (const auto& pending : pendingCookedTextures)
+				delete pending->texture;
+			return false;
         }
 
         for (const auto& pending : pendingCookedTextures)
@@ -453,18 +479,22 @@ bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
 	if (includeDefaultTextureSet)
     {
         // Default textures are always loaded from the engine's EngineAssets directory.
-        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultAlbedo.png").string(),    "defaultAlbedo",    vkDevice, false);
-        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultMetal.png").string(),     "defaultMetal",     vkDevice, false);
-        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultRoughness.png").string(), "defaultRoughness", vkDevice, false);
-        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultAo.png").string(),        "defaultAo",        vkDevice, false);
-		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultNormal.png").string(),    "defaultNormal",    vkDevice, false);
-		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultSkinCavity.png").string(), "defaultSkinCavity", vkDevice, false);
-		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultSkinMask.png").string(),   "defaultSkinMask",   vkDevice, false);
+		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, "defaultAlbedo", *vkDevice, false);
+		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, "defaultMetal", *vkDevice, false);
+		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, "defaultRoughness", *vkDevice, false);
+		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, "defaultAo", *vkDevice, false);
+		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, "defaultNormal", *vkDevice, false);
+		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, "defaultSkinCavity", *vkDevice, false);
+		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, "defaultSkinMask", *vkDevice, false);
 	}
 	return true;
 }
 
-void VansSceneProjectResourceBuilder::ImportDefaultTexture(VansScene& scene, const std::string& path, const std::string& name, VansVKDevice* vkDevice, bool isSRGB)
+void VansSceneProjectResourceBuilder::ImportDefaultTexture(
+	VansScene& scene,
+	const std::string& name,
+	VansVKDevice& vkDevice,
+	bool isSRGB)
 {
     VansTexture* defaultMetalTexture = new VansTexture();
     defaultMetalTexture->m_TextureType = TEXTURE_2D;
@@ -482,7 +512,7 @@ void VansSceneProjectResourceBuilder::ImportDefaultTexture(VansScene& scene, con
         pixel[2] = 255;
     }
     defaultMetalTexture->LoadFromMemory(
-        vkDevice->GetCommandBuffer(),
+		vkDevice.GetCommandBuffer(),
         pixel,
         sizeof(pixel),
         1,
@@ -546,21 +576,6 @@ VansTexture* VansSceneProjectResourceBuilder::LoadOrGetTexture(VansScene& scene,
 
     VANS_LOG("[LoadOrGetTexture] Loaded texture: " << texName << " from " << absPath);
     return texture;
-}
-
-void VansSceneProjectResourceBuilder::LoadShaderFromEntry(VansScene& scene,
-    const VansGraphics::VansShaderEntry& entry,
-    const std::string& pathPrefix,
-    VkDevice& device)
-{
-    if (scene.FindShaderAsset(entry.name) != nullptr)
-        return; // already loaded
-
-    std::string fullPath = pathPrefix + entry.relativePath;
-    VansGraphicsShader* shader = new VansGraphicsShader();
-    shader->InitShader(device, fullPath);
-    VansShaderManager::Get().ConfigureGraphicsShader(*shader, entry, fullPath);
-    scene.AddShaderAsset(shader);
 }
 
 }

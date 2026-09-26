@@ -19,7 +19,6 @@ struct VansComponentHeader
 	VansComponentHandle self;
 	bool selfEnabled = true;
 	bool effectiveEnabled = true;
-	std::uint32_t dirtyMask = 0;
 };
 
 class IVansComponentStorage
@@ -39,6 +38,7 @@ public:
 	virtual void CollectOwnedBy(VansEntityHandle owner, std::vector<VansComponentHandle>& outComponents) const = 0;
 	virtual VansComponentHandle FindFirstOwnedBy(VansEntityHandle owner) const = 0;
 	virtual void RecomputeEffectiveEnabled(const std::function<bool(VansEntityHandle)>& activeQuery) = 0;
+	virtual void Clear() = 0;
 	virtual std::size_t Size() const = 0;
 };
 
@@ -117,6 +117,28 @@ public:
 		return dense == VansInvalidRuntimeIndex ? nullptr : &m_Data[dense];
 	}
 
+	T* FindFirstEffectiveOwnedBy(VansEntityHandle owner)
+	{
+		const auto found = m_OwnerDenseIndices.find(OwnerKey(owner));
+		if (found == m_OwnerDenseIndices.end())
+			return nullptr;
+		for (std::uint32_t dense : found->second)
+			if (m_Headers[dense].effectiveEnabled)
+				return &m_Data[dense];
+		return nullptr;
+	}
+
+	const T* FindFirstEffectiveOwnedBy(VansEntityHandle owner) const
+	{
+		const auto found = m_OwnerDenseIndices.find(OwnerKey(owner));
+		if (found == m_OwnerDenseIndices.end())
+			return nullptr;
+		for (std::uint32_t dense : found->second)
+			if (m_Headers[dense].effectiveEnabled)
+				return &m_Data[dense];
+		return nullptr;
+	}
+
 	const VansComponentHeader* GetHeader(VansComponentHandle handle) const
 	{
 		const std::uint32_t dense = DenseIndexFor(handle);
@@ -177,9 +199,29 @@ public:
 		m_Data.pop_back();
 		m_Headers.pop_back();
 		m_SlotToDense[handle.index] = VansInvalidRuntimeIndex;
-		++m_SlotGenerations[handle.index];
+		m_SlotGenerations[handle.index] = NextRuntimeGeneration(
+			m_SlotGenerations[handle.index]);
 		m_FreeSlots.push_back(handle.index);
 		return true;
+	}
+
+	void Clear() override
+	{
+		for (const VansComponentHeader& header : m_Headers)
+		{
+			const std::uint32_t slot = header.self.index;
+			m_SlotGenerations[slot] = NextRuntimeGeneration(m_SlotGenerations[slot]);
+			m_SlotToDense[slot] = VansInvalidRuntimeIndex;
+		}
+
+		m_Data.clear();
+		m_Headers.clear();
+		m_OwnerDenseIndices.clear();
+		m_GuidIndex.clear();
+		m_FreeSlots.clear();
+		m_FreeSlots.reserve(m_SlotGenerations.size());
+		for (std::size_t slot = m_SlotGenerations.size(); slot > 0; --slot)
+			m_FreeSlots.push_back(static_cast<std::uint32_t>(slot - 1));
 	}
 
 	void RemoveOwnedBy(VansEntityHandle owner) override

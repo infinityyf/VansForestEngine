@@ -1,3 +1,4 @@
+#include "../EngineCore/SceneRuntime/Transform/VansTransformStore.h"
 #include "ProceduralAnimationContractTests.h"
 #include "../EngineCore/AnimationCore/VansAnimGraph.h"
 #include "../EngineCore/SceneRuntime/Animation/VansAnimationTargetResolver.h"
@@ -18,6 +19,7 @@
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../EngineCore/AssetCore/VansAssetDocument.h"
 #include "../EngineCore/SceneCore/VansSceneAnimationComponentReader.h"
+#include "../EngineCore/SceneCore/Serialization/VansMotionMatchingConfigCodec.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/quaternion.hpp>
@@ -29,13 +31,42 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace
 {
 	using namespace VansGraphics;
+
+	template<typename Pose, typename = void>
+	struct HasLegacyMatrixPoseBlend : std::false_type {};
+
+	template<typename Pose>
+	struct HasLegacyMatrixPoseBlend<Pose, std::void_t<decltype(
+		VansPoseMath::BlendPoses(
+			std::declval<const Pose&>(),
+			std::declval<const Pose&>(),
+			0.5f,
+			std::declval<Pose&>()))>> : std::true_type {};
+
+	template<typename Pose, typename = void>
+	struct HasLegacyMatrixPoseAdditive : std::false_type {};
+
+	template<typename Pose>
+	struct HasLegacyMatrixPoseAdditive<Pose, std::void_t<decltype(
+		VansPoseMath::ApplyAdditivePose(
+			std::declval<const Pose&>(),
+			std::declval<const Pose&>(),
+			0.5f,
+			std::declval<Pose&>()))>> : std::true_type {};
+
+	static_assert(!HasLegacyMatrixPoseBlend<std::vector<glm::mat4>>::value,
+		"Animation pose blending must use the TRS frame-pose representation");
+	static_assert(!HasLegacyMatrixPoseAdditive<std::vector<glm::mat4>>::value,
+		"Animation additive poses must use the TRS frame-pose representation");
 
 	bool Check(bool condition, const char* message)
 	{
@@ -48,6 +79,142 @@ namespace
 	{
 		return (static_cast<std::uint32_t>(result.limitReason)
 			& static_cast<std::uint32_t>(reason)) != 0;
+	}
+
+	bool TestTrsPoseMathContract()
+	{
+		VansAnimationFrameVector<VansBoneTransform> first(2);
+		VansAnimationFrameVector<VansBoneTransform> second(2);
+		VansAnimationFrameVector<VansBoneTransform> blended;
+
+		first[0].translation = glm::vec3(2.0f, 0.0f, 0.0f);
+		first[0].scale = glm::vec3(1.0f);
+		second[0].translation = glm::vec3(6.0f, 0.0f, 0.0f);
+		second[0].rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+		second[0].scale = glm::vec3(3.0f);
+
+		VansPoseMath::BlendPoses(first, second, 0.25f, blended);
+		if (!Check(blended.size() == 2
+			&& glm::length(blended[0].translation - glm::vec3(3.0f, 0.0f, 0.0f)) < 1.0e-6f
+			&& glm::length(blended[0].scale - glm::vec3(1.5f)) < 1.0e-6f
+			&& std::abs(glm::length(blended[0].rotation) - 1.0f) < 1.0e-6f,
+			"TRS frame-pose blending changed translation, scale, or rotation normalization"))
+			return false;
+
+		VansAnimationFrameVector<VansBoneTransform> additive(2);
+		VansAnimationFrameVector<VansBoneTransform> reference(2);
+		VansAnimationFrameVector<VansBoneTransform> result;
+		first[0].translation = glm::vec3(10.0f, 0.0f, 0.0f);
+		additive[0].translation = glm::vec3(5.0f, 0.0f, 0.0f);
+		additive[0].scale = glm::vec3(2.0f);
+		reference[0].translation = glm::vec3(1.0f, 0.0f, 0.0f);
+
+		VansPoseMath::ApplyAdditivePose(first, additive, 0.5f, result, &reference);
+		return Check(result.size() == 2
+			&& glm::length(result[0].translation - glm::vec3(12.0f, 0.0f, 0.0f)) < 1.0e-6f
+			&& glm::length(result[0].scale - glm::vec3(1.5f)) < 1.0e-6f,
+			"TRS frame-pose additive evaluation changed reference-relative semantics");
+	}
+
+	bool TestSkeletonIdentityAndHierarchyContract()
+	{
+		Skeleton skeleton;
+		skeleton.sourceSkeletonGuid = "skeleton-contract";
+		skeleton.bones.resize(3);
+		skeleton.bones[0].name = "leaf";
+		skeleton.bones[0].guid = "bone-leaf";
+		skeleton.bones[0].canonicalPath = "root/parent/leaf";
+		skeleton.bones[0].parentIndex = 1;
+		skeleton.bones[0].localTransform = glm::translate(
+			glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+		skeleton.bones[1].name = "parent";
+		skeleton.bones[1].guid = "bone-parent";
+		skeleton.bones[1].canonicalPath = "root/parent";
+		skeleton.bones[1].parentIndex = 2;
+		skeleton.bones[1].children = { 0 };
+		skeleton.bones[1].localTransform = glm::translate(
+			glm::mat4(1.0f), glm::vec3(0.0f, 2.0f, 0.0f))
+			* glm::toMat4(glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f)));
+		skeleton.bones[2].name = "root";
+		skeleton.bones[2].guid = "bone-root";
+		skeleton.bones[2].canonicalPath = "root";
+		skeleton.bones[2].parentIndex = -1;
+		skeleton.bones[2].children = { 1 };
+		skeleton.bones[2].localTransform = glm::translate(
+			glm::mat4(1.0f), glm::vec3(10.0f, 0.0f, 0.0f));
+		skeleton.BuildTopologicalOrder();
+		skeleton.RebuildIdentityMapsAndSignature();
+
+		std::string topologyError;
+		if (!Check(skeleton.ValidateTopology(&topologyError)
+			&& skeleton.topologicalOrder == std::vector<int>({ 2, 1, 0 }),
+			"Skeleton topology did not preserve parent-before-child order for non-index hierarchy"))
+			return false;
+		if (!Check(skeleton.FindBoneIndex("bone-leaf") == 0
+			&& skeleton.FindBoneIndex("root/parent") == 1
+			&& skeleton.FindBoneIndex("root") == 2,
+			"Skeleton identity lookup did not resolve GUID, canonical path, and unique name"))
+			return false;
+
+		Skeleton ambiguous = skeleton;
+		ambiguous.bones[0].name = "joint";
+		ambiguous.bones[1].name = "joint";
+		ambiguous.RebuildIdentityMapsAndSignature();
+		if (!Check(ambiguous.FindBoneIndex("joint") < 0
+			&& ambiguous.FindBoneIndex("root/parent/leaf") == 0,
+			"Ambiguous bone names must require stable path or GUID identity"))
+			return false;
+
+		std::vector<glm::mat4> localTransforms;
+		for (const BoneInfo& bone : skeleton.bones)
+			localTransforms.push_back(bone.localTransform);
+		std::vector<glm::mat4> modelTransforms;
+		if (!Check(VansPoseMath::BuildModelTransforms(
+			localTransforms, skeleton, modelTransforms, &topologyError),
+			"Canonical local-to-model propagation rejected a valid topology"))
+			return false;
+		const glm::mat4 expectedLeaf = skeleton.bones[2].localTransform
+			* skeleton.bones[1].localTransform * skeleton.bones[0].localTransform;
+		if (!Check(glm::length(glm::vec4(modelTransforms[0][0] - expectedLeaf[0])) < 1.0e-5f
+			&& glm::length(glm::vec4(modelTransforms[0][1] - expectedLeaf[1])) < 1.0e-5f
+			&& glm::length(glm::vec4(modelTransforms[0][2] - expectedLeaf[2])) < 1.0e-5f
+			&& glm::length(glm::vec4(modelTransforms[0][3] - expectedLeaf[3])) < 1.0e-5f,
+			"Canonical local-to-model propagation changed the golden non-index pose"))
+			return false;
+
+		std::vector<glm::mat4> roundTrip;
+		if (!Check(VansPoseMath::BuildLocalTransforms(
+			modelTransforms, skeleton, roundTrip, &topologyError),
+			"Canonical model-to-local propagation rejected a valid topology"))
+			return false;
+		for (std::size_t index = 0; index < roundTrip.size(); ++index)
+		{
+			for (int column = 0; column < 4; ++column)
+			{
+				if (!Check(glm::length(glm::vec4(roundTrip[index][column]
+					- localTransforms[index][column])) < 1.0e-5f,
+					"Local/model round-trip changed a bone transform"))
+					return false;
+			}
+		}
+
+		VansBoneMaskAsset mask;
+		mask.id = "signature-contract";
+		mask.defaultWeight = 1.0f;
+		const VansCompiledBoneMask compiled = VansBoneMaskCompiler::Compile(mask, skeleton);
+		if (!Check(compiled.skeletonSignature == skeleton.ComputeSignature(),
+			"Bone Mask cache key did not use the canonical Skeleton signature"))
+			return false;
+
+		Skeleton invalid = skeleton;
+		invalid.topologicalOrder = { 0, 1, 2 };
+		std::vector<glm::mat4> untouched = { glm::mat4(7.0f) };
+		topologyError.clear();
+		return Check(!VansPoseMath::BuildModelTransforms(
+			localTransforms, invalid, untouched, &topologyError)
+			&& !topologyError.empty() && untouched.size() == 1
+			&& untouched[0][0][0] == 7.0f,
+			"Invalid topology must fail explicitly without mutating the output pose");
 	}
 
 	int AddBone(Skeleton& skeleton, const char* name, int parent, const glm::vec3& translation)
@@ -1296,6 +1463,22 @@ namespace
 			"Retarget Profile storage silently rewrote an invalid model alignment enum"))
 			return false;
 
+		Vans::VansSerializedValue minimalMotionMatching = Vans::VansSerializedValue::Object({});
+		MotionMatchingSettings defaultSettings;
+		MotionMatchingSettings decodedDefaults;
+		if (!Check(Vans::VansMotionMatchingConfigCodec::Decode(
+			minimalMotionMatching, decodedDefaults, error), error.c_str()) ||
+			!Check(decodedDefaults.sampleRate == defaultSettings.sampleRate
+				&& decodedDefaults.desiredSpeedScale == defaultSettings.desiredSpeedScale
+				&& decodedDefaults.trajectoryWeight == defaultSettings.trajectoryWeight
+				&& decodedDefaults.states.airborneState == defaultSettings.states.airborneState,
+				"Motion Matching decoder did not inherit owned defaults")) return false;
+		Vans::SetSerializedObjectField(
+			minimalMotionMatching, "search_groups", Vans::VansSerializedValue::Array({}));
+		if (!Check(!Vans::VansMotionMatchingConfigCodec::Decode(
+			minimalMotionMatching, decodedDefaults, error),
+			"Motion Matching accepted the removed search_groups compatibility schema")) return false;
+
 		MotionMatchingSettings settings;
 		settings.contactProvider = "locomotion";
 		settings.contactChannels = {
@@ -1330,16 +1513,35 @@ namespace
 				"Project scene animation did not resolve its required Animation Rig")) return false;
 			if (!Check(found.insert(config->name).second,
 				"Project scene contains a duplicate configured character")) return false;
+			if (config->rootMotion && !Check(!config->rootBone.empty(),
+				"Root-motion Animation component has no configured root bone")) return false;
 			if (config->motionMatching)
 			{
 				VansAnimationController controller;
 				if (!Check(controller.ConfigureMotionMatching(*config->motionMatching, error),
 					error.c_str())) return false;
+				Vans::VansSerializedValue encoded;
+				if (!Check(Vans::VansMotionMatchingConfigCodec::Encode(
+					*config->motionMatching, encoded, error), error.c_str())) return false;
+				MotionMatchingSettings decoded;
+				if (!Check(Vans::VansMotionMatchingConfigCodec::Decode(
+					encoded, decoded, error), error.c_str())) return false;
+				Vans::VansSerializedValue encodedAgain;
+				if (!Check(Vans::VansMotionMatchingConfigCodec::Encode(
+					decoded, encodedAgain, error), error.c_str()) ||
+					!Check(Vans::SerializedValuesEqual(encoded, encodedAgain),
+						"Motion Matching current-schema encode/decode is not stable")) return false;
 				if (config->motionMatching->enabled && config->name != "Belica")
 				{
 					if (!Check(config->motionMatching->contactProvider == "locomotion"
 						&& config->motionMatching->contactChannels.size() == 2,
 						"Motion Matching character does not publish both canonical foot contacts"))
+						return false;
+					if (!Check(config->motionMatching->states.airborneState == 5,
+						"Motion Matching airborne state was not loaded from project configuration"))
+						return false;
+					if (!Check(config->rootBone == config->motionMatching->rig.root,
+						"Motion Matching root bone is not owned by the Animation component configuration"))
 						return false;
 				}
 			}
@@ -1355,8 +1557,8 @@ namespace
 		struct Leases
 		{
 			std::vector<std::uint32_t> ids;
-			std::uint32_t Add(){const auto id=VansTransformStore::AllocateTransform();ids.push_back(id);auto& t=VansTransformStore::GetTransform(id);t.m_Position=glm::vec3(0);t.m_Rotation=glm::vec3(0);t.m_Scale=glm::vec3(1);return id;}
-			~Leases(){for(auto id:ids)VansTransformStore::FreeTransform(id);}
+			std::uint32_t Add(){const auto id=Vans::VansTransformStore::Allocate();ids.push_back(id);auto t=Vans::VansTransformStore::Read(id);t.m_Position=glm::vec3(0);t.m_Rotation=glm::vec3(0);t.m_Scale=glm::vec3(1);Vans::VansTransformStore::Write(id,t);return id;}
+			~Leases(){for(auto id:ids)Vans::VansTransformStore::Release(id);}
 		} leases;
 		struct Provider : Vans::IVansTransformAnchorProvider
 		{
@@ -1376,12 +1578,12 @@ namespace
 		VansResolvedAnimationTarget target;
 		if(!Check(Vans::VansAnimationTargetResolver::Resolve(graph,grip,{},target),target.diagnostic.c_str()))return false;
 		// 根 Transform 的实际世界矩阵是权威值，90 度附近的 Euler 往返有浮点量化。
-		auto expected=glm::vec3(VansTransformStore::GetTransform(owner).GetModelMatrix()*
+		auto expected=glm::vec3(Vans::VansTransformStore::Read(owner).GetModelMatrix()*
 			gunLocal.ToMatrix()*gripLocal.ToMatrix()*glm::vec4(0,0,0,1));
 		if(!Check(glm::length(target.positionWorld-expected)<1e-5f,"Target hierarchy world transform or owner scale incorrect"))
 		{
 			const auto actual = target.positionWorld;
-			const auto rotation = VansTransformStore::GetTransform(owner).m_Rotation;
+			const auto rotation = Vans::VansTransformStore::Read(owner).m_Rotation;
 			std::cerr << "actual=" << actual.x << "," << actual.y << "," << actual.z
 				<< " expected=" << expected.x << "," << expected.y << "," << expected.z
 				<< " ownerEuler=" << rotation.x << "," << rotation.y << "," << rotation.z << std::endl;
@@ -1453,7 +1655,7 @@ namespace
 		graph.AddLink(goalId,0,checkpointId,0);
 		graph.AddLink(checkpointId,0,limbId,0);
 		graph.AddLink(limbId,0,outputId,0);
-		AnimGraphJson json;
+		nlohmann::json json;
 		graph.SerializeToJsonObject(json);
 		auto roundtrip = VansAnimGraph::DeserializeFromJsonObject(json);
 		if (!Check(roundtrip != nullptr, "Checkpoint graph roundtrip failed")) return false;
@@ -1707,7 +1909,7 @@ namespace
 		const int rotationId = graph.AddNode(std::move(rotation));
 		const int outputId = graph.AddNode(std::make_unique<AnimGraphOutputNode>());
 		graph.AddLink(inputId, 0, goalId, 0); graph.AddLink(goalId, 0, rotationId, 0); graph.AddLink(rotationId, 0, outputId, 0);
-		AnimGraphJson json;
+		nlohmann::json json;
 		graph.SerializeToJsonObject(json);
 		auto loaded = VansAnimGraph::DeserializeFromJsonObject(json);
 		if (!Check(loaded && static_cast<AnimGraphRotationDistributionNode*>(loaded->GetNode(rotationId))->m_RotationProfileId == "toolRotation",
@@ -1755,13 +1957,13 @@ namespace
 		const int outputId = graph.AddNode(std::make_unique<AnimGraphOutputNode>());
 		graph.AddLink(entryId, 0, blendId, 0);
 		graph.AddLink(blendId, 0, outputId, 0);
-		AnimGraphJson json;
+		nlohmann::json json;
 		graph.SerializeToJsonObject(json);
 		auto loaded = VansAnimGraph::DeserializeFromJsonObject(json);
 		if (!Check(loaded != nullptr, "BlendSpace2D graph did not deserialize"))
 			return false;
 		const auto* loadedNode = loaded->GetNode(blendId);
-		if (!Check(loadedNode && loadedNode->GetType() == AnimGraphNodeType::BlendSpace2D,
+		if (!Check(loadedNode && loadedNode->GetType() == VansAnimGraphNodeType::BlendSpace2D,
 			"BlendSpace2D node type did not roundtrip"))
 			return false;
 		const auto* loadedBlend = static_cast<const AnimGraphBlendSpace2DNode*>(loadedNode);
@@ -1803,7 +2005,9 @@ namespace
 
 bool RunProceduralAnimationContractTests()
 {
-	return TestGroundingRigEditContinuity()
+	return TestTrsPoseMathContract()
+		&& TestSkeletonIdentityAndHierarchyContract()
+		&& TestGroundingRigEditContinuity()
 		&& TestBlendSpace2DGraph()
 		&& TestRotationDistribution()
 		&& TestRotationDistributionGraph()

@@ -25,7 +25,6 @@ struct VansSceneRenderNodeConfig
 	std::string material;
 	std::string entityGuid;
 	std::string parentEntityGuid;
-	std::string parent;
 	std::string submeshSlotName;
 	std::string rayTracingMode = "auto";
 	std::optional<VansSceneImpactDecalConfig> impactPool;

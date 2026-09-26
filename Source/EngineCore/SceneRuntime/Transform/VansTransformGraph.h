@@ -1,6 +1,8 @@
 #pragma once
 
-#include "../../ScriptCore/VansTransform.h"
+#include "VansTransformStore.h"
+
+#include <glm/gtc/quaternion.hpp>
 
 #include <cstdint>
 #include <string>

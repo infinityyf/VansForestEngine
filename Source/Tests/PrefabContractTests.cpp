@@ -1,14 +1,14 @@
 #include <algorithm>
 #include "../EngineCore/SceneCore/VansSceneContentBuildPlan.h"
-#include "../EngineCore/EditorCore/VansAssetDocumentRegistry.h"
-#include "../EngineCore/EditorCore/VansAssetDocumentEditService.h"
+#include "../EngineCore/AuthoringCore/VansAssetDocumentRegistry.h"
+#include "../EngineCore/AuthoringCore/VansAssetDocumentEditService.h"
 #include "../EngineCore/EditorCore/VansEditorAssetSaveService.h"
 #include "../EngineCore/EngineAPILayer/Private/EngineAPIImpl.h"
 #include "../EngineCore/ProjectSystem/VansProjectManager.h"
 #include "../EngineCore/SceneCore/VansSceneRuntimeProjection.h"
 #include "../EngineCore/SceneCore/VansSceneDocument.h"
 #include "../EngineCore/SceneCore/VansSceneDocumentLoader.h"
-#include "../EngineCore/SceneCore/VansSceneSaveService.h"
+#include "../EngineCore/SceneCore/Storage/VansSceneFileStorage.h"
 #include "../EngineCore/EditorCore/VansSceneEditService.h"
 #include "../EngineCore/EditorCore/VansPrefabEditService.h"
 #include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
@@ -26,7 +26,9 @@
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
 
 #include <nlohmann/json.hpp>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 
 namespace
@@ -127,6 +129,31 @@ void RunPrefabContractTests()
     const bool previewValid = VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
         DecodeSerializedValueJson(VansSceneSchema::SerializeSceneJson(previewScene)), {}, previewPlan, error);
     Check(previewValid, "Default empty scene is not runtime-loadable: " + error);
+    auto healthScene = VansSceneSchema::SerializeSceneJson(previewScene);
+    healthScene["entities"].push_back(JsonOf(
+        VansSceneEntityFactory::BuildEmptyEntity({}, VansAssetGuid::New().ToString())));
+    auto healthDocument = VansSceneDocument::CreateInMemory(
+        DecodeSerializedValueJson(healthScene), {}, error);
+    Check(healthDocument && healthDocument->IsHealthy(), "Healthy scene fixture failed: " + error);
+    VansSceneEditService healthEdits(*healthDocument);
+    const auto invalidTypeEdit = healthEdits.Set(
+        MakeDocumentPropertyPath(
+            DocumentPropertySpace::Scene, "/entities/0/components/0/type"),
+        VansSerializedValue::String("UnknownRuntimeComponent"));
+    Check(invalidTypeEdit.success && !healthDocument->IsHealthy(),
+        "Scene diagnostics stayed healthy after an invalid component edit");
+    Check(std::any_of(
+        healthDocument->Diagnostics().begin(), healthDocument->Diagnostics().end(),
+        [](const SceneDiagnostic& diagnostic)
+        {
+            return diagnostic.message.find("Unsupported runtime component") != std::string::npos;
+        }), "Edited Scene diagnostics did not report the unsupported component");
+    Check(healthEdits.Undo().success && healthDocument->IsHealthy(),
+        "Undo did not rebuild healthy Scene diagnostics");
+    Check(healthEdits.Redo().success && !healthDocument->IsHealthy(),
+        "Redo did not rebuild invalid Scene diagnostics");
+    Check(healthEdits.Undo().success && healthDocument->IsHealthy(),
+        "Final health fixture restore failed");
     // 编辑命令始终保存精简作者数据；Undo/Redo 与磁盘重新打开恢复相同身份。
     auto doc = VansSceneDocument::CreateInMemory(authoring, lookup, error);
     Check(doc != nullptr, error);
@@ -192,9 +219,8 @@ void RunPrefabContractTests()
         ~TestDirectory() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
     } temporary;
     const auto scenePath = temporary.path / "Scene.vscene";
-    VansSceneSaveService saves;
-    auto saved = saves.SaveAs(*doc, scenePath);
-    Check(static_cast<bool>(saved), saved.message);
+    Check(VansSceneFileStorage::WriteSceneDocument(
+        scenePath, JsonOf(doc->AuthoringRootSnapshot()), error), error);
     const auto loaded = VansSceneDocumentLoader::Load(scenePath, lookup);
     Check(static_cast<bool>(loaded), "Saved prefab scene could not reopen");
     Check(JsonOf(loaded.document->SerializedRootSnapshot()) == JsonOf(doc->SerializedRootSnapshot()), "Save/open changed prefab identities or overrides");
@@ -223,8 +249,10 @@ void RunPrefabContractTests()
 
     const auto retryPath = temporary.path / "Retry.json";
     Check(VansFileStorage::WriteAtomicBytes(retryPath, "{\"value\":1}", error), error);
-    VansAssetDocument retryDocument;
-    Check(retryDocument.Load(retryPath, error), error);
+    const auto retryOpenDocument = VansAssetDocumentRegistry::Get().GetOrOpen(retryPath);
+    Check(retryOpenDocument && retryOpenDocument->sourceDocument.IsLoaded(),
+        "Retry fixture document did not open");
+    VansAssetDocument& retryDocument = retryOpenDocument->sourceDocument;
     Check(VansAssetDocumentEditService::ReplaceRoot(retryDocument, DecodeSerializedValueJson(Json{{"value",2}})).success,
         "Retry fixture edit failed");
     VansAssetDocumentSaveStage retryStage;
@@ -299,7 +327,7 @@ void RunPrefabContractTests()
     auto unknown = dependencyPrefab.entities;
     unknown.arrayItems[0].objectFields.push_back({"opaque", VansSerializedValue::String("retained")});
     auto unknownJson = JsonOf(unknown); unknownJson[0]["components"][1]["type"] = "UnknownPrefabComponent";
-    Check(!VansSceneRuntimeProjection::ValidateEntityComponentTypes(DecodeSerializedValueJson(unknownJson), error),
+    Check(!VansSceneSchema::ValidateEntityComponents(DecodeSerializedValueJson(unknownJson)).empty(),
         "Unsupported prefab component silently omitted from runtime");
 
     // 包内只保留缓存及索引路径，移除作者文件后依然能加载模板。
@@ -321,8 +349,9 @@ void RunPrefabContractTests()
     std::filesystem::create_directories(projectPath / "Assets");
     VansProjectConfig configuration; configuration.SetDefaults("Prefab Editor Contract");
     Check(configuration.SaveToFile((projectPath / "ForestProject.json").string()), "Fixture project save failed");
-    VansProjectOpenOptions options; options.updateRecentProjects = false; options.loadProjectSettings = false;
-    Check(VansProjectManager::Get().OpenProject(projectPath.string(), options), "Fixture project open failed");
+    VansProjectOpenRequest openRequest; openRequest.m_ProjectRootPath = projectPath.string();
+    openRequest.m_Options.m_UpdateRecentProjects = false; openRequest.m_Options.m_LoadProjectSettings = false;
+    Check(VansProjectManager::Get().OpenProject(openRequest).m_Opened, "Fixture project open failed");
     struct ProjectScope
     {
         ~ProjectScope()
@@ -350,7 +379,12 @@ void RunPrefabContractTests()
     auto editorDocument = VansSceneDocument::CreateInMemory(DecodeSerializedValueJson(editorScene), VansPrefabEditService::Lookup(api), error);
     Check(editorDocument != nullptr, error);
     const auto editorScenePath = projectPath / "MainScene.json";
-    Check(static_cast<bool>(saves.SaveAs(*editorDocument, editorScenePath)), "Editor fixture scene save failed");
+    Check(VansSceneFileStorage::WriteSceneDocument(
+        editorScenePath, JsonOf(editorDocument->AuthoringRootSnapshot()), error), error);
+    auto loadedEditorDocument = VansSceneDocumentLoader::Load(
+        editorScenePath, VansPrefabEditService::Lookup(api));
+    Check(bool(loadedEditorDocument), "Editor fixture scene failed to reopen");
+    editorDocument = std::move(loadedEditorDocument.document);
     VansSceneEditService editorEdits(*editorDocument);
     std::filesystem::path createdPath;
     const auto created = VansPrefabEditService::Create(api, *editorDocument, editorEdits, editorRoot, projectPath / "Assets", createdPath);
@@ -380,5 +414,35 @@ void RunPrefabContractTests()
     Check(reopened && JsonOf(reopened.document->SerializedRootSnapshot())["entities"][0]["name"] == "Applied Crate",
         "Compound save/open lost the applied source value");
     Check(!editorDocument->IsDirty() && !VansAssetDocumentRegistry::Get().HasDirtyDocuments(), "Compound save did not adopt all saved states");
-    std::cout << "PREFAB_CONTRACT_PASS identity references timeline external-binding overrides roundtrip edit undo redo save reopen unpack transaction bootstrap apply duplicate dynamic-dependencies packaged-source-removal editor-create-import compound-save-conflict\n";
+
+    const std::filesystem::path engineRoot =
+        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    std::ifstream prefabSourceFile(
+        engineRoot / "Source" / "EngineCore" / "SceneCore" / "Prefab" / "VansPrefabAsset.cpp",
+        std::ios::binary);
+    const std::string prefabSource{
+        std::istreambuf_iterator<char>(prefabSourceFile),
+        std::istreambuf_iterator<char>() };
+    const std::size_t instantiateBegin = prefabSource.find(
+        "bool VansPrefabResolver::Instantiate(");
+    const std::size_t resolveBegin = prefabSource.find(
+        "bool VansPrefabResolver::ResolveScene(", instantiateBegin);
+    const std::size_t captureBegin = prefabSource.find(
+        "bool VansPrefabResolver::CaptureScene(", resolveBegin);
+    Check(instantiateBegin != std::string::npos && resolveBegin != std::string::npos &&
+        captureBegin != std::string::npos,
+        "Prefab runtime resolution source boundaries are unavailable");
+    const std::string instantiateSource = prefabSource.substr(
+        instantiateBegin, resolveBegin - instantiateBegin);
+    const std::string resolveSource = prefabSource.substr(
+        resolveBegin, captureBegin - resolveBegin);
+    Check(instantiateSource.find("LocalSerializedEntities") != std::string::npos &&
+        instantiateSource.find("CompleteSerializedIdentityMap") != std::string::npos &&
+        instantiateSource.find("ToJson(") == std::string::npos &&
+        instantiateSource.find("DecodeSerializedValueJson") == std::string::npos &&
+        resolveSource.find("sceneEntities->arrayItems.insert") != std::string::npos &&
+        resolveSource.find("ToJson(objects)") == std::string::npos &&
+        resolveSource.find("DecodeSerializedValueJson(record)") == std::string::npos,
+        "Prefab runtime resolution restored repeated JSON tree conversions");
+    std::cout << "PREFAB_CONTRACT_PASS identity references timeline external-binding overrides roundtrip edit undo redo save reopen unpack transaction bootstrap apply duplicate dynamic-dependencies packaged-source-removal editor-create-import compound-save-conflict runtime-resolution=serialized-value\n";
 }

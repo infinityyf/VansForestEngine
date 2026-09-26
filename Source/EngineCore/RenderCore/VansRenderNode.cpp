@@ -1,4 +1,6 @@
+#include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "VansRenderNode.h"
+#include "Animation/VansAnimationGpuBinding.h"
 #include "PcgCore/VansPcgSplineFieldResources.h"
 #include "VansPostProcessProfile.h"
 #include "VansDrawSubmission.h"
@@ -12,7 +14,6 @@
 #include "../../EngineCore/RenderCore/TerrainCore/VansTerrain.h"
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
-#include "../AnimationCore/VansAnimationNode.h"
 #include <atomic>
 #include <iostream>
 using namespace VansGraphics;
@@ -28,7 +29,7 @@ VansGraphics::VansRenderNode::VansRenderNode(VkDevice& device, RenderNodeType ty
 	m_NodeType = typee;
 
 	// Allocate ECS Data
-    m_TransformID = VansTransformStore::AllocateTransform();
+    m_TransformID = Vans::VansTransformStore::Allocate();
 	SetTransformData();
 	m_DescriptorsetsDirty = true;
 
@@ -40,7 +41,7 @@ VansGraphics::VansRenderNode::~VansRenderNode()
 	DestroyDescriptorSets();
 
 	if (m_OwnsTransform)
-		VansTransformStore::FreeTransform(m_TransformID);
+		Vans::VansTransformStore::Release(m_TransformID);
 	//m_RenderNodeDataBuffer.DestroyVulkanBuffer();
 }
 
@@ -136,7 +137,7 @@ void VansGraphics::VansRenderNode::RecreateDescriptorSets(
 
 void VansGraphics::VansRenderNode::ComputeModelDataFromTransform()
 {
-	VansTransform& transform = VansTransformStore::GetTransform(m_TransformID);
+	const Vans::VansTransform& transform = Vans::VansTransformStore::Read(m_TransformID);
 	
 	// Build model matrix
 	m_ModelData.ModelMatrix = glm::translate(glm::mat4x4(1.0f), transform.m_Position);
@@ -198,13 +199,7 @@ void VansGraphics::VansRenderNode::BeforeDrawCall()
 
 bool VansGraphics::VansRenderNode::HasValidSkeletalSkinningResources() const
 {
-	if (m_VertexDeformationState.HasValidSkeletalSkinningResources())
-		return true;
-
-	return m_HasSkeletonBone &&
-		m_AnimOwner != nullptr &&
-		m_AnimBoneIDBuffer != nullptr &&
-		m_AnimBoneWeightBuffer != nullptr;
+	return m_VertexDeformationState.HasValidSkeletalSkinningResources();
 }
 
 std::uint32_t VansGraphics::VansRenderNode::BuildVertexFeatureMask() const
@@ -589,21 +584,21 @@ void VansGraphics::VansCommonRenderNode::UpdateDescriptorSets(VansMaterialManage
 		descManager->WriteBufferDescriptor(
 			modelBufferDescriptorSets[0], VERTEX_DEFORMATION_BINDING_BONEID_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ (m_VertexDeformationState.boneIDBuffer ? m_VertexDeformationState.boneIDBuffer : m_AnimBoneIDBuffer)->GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
+			{{ m_VertexDeformationState.boneIDBuffer->GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		// binding 1: Bone Matrices SSBO (shared across all submeshes)
 		descManager->WriteBufferDescriptor(
 			modelBufferDescriptorSets[0], VERTEX_DEFORMATION_BINDING_BONE_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ (m_VertexDeformationState.skinningOwner ? m_VertexDeformationState.skinningOwner : m_AnimOwner)->GetBoneBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
+			{{ m_VertexDeformationState.gpuBinding->GetCurrentPoseBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		// binding 2: Per-vertex Bone Weights SSBO (per-submesh)
 		descManager->WriteBufferDescriptor(
 			modelBufferDescriptorSets[0], VERTEX_DEFORMATION_BINDING_BONEWEIGHT_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ (m_VertexDeformationState.boneWeightBuffer ? m_VertexDeformationState.boneWeightBuffer : m_AnimBoneWeightBuffer)->GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
+			{{ m_VertexDeformationState.boneWeightBuffer->GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		descManager->WriteBufferDescriptor(
 			modelBufferDescriptorSets[0], VERTEX_DEFORMATION_BINDING_PREVIOUS_BONE_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ (m_VertexDeformationState.skinningOwner ? m_VertexDeformationState.skinningOwner : m_AnimOwner)->GetPreviousBoneBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
+			{{ m_VertexDeformationState.gpuBinding->GetPreviousPoseBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		descManager->CommitDescriptorUpdates();
 	}
 
@@ -707,19 +702,19 @@ void VansGraphics::VansTransparentRenderNode::UpdateDescriptorSets(VansMaterialM
 		descManager->WriteBufferDescriptor(
 			modelBufferDescriptorSets[0], VERTEX_DEFORMATION_BINDING_BONEID_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ (m_VertexDeformationState.boneIDBuffer ? m_VertexDeformationState.boneIDBuffer : m_AnimBoneIDBuffer)->GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
+			{{ m_VertexDeformationState.boneIDBuffer->GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		descManager->WriteBufferDescriptor(
 			modelBufferDescriptorSets[0], VERTEX_DEFORMATION_BINDING_BONE_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ (m_VertexDeformationState.skinningOwner ? m_VertexDeformationState.skinningOwner : m_AnimOwner)->GetBoneBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
+			{{ m_VertexDeformationState.gpuBinding->GetCurrentPoseBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		descManager->WriteBufferDescriptor(
 			modelBufferDescriptorSets[0], VERTEX_DEFORMATION_BINDING_BONEWEIGHT_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ (m_VertexDeformationState.boneWeightBuffer ? m_VertexDeformationState.boneWeightBuffer : m_AnimBoneWeightBuffer)->GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
+			{{ m_VertexDeformationState.boneWeightBuffer->GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		descManager->WriteBufferDescriptor(
 			modelBufferDescriptorSets[0], VERTEX_DEFORMATION_BINDING_PREVIOUS_BONE_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ (m_VertexDeformationState.skinningOwner ? m_VertexDeformationState.skinningOwner : m_AnimOwner)->GetPreviousBoneBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
+			{{ m_VertexDeformationState.gpuBinding->GetPreviousPoseBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		descManager->CommitDescriptorUpdates();
 	}
 }

@@ -170,6 +170,7 @@ namespace VansGraphics
 
 		void CleanupFSR();
 		void CleanupDLSS();
+		void CleanupUpscalerResources();
 
 		VkExtent2D CalculateUpscalerOutputExtent() const;
 		VkExtent2D CalculateUpscalerRenderExtent() const;
@@ -211,7 +212,7 @@ namespace VansGraphics
 			const VansUpscalerConfig& config,
 			uint32_t outputWidth,
 			uint32_t outputHeight);
-		void ApplyRenderRuntimeConfig(
+		VansUpscalerSelectionChange ApplyRenderRuntimeConfig(
 			const VansRenderRuntimeConfig& config,
 			uint32_t outputWidth,
 			uint32_t outputHeight);
@@ -336,6 +337,7 @@ namespace VansGraphics
 			return m_PunctualShadowFrameState.GetTotalAtlasPages();
 		}
 		void EnqueueDeferredDelete(std::function<void()> destroy);
+		bool DrainDeferredDeletesAfterDeviceIdle();
 
 		void InitializeGpuProfiler() override;
 

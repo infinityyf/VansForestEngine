@@ -2,7 +2,7 @@
 #include "../../GameplayTargeting/VansSurfaceImpact.h"
 #include "../../SceneCore/VansSceneImpactDecalConfig.h"
 #include "../../SceneRuntime/VansRuntimeHandle.h"
-#include "../../ScriptCore/VansTransform.h"
+#include "../../SceneRuntime/Transform/VansTransformStore.h"
 #include <array>
 #include <vector>
 
@@ -37,7 +37,7 @@ public:
     // 可独立验证的坐标运算：尺寸始终是世界单位，不继承接收者非均匀缩放。
     static bool BuildPose(const glm::mat4& anchor, const glm::vec3& localPosition,
         const glm::vec3& localNormal, const glm::vec3& localTangent,
-        const Vans::VansSceneImpactDecalConfig& config, VansTransform& pose);
+        const Vans::VansSceneImpactDecalConfig& config, Vans::VansTransform& pose);
 private:
     struct Pool { std::string source; Vans::VansSceneImpactDecalConfig config; size_t start = 0, count = 0; };
     struct ReceiverGroup { std::vector<Vans::VansComponentHandle> components; uint32_t references = 0; };
@@ -49,7 +49,7 @@ private:
         Vans::VansComponentHandle anchorComponent;
         uint32_t transform = UINT32_MAX, transformGeneration = 0;
         glm::vec3 localPosition{0}, localNormal{0,1,0}, localTangent{1,0,0};
-        VansTransform lastAnchor;
+        Vans::VansTransform lastAnchor;
         double expires = 0;
         uint64_t sequence = 0;
     };

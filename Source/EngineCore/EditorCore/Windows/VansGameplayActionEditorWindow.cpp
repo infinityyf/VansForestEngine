@@ -1,4 +1,6 @@
 #include "VansGameplayActionEditorWindow.h"
+#include "../../EngineAPILayer/Public/IAssetEditorAPI.h"
+#include "../../EngineAPILayer/Public/IGAFEditorAPI.h"
 
 #include "imgui.h"
 
@@ -73,7 +75,7 @@ void VansGameplayActionEditorWindow::Close()
 	m_GraphDragPositions.clear();
 }
 
-void VansGameplayActionEditorWindow::Refresh(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+void VansGameplayActionEditorWindow::Refresh(Vans::EditorAPI::IGAFEditorAPI& editorAPI)
 {
 	m_Document = editorAPI.OpenGAFAsset(m_Path);
 	m_NeedsRefresh = false;
@@ -97,7 +99,7 @@ void VansGameplayActionEditorWindow::ApplyOperation(
 }
 
 void VansGameplayActionEditorWindow::SetField(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI,
 	const std::string& path,
 	Vans::EditorAPI::GAFEditorValue value)
 {
@@ -110,7 +112,7 @@ void VansGameplayActionEditorWindow::SetField(
 }
 
 void VansGameplayActionEditorWindow::DrawMenuBar(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI)
 {
 	if (!ImGui::BeginMenuBar()) return;
 	if (ImGui::BeginMenu("File"))
@@ -141,7 +143,7 @@ void VansGameplayActionEditorWindow::DrawMenuBar(
 }
 
 void VansGameplayActionEditorWindow::DrawToolbar(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI)
 {
 	ImGui::BeginDisabled(!m_Document.dirty);
 	if (ImGui::Button("Save"))
@@ -230,7 +232,8 @@ void VansGameplayActionEditorWindow::OpenStructuredEditor(
 }
 
 void VansGameplayActionEditorWindow::DrawProperty(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI,
+	Vans::EditorAPI::IAssetEditorAPI& assetAPI,
 	Vans::EditorAPI::GAFEditorFieldSnapshot field)
 {
 	if (!field.visible) return;
@@ -432,7 +435,7 @@ void VansGameplayActionEditorWindow::DrawProperty(
 		{
 			bool any = false;
 			for (const auto type : field.allowedAssetTypes)
-				for (const auto& asset : editorAPI.QueryAssets({ type, false }))
+				for (const auto& asset : assetAPI.QueryAssets({ type, false }))
 				{
 					any = true;
 					const std::string label = asset.name + "##" + asset.guid;
@@ -503,7 +506,7 @@ void VansGameplayActionEditorWindow::DrawProperty(
 		if (!field.children.empty() && ImGui::TreeNodeEx("Items##structured",
 			ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth))
 		{
-			DrawStructuredChildren(editorAPI, field.path + "##items", field.children);
+			DrawStructuredChildren(editorAPI, assetAPI, field.path + "##items", field.children);
 			ImGui::TreePop();
 		}
 		break;
@@ -514,7 +517,7 @@ void VansGameplayActionEditorWindow::DrawProperty(
 			if (ImGui::TreeNodeEx("Configure##structured",
 				ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth))
 			{
-				DrawStructuredChildren(editorAPI, field.path + "##children", field.children);
+				DrawStructuredChildren(editorAPI, assetAPI, field.path + "##children", field.children);
 				ImGui::TreePop();
 			}
 			ImGui::SameLine();
@@ -536,7 +539,8 @@ void VansGameplayActionEditorWindow::DrawProperty(
 }
 
 void VansGameplayActionEditorWindow::DrawStructuredChildren(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI,
+	Vans::EditorAPI::IAssetEditorAPI& assetAPI,
 	const std::string& tableId,
 	const std::vector<Vans::EditorAPI::GAFEditorFieldSnapshot>& children)
 {
@@ -545,12 +549,13 @@ void VansGameplayActionEditorWindow::DrawStructuredChildren(
 		ImGuiTableFlags_BordersInnerH)) return;
 	ImGui::TableSetupColumn("Field", ImGuiTableColumnFlags_WidthFixed, 170.0f);
 	ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
-	for (const auto& child : children) DrawProperty(editorAPI, child);
+	for (const auto& child : children) DrawProperty(editorAPI, assetAPI, child);
 	ImGui::EndTable();
 }
 
 void VansGameplayActionEditorWindow::DrawProperties(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI,
+	Vans::EditorAPI::IAssetEditorAPI& assetAPI)
 {
 	std::vector<std::string> groups;
 	std::unordered_set<std::string> seen;
@@ -566,7 +571,7 @@ void VansGameplayActionEditorWindow::DrawProperties(
 			ImGui::TableSetupColumn("Field", ImGuiTableColumnFlags_WidthFixed, 190.0f);
 			ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 			for (const auto& field : m_Document.fields)
-				if (field.group == group) DrawProperty(editorAPI, field);
+				if (field.group == group) DrawProperty(editorAPI, assetAPI, field);
 			ImGui::EndTable();
 		}
 		ImGui::PopID();
@@ -574,7 +579,7 @@ void VansGameplayActionEditorWindow::DrawProperties(
 }
 
 void VansGameplayActionEditorWindow::ApplyGraphOperation(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI,
 	Vans::EditorAPI::GAFGraphEditRequest request)
 {
 	request.sourcePath = m_Path;
@@ -591,7 +596,8 @@ void VansGameplayActionEditorWindow::ApplyGraphOperation(
 }
 
 void VansGameplayActionEditorWindow::DrawGraph(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI,
+	Vans::EditorAPI::IAssetEditorAPI& assetAPI)
 {
 	if (!m_Document.graph.available)
 	{
@@ -891,7 +897,7 @@ void VansGameplayActionEditorWindow::DrawGraph(
 				{
 					bool any = false;
 					for (const auto type : property.allowedAssetTypes)
-						for (const auto& asset : editorAPI.QueryAssets({ type, false }))
+						for (const auto& asset : assetAPI.QueryAssets({ type, false }))
 						{
 							any = true;
 							const std::string label = asset.name + "##" + asset.guid;
@@ -960,7 +966,7 @@ void VansGameplayActionEditorWindow::DrawGraph(
 }
 
 void VansGameplayActionEditorWindow::DrawGraphPropertyEditor(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI)
 {
 	if (m_GraphPropertyEditorOpen)
 	{
@@ -997,7 +1003,7 @@ void VansGameplayActionEditorWindow::DrawGraphPropertyEditor(
 }
 
 void VansGameplayActionEditorWindow::DrawDiff(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI)
 {
 	if (ImGui::Button("Refresh Diff"))
 		m_Diff = editorAPI.DiffGAFAsset(m_Path, m_BaselineCanonicalJson);
@@ -1029,7 +1035,7 @@ void VansGameplayActionEditorWindow::DrawDiff(
 
 
 void VansGameplayActionEditorWindow::DrawStructuredEditor(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI)
 {
 	if (m_StructuredEditorOpen)
 	{
@@ -1066,7 +1072,7 @@ void VansGameplayActionEditorWindow::DrawStructuredEditor(
 }
 
 void VansGameplayActionEditorWindow::DrawCloseConfirmation(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::IGAFEditorAPI& editorAPI)
 {
 	if (m_CloseRequested)
 	{
@@ -1110,8 +1116,10 @@ void VansGameplayActionEditorWindow::DrawCloseConfirmation(
 void VansGameplayActionEditorWindow::ShowWindow(
 	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
+	Vans::EditorAPI::IGAFEditorAPI& gafAPI = editorAPI;
+	Vans::EditorAPI::IAssetEditorAPI& assetAPI = editorAPI;
 	if (!m_IsOpen) return;
-	if (m_NeedsRefresh) Refresh(editorAPI);
+	if (m_NeedsRefresh) Refresh(gafAPI);
 	bool open = true;
 	const std::string title = (m_Document.assetKind.empty() ? "GAF Asset" : m_Document.assetKind) +
 		" Editor###GameplayActionEditor";
@@ -1119,17 +1127,17 @@ void VansGameplayActionEditorWindow::ShowWindow(
 	{
 		ImGui::End();
 		if (!open) m_CloseRequested = true;
-		DrawCloseConfirmation(editorAPI);
+		DrawCloseConfirmation(gafAPI);
 		return;
 	}
-	DrawMenuBar(editorAPI);
+	DrawMenuBar(gafAPI);
 	if (!m_Document.success)
 	{
 		ImGui::TextColored(ImVec4(0.95f, 0.30f, 0.28f, 1.0f), "%s", m_LastError.c_str());
 	}
 	else
 	{
-		DrawToolbar(editorAPI);
+		DrawToolbar(gafAPI);
 		if (!m_LastError.empty())
 			ImGui::TextColored(ImVec4(0.95f, 0.30f, 0.28f, 1.0f), "%s", m_LastError.c_str());
 		ImGui::Separator();
@@ -1138,18 +1146,18 @@ void VansGameplayActionEditorWindow::ShowWindow(
 			if (ImGui::BeginTabItem("Overview")) { DrawOverview(); ImGui::EndTabItem(); }
 			if (m_Document.graph.available && ImGui::BeginTabItem("Graph"))
 			{
-				DrawGraph(editorAPI);
+				DrawGraph(gafAPI, assetAPI);
 				ImGui::EndTabItem();
 			}
-			if (ImGui::BeginTabItem("Properties")) { DrawProperties(editorAPI); ImGui::EndTabItem(); }
-			if (ImGui::BeginTabItem("Semantic Diff")) { DrawDiff(editorAPI); ImGui::EndTabItem(); }
+			if (ImGui::BeginTabItem("Properties")) { DrawProperties(gafAPI, assetAPI); ImGui::EndTabItem(); }
+			if (ImGui::BeginTabItem("Semantic Diff")) { DrawDiff(gafAPI); ImGui::EndTabItem(); }
 			ImGui::EndTabBar();
 		}
 	}
 	ImGui::End();
 	if (!open) m_CloseRequested = true;
-	DrawStructuredEditor(editorAPI);
-	DrawGraphPropertyEditor(editorAPI);
-	DrawCloseConfirmation(editorAPI);
+	DrawStructuredEditor(gafAPI);
+	DrawGraphPropertyEditor(gafAPI);
+	DrawCloseConfirmation(gafAPI);
 }
 }

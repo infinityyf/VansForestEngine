@@ -10,7 +10,7 @@
 #include "../AtmosphereCore/VansAtmosphereSystem.h"
 
 #include "../VansPostProcessProfile.h"
-#include "../../Configration/VansConfigration.h"
+#include "../VansRenderBootstrapSettings.h"
 #include "../../Util/VansProfiler.h"
 
 
@@ -1702,7 +1702,7 @@ namespace VansGraphics
 			manager->m_CascadeShadowMinMaxMipCount == 0)
 			return;
 
-		const uint32_t cascadeSize = uint32_t(VansConfigration::GetInstance()->GetCascadeShadowMapSize());
+		const uint32_t cascadeSize = kVansRenderBootstrapSettings.cascadeShadowMapSize;
 		const uint32_t baseSize = (std::max)(cascadeSize / 4u, 1u);
 		computeCmd.EnsureComputeShader(*manager->m_CascadeShadowMinMaxSeedShader,
 			{ manager->m_CascadeShadowMinMaxSetLayout });

@@ -4,7 +4,6 @@
 #include "../RuntimeCore/VansGenerationPool.h"
 
 #include <cstdint>
-#include <functional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -22,6 +21,7 @@ struct VansAttributeDefinition
 	double maximum = 0.0;
 	bool hasMinimum = false;
 	bool hasMaximum = false;
+	bool IsValueInRange(double value) const;
 };
 
 class VansAttributeRegistry
@@ -47,6 +47,26 @@ enum class VansAttributeModifierOperation : std::uint8_t
 	Override
 };
 
+enum class VansAttributeBaseOperation : std::uint8_t
+{
+	Add,
+	Multiply,
+	Set
+};
+
+enum class VansAttributeBoundsPolicy : std::uint8_t
+{
+	Clamp,
+	Reject
+};
+
+struct VansAttributeBaseResult
+{
+	bool applied = false;
+	bool clamped = false;
+	explicit operator bool() const { return applied; }
+};
+
 struct VansAttributeModifierDesc
 {
 	VansAttributeId attribute;
@@ -64,29 +84,34 @@ struct VansAttributeSnapshot
 	double currentValue = 0.0;
 };
 
+struct VansAttributeBaseState
+{
+	VansAttributeId attribute;
+	double value = 0.0;
+};
+
 class VansAttributeService
 {
 public:
-	using ChangedCallback = std::function<void(VansAttributeId, double, double)>;
-
 	explicit VansAttributeService(const VansAttributeRegistry* registry = nullptr)
 		: m_Registry(registry) {}
 
 	void SetRegistry(const VansAttributeRegistry* registry);
 	bool InitializeDefaults(std::string& error);
-	bool SetBase(VansAttributeId attribute, double value);
-	bool AddBase(VansAttributeId attribute, double delta);
+	VansAttributeBaseResult ApplyBase(VansAttributeId attribute,
+		VansAttributeBaseOperation operation,
+		double operand, VansAttributeBoundsPolicy bounds = VansAttributeBoundsPolicy::Clamp);
+	bool Contains(VansAttributeId attribute) const { return HasAttribute(attribute); }
 	double Base(VansAttributeId attribute) const;
 	double Current(VansAttributeId attribute) const;
 	VansAttributeModifierHandle AddModifier(const VansAttributeModifierDesc& desc);
 	bool UpdateModifier(VansAttributeModifierHandle handle, const VansAttributeModifierDesc& desc);
 	bool RemoveModifier(VansAttributeModifierHandle handle);
-	std::size_t RemoveModifiersFromSource(std::uint64_t source);
-	std::vector<VansAttributeSnapshot> Capture() const;
-	void Restore(const std::vector<VansAttributeSnapshot>& snapshot);
+	std::vector<VansAttributeSnapshot> Snapshot() const;
+	std::vector<VansAttributeBaseState> CaptureBases() const;
+	bool RestoreBases(const std::vector<VansAttributeBaseState>& state);
 	void BeginBatch();
 	void EndBatch();
-	void SetChangedCallback(ChangedCallback callback) { m_Changed = std::move(callback); }
 
 private:
 	struct AttributeState
@@ -97,6 +122,7 @@ private:
 	struct ModifierState
 	{
 		VansAttributeModifierDesc desc;
+		std::uint64_t order = 0;
 	};
 
 	bool HasAttribute(VansAttributeId attribute) const;
@@ -108,7 +134,7 @@ private:
 	std::unordered_map<VansAttributeId, AttributeState> m_States;
 	VansGenerationPool<ModifierState> m_Modifiers;
 	std::unordered_set<VansAttributeId> m_Dirty;
-	ChangedCallback m_Changed;
 	std::uint32_t m_BatchDepth = 0;
+	std::uint64_t m_NextModifierOrder = 1;
 };
 }

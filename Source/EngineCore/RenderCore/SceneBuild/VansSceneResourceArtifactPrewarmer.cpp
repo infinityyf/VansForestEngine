@@ -1,5 +1,6 @@
 #include "VansSceneResourceArtifactPrewarmer.h"
 
+#include "../../AssetCore/VansDerivedArtifactLayout.h"
 #include "../VulkanCore/VansMesh.h"
 #include "../../Util/VansLog.h"
 
@@ -80,8 +81,11 @@ VansSceneResourceArtifactPrewarmResult VansSceneResourceArtifactPrewarmer::Prewa
             continue;
         }
 
+        const Vans::VansDerivedArtifactLocation defaultArtifact =
+            Vans::VansDerivedArtifactLayout::ImportedRuntimeCache(
+                owner->ArtifactRoot(), Vans::VansAssetType::Model, guid);
         const fs::path cachePath = request.artifactPath.empty()
-            ? owner->ArtifactRoot() / "Meshes" / (request.assetGuid + ".vmesh")
+            ? defaultArtifact.path
             : ResolveProjectPath(projectRoot, request.artifactPath);
         const bool importTangents = Vans::RequiresMeshTangentImport(request);
         std::string error;

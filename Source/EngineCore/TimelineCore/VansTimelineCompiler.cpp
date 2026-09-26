@@ -31,6 +31,11 @@ std::shared_ptr<const VansCompiledTimeline> VansCompiledTimeline::ChildTimeline(
 
 namespace
 {
+void MixManifest(std::uint64_t& hash, std::uint64_t value)
+{
+	hash ^= value + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+}
+
 bool RuntimeOrder(const VansCompiledTimelineTrack& left, const VansCompiledTimelineTrack& right)
 {
 	if (left.priority != right.priority) return left.priority < right.priority;
@@ -69,6 +74,16 @@ VansCompiledTimelineSection CompileSection(
 }
 }
 
+std::uint64_t VansTimelineCompiler::RegistryManifestHash(
+	const VansTimelineCompileOptions& options)
+{
+	if (!options.extensions || !options.extensions->IsSealed()) return 0;
+	std::uint64_t hash = VansStableHash64("Timeline.RegistryManifest");
+	MixManifest(hash, options.extensions->ManifestHash());
+	MixManifest(hash, options.runtimeRegistryManifestHash);
+	return hash;
+}
+
 VansTimelineCompileResult VansTimelineCompiler::Compile(
 	const VansTimelineAsset& source,
 	const VansTimelineCompileOptions& options)
@@ -95,7 +110,7 @@ VansTimelineCompileResult VansTimelineCompiler::Compile(
 	compiled->m_DefaultCompletionMode = normalized.defaultCompletionMode;
 	compiled->m_Markers = normalized.markers;
 	compiled->m_ContentHash = VansStableHash64(VansTimelineSerialization::Encode(normalized).dump());
-	compiled->m_RegistryManifestHash = options.extensions->ManifestHash();
+	compiled->m_RegistryManifestHash = RegistryManifestHash(options);
 
 	for (const VansTimelineParameterDescriptor& parameter : normalized.parameters)
 	{

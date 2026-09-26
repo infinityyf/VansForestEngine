@@ -3,7 +3,7 @@
 #include "../../AssetCore/Storage/VansStagedFileTransaction.h"
 #include "../../AssetCore/VansAssetDatabase.h"
 #include "../../AssetCore/VansAssetDocument.h"
-#include "../VansAssetDocumentRegistry.h"
+#include "../../AuthoringCore/VansAssetDocumentRegistry.h"
 #include "../VansAssetDocumentTypeRegistry.h"
 
 #include <utility>

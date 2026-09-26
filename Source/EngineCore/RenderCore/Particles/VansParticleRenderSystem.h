@@ -27,6 +27,8 @@ struct VansParticleRenderDiagnostics
     std::uint64_t allocatedBytes = 0;
     std::uint32_t drawCount = 0;
     std::uint32_t droppedDraws = 0;
+    std::uint32_t rejectedRibbonPoints = 0;
+    std::uint32_t splitRibbonRuns = 0;
     double prepareMilliseconds = 0;
 };
 class VansParticleRenderSystem final

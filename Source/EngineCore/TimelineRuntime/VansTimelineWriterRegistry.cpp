@@ -2,12 +2,12 @@
 
 namespace Vans
 {
-VansTimelineWriterHandle VansTimelineWriterRegistry::Acquire(const VansTimelineWriterDesc& desc)
+VansTimelineWriterHandle VansTimelineWriterRegistry::Acquire(const VansTimelineWriterIdentity& identity)
 {
-	const Key key{ desc.session, desc.trackIndex, desc.sectionIndex, desc.outputType };
+	const Key key{ identity.session, identity.trackIndex, identity.sectionIndex, identity.outputType };
 	const auto found = m_ByKey.find(key);
 	if (found != m_ByKey.end() && m_Writers.Contains(found->second)) return found->second;
-	const VansTimelineWriterHandle handle = m_Writers.Emplace(desc);
+	const VansTimelineWriterHandle handle = m_Writers.Emplace(identity);
 	m_ByKey[key] = handle;
 	return handle;
 }
@@ -23,16 +23,16 @@ VansTimelineWriterHandle VansTimelineWriterRegistry::Find(
 		? VansTimelineWriterHandle{} : found->second;
 }
 
-const VansTimelineWriterDesc* VansTimelineWriterRegistry::Resolve(VansTimelineWriterHandle handle) const
+const VansTimelineWriterIdentity* VansTimelineWriterRegistry::Resolve(VansTimelineWriterHandle handle) const
 {
 	return m_Writers.Resolve(handle);
 }
 
 bool VansTimelineWriterRegistry::Release(VansTimelineWriterHandle handle)
 {
-	const VansTimelineWriterDesc* desc = m_Writers.Resolve(handle);
-	if (!desc) return false;
-	m_ByKey.erase(Key{ desc->session, desc->trackIndex, desc->sectionIndex, desc->outputType });
+	const VansTimelineWriterIdentity* identity = m_Writers.Resolve(handle);
+	if (!identity) return false;
+	m_ByKey.erase(Key{ identity->session, identity->trackIndex, identity->sectionIndex, identity->outputType });
 	return m_Writers.Release(handle);
 }
 
@@ -40,23 +40,12 @@ std::vector<VansTimelineWriterHandle> VansTimelineWriterRegistry::ReleaseSession
 	VansTimelineSessionHandle session)
 {
 	std::vector<VansTimelineWriterHandle> handles;
-	m_Writers.ForEach([&](VansTimelineWriterHandle handle, const VansTimelineWriterDesc& desc)
+	m_Writers.ForEach([&](VansTimelineWriterHandle handle, const VansTimelineWriterIdentity& identity)
 	{
-		if (desc.session == session) handles.push_back(handle);
+		if (identity.session == session) handles.push_back(handle);
 	});
 	for (VansTimelineWriterHandle handle : handles) Release(handle);
 	return handles;
 }
 
-std::vector<VansTimelineWriterHandle> VansTimelineWriterRegistry::ReleaseRoot(
-	VansTimelineSessionHandle root)
-{
-	std::vector<VansTimelineWriterHandle> handles;
-	m_Writers.ForEach([&](VansTimelineWriterHandle handle, const VansTimelineWriterDesc& desc)
-	{
-		if (desc.root == root) handles.push_back(handle);
-	});
-	for (VansTimelineWriterHandle handle : handles) Release(handle);
-	return handles;
-}
 }

@@ -1,4 +1,5 @@
 #include "VansTerrainBrush.h"
+#include "VansTerrainHeightEncoding.h"
 
 #include <algorithm>
 #include <array>
@@ -65,7 +66,7 @@ float ValueNoise(float x, float y, std::uint32_t seed)
 	{
 		return static_cast<float>(Hash(
 			static_cast<std::uint32_t>(sx), static_cast<std::uint32_t>(sy), seed) & 0xffffu) /
-			65535.0f;
+			VansTerrainHeightEncoding::kMaximumSampleFloat;
 	};
 	const float a = sample(x0, y0);
 	const float b = sample(x0 + 1, y0);
@@ -319,16 +320,18 @@ VansTerrainBrushResult VansTerrainBrush::Apply(
 					dab.operation == VansTerrainBrushOperation::Lower)
 				{
 					const float direction = dab.operation == VansTerrainBrushOperation::Raise ? 1.0f : -1.0f;
-					target += direction * alpha * 65535.0f;
+					target += direction * alpha * VansTerrainHeightEncoding::kMaximumSampleFloat;
 				}
 				else if (dab.operation == VansTerrainBrushOperation::Flatten)
 				{
-					target += (Saturate(dab.targetHeight) * 65535.0f - target) * alpha;
+					target += (Saturate(dab.targetHeight) *
+						VansTerrainHeightEncoding::kMaximumSampleFloat - target) * alpha;
 				}
 				else if (dab.operation == VansTerrainBrushOperation::Noise)
 				{
-					const float noise = static_cast<float>(Hash(x, y, dab.noiseSeed) & 0xffffu) / 32767.5f - 1.0f;
-					target += noise * alpha * 65535.0f;
+					const float noise = static_cast<float>(Hash(x, y, dab.noiseSeed) & 0xffffu) /
+						(VansTerrainHeightEncoding::kMaximumSampleFloat * 0.5f) - 1.0f;
+					target += noise * alpha * VansTerrainHeightEncoding::kMaximumSampleFloat;
 				}
 				else
 				{
@@ -347,7 +350,8 @@ VansTerrainBrushResult VansTerrainBrush::Apply(
 						}
 					target += (static_cast<float>(sum) / count - target) * alpha;
 				}
-				const auto after = static_cast<std::uint16_t>(std::lround(std::clamp(target, 0.0f, 65535.0f)));
+				const auto after = static_cast<std::uint16_t>(std::lround(std::clamp(
+					target, 0.0f, VansTerrainHeightEncoding::kMaximumSampleFloat)));
 				if (after != before)
 				{
 					terrain.heights[pixel] = after;

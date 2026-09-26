@@ -101,17 +101,9 @@ namespace Vans
 		ValidateRequiredPath(diagnostics, "/assetDatabase/importedArtifactRoot", config.importedArtifactRoot);
 		ValidateRequiredPath(diagnostics, "/renderSettings", config.renderSettings);
 		ValidateRequiredPath(diagnostics, "/physicsSettings", config.physicsSettings);
+		ValidateRequiredPath(diagnostics, "/navigationSettings", config.navigationSettings);
 		ValidateRequiredPath(diagnostics, "/audioSettings", config.audioSettings);
 		ValidateRequiredPath(diagnostics, "/collisionLayerSettings", config.collisionLayerSettings);
-
-		if (config.metaExtension.empty() || config.metaExtension.front() != '.')
-		{
-			AddDiagnostic(
-				diagnostics,
-				VansProjectConfigDiagnosticSeverity::Warning,
-				"/assetDatabase/metaExtension",
-				"Meta extension should start with '.'.");
-		}
 
 		std::unordered_set<std::string> assetDirectoryPaths;
 		for (const auto& item : config.assetDirectories)

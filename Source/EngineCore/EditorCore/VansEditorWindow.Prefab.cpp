@@ -2,79 +2,70 @@
 #include "../SceneCore/VansSceneEntityFactory.h"
 #include "VansEditorWindow.h"
 #include "VansPrefabEditService.h"
-#include "VansAssetDocumentEditService.h"
+#include "../AuthoringCore/VansAssetDocumentEditService.h"
 #include "VansEditorAssetSaveService.h"
 #include "VansEditorSelectionService.h"
 #include "../SceneCore/VansSceneDocument.h"
 #include "../SceneCore/VansSceneSchema.h"
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../EngineAPILayer/Public/IPlayModeEditorAPI.h"
+#include "../EngineAPILayer/Public/IRuntimeSceneEditorAPI.h"
+#include "../EngineAPILayer/Public/ISceneInteractionEditorAPI.h"
 #include "../Util/VansLog.h"
 #include "imgui.h"
 #include <nlohmann/json.hpp>
 #include <unordered_set>
 #include <algorithm>
+#include <cstdint>
 
 namespace VansGraphics
 {
 namespace
 {
 using Json = nlohmann::ordered_json;
-struct PrefabRequest
-{
-    enum class Kind { Create, Place, Open, Close, Discard, Unpack, Revert, Apply, Duplicate, Delete } kind;
-    std::string target, path, token, parent;
-    float x = 0, y = 0, z = 0;
-};
-std::vector<PrefabRequest> requests;
-struct PrefabSession
-{
-    std::shared_ptr<Vans::VansOpenAssetDocument> asset;
-    std::string root;
-    std::unique_ptr<Vans::VansSceneDocument> previousDocument;
-    std::unique_ptr<Vans::VansSceneEditService> previousEdits;
-    Vans::EditorSelectionSnapshot previousSelection;
-    Vans::EditorAPI::EditorViewportCameraState previousCamera;
-    Vans::SceneStateId savedState = 0;
-};
-std::unique_ptr<PrefabSession> session;
-std::string status;
+using PrefabRequest = VansPrefabRequest;
+using PrefabSession = VansEditorPrefabStage;
 Json JsonOf(const Vans::VansSerializedValue& value) { return Vans::EncodeSerializedValueJson<Json>(value); }
 }
 
-bool VansEditorWindow::HasPrefabSession() { return session != nullptr; }
-bool VansEditorWindow::HasPendingPrefabRequests() { return !requests.empty(); }
+bool VansEditorWindow::HasPrefabSession() { return m_PrefabSession.HasStage(); }
+bool VansEditorWindow::HasPendingPrefabRequests() { return m_PrefabSession.HasPendingRequests(); }
 std::string VansEditorWindow::ActiveDocumentToken()
 {
-    if (!m_SceneDocument) return {};
-    return JsonOf(m_SceneDocument->SerializedRootSnapshot()).value("sceneGuid", std::string{});
+    if (!GetSceneDocument()) return {};
+    return JsonOf(GetSceneDocument()->SerializedRootSnapshot()).value("sceneGuid", std::string{});
 }
 void VansEditorWindow::QueuePrefabCreation(std::string entity, std::string directory, std::string token)
 {
-    requests.push_back({PrefabRequest::Kind::Create, std::move(entity), std::move(directory), std::move(token)});
+    m_PrefabSession.Queue({PrefabRequest::Kind::Create, std::move(entity), std::move(directory), std::move(token)});
 }
 void VansEditorWindow::QueuePrefabPlacement(std::string asset, std::string parent, float x, float y, float z)
 {
     PrefabRequest request{PrefabRequest::Kind::Place, std::move(asset)};
     request.parent = std::move(parent); request.x = x; request.y = y; request.z = z;
-    request.token = ActiveDocumentToken(); requests.push_back(std::move(request));
+    request.token = ActiveDocumentToken(); m_PrefabSession.Queue(std::move(request));
 }
-void VansEditorWindow::QueuePrefabDuplicate(std::string root) { requests.push_back({PrefabRequest::Kind::Duplicate, std::move(root), {}, ActiveDocumentToken()}); }
-void VansEditorWindow::QueuePrefabDelete(std::string root) { requests.push_back({PrefabRequest::Kind::Delete, std::move(root), {}, ActiveDocumentToken()}); }
+void VansEditorWindow::QueuePrefabDuplicate(std::string root) { m_PrefabSession.Queue({PrefabRequest::Kind::Duplicate, std::move(root), {}, ActiveDocumentToken()}); }
+void VansEditorWindow::QueuePrefabDelete(std::string root) { m_PrefabSession.Queue({PrefabRequest::Kind::Delete, std::move(root), {}, ActiveDocumentToken()}); }
 
 void VansEditorWindow::QueuePrefabOpen(std::string path)
 {
-    requests.push_back({PrefabRequest::Kind::Open, {}, std::move(path)});
+    m_PrefabSession.Queue({PrefabRequest::Kind::Open, {}, std::move(path)});
 }
 
 bool VansEditorWindow::RefreshActiveScenePreview()
 {
-    if (!m_SceneDocument || !GetEditorAPI()) return false;
+    if (!GetSceneDocument() || !GetEditorAPI()) return false;
+	auto* session = m_PrefabSession.Stage();
+	auto& status = m_PrefabSession.Status();
+	auto& runtimeSceneAPI =
+		static_cast<Vans::EditorAPI::IRuntimeSceneEditorAPI&>(*GetEditorAPI());
     Vans::EditorAPI::RuntimeSceneLoadRequest request;
     request.mode = Vans::EditorAPI::RuntimeSceneLoadMode::Editor;
     request.ensureResourceDependencies = true;
-    request.document.sourcePath = session ? session->asset->sourcePath.string() : m_SceneDocument->SourcePath().string();
-    auto preview = JsonOf(m_SceneDocument->SerializedRootSnapshot());
+    request.document.sourcePath = session ? session->asset->sourcePath.string() : GetSceneDocument()->SourcePath().string();
+    auto preview = JsonOf(GetSceneDocument()->SerializedRootSnapshot());
     if (session)
     {
         // 灯光只属于运行预览，不进入作者文档、Hierarchy 或资产文件。
@@ -87,8 +78,8 @@ bool VansEditorWindow::RefreshActiveScenePreview()
         preview["entities"].push_back(std::move(light));
     }
     request.document.canonicalJson = preview.dump();
-    request.document.authoringStateId = m_SceneDocument->CurrentStateId();
-    const auto result = GetEditorAPI()->LoadRuntimeScene(request);
+    request.document.authoringStateId = GetSceneDocument()->CurrentStateId();
+    const auto result = runtimeSceneAPI.LoadRuntimeScene(request);
     if (!result)
     {
         status = "Prefab preview failed";
@@ -101,8 +92,10 @@ bool VansEditorWindow::RefreshActiveScenePreview()
 
 bool VansEditorWindow::SavePrefabSession()
 {
-    if (!session || !m_SceneDocument) return false;
-    const auto scene = JsonOf(m_SceneDocument->SerializedRootSnapshot());
+	auto* session = m_PrefabSession.Stage();
+	auto& status = m_PrefabSession.Status();
+    if (!session || !GetSceneDocument()) return false;
+    const auto scene = JsonOf(GetSceneDocument()->SerializedRootSnapshot());
     Vans::VansPrefabAsset asset{session->root, Vans::DecodeSerializedValueJson(scene.at("entities"))};
     if (!Vans::VansPrefabCodec::Validate(asset, status)) return false;
     const auto next = Vans::VansPrefabCodec::Encode(asset);
@@ -123,34 +116,55 @@ bool VansEditorWindow::SavePrefabSession()
         }
         return false;
     }
-    session->savedState = m_SceneDocument->CurrentStateId();
+    session->savedState = GetSceneDocument()->CurrentStateId();
     status = "Prefab saved";
     return true;
 }
 
 void VansEditorWindow::DrawPrefabToolbar()
 {
+	auto* session = m_PrefabSession.Stage();
+	auto& status = m_PrefabSession.Status();
+	auto& toolbarCache = m_PrefabSession.ToolbarCache();
     if (session)
     {
         ImGui::Text("Prefab: %s%s", session->asset->sourcePath.filename().string().c_str(),
-            m_SceneDocument && m_SceneDocument->CurrentStateId() != session->savedState ? " *" : "");
+            GetSceneDocument() && GetSceneDocument()->CurrentStateId() != session->savedState ? " *" : "");
         if (ImGui::Button("Save Prefab")) SavePrefabSession();
         ImGui::SameLine();
-        if (ImGui::Button("Back to Scene")) requests.push_back({PrefabRequest::Kind::Close});
+        if (ImGui::Button("Back to Scene")) m_PrefabSession.Queue({PrefabRequest::Kind::Close});
         ImGui::SameLine();
-        if (ImGui::Button("Discard")) requests.push_back({PrefabRequest::Kind::Discard});
+        if (ImGui::Button("Discard")) m_PrefabSession.Queue({PrefabRequest::Kind::Discard});
     }
-    else if (m_SceneDocument)
+    else if (GetSceneDocument())
     {
         const auto selected = Vans::VansEditorSelectionService::Get().EntityGuid();
-        if (!Vans::VansPrefabEditService::SourceAsset(*m_SceneDocument, selected).empty())
+        const auto selectionRevision = Vans::VansEditorSelectionService::Get().Snapshot().revision;
+        const auto documentSnapshot = GetSceneDocument()->CreateSnapshot();
+        const bool cacheDirty = !toolbarCache.valid
+            || toolbarCache.document != GetSceneDocument()
+            || toolbarCache.authoringRoot != documentSnapshot.authoringRoot
+            || toolbarCache.documentState != GetSceneDocument()->CurrentStateId()
+            || toolbarCache.selectionRevision != selectionRevision
+            || toolbarCache.selectedEntity != selected;
+        if (cacheDirty)
+        {
+            toolbarCache.document = GetSceneDocument();
+            toolbarCache.authoringRoot = documentSnapshot.authoringRoot;
+            toolbarCache.documentState = GetSceneDocument()->CurrentStateId();
+            toolbarCache.selectionRevision = selectionRevision;
+            toolbarCache.selectedEntity = selected;
+            toolbarCache.sourceAsset = Vans::VansPrefabEditService::SourceAsset(*GetSceneDocument(), selected);
+            toolbarCache.valid = true;
+        }
+        if (!toolbarCache.sourceAsset.empty())
         {
             ImGui::TextUnformatted("Prefab Instance");
-            if (ImGui::Button("Apply Overrides")) requests.push_back({PrefabRequest::Kind::Apply, selected});
+            if (ImGui::Button("Apply Overrides")) m_PrefabSession.Queue({PrefabRequest::Kind::Apply, selected});
             ImGui::SameLine();
-            if (ImGui::Button("Revert Overrides")) requests.push_back({PrefabRequest::Kind::Revert, selected});
+            if (ImGui::Button("Revert Overrides")) m_PrefabSession.Queue({PrefabRequest::Kind::Revert, selected});
             ImGui::SameLine();
-            if (ImGui::Button("Unpack")) requests.push_back({PrefabRequest::Kind::Unpack, selected});
+            if (ImGui::Button("Unpack")) m_PrefabSession.Queue({PrefabRequest::Kind::Unpack, selected});
         }
     }
     if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
@@ -158,15 +172,20 @@ void VansEditorWindow::DrawPrefabToolbar()
 
 void VansEditorWindow::ProcessPrefabRequests()
 {
-    if (requests.empty()) return;
+    if (!m_PrefabSession.HasPendingRequests()) return;
     auto* api = GetEditorAPI();
     if (!api) return;
-    auto pending = std::move(requests); requests.clear();
-    if (api->GetPlayState() != Vans::EditorAPI::EnginePlayState::Edit) return;
+	Vans::EditorAPI::IRuntimeSceneEditorAPI& runtimeSceneAPI = *api;
+	Vans::EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI = *api;
+	Vans::EditorAPI::IPlayModeEditorAPI& playModeAPI = *api;
+    auto pending = m_PrefabSession.TakePendingRequests();
+    if (playModeAPI.GetPlayState() != Vans::EditorAPI::EnginePlayState::Edit) return;
     for (const auto& request : pending)
     {
+		auto& status = m_PrefabSession.Status();
         try
         {
+            auto* session = m_PrefabSession.Stage();
             status.clear();
             if (request.kind == PrefabRequest::Kind::Open)
             {
@@ -183,21 +202,23 @@ void VansEditorWindow::ProcessPrefabRequests()
                 auto candidate = std::make_unique<PrefabSession>();
                 candidate->asset = assetDocument; candidate->root = asset.rootEntity;
                 candidate->previousSelection = Vans::VansEditorSelectionService::Get().Snapshot();
-                candidate->previousCamera = api->CaptureEditorViewportCamera();
-                candidate->previousEdits = std::move(m_SceneEditService);
-                candidate->previousDocument = std::move(m_SceneDocument);
+                candidate->previousCamera = sceneInteractionAPI.CaptureEditorViewportCamera();
                 candidate->savedState = document->CurrentStateId();
-                session = std::move(candidate); m_SceneDocument = std::move(document);
-                m_SceneEditService = std::make_unique<Vans::VansSceneEditService>(*m_SceneDocument);
-                m_SceneEditService->SetPrefabPreviewRefresh([] { return RefreshActiveScenePreview(); });
+                candidate->previousSceneState = m_SceneDocumentSession.ReplaceDocument(
+                    std::move(document),
+                    [] { return RefreshActiveScenePreview(); });
+                m_PrefabSession.Begin(std::move(candidate));
+                session = m_PrefabSession.Stage();
                 if (!RefreshActiveScenePreview())
                 {
                     const auto camera = session->previousCamera;
-                    m_SceneEditService = std::move(session->previousEdits);
-                    m_SceneDocument = std::move(session->previousDocument); session.reset();
-                    if (m_SceneDocument) RefreshActiveScenePreview();
-                    else api->UnloadRuntimeScene();
-                    api->RestoreEditorViewportCamera(camera);
+                    auto previousSceneState = std::move(session->previousSceneState);
+                    m_SceneDocumentSession.Restore(std::move(previousSceneState));
+                    m_PrefabSession.End();
+                    session = nullptr;
+                    if (GetSceneDocument()) RefreshActiveScenePreview();
+                    else runtimeSceneAPI.UnloadRuntimeScene();
+                    sceneInteractionAPI.RestoreEditorViewportCamera(camera);
                     VANS_LOG_ERROR("[Prefab] Stage open failed: " << status); continue;
                 }
                 Vans::VansEditorSelectionService::Get().SelectEntity(asset.rootEntity, "PrefabStage");
@@ -208,24 +229,27 @@ void VansEditorWindow::ProcessPrefabRequests()
             if (request.kind == PrefabRequest::Kind::Close || request.kind == PrefabRequest::Kind::Discard)
             {
                 if (!session) continue;
-                if (request.kind == PrefabRequest::Kind::Close && m_SceneDocument->CurrentStateId() != session->savedState)
+                if (request.kind == PrefabRequest::Kind::Close && GetSceneDocument()->CurrentStateId() != session->savedState)
                 { status = "Save Prefab or choose Discard before returning to the scene"; continue; }
-                if (session->previousDocument && !session->previousDocument->RefreshPrefabView(status)) continue;
+                if (session->previousSceneState.Document() &&
+                    !session->previousSceneState.Document()->RefreshPrefabView(status)) continue;
                 auto selection = session->previousSelection;
                 const auto camera = session->previousCamera;
-                m_SceneEditService = std::move(session->previousEdits);
-                m_SceneDocument = std::move(session->previousDocument); session.reset();
-                if (m_SceneDocument)
+                auto previousSceneState = std::move(session->previousSceneState);
+                m_SceneDocumentSession.Restore(std::move(previousSceneState));
+                m_PrefabSession.End();
+                session = nullptr;
+                if (GetSceneDocument())
                 {
                     RefreshActiveScenePreview();
                 }
-                else api->UnloadRuntimeScene();
+                else runtimeSceneAPI.UnloadRuntimeScene();
                 Vans::VansSceneViewCommands::Clear();
-                api->RestoreEditorViewportCamera(camera);
+                sceneInteractionAPI.RestoreEditorViewportCamera(camera);
                 Vans::VansEditorSelectionService::Get().Apply(Vans::EditorSelectionOperation::Replace, selection.objects, selection.active, "PrefabStageReturn");
                 continue;
             }
-            if (!m_SceneDocument || !m_SceneEditService) { status = "Open a scene first"; continue; }
+            if (!GetSceneDocument() || !GetSceneEditService()) { status = "Open a scene first"; continue; }
             if (!request.token.empty() && request.token != ActiveDocumentToken()) { status = "The dragged object belongs to another document"; continue; }
             Vans::SceneEditResult result;
             const auto refresh = [] { return VansEditorWindow::RefreshActiveScenePreview(); };
@@ -234,7 +258,7 @@ void VansEditorWindow::ProcessPrefabRequests()
             {
                 if (session) { status = "Create Prefab assets from a scene"; continue; }
                 std::filesystem::path path;
-                result = Vans::VansPrefabEditService::Create(*api, *m_SceneDocument, *m_SceneEditService, request.target, request.path, path);
+                result = Vans::VansPrefabEditService::Create(*api, *GetSceneDocument(), *GetSceneEditService(), request.target, request.path, path);
                 if (result) status = "Created " + path.filename().string();
             }
             else if (request.kind == PrefabRequest::Kind::Place)
@@ -242,27 +266,27 @@ void VansEditorWindow::ProcessPrefabRequests()
                 if (session) { status = "Nested Prefabs are not supported"; continue; }
                 Json placement{{"parent", nullptr}, {"position", {request.x, request.y, request.z}}, {"rotation", {0,0,0,1}}};
                 if (!request.parent.empty()) placement["parent"] = {{"kind", "entity"}, {"entityGuid", request.parent}};
-                result = Vans::VansPrefabEditService::Place(*m_SceneDocument, *m_SceneEditService, request.target, Vans::DecodeSerializedValueJson(placement), hooks);
+                result = Vans::VansPrefabEditService::Place(*GetSceneDocument(), *GetSceneEditService(), request.target, Vans::DecodeSerializedValueJson(placement), hooks);
             }
             else if (request.kind == PrefabRequest::Kind::Apply)
             {
-                result = Vans::VansPrefabEditService::Apply(*api, *m_SceneDocument, *m_SceneEditService, request.target);
+                result = Vans::VansPrefabEditService::Apply(*api, *GetSceneDocument(), *GetSceneEditService(), request.target);
                 if (result) status = "Overrides applied in memory; Save Scene / Save All saves the template";
             }
             else if (request.kind == PrefabRequest::Kind::Duplicate)
             {
                 Vans::VansSerializedValue duplicated; std::string root, error;
-                if (!Vans::VansPrefabResolver::DuplicateSubtree(m_SceneDocument->SerializedRootSnapshot(), m_SceneDocument->PrefabLookup(), request.target, duplicated, root, error))
+                if (!Vans::VansPrefabResolver::DuplicateSubtree(GetSceneDocument()->SerializedRootSnapshot(), GetSceneDocument()->PrefabLookup(), request.target, duplicated, root, error))
                     result = {false, error};
                 else
                 {
-                    result = m_SceneEditService->ReplaceRoot(std::move(duplicated), hooks);
+                    result = GetSceneEditService()->ReplaceRoot(std::move(duplicated), hooks);
                     if (result) Vans::VansEditorSelectionService::Get().SelectEntity(root, "PrefabDuplicate");
                 }
             }
             else if (request.kind == PrefabRequest::Kind::Delete)
             {
-                auto scene = JsonOf(m_SceneDocument->SerializedRootSnapshot());
+                auto scene = JsonOf(GetSceneDocument()->SerializedRootSnapshot());
                 Vans::VansSerializedValue removed; std::string error;
                 if (!Vans::ExtractSceneObjectSubtree(Vans::DecodeSerializedValueJson(scene["entities"]), request.target, removed, error)) result = {false, error};
                 else
@@ -271,14 +295,14 @@ void VansEditorWindow::ProcessPrefabRequests()
                     for (const auto& object : JsonOf(removed)) ids.insert(object.at("id"));
                     auto& objects = scene["entities"];
                     objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const auto& object) { return ids.count(object.at("id")); }), objects.end());
-                    result = m_SceneEditService->ReplaceRoot(Vans::DecodeSerializedValueJson(scene), hooks);
+                    result = GetSceneEditService()->ReplaceRoot(Vans::DecodeSerializedValueJson(scene), hooks);
                     if (result) Vans::VansEditorSelectionService::Get().Clear("PrefabDelete");
                 }
             }
             else if (request.kind == PrefabRequest::Kind::Unpack)
-                result = Vans::VansPrefabEditService::Unpack(*m_SceneDocument, *m_SceneEditService, request.target);
+                result = Vans::VansPrefabEditService::Unpack(*GetSceneDocument(), *GetSceneEditService(), request.target);
             else if (request.kind == PrefabRequest::Kind::Revert)
-                result = Vans::VansPrefabEditService::Revert(*m_SceneDocument, *m_SceneEditService, request.target, hooks);
+                result = Vans::VansPrefabEditService::Revert(*GetSceneDocument(), *GetSceneEditService(), request.target, hooks);
             if (!result) status = result.message;
         }
         catch (const std::exception& e) { status = e.what(); }

@@ -3,6 +3,7 @@
 #include "VansTimelineCompiledDataWriter.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -41,11 +42,11 @@ enum class VansTimelineBindingRequirement : std::uint8_t
 	Required
 };
 
-using VansTimelineValidateExtensionFn = void(*)(
+using VansTimelineValidateExtensionFn = std::function<void(
 	const VansTimelineTrack&,
 	const VansTimelineSourceSchema&,
 	const VansTimelineValidationContext&,
-	VansTimelineDiagnostics&);
+	VansTimelineDiagnostics&)>;
 using VansTimelineCollectDependenciesFn = void(*)(
 	const VansTimelineTrack&,
 	std::vector<VansTimelineDependency>&);

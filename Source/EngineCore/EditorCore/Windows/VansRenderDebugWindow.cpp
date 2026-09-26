@@ -1,5 +1,6 @@
 #include "VansRenderDebugWindow.h"
 #include "../VansEditorWindow.h"
+#include "../../EngineAPILayer/Public/IRenderEditorAPI.h"
 #include "imgui.h"
 
 #include <cfloat>
@@ -60,7 +61,7 @@ namespace
 		ImGui::Text("%llu", ToImGuiCount(stats.expiredCount));
 	}
 
-	void DrawPipelineRegistryStats(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	void DrawPipelineRegistryStats(Vans::EditorAPI::IRenderEditorAPI& editorAPI)
 	{
 		if (!ImGui::CollapsingHeader("Pipeline Registry", ImGuiTreeNodeFlags_DefaultOpen))
 		{
@@ -88,7 +89,7 @@ namespace
 		}
 	}
 
-	void DrawRenderDocControls(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	void DrawRenderDocControls(Vans::EditorAPI::IRenderEditorAPI& editorAPI)
 	{
 		if (!ImGui::CollapsingHeader("RenderDoc Capture", ImGuiTreeNodeFlags_DefaultOpen))
 		{
@@ -145,7 +146,7 @@ namespace
 		}
 	}
 
-	void DrawRenderBackendDiagnostics(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	void DrawRenderBackendDiagnostics(Vans::EditorAPI::IRenderEditorAPI& editorAPI)
 	{
 		if (!ImGui::CollapsingHeader("Render Backend Diagnostics", ImGuiTreeNodeFlags_DefaultOpen))
 		{
@@ -249,40 +250,41 @@ namespace
 
 void VansGraphics::VansRenderDebugWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-	if (!VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen &&
-		!VansGraphics::VansEditorWindow::m_HairDebugWindowOpen)
+	Vans::EditorAPI::IRenderEditorAPI& renderAPI = editorAPI;
+	if (!VansGraphics::VansEditorWindow::IsWindowOpen(VansGraphics::VansEditorWindowId::RenderDebug) &&
+		!VansGraphics::VansEditorWindow::IsWindowOpen(VansGraphics::VansEditorWindowId::HairDebug))
 	{
 		return;
 	}
 
-	if (VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen)
+	if (VansGraphics::VansEditorWindow::IsWindowOpen(VansGraphics::VansEditorWindowId::RenderDebug))
 	{
-		ImGui::Begin("Render Debug", &VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen);
+		ImGui::Begin("Render Debug", VansGraphics::VansEditorWindow::WindowOpenState(VansGraphics::VansEditorWindowId::RenderDebug));
 		ImGui::TextWrapped("SSAO: white = unoccluded, black = fully occluded. Filtered is the SSAO input to Deferred lighting, before material AO.");
 		if (ImGui::CollapsingHeader("Ambient Reflection Sky Cache", ImGuiTreeNodeFlags_DefaultOpen))
 		{
-			int mode = static_cast<int>(editorAPI.GetAmbientSkyCacheDebugMode());
+			int mode = static_cast<int>(renderAPI.GetAmbientSkyCacheDebugMode());
 			const char* modes[] = { "Off", "Cached Visibility", "Cache Confidence", "Sky Residual" };
 			if (ImGui::Combo("Visualization", &mode, modes, IM_ARRAYSIZE(modes)))
-				editorAPI.SetAmbientSkyCacheDebugMode(static_cast<std::uint32_t>(std::max(mode, 0)));
+				renderAPI.SetAmbientSkyCacheDebugMode(static_cast<std::uint32_t>(std::max(mode, 0)));
 			ImGui::TextDisabled("Only the uncovered sky residual is attenuated; SSR and local probes remain unchanged.");
 		}
 		ImGui::Separator();
 		Vans::EditorAPI::RenderTextureFilter filter;
 		filter.category = "render_debug";
-		DrawPreviewTable("RenderDebugTable", editorAPI.QueryRenderTexturePreviews(filter));
+		DrawPreviewTable("RenderDebugTable", renderAPI.QueryRenderTexturePreviews(filter));
 		ImGui::Separator();
-		DrawRenderDocControls(editorAPI);
+		DrawRenderDocControls(renderAPI);
 		ImGui::Separator();
-		DrawRenderBackendDiagnostics(editorAPI);
+		DrawRenderBackendDiagnostics(renderAPI);
 		ImGui::Separator();
-		DrawPipelineRegistryStats(editorAPI);
+		DrawPipelineRegistryStats(renderAPI);
 		ImGui::End();
 	}
 
-	if (VansGraphics::VansEditorWindow::m_HairDebugWindowOpen)
+	if (VansGraphics::VansEditorWindow::IsWindowOpen(VansGraphics::VansEditorWindowId::HairDebug))
 	{
-		ImGui::Begin("Hair Debug", &VansGraphics::VansEditorWindow::m_HairDebugWindowOpen);
+		ImGui::Begin("Hair Debug", VansGraphics::VansEditorWindow::WindowOpenState(VansGraphics::VansEditorWindowId::HairDebug));
 		ImGui::Text("Hair PPLL OIT");
 		ImGui::Text("Visibility pass writes per-pixel linked-list storage buffers.");
 		ImGui::Text("HairColor: RGB lit hair, A resolved coverage");
@@ -291,7 +293,7 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(Vans::EditorAPI::IEngineEdi
 
 		Vans::EditorAPI::RenderTextureFilter filter;
 		filter.category = "hair_debug";
-		DrawPreviewTable("HairDebugTable", editorAPI.QueryRenderTexturePreviews(filter));
+		DrawPreviewTable("HairDebugTable", renderAPI.QueryRenderTexturePreviews(filter));
 		ImGui::End();
 	}
 }

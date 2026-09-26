@@ -71,10 +71,19 @@ struct VansAIStateDefinition
 	std::vector<VansAITransitionDefinition> transitions;
 };
 
+struct VansAIBehaviorBindings
+{
+	std::string activationRequested;
+	std::string gameplayReleased;
+	std::string target;
+};
+
 struct VansAIBehaviorAsset
 {
 	std::string name;
 	std::vector<VansAIBlackboardEntryDefinition> blackboard;
+	VansAIBehaviorBindings bindings;
+	std::uint32_t maxTransitionsPerUpdate = 4;
 	std::string initialState;
 	std::vector<VansAIStateDefinition> states;
 

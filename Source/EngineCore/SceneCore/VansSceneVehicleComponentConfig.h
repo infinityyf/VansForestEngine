@@ -35,7 +35,6 @@ struct VansSceneVehicleTuningConfig
 	std::optional<std::array<float, 3>> bodyGeometryHalfExtentsScale;
 	std::optional<std::array<float, 3>> bodyGeometryCenterOffset;
 	std::optional<VansSceneVehicleTokenConfig> longitudinalAxis;
-	std::optional<VansSceneVehicleTokenConfig> forwardAxis;
 	std::optional<VansSceneVehicleTokenConfig> lateralAxis;
 	std::optional<VansSceneVehicleTokenConfig> verticalAxis;
 
@@ -46,11 +45,8 @@ struct VansSceneVehicleTuningConfig
 	std::optional<float> wheelDampingRate;
 	std::optional<float> visualWheelRollSign;
 	std::optional<float> wheelVisualGroundClearance;
-	std::optional<bool> enableWheelSimulationCollision;
 	std::optional<std::string> collisionLayer;
-	std::optional<std::string> layer;
 	std::optional<bool> useRoadQueryLayerFilter;
-	std::optional<bool> roadQueryLayerFilter;
 	std::optional<std::string> physxActorUpdateMode;
 	std::optional<uint32_t> roadQueryMask;
 	std::vector<std::string> roadQueryLayers;
@@ -68,22 +64,56 @@ struct VansSceneVehicleTuningConfig
 
 	std::optional<float> brakeMaxTorque;
 	std::optional<float> handbrakeMaxTorque;
-	std::optional<float> maxSteerAngleDeg;
-	std::optional<float> maxSteerAngleRad;
+	std::optional<float> maxSteerAngleDegrees;
 	std::optional<float> ackermannWheelBase;
 	std::optional<float> ackermannTrackWidth;
 	std::optional<float> ackermannStrength;
 
 	std::optional<float> enginePeakTorque;
 	std::optional<float> engineMaxOmega;
+	std::optional<float> engineMoi;
+	std::optional<float> engineIdleOmega;
+	std::optional<float> engineDampingFullThrottle;
+	std::optional<float> engineDampingZeroThrottleClutchEngaged;
+	std::optional<float> engineDampingZeroThrottleClutchDisengaged;
+	std::vector<std::array<float, 2>> engineTorqueCurve;
+	std::vector<float> gearRatios;
+	std::optional<uint32_t> neutralGear;
 	std::optional<float> gearboxFinalRatio;
 	std::optional<float> gearboxSwitchTime;
+	std::vector<float> autoboxUpRatios;
+	std::vector<float> autoboxDownRatios;
 	std::optional<float> autoboxLatency;
 	std::optional<float> clutchStrength;
+	std::optional<uint32_t> clutchEstimateIterations;
+
+	std::optional<float> tireLongitudinalStiffness;
+	std::optional<float> tireLateralStiffnessX;
+	std::optional<std::array<float, 4>> tireLateralStiffnessY;
+	std::optional<float> tireCamberStiffness;
+	std::optional<std::array<float, 4>> tireRestLoad;
+	std::optional<std::array<std::array<float, 2>, 3>> tireFrictionVsSlip;
+	std::optional<std::array<std::array<float, 2>, 2>> tireLoadFilter;
+
+	std::optional<std::array<float, 4>> differentialTorqueRatios;
+	std::optional<std::array<float, 4>> differentialAverageWheelSpeedRatios;
+	std::optional<float> differentialCenterBias;
+	std::optional<float> differentialCenterTarget;
+	std::optional<float> differentialFrontBias;
+	std::optional<float> differentialFrontTarget;
+	std::optional<float> differentialRearBias;
+	std::optional<float> differentialRearTarget;
+	std::optional<float> differentialRate;
+
+	std::optional<float> materialStaticFriction;
+	std::optional<float> materialDynamicFriction;
+	std::optional<float> materialRestitution;
+	std::optional<float> tireFriction;
+	std::optional<float> suspensionLimitRestitution;
+	std::optional<uint32_t> drivetrainSubsteps;
 
 	std::optional<bool> autoWheelGeometry;
 	std::vector<std::string> bodyGeometryExcludeObjects;
-	std::optional<std::array<VansSceneVehicleTokenConfig, 4>> wheelOrder;
 };
 
 struct VansSceneVehicleComponentConfig

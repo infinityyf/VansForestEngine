@@ -1,76 +1,78 @@
 #include "VansRuntimeFrameScheduler.h"
 
-#include "VansFramePhase.h"
 #include "../EventCore/VansEventBus.h"
+#include "VansFramePhase.h"
+#include "VansThreadContract.h"
 
 namespace Vans
 {
-void VansRuntimeFrameScheduler::RunGameplay(const VansRuntimeGameplayFrame& frame)
+void VansRuntimeFrameScheduler::RunGameplay(
+	IVansRuntimeFramePort& runtimePort,
+	IVansRuntimeFramePreviewPort* previewPort,
+	const VansRuntimeFramePolicy& policy,
+	const VansRuntimeFrameContext& context)
 {
-    VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
+	VANS_ASSERT_MAIN_THREAD();
+	VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
 	VansEventBus::Get().BeginFrame();
-    if (!frame.sceneReady)
-        return;
-	if (frame.cameraControlActive && frame.beginCameraControlFrame)
-		frame.beginCameraControlFrame();
+	if (!policy.m_IsSceneReady)
+		return;
 
-    if (frame.simulationRunning)
-    {
-        VansEventBus::Get().Flush(VansEventLane::Physics);
-        if (frame.syncPhysicsTransforms)
-            frame.syncPhysicsTransforms();
-    }
+	if (policy.m_IsCameraControlActive)
+		runtimePort.BeginCameraControlFrame(context);
 
-    if (frame.gameplayActive)
-    {
-        VansEventBus::Get().Flush(VansEventLane::Script);
-        if (frame.updateNonCameraScripts)
-            frame.updateNonCameraScripts();
-    }
-	if (frame.gameplayActive)
+	if (policy.m_IsSimulationRunning)
 	{
-		VansEventBus::Get().Flush(VansEventLane::GameLogic);
-		if (frame.updateActionsEarly)
-			frame.updateActionsEarly(frame.deltaSeconds);
-		if (frame.updateAI)
-			frame.updateAI(frame.deltaSeconds);
+		VansEventBus::Get().Flush(VansEventLane::Physics);
+		runtimePort.SyncPhysicsTransforms(context);
 	}
-	if (frame.gameplayActive && frame.prepareCharacterLocomotion)
-		frame.prepareCharacterLocomotion(frame.deltaSeconds);
 
-    if (frame.simulationRunning && frame.flushCharacterControllerTransforms)
-        frame.flushCharacterControllerTransforms();
+	if (policy.m_IsGameplayActive)
+	{
+		VansEventBus::Get().Flush(VansEventLane::Script);
+		runtimePort.UpdateNonCameraScripts(context);
 
-	if (frame.gameplayActive && frame.updateTimelinesPostScript)
-		frame.updateTimelinesPostScript(frame.deltaSeconds);
-	if (frame.cameraControlActive && frame.updateAdditionalPostScriptControllers)
-		frame.updateAdditionalPostScriptControllers(frame.deltaSeconds);
-	if (frame.gameplayActive || frame.cameraControlActive)
+		VansEventBus::Get().Flush(VansEventLane::GameLogic);
+	}
+	if (policy.m_IsCameraControlActive)
+		runtimePort.AdvanceCameraRuntime(context);
+	if (policy.m_IsGameplayActive)
+	{
+		runtimePort.UpdateActionsEarly(context);
+		runtimePort.UpdateAI(context);
+		runtimePort.PrepareCharacterLocomotion(context);
+	}
+
+	if (policy.m_IsSimulationRunning)
+		runtimePort.FlushCharacterControllerTransforms(context);
+
+	if (policy.m_IsGameplayActive)
+		runtimePort.UpdateTimelinesPostScript(context);
+	if (policy.m_IsCameraControlActive && previewPort)
+		previewPort->UpdatePostScriptControllers(context);
+
+	if (policy.m_IsGameplayActive || policy.m_IsCameraControlActive)
 	{
 		VansEventBus::Get().Flush(VansEventLane::GameLogic);
 		VansEventBus::Get().Flush(VansEventLane::Script);
 		VansEventBus::Get().Flush(VansEventLane::MainThread);
-		if (frame.runTimelineLateContinuation)
-			frame.runTimelineLateContinuation();
-		if (frame.runActionLateContinuation)
-			frame.runActionLateContinuation();
+		runtimePort.RunActionLateContinuation(context);
 	}
 
-    if (frame.gameplayActive && frame.updateCameraScripts)
-        frame.updateCameraScripts();
-	if (frame.cameraControlActive && frame.captureCameraControlBase)
-		frame.captureCameraControlBase();
+	if (policy.m_IsGameplayActive)
+		runtimePort.UpdateCameraScripts(context);
+	if (policy.m_IsCameraControlActive)
+		runtimePort.CaptureCameraControlBase(context);
 
-	if (frame.gameplayActive && frame.updateTimelinesCamera)
-		frame.updateTimelinesCamera(frame.deltaSeconds);
-	if (frame.cameraControlActive && frame.updateAdditionalCameraControllers)
-		frame.updateAdditionalCameraControllers(frame.deltaSeconds);
-	if (frame.cameraControlActive && frame.resolveCameraControlFrame)
-		frame.resolveCameraControlFrame();
-	if (frame.cameraControlActive)
+	if (policy.m_IsGameplayActive)
+		runtimePort.UpdateTimelinesCamera(context);
+	if (policy.m_IsCameraControlActive)
 	{
+		if (previewPort)
+			previewPort->UpdateCameraControllers(context);
+		runtimePort.ResolveCameraControlFrame(context);
 		VansEventBus::Get().Flush(VansEventLane::RenderPrep);
 		VansEventBus::Get().Flush(VansEventLane::Diagnostics);
 	}
 }
-}
+} // namespace Vans

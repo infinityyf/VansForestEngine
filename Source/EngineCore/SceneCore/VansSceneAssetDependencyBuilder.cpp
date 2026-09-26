@@ -1,14 +1,19 @@
 #include "VansSceneRuntimeProjection.h"
+#include "VansSceneContentBuildPlan.h"
 #include "Prefab/VansPrefabAsset.h"
 #include "VansSceneAssetDependencyBuilder.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../AssetCore/Serialization/VansSerializedObjectReference.h"
 #include "../AssetCore/VansAssetMeta.h"
 #include "../AssetCore/VansAssetObjectRepository.h"
+#include "../AssetCore/VansAssetReference.h"
 #include "../AssetCore/VansBuiltInAssetCatalog.h"
+#include "../AssetCore/VansDerivedArtifactLayout.h"
 #include "../AssetCore/VansMaterialAuthoringAsset.h"
 #include "../AssetCore/VansShaderAuthoringAsset.h"
 #include "../AudioCore/VansAudioBus.h"
+#include "../AudioCore/VansAudioReverbPresetAsset.h"
 #include "../AICore/VansAIBehaviorAsset.h"
 #include "../AnimationCore/VansAnimatorIO.h"
 #include "../AnimationCore/Procedural/VansAnimationRig.h"
@@ -16,23 +21,31 @@
 #include "../AnimationCore/VansBoneMask.h"
 #include "../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../NavigationCore/VansNavigationMesh.h"
+#include "../NavigationCore/VansNavigationSource.h"
+#include "../NavigationCore/VansSceneNavigationGeometry.h"
 #include "../PhysicsCore/VansRagdollTypes.h"
 #include "../ParticleCore/VansParticleAsset.h"
 #include "../RuntimeUI/Serialization/VansUIAssetDocument.h"
+#include "../ScriptCore/VansScriptComponentReader.h"
+#include "../SceneCore/VansComponentTypeCatalog.h"
 #include "../SceneCore/VansSceneSchema.h"
 #include "../SceneCore/VansSceneLocalVolumetricFogComponentConfig.h"
 #include "../SceneCore/Serialization/VansVegetationConfigCodec.h"
 #include "../TimelineCore/VansTimelineDependencyBuilder.h"
 #include "../TimelineCore/VansTimelineValidator.h"
+#include "../Timeline/VansEngineTimelineRegistry.h"
 #include "../TerrainCore/VansTerrainAsset.h"
 #include "../PcgCore/VansPcgResourcePlan.h"
 #include "../Util/VansLog.h"
+#include "../Util/VansFileFingerprint.h"
 
 #include <algorithm>
 #include <cctype>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Vans
@@ -50,8 +63,8 @@ namespace
 		request.srgb = colorSpace.empty()
 			? meta.ReadBoolSetting("sRGB", true)
 			: colorSpace != "linear";
-		request.useCompress = meta.ReadBoolSetting("useCompress", "compress", true);
-		request.needMip = meta.ReadBoolSetting("needMip", "generateMip", true);
+		request.useCompress = meta.ReadBoolSetting("useCompress", true);
+		request.needMip = meta.ReadBoolSetting("needMip", true);
 		const std::string precision = meta.ReadStringSetting("precision");
 		if (!precision.empty())
 			request.precision = precision;
@@ -59,6 +72,14 @@ namespace
 		const std::string addressMode = meta.ReadStringSetting("addressMode");
 		if (!addressMode.empty())
 			request.addressMode = addressMode;
+	}
+
+	bool SupportsRectLightEmissive(const VansSceneTextureResourceRequest& request)
+	{
+		return request.textureType == SceneTexture2D &&
+			!request.useCompress &&
+			request.precision == "low8" &&
+			request.importChannel == 4;
 	}
 
 	const VansSerializedValue* ReadSerializedObjectField(const VansSerializedValue& object, const char* key)
@@ -121,13 +142,15 @@ namespace
 	VansSceneShaderResourceRequest BuildShaderResourceRequest(
 		const VansShaderAuthoringAsset& shader,
 		const VansAssetRecord& record,
-		const std::filesystem::path& projectRoot)
+		const std::filesystem::path& projectRoot,
+		const std::filesystem::path& artifactRoot)
 	{
 		const VansSerializedValue& root = shader.root;
 
 		VansSceneShaderResourceRequest request;
 		request.name = shader.name.empty() ? record.guid.ToString() : shader.name;
 		request.assetGuid = record.guid.ToString();
+		request.artifactRoot = VansDerivedArtifactLayout::ProjectShaderCache(artifactRoot).path;
 		request.source = ReadSerializedStringField(root, "source");
 		if (request.source.empty())
 			request.source = ReadSerializedStringField(root, "path");
@@ -205,83 +228,71 @@ namespace
 		return value;
 	}
 
-	std::string ResolveTextureGuidFromAlias(
-		VansAssetDatabase& database,
-		const std::string& textureName,
-		const std::string& preferredRoot)
-	{
-		if (textureName.empty())
-			return {};
-		VansAssetGuid parsed;
-		if (VansAssetGuid::TryParse(textureName, parsed))
-			return textureName;
-
-		const std::string wantedStem = LowerAsciiCopy(std::filesystem::path(textureName).stem().string());
-		const std::string wantedFile = LowerAsciiCopy(textureName);
-		const std::string preferredToken = LowerAsciiCopy(preferredRoot);
-		std::string fallbackGuid;
-		for (const VansAssetRecord& candidate : database.All())
-		{
-			if (candidate.type != VansAssetType::Texture || candidate.state == VansAssetState::Missing)
-				continue;
-			const std::string candidateStem = LowerAsciiCopy(candidate.sourcePath.stem().string());
-			const std::string candidateFile = LowerAsciiCopy(candidate.sourcePath.filename().string());
-			if (candidateStem != wantedStem && candidateFile != wantedFile)
-				continue;
-
-			if (fallbackGuid.empty())
-				fallbackGuid = candidate.guid.ToString();
-			const std::string candidatePath = LowerAsciiCopy(candidate.sourcePath.generic_string());
-			if (!preferredToken.empty() && candidatePath.find(preferredToken) != std::string::npos)
-				return candidate.guid.ToString();
-		}
-		return fallbackGuid;
-	}
-
-	void CollectSerializedAssetReferences(
-		const VansSerializedValue& value,
-		const std::unordered_map<std::string, VansAssetType>& assetTypesByGuid,
-		VansSceneAssetDependencyBuildResult& result)
-	{
-		if (value.kind == VansSerializedValue::Kind::String)
-		{
-			const auto found = assetTypesByGuid.find(value.stringValue);
-			if (found == assetTypesByGuid.end()) return;
-			switch (found->second)
-			{
-			case VansAssetType::Model: result.requiredModels.insert(found->first); break;
-			case VansAssetType::Texture: result.requiredTextures.insert(found->first); break;
-			case VansAssetType::Material: result.requiredMaterials.insert(found->first); break;
-			case VansAssetType::Shader: result.requiredShaders.insert(found->first); break;
-			case VansAssetType::SkinProfile: result.requiredSkinProfiles.insert(found->first); break;
-			case VansAssetType::NavigationMesh:
-			case VansAssetType::AIBehavior:
-			case VansAssetType::VegetationConfig:
-				result.requiredAssets.insert(found->first); break;
-			default:
-				result.requiredAssets.insert(found->first);
-				break;
-			}
-			return;
-		}
-
-		if (value.kind == VansSerializedValue::Kind::Array)
-		{
-			for (const VansSerializedValue& item : value.arrayItems)
-				CollectSerializedAssetReferences(item, assetTypesByGuid, result);
-			return;
-		}
-
-		if (value.kind == VansSerializedValue::Kind::Object)
-		{
-			for (const auto& [key, item] : value.objectFields)
-				CollectSerializedAssetReferences(item, assetTypesByGuid, result);
-		}
-	}
-
 	void AppendDependencyError(
 		VansSceneAssetDependencyBuildResult& result,
 		const std::string& message);
+
+	void InsertRequiredAsset(
+		const std::string& guid,
+		VansAssetType type,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (guid.empty()) return;
+		result.requiredAssets.insert(guid);
+		switch (type)
+		{
+		case VansAssetType::Model: result.requiredModels.insert(guid); break;
+		case VansAssetType::Texture: result.requiredTextures.insert(guid); break;
+		case VansAssetType::Material: result.requiredMaterials.insert(guid); break;
+		case VansAssetType::Shader: result.requiredShaders.insert(guid); break;
+		case VansAssetType::SkinProfile: result.requiredSkinProfiles.insert(guid); break;
+		default: break;
+		}
+	}
+
+	void CollectUIReference(
+		const VansSerializedValue& reference,
+		VansAssetType expectedType,
+		const std::string& chain,
+		const std::unordered_map<std::string, VansAssetRecord>& recordsByGuid,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		VansAssetGuid guid;
+		if (!TryReadAssetGuidReference(reference, guid))
+		{
+			AppendDependencyError(result, chain + " must contain exactly one valid guid");
+			return;
+		}
+		const std::string guidText = guid.ToString();
+		const auto record = recordsByGuid.find(guidText);
+		if (record == recordsByGuid.end() || record->second.state == VansAssetState::Missing ||
+			record->second.type != expectedType)
+		{
+			AppendDependencyError(result, chain + " resolves to a missing or wrong-type asset: " + guidText);
+			return;
+		}
+		InsertRequiredAsset(guidText, expectedType, result);
+	}
+
+	void CollectUIReferenceArray(
+		const VansSerializedValue& root,
+		const char* fieldName,
+		VansAssetType expectedType,
+		const std::unordered_map<std::string, VansAssetRecord>& recordsByGuid,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		const VansSerializedValue* references = FindObjectField(root, fieldName);
+		if (references == nullptr) return;
+		if (references->kind != VansSerializedValue::Kind::Array)
+		{
+			AppendDependencyError(result, std::string("UI.") + fieldName + " must be an array");
+			return;
+		}
+		for (std::size_t index = 0; index < references->arrayItems.size(); ++index)
+			CollectUIReference(references->arrayItems[index], expectedType,
+				std::string("UI.") + fieldName + "[" + std::to_string(index) + "]",
+				recordsByGuid, result);
+	}
 
 	template <typename Asset>
 	std::shared_ptr<const Asset> ResolveMemoryAsset(
@@ -296,7 +307,6 @@ namespace
 
 	void ExpandUIAssetDependencies(
 		const std::unordered_map<std::string, VansAssetRecord>& recordsByGuid,
-		const std::unordered_map<std::string, VansAssetType>& assetTypesByGuid,
 		const VansAssetObjectRepository& objectRepository,
 		VansSceneAssetDependencyBuildResult& result)
 	{
@@ -324,7 +334,36 @@ namespace
 				continue;
 			}
 			const std::unordered_set<std::string> before = result.requiredAssets;
-			CollectSerializedAssetReferences(memoryDocument->root, assetTypesByGuid, result);
+			const VansSerializedValue* xaml = FindObjectField(memoryDocument->root, "xaml");
+			if (xaml != nullptr)
+				CollectUIReference(*xaml, VansAssetType::UIXaml,
+					"UI.xaml", recordsByGuid, result);
+			if (type == VansAssetType::UIScreen)
+			{
+				CollectUIReferenceArray(memoryDocument->root, "themes",
+					VansAssetType::UIThemeTokens, recordsByGuid, result);
+				CollectUIReferenceArray(memoryDocument->root, "tokens",
+					VansAssetType::UIThemeTokens, recordsByGuid, result);
+				CollectUIReferenceArray(memoryDocument->root, "localization",
+					VansAssetType::UILocalization, recordsByGuid, result);
+				if (const VansSerializedValue* dependencies =
+					FindObjectField(memoryDocument->root, "dependencies"))
+				{
+					if (dependencies->kind != VansSerializedValue::Kind::Array)
+						AppendDependencyError(result, "UI.dependencies must be an array");
+					else for (const VansSerializedValue& dependency : dependencies->arrayItems)
+					{
+						if (dependency.kind != VansSerializedValue::Kind::String) continue;
+						const auto dependencyRecord = recordsByGuid.find(dependency.stringValue);
+						// UI dependencies also carry relative XAML resource paths. Only an exact
+						// indexed GUID is an AssetDatabase dependency; paths stay in the UI owner.
+						if (dependencyRecord == recordsByGuid.end() ||
+							dependencyRecord->second.state == VansAssetState::Missing) continue;
+						InsertRequiredAsset(dependency.stringValue,
+							dependencyRecord->second.type, result);
+					}
+				}
+			}
 			for (const std::string& dependency : result.requiredAssets)
 				if (before.find(dependency) == before.end()) pending.push_back(dependency);
 		}
@@ -415,10 +454,34 @@ namespace
         }
     }
 
-	void CollectMaterialTextureDependencies(
-		VansAssetDatabase& database,
+	void CollectMaterialReference(
+		const VansSerializedValue& reference,
+		VansAssetType expectedType,
+		const std::string& chain,
+		const std::unordered_map<std::string, VansAssetRecord>& recordsByGuid,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		VansAssetGuid guid;
+		if (!TryReadAssetGuidReference(reference, guid))
+		{
+			AppendDependencyError(result, chain + " must contain exactly one valid guid");
+			return;
+		}
+		const std::string guidText = guid.ToString();
+		const auto record = recordsByGuid.find(guidText);
+		if (record == recordsByGuid.end() || record->second.state == VansAssetState::Missing ||
+			record->second.type != expectedType)
+		{
+			AppendDependencyError(result, chain + " resolves to a missing or wrong-type asset: " + guidText);
+			return;
+		}
+		InsertRequiredAsset(guidText, expectedType, result);
+	}
+
+	void CollectMaterialDependencies(
 		const VansMaterialAuthoringAsset& material,
-		std::unordered_set<std::string>& requiredTextures)
+		const std::unordered_map<std::string, VansAssetRecord>& recordsByGuid,
+		VansSceneAssetDependencyBuildResult& result)
 	{
 		const std::string preferredRoot = material.preferredImportModel;
 		const std::string generatedFor = ReadSerializedStringField(material.importSource, "generatedFor");
@@ -437,21 +500,18 @@ namespace
 		{
 			for (const auto& [slot, texture] : material.textures.objectFields)
 			{
-				std::string textureGuid;
-				if (texture.kind == VansSerializedValue::Kind::Object)
-					textureGuid = ReadSerializedStringField(texture, "guid");
-				else if (texture.kind == VansSerializedValue::Kind::String)
-					textureGuid = ResolveTextureGuidFromAlias(database, texture.stringValue, preferredRoot);
-				if (!textureGuid.empty())
+				VansAssetGuid textureGuid;
+				if (TryReadAssetGuidReference(texture, textureGuid))
 				{
-					logTexture(slot, textureGuid);
-					requiredTextures.insert(textureGuid);
+					const std::string guidText = textureGuid.ToString();
+					logTexture(slot, guidText);
+					CollectMaterialReference(texture, VansAssetType::Texture,
+						"Material '" + material.guid + "'.textures['" + slot + "']",
+						recordsByGuid, result);
 				}
 			}
-			return;
 		}
-
-		if (material.textures.kind == VansSerializedValue::Kind::Array)
+		else if (material.textures.kind == VansSerializedValue::Kind::Array)
 		{
 			for (const VansSerializedValue& entry : material.textures.arrayItems)
 			{
@@ -461,88 +521,46 @@ namespace
 				if (texture == nullptr)
 					continue;
 
-				std::string textureGuid;
-				if (texture->kind == VansSerializedValue::Kind::Object)
-					textureGuid = ReadSerializedStringField(*texture, "guid");
-				else if (texture->kind == VansSerializedValue::Kind::String)
-					textureGuid = ResolveTextureGuidFromAlias(database, texture->stringValue, preferredRoot);
-				if (!textureGuid.empty())
+				VansAssetGuid textureGuid;
+				if (TryReadAssetGuidReference(*texture, textureGuid))
 				{
-					logTexture(ReadSerializedStringField(entry, "slot"), textureGuid);
-					requiredTextures.insert(textureGuid);
+					const std::string guidText = textureGuid.ToString();
+					logTexture(ReadSerializedStringField(entry, "slot"), guidText);
+					CollectMaterialReference(*texture, VansAssetType::Texture,
+						"Material '" + material.guid + "'.textures['" +
+						ReadSerializedStringField(entry, "slot") + "']",
+						recordsByGuid, result);
 				}
 			}
 		}
-	}
 
-	void CollectSceneModelRendererDependencies(
-		const VansSerializedValue& sceneDocument,
-		std::unordered_set<std::string>& requiredModels,
-		std::unordered_set<std::string>& requiredMaterials)
-	{
-		const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
-		if (entities == nullptr)
-			return;
-
-		for (const VansSerializedValue& entity : entities->arrayItems)
+		auto collectObjectValues = [&](const VansSerializedValue& values,
+			VansAssetType expectedType, const char* fieldName)
 		{
-			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
-			if (components == nullptr)
-				continue;
-			for (const VansSerializedValue& component : components->arrayItems)
-			{
-				const std::string componentType = ReadSerializedStringField(component, "type");
-				if (componentType != "ModelRenderer" && componentType != "MultiMeshRoot" &&
-					componentType != "LODGroup")
-					continue;
-				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
-				if (data == nullptr)
-					continue;
-				if (componentType == "LODGroup")
-				{
-					const VansSerializedValue* levels = ReadSerializedArrayField(*data, "levels");
-					if (levels == nullptr)
-						continue;
-					for (const VansSerializedValue& level : levels->arrayItems)
-					{
-						const VansSerializedValue* meshes =
-							ReadSerializedArrayField(level, "meshes");
-						if (meshes == nullptr)
-							continue;
-						for (const VansSerializedValue& mesh : meshes->arrayItems)
-						{
-							const std::string model = ReadAssetGuidReference(mesh);
-							if (!model.empty()) requiredModels.insert(model);
-						}
-					}
-					continue;
-				}
-				const VansSerializedValue* modelReference = FindObjectField(*data, "model");
-				const std::string model = modelReference ? ReadAssetGuidReference(*modelReference) : std::string{};
-				if (!model.empty()) requiredModels.insert(model);
-				if (componentType != "ModelRenderer")
-					continue;
-				const VansSerializedValue* overrides = ReadSerializedObjectField(*data, "materialOverrides");
-				if (overrides == nullptr)
-					continue;
-				for (const auto& [slot, material] : overrides->objectFields)
-				{
-					const std::string materialGuid = ReadAssetGuidReference(material);
-					if (!materialGuid.empty()) requiredMaterials.insert(materialGuid);
-				}
-			}
-		}
+			if (values.kind != VansSerializedValue::Kind::Object) return;
+			for (const auto& [name, reference] : values.objectFields)
+				CollectMaterialReference(reference, expectedType,
+					"Material '" + material.guid + "'." + fieldName + "['" + name + "']",
+					recordsByGuid, result);
+		};
+		if (material.shader.kind != VansSerializedValue::Kind::Null)
+			CollectMaterialReference(material.shader, VansAssetType::Shader,
+				"Material '" + material.guid + "'.shader", recordsByGuid, result);
+		collectObjectValues(material.shaderPasses, VansAssetType::Shader, "shaderPasses");
+		collectObjectValues(material.customTextures, VansAssetType::Texture, "customTextures");
+		if (const VansSerializedValue* skinProfile = FindObjectField(material.parameters, "skinProfile"))
+			CollectMaterialReference(*skinProfile, VansAssetType::SkinProfile,
+				"Material '" + material.guid + "'.parameters.skinProfile", recordsByGuid, result);
 	}
 
-	void CollectScenePhysicsMeshColliderDependencies(
-		const VansSerializedValue& sceneDocument,
+	void CollectPhysicsMeshColliderDependencies(
+		const VansSerializedValue& entities,
 		std::unordered_set<std::string>& meshColliderModels)
 	{
-		const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
-		if (entities == nullptr)
+		if (entities.kind != VansSerializedValue::Kind::Array)
 			return;
 
-		for (const VansSerializedValue& entity : entities->arrayItems)
+		for (const VansSerializedValue& entity : entities.arrayItems)
 		{
 			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
 			if (components == nullptr)
@@ -581,6 +599,108 @@ namespace
 		VANS_LOG_ERROR("[AssetDatabase] " << message);
 	}
 
+	void ValidateNavigationSources(
+		const VansSerializedValue& entities,
+		const std::filesystem::path& projectRoot,
+		const std::filesystem::path& sceneSourcePath,
+		const std::unordered_map<std::string, VansAssetRecord>& records,
+		const VansAssetObjectRepository& objectRepository,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		bool hasNavigationMesh = false;
+		for (const std::string& guid : result.requiredAssets)
+		{
+			const auto record = records.find(guid);
+			if (record != records.end() && record->second.type == VansAssetType::NavigationMesh)
+			{
+				hasNavigationMesh = true;
+				break;
+			}
+		}
+		if (!hasNavigationMesh) return;
+
+		VansSceneContentBuildPlan contentPlan;
+		std::string error;
+		if (!VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+			entities, projectRoot.generic_string(), contentPlan, error))
+		{
+			AppendDependencyError(result,
+				"Could not project Scene for navigation source validation: " + error);
+			return;
+		}
+		std::vector<std::string> colliderGuids;
+		if (!VansSceneNavigationGeometry::CollectEnvironmentMeshAssets(
+			contentPlan.objects, colliderGuids, error))
+		{
+			AppendDependencyError(result,
+				"Could not collect navigation collider sources: " + error);
+			return;
+		}
+		std::vector<VansNavigationColliderSource> colliderSources;
+		colliderSources.reserve(colliderGuids.size());
+		for (const std::string& guid : colliderGuids)
+		{
+			const auto record = records.find(guid);
+			if (record == records.end() || record->second.type != VansAssetType::Model ||
+				record->second.state == VansAssetState::Missing)
+			{
+				AppendDependencyError(result,
+					"Navigation collider Model is missing: " + guid);
+				return;
+			}
+			colliderSources.push_back({ guid, record->second.sourceHash,
+				record->second.metaHash });
+		}
+
+		VansFileFingerprint sceneFingerprint;
+		if (!ComputeFileFingerprint(sceneSourcePath, sceneFingerprint, &error))
+		{
+			AppendDependencyError(result,
+				"Could not fingerprint navigation source Scene: " + error);
+			return;
+		}
+		std::error_code relativeError;
+		const std::string scene = std::filesystem::relative(
+			sceneSourcePath, projectRoot, relativeError).generic_string();
+		if (relativeError || scene.empty())
+		{
+			AppendDependencyError(result,
+				"Could not resolve the navigation source Scene path");
+			return;
+		}
+		const std::uint64_t colliderHash =
+			HashNavigationColliders(std::move(colliderSources));
+		for (const std::string& guid : result.requiredAssets)
+		{
+			const auto record = records.find(guid);
+			if (record == records.end() ||
+				record->second.type != VansAssetType::NavigationMesh)
+			{
+				continue;
+			}
+			VansAssetGuid assetGuid;
+			VansAssetGuid::TryParse(guid, assetGuid);
+			const auto navigation =
+				objectRepository.ResolveLatest<VansNavigationMesh>(assetGuid);
+			if (!navigation)
+			{
+				AppendDependencyError(result,
+					"Navigation Mesh " + guid +
+					" is unavailable for source validation; run ForestAssetTool bake-navigation");
+				continue;
+			}
+			const VansNavigationSource& source = navigation->GetSource();
+			if (!source.IsValid() || source.scene != scene ||
+				source.sceneHash != sceneFingerprint.contentHash ||
+				source.colliderHash != colliderHash)
+			{
+				AppendDependencyError(result,
+					"Navigation Mesh " + guid + " is stale for Scene '" + scene +
+					"'; run ForestAssetTool bake-navigation");
+			}
+		}
+	}
+
 	void CollectStrictAssetReference(
 		const VansSerializedValue* reference,
 		VansAssetType expectedType,
@@ -603,16 +723,482 @@ namespace
 		dependencies.push_back({ guidText, expectedType, chain + " -> " + guidText });
 	}
 
-	void CollectSceneLocalFogDependencies(
+	void CollectGuidObjectAssetReference(
+		const VansSerializedValue* reference,
+		VansAssetType expectedType,
+		const std::string& chain,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (reference == nullptr)
+			return;
+		std::optional<VansAssetGuid> guid;
+		if (!TryReadOptionalAssetGuidReference(*reference, guid))
+		{
+			AppendDependencyError(result,
+				chain + " must be an object containing exactly one guid");
+			return;
+		}
+		if (!guid)
+			return;
+		const std::string guidText = guid->ToString();
+		dependencies.push_back({ guidText, expectedType, chain + " -> " + guidText });
+	}
+
+	VansAssetType ParseDeclaredAssetType(std::string_view declaredType)
+	{
+		const std::string normalized = LowerAsciiCopy(std::string(declaredType));
+		for (int value = static_cast<int>(VansAssetType::Model);
+			value <= static_cast<int>(VansAssetType::Prefab); ++value)
+		{
+			const VansAssetType type = static_cast<VansAssetType>(value);
+			if (LowerAsciiCopy(std::string(VansAssetDatabase::SerializedTypeName(type))) == normalized)
+				return type;
+		}
+		return VansAssetType::Unknown;
+	}
+
+	void CollectCatalogReferenceValue(
+		std::string_view componentType,
+		const VansSerializedValue& value,
+		const std::string& parentKey,
+		const std::string& fieldKey,
+		const std::string& chain,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (const VansComponentAssetReferenceRule* rule =
+			VansComponentTypeCatalog::FindAssetReferenceRule(componentType, parentKey, fieldKey))
+		{
+			const VansAssetType expectedType = ParseDeclaredAssetType(rule->assetType);
+			if (expectedType == VansAssetType::Unknown)
+			{
+				AppendDependencyError(result, chain + " declares an unknown asset type");
+				return;
+			}
+			if (rule->storage == VansComponentAssetReferenceStorage::GuidObject)
+			{
+				const std::string domain = ReadSerializedStringField(value, "domain");
+				if (!domain.empty())
+				{
+					SerializedObjectReferenceValue reference;
+					const std::string expectedSerializedType(
+						VansAssetDatabase::SerializedTypeName(expectedType));
+					if (!TryReadSerializedObjectReference(value, reference) ||
+						reference.domain != "ProjectAsset" ||
+						LowerAsciiCopy(reference.assetType) != LowerAsciiCopy(expectedSerializedType))
+					{
+						AppendDependencyError(result, chain +
+							" must be a ProjectAsset " + expectedSerializedType + " reference");
+						return;
+					}
+					if (reference.guid.empty()) return;
+					CollectStrictAssetReference(FindObjectField(value, "guid"), expectedType,
+						chain, dependencies, result);
+				}
+				else
+					CollectGuidObjectAssetReference(&value, expectedType, chain, dependencies, result);
+			}
+			else
+				CollectStrictAssetReference(&value, expectedType, chain, dependencies, result);
+			return;
+		}
+
+		if (value.kind == VansSerializedValue::Kind::Object)
+		{
+			for (const auto& [name, child] : value.objectFields)
+				CollectCatalogReferenceValue(componentType, child,
+					LowerAsciiCopy(fieldKey), LowerAsciiCopy(name), chain + "." + name,
+					dependencies, result);
+		}
+		else if (value.kind == VansSerializedValue::Kind::Array)
+		{
+			for (std::size_t index = 0; index < value.arrayItems.size(); ++index)
+				CollectCatalogReferenceValue(componentType, value.arrayItems[index],
+					LowerAsciiCopy(fieldKey), {}, chain + "[" + std::to_string(index) + "]",
+					dependencies, result);
+		}
+	}
+
+	bool UsesCatalogDependencyCollection(std::string_view componentType)
+	{
+		return componentType == "DirectionalLight" || componentType == "PointLight" ||
+			componentType == "SpotLight" || componentType == "RectLight" ||
+			componentType == "Particle" || componentType == "Cloth" ||
+			componentType == "ActionHost" || componentType == "UIController";
+	}
+
+	void CollectCatalogComponentDependencies(
+		const VansSerializedValue& entities,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (entities.kind != VansSerializedValue::Kind::Array) return;
+		for (const VansSerializedValue& entity : entities.arrayItems)
+		{
+			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
+			if (components == nullptr) continue;
+			for (const VansSerializedValue& component : components->arrayItems)
+			{
+				const std::string componentType = ReadSerializedStringField(component, "type");
+				if (!UsesCatalogDependencyCollection(componentType)) continue;
+				const VansSerializedValue* data = FindObjectField(component, "data");
+				if (data == nullptr) continue;
+				CollectCatalogReferenceValue(componentType, *data, {}, "data",
+					"scene entity '" + entityName + "' " + componentType + ".data",
+					dependencies, result);
+			}
+		}
+	}
+
+	void CollectScriptFieldAssetDependencies(
+		const VansSerializedValue& entities,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (entities.kind != VansSerializedValue::Kind::Array) return;
+		for (const VansSerializedValue& entity : entities.arrayItems)
+		{
+			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
+			if (components == nullptr) continue;
+			for (const VansSerializedValue& component : components->arrayItems)
+			{
+				if (ReadSerializedStringField(component, "type") != "Script") continue;
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				if (data == nullptr) continue;
+				std::vector<VansScriptSerializedObjectReference> references;
+				std::string error;
+				if (!VansScriptComponentReader::CollectProjectAssetReferences(
+						*data, references, error))
+				{
+					AppendDependencyError(result, "scene entity '" + entityName +
+						"' Script.data.fields: " + error);
+					continue;
+				}
+				for (const VansScriptSerializedObjectReference& reference : references)
+				{
+					const VansAssetType expectedType = ParseDeclaredAssetType(reference.assetType);
+					if (expectedType == VansAssetType::Unknown)
+					{
+						AppendDependencyError(result, "scene entity '" + entityName +
+							"' Script.data.fields declares unknown ProjectAsset type '" +
+							reference.assetType + "'");
+						continue;
+					}
+					const VansSerializedValue guid = VansSerializedValue::String(reference.guid);
+					CollectStrictAssetReference(&guid, expectedType,
+						"scene entity '" + entityName + "' Script.data.fields ProjectAsset",
+						dependencies, result);
+				}
+			}
+		}
+	}
+
+	void CollectSceneSettingDependencies(
 		const VansSerializedValue& sceneDocument,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		const VansSerializedValue* settings = ReadSerializedObjectField(sceneDocument, "settings");
+		if (settings == nullptr) return;
+		if (const VansSerializedValue* terrain = ReadSerializedObjectField(*settings, "terrain"))
+		{
+			const VansSerializedValue* asset = FindObjectField(*terrain, "asset");
+			SerializedObjectReferenceValue reference;
+			if (asset == nullptr || !TryReadSerializedObjectReference(*asset, reference) ||
+				reference.domain != "ProjectAsset" || reference.assetType != "terrain")
+				AppendDependencyError(result,
+					"Scene settings.terrain.asset must be a ProjectAsset terrain reference");
+			else
+				CollectStrictAssetReference(FindObjectField(*asset, "guid"), VansAssetType::Terrain,
+					"Scene settings.terrain.asset", dependencies, result);
+		}
+		if (const VansSerializedValue* vegetation = ReadVegetationField(sceneDocument))
+		{
+			const VansSerializedValue* asset = FindObjectField(*vegetation, "asset");
+			CollectGuidObjectAssetReference(asset, VansAssetType::VegetationConfig,
+				"Scene settings.vegetation.asset", dependencies, result);
+		}
+		if (const VansSerializedValue* splines = FindObjectField(*settings, "pcgSplines"))
+		{
+			SerializedObjectReferenceValue reference;
+			if (!TryReadSerializedObjectReference(*splines, reference) ||
+				reference.domain != "ProjectAsset" || reference.assetType != "pcgSpline")
+				AppendDependencyError(result,
+					"Scene settings.pcgSplines must be a ProjectAsset pcgSpline reference");
+			else
+				CollectStrictAssetReference(FindObjectField(*splines, "guid"), VansAssetType::PcgSpline,
+					"Scene settings.pcgSplines", dependencies, result);
+		}
+	}
+
+	void CollectModelRendererDependencies(
+		const VansSerializedValue& entities,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (entities.kind != VansSerializedValue::Kind::Array)
+			return;
+
+		for (const VansSerializedValue& entity : entities.arrayItems)
+		{
+			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
+			if (!components)
+				continue;
+			for (const VansSerializedValue& component : components->arrayItems)
+			{
+				if (ReadSerializedStringField(component, "type") != "ModelRenderer")
+					continue;
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				const std::string owner = "scene entity '" + entityName + "' ModelRenderer";
+				CollectStrictAssetReference(
+					data ? FindObjectField(*data, "model") : nullptr,
+					VansAssetType::Model,
+					owner + ".model",
+					dependencies,
+					result);
+				if (!data)
+					continue;
+
+				for (const char* fieldName : { "materialOverrides", "submeshMaterialOverrides" })
+				{
+					const VansSerializedValue* overrides = FindObjectField(*data, fieldName);
+					if (!overrides)
+						continue;
+					if (overrides->kind != VansSerializedValue::Kind::Object)
+					{
+						AppendDependencyError(result, owner + "." + fieldName + " must be an object");
+						continue;
+					}
+					for (const auto& [slot, material] : overrides->objectFields)
+					{
+						const std::string materialGuid = ReadAssetGuidReference(material);
+						if (materialGuid.empty())
+						{
+							const VansSerializedValue* guid = material.kind == VansSerializedValue::Kind::Object
+								? FindObjectField(material, "guid") : nullptr;
+							const bool emptyReference =
+								(material.kind == VansSerializedValue::Kind::String && material.stringValue.empty()) ||
+								(material.kind == VansSerializedValue::Kind::Object &&
+									(material.objectFields.empty() ||
+										(guid && guid->kind == VansSerializedValue::Kind::String &&
+											guid->stringValue.empty())));
+							if (!emptyReference)
+								AppendDependencyError(result, owner + "." + fieldName + "['" + slot +
+									"'] must be an empty binding or a Material GUID reference");
+							continue;
+						}
+						CollectStrictAssetReference(
+							&material,
+							VansAssetType::Material,
+							owner + "." + fieldName + "['" + slot + "']",
+							dependencies,
+							result);
+					}
+				}
+			}
+		}
+	}
+
+	void CollectLodGroupDependencies(
+		const VansSerializedValue& entities,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (entities.kind != VansSerializedValue::Kind::Array)
+			return;
+		for (const VansSerializedValue& entity : entities.arrayItems)
+		{
+			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
+			if (!components)
+				continue;
+			for (const VansSerializedValue& component : components->arrayItems)
+			{
+				if (ReadSerializedStringField(component, "type") != "LODGroup")
+					continue;
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				const VansSerializedValue* levels = data
+					? ReadSerializedArrayField(*data, "levels") : nullptr;
+				if (!levels)
+					continue;
+				for (std::size_t levelIndex = 0; levelIndex < levels->arrayItems.size(); ++levelIndex)
+				{
+					const VansSerializedValue* meshes = ReadSerializedArrayField(
+						levels->arrayItems[levelIndex], "meshes");
+					if (!meshes)
+						continue;
+					for (std::size_t meshIndex = 0; meshIndex < meshes->arrayItems.size(); ++meshIndex)
+					{
+						const VansSerializedValue& mesh = meshes->arrayItems[meshIndex];
+						if (mesh.kind == VansSerializedValue::Kind::String && mesh.stringValue.empty())
+							continue;
+						CollectStrictAssetReference(
+							&mesh,
+							VansAssetType::Model,
+							"scene entity '" + entityName + "' LODGroup.levels[" +
+								std::to_string(levelIndex) + "].meshes[" +
+								std::to_string(meshIndex) + "]",
+							dependencies,
+							result);
+					}
+				}
+			}
+		}
+	}
+
+	void CollectMultiMeshRootDependencies(
+		const VansSerializedValue& entities,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (entities.kind != VansSerializedValue::Kind::Array)
+			return;
+		for (const VansSerializedValue& entity : entities.arrayItems)
+		{
+			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
+			if (!components)
+				continue;
+			for (const VansSerializedValue& component : components->arrayItems)
+			{
+				if (ReadSerializedStringField(component, "type") != "MultiMeshRoot")
+					continue;
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				CollectStrictAssetReference(
+					data ? FindObjectField(*data, "model") : nullptr,
+					VansAssetType::Model,
+					"scene entity '" + entityName + "' MultiMeshRoot.model",
+					dependencies,
+					result);
+			}
+		}
+	}
+
+	void CollectLightDependencies(
+		const VansSerializedValue& entities,
+		std::vector<TypedAssetDependency>& dependencies,
+		std::unordered_set<std::string>& rectLightEmissiveTextures,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (entities.kind != VansSerializedValue::Kind::Array)
+			return;
+		for (const VansSerializedValue& entity : entities.arrayItems)
+		{
+			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
+			if (!components)
+				continue;
+			for (const VansSerializedValue& component : components->arrayItems)
+			{
+				const std::string type = ReadSerializedStringField(component, "type");
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				if (!data)
+					continue;
+				if (type == "PointLight" || type == "SpotLight")
+				{
+					CollectStrictAssetReference(
+						FindObjectField(*data, "ies_profile_guid"),
+						VansAssetType::IESProfile,
+						"scene entity '" + entityName + "' " + type + ".ies_profile_guid",
+						dependencies,
+						result);
+					continue;
+				}
+				if (type != "RectLight")
+					continue;
+
+				const VansSerializedValue* reference =
+					FindObjectField(*data, "emissive_texture_guid");
+				CollectStrictAssetReference(
+					reference,
+					VansAssetType::Texture,
+					"scene entity '" + entityName + "' RectLight.emissive_texture_guid",
+					dependencies,
+					result);
+				if (reference != nullptr)
+				{
+					const std::string guidText = ReadAssetGuidReference(*reference);
+					VansAssetGuid guid;
+					if (VansAssetGuid::TryParse(guidText, guid))
+						rectLightEmissiveTextures.insert(guidText);
+				}
+			}
+		}
+	}
+
+	void CollectAudioReverbZoneDependencies(
+		const VansSerializedValue& entities,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (entities.kind != VansSerializedValue::Kind::Array)
+			return;
+		for (const VansSerializedValue& entity : entities.arrayItems)
+		{
+			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
+			if (!components)
+				continue;
+			for (const VansSerializedValue& component : components->arrayItems)
+			{
+				const std::string type = ReadSerializedStringField(component, "type");
+				if (type != "AudioReverbZone" && type != "AudioVolume")
+					continue;
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				const VansSerializedValue* reference = data
+					? FindObjectField(*data, "presetAsset") : nullptr;
+				CollectGuidObjectAssetReference(
+					reference,
+					VansAssetType::AudioReverbPreset,
+					"scene entity '" + entityName + "' " + type + ".presetAsset",
+					dependencies,
+					result);
+			}
+		}
+	}
+
+	void CollectCameraMediaDependencies(
+		const VansSerializedValue& entities,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (entities.kind != VansSerializedValue::Kind::Array)
+			return;
+		for (const VansSerializedValue& entity : entities.arrayItems)
+		{
+			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
+			if (!components)
+				continue;
+			for (const VansSerializedValue& component : components->arrayItems)
+			{
+				const std::string type = ReadSerializedStringField(component, "type");
+				if (type != "Audio" && type != "Video")
+					continue;
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				CollectGuidObjectAssetReference(
+					data ? FindObjectField(*data, "source") : nullptr,
+					type == "Audio" ? VansAssetType::Audio : VansAssetType::Video,
+					"scene entity '" + entityName + "' " + type + ".source",
+					dependencies,
+					result);
+			}
+		}
+	}
+
+	void CollectLocalFogDependencies(
+		const VansSerializedValue& entities,
 		std::vector<TypedAssetDependency>& dependencies,
 		std::unordered_map<std::string, int>& fieldTextureRequiredChannels,
 		VansSceneAssetDependencyBuildResult& result)
 	{
-		const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
-		if (!entities)
+		if (entities.kind != VansSerializedValue::Kind::Array)
 			return;
-		for (const VansSerializedValue& entity : entities->arrayItems)
+		for (const VansSerializedValue& entity : entities.arrayItems)
 		{
 			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
 			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
@@ -688,15 +1274,14 @@ namespace
 		}
 	}
 
-	void CollectSceneAnimationDependencies(
-		const VansSerializedValue& sceneDocument,
+	void CollectAnimationDependencies(
+		const VansSerializedValue& entities,
 		std::vector<TypedAssetDependency>& dependencies,
 		VansSceneAssetDependencyBuildResult& result)
 	{
-		const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
-		if (entities == nullptr)
+		if (entities.kind != VansSerializedValue::Kind::Array)
 			return;
-		for (const VansSerializedValue& entity : entities->arrayItems)
+		for (const VansSerializedValue& entity : entities.arrayItems)
 		{
 			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
 			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
@@ -737,14 +1322,13 @@ namespace
 		}
 	}
 
-	void CollectSceneTimelineDependencies(
-		const VansSerializedValue& sceneDocument,
+	void CollectTimelineDependencies(
+		const VansSerializedValue& entities,
 		std::vector<TypedAssetDependency>& dependencies,
 		VansSceneAssetDependencyBuildResult& result)
 	{
-		const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
-		if (entities == nullptr) return;
-		for (const VansSerializedValue& entity : entities->arrayItems)
+		if (entities.kind != VansSerializedValue::Kind::Array) return;
+		for (const VansSerializedValue& entity : entities.arrayItems)
 		{
 			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
 			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
@@ -754,20 +1338,19 @@ namespace
 				if (ReadSerializedStringField(component, "type") != "Timeline") continue;
 				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
 				const VansSerializedValue* timeline = data ? ReadSerializedObjectField(*data, "timeline") : nullptr;
-				CollectStrictAssetReference(timeline, VansAssetType::Timeline,
+				CollectGuidObjectAssetReference(timeline, VansAssetType::Timeline,
 					"scene entity '" + entityName + "' Timeline.timeline", dependencies, result);
 			}
 		}
 	}
 
-	void CollectSceneAIDependencies(
-		const VansSerializedValue& sceneDocument,
+	void CollectAIDependencies(
+		const VansSerializedValue& entities,
 		std::vector<TypedAssetDependency>& dependencies,
 		VansSceneAssetDependencyBuildResult& result)
 	{
-		const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
-		if (entities == nullptr) return;
-		for (const VansSerializedValue& entity : entities->arrayItems)
+		if (entities.kind != VansSerializedValue::Kind::Array) return;
+		for (const VansSerializedValue& entity : entities.arrayItems)
 		{
 			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
 			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
@@ -814,7 +1397,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	VansAssetDatabase* builtInAssetDatabase)
 {
 	VansSceneAssetDependencyBuildResult result;
-    VansSerializedValue sceneDocument = inputDocument;
+	const VansSerializedValue& sceneDocument = inputDocument;
 
 	const std::filesystem::path projectRoot = database.AssetsRoot().parent_path();
 	for (const auto& [alias, guid] : runtimeAssetBindings)
@@ -867,8 +1450,8 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
             result.requiredAssets.insert(reference.stringValue);
         }
     }
-	CollectSerializedAssetReferences(sceneDocument, assetTypesByGuid, result);
-    // 实例覆盖来自展开场景；动态模板默认值也进入相同组件依赖遍历。
+	// 动态模板保留源 identity，只遍历模板数据；依赖收集不生成运行时实例或展开副本。
+	std::vector<std::shared_ptr<const VansPrefabAsset>> prefabDependencyAssets;
     std::unordered_set<std::string> expandedPrefabs;
     for (;;)
     {
@@ -881,36 +1464,57 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
         VansAssetGuid guid; VansAssetGuid::TryParse(pending, guid);
         const auto asset = objectRepository.ResolveLatest<VansPrefabAsset>(guid);
         if (!asset) { result.errors.push_back("Prefab memory asset missing: " + pending); return result; }
-        std::string error; VansSerializedValue objects;
-        const auto instance = VansPrefabResolver::MakeInstance(guid);
-        if (!VansPrefabResolver::Instantiate(*asset, instance, objects, error))
+		std::string error;
+		if (!VansPrefabCodec::Validate(*asset, error))
         { result.errors.push_back("Prefab " + pending + ": " + error); return result; }
-        if (!VansSceneRuntimeProjection::ValidateEntityComponentTypes(objects, error))
-        { result.errors.push_back("Prefab " + pending + ": " + error); return result; }
-        CollectSerializedAssetReferences(objects, assetTypesByGuid, result);
-        for (auto& field : sceneDocument.objectFields) if (field.first == "entities")
-            field.second.arrayItems.insert(field.second.arrayItems.end(), objects.arrayItems.begin(), objects.arrayItems.end());
+		prefabDependencyAssets.push_back(asset);
     }
-	CollectSceneModelRendererDependencies(sceneDocument, result.requiredModels, result.requiredMaterials);
-	std::unordered_set<std::string> meshColliderModels;
-	CollectScenePhysicsMeshColliderDependencies(sceneDocument, meshColliderModels);
-	result.requiredModels.insert(meshColliderModels.begin(), meshColliderModels.end());
 
+	std::unordered_set<std::string> meshColliderModels;
 	std::unordered_set<std::string> terrainHeightTextures;
 	std::unordered_set<std::string> terrainSplatTextures;
 	std::unordered_set<std::string> pcgPixelTextures;
 	std::unordered_set<std::string> pcgGrassModels;
-	ExpandUIAssetDependencies(assetRecordsByGuid, assetTypesByGuid, objectRepository, result);
 	std::vector<TypedAssetDependency> animationDependencies;
-	CollectSceneAnimationDependencies(sceneDocument, animationDependencies, result);
 	std::vector<TypedAssetDependency> timelineDependencies;
-	CollectSceneTimelineDependencies(sceneDocument, timelineDependencies, result);
 	std::vector<TypedAssetDependency> aiDependencies;
-	CollectSceneAIDependencies(sceneDocument, aiDependencies, result);
+	std::vector<TypedAssetDependency> cameraMediaDependencies;
+	std::vector<TypedAssetDependency> audioReverbZoneDependencies;
+	std::vector<TypedAssetDependency> lodGroupDependencies;
+	std::vector<TypedAssetDependency> multiMeshRootDependencies;
 	std::vector<TypedAssetDependency> localFogDependencies;
+	std::vector<TypedAssetDependency> lightDependencies;
+	std::vector<TypedAssetDependency> catalogDependencies;
+	std::vector<TypedAssetDependency> sceneSettingDependencies;
+	std::unordered_set<std::string> rectLightEmissiveTextures;
 	std::unordered_map<std::string, int> localFogFieldTextureRequiredChannels;
-	CollectSceneLocalFogDependencies(
-		sceneDocument, localFogDependencies, localFogFieldTextureRequiredChannels, result);
+	std::vector<TypedAssetDependency> modelRendererDependencies;
+	const auto collectEntityDependencies = [&](const VansSerializedValue& entityArray)
+	{
+		CollectCatalogComponentDependencies(entityArray, catalogDependencies, result);
+		CollectScriptFieldAssetDependencies(entityArray, catalogDependencies, result);
+		CollectModelRendererDependencies(
+			entityArray, modelRendererDependencies, result);
+		CollectPhysicsMeshColliderDependencies(entityArray, meshColliderModels);
+		CollectAnimationDependencies(entityArray, animationDependencies, result);
+		CollectTimelineDependencies(entityArray, timelineDependencies, result);
+		CollectAIDependencies(entityArray, aiDependencies, result);
+		CollectCameraMediaDependencies(entityArray, cameraMediaDependencies, result);
+		CollectAudioReverbZoneDependencies(
+			entityArray, audioReverbZoneDependencies, result);
+		CollectLodGroupDependencies(entityArray, lodGroupDependencies, result);
+		CollectMultiMeshRootDependencies(
+			entityArray, multiMeshRootDependencies, result);
+		CollectLightDependencies(
+			entityArray, lightDependencies, rectLightEmissiveTextures, result);
+		CollectLocalFogDependencies(
+			entityArray, localFogDependencies, localFogFieldTextureRequiredChannels, result);
+	};
+	collectEntityDependencies(*entities);
+	for (const auto& prefab : prefabDependencyAssets)
+		collectEntityDependencies(prefab->entities);
+	CollectSceneSettingDependencies(sceneDocument, sceneSettingDependencies, result);
+	result.requiredModels.insert(meshColliderModels.begin(), meshColliderModels.end());
 	if (const VansSerializedValue* vegetationConfig = ReadVegetationField(sceneDocument))
 	{
 		const std::string vegetationGuidText =
@@ -973,10 +1577,6 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			}
 		}
 	}
-	// PCG 可以显式引用一个高度场，依赖处理不依赖它在场景中的先后位置。
-	ExpandTerrainDependencies(assetRecordsByGuid, objectRepository, result,
-		terrainHeightTextures, terrainSplatTextures);
-
 	result.requiredAssets.insert(result.requiredModels.begin(), result.requiredModels.end());
 	result.requiredAssets.insert(result.requiredMaterials.begin(), result.requiredMaterials.end());
 	result.requiredAssets.insert(result.requiredTextures.begin(), result.requiredTextures.end());
@@ -984,13 +1584,29 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	result.requiredAssets.insert(result.requiredSkinProfiles.begin(), result.requiredSkinProfiles.end());
 
 	std::deque<TypedAssetDependency> pendingDependencies(
+		modelRendererDependencies.begin(), modelRendererDependencies.end());
+	pendingDependencies.insert(pendingDependencies.end(),
 		animationDependencies.begin(), animationDependencies.end());
 	pendingDependencies.insert(pendingDependencies.end(),
 		timelineDependencies.begin(), timelineDependencies.end());
 	pendingDependencies.insert(pendingDependencies.end(),
 		aiDependencies.begin(), aiDependencies.end());
 	pendingDependencies.insert(pendingDependencies.end(),
+		cameraMediaDependencies.begin(), cameraMediaDependencies.end());
+	pendingDependencies.insert(pendingDependencies.end(),
+		audioReverbZoneDependencies.begin(), audioReverbZoneDependencies.end());
+	pendingDependencies.insert(pendingDependencies.end(),
+		lodGroupDependencies.begin(), lodGroupDependencies.end());
+	pendingDependencies.insert(pendingDependencies.end(),
+		multiMeshRootDependencies.begin(), multiMeshRootDependencies.end());
+	pendingDependencies.insert(pendingDependencies.end(),
 		localFogDependencies.begin(), localFogDependencies.end());
+	pendingDependencies.insert(pendingDependencies.end(),
+		lightDependencies.begin(), lightDependencies.end());
+	pendingDependencies.insert(pendingDependencies.end(),
+		catalogDependencies.begin(), catalogDependencies.end());
+	pendingDependencies.insert(pendingDependencies.end(),
+		sceneSettingDependencies.begin(), sceneSettingDependencies.end());
 	std::unordered_set<std::string> expandedAnimators;
 	std::unordered_set<std::string> expandedTimelines;
 	while (!pendingDependencies.empty())
@@ -1079,8 +1695,23 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				continue;
 			}
 		}
+		else if (record.type == VansAssetType::AudioReverbPreset)
+		{
+			if (!ResolveMemoryAsset<VansAudioReverbPresetAsset>(objectRepository, record))
+			{
+				AppendDependencyError(result,
+					dependency.chain + " has no Audio Reverb Preset memory object");
+				continue;
+			}
+		}
 		if (record.type == VansAssetType::Timeline)
 		{
+			const VansEngineTimelineCatalog catalog = VansGetEngineTimelineCatalog();
+			if (!catalog)
+			{
+				AppendDependencyError(result, dependency.chain + ": " + std::string(catalog.error));
+				continue;
+			}
 			if (!expandedTimelines.insert(dependency.guid).second) continue;
 			VansTimelineAsset timeline;
 			const auto memoryTimeline = ResolveMemoryAsset<VansTimelineAsset>(
@@ -1097,7 +1728,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			VansTimelineDiagnostics diagnostics;
 			const bool closureBuilt = VansTimelineDependencyBuilder::BuildClosure(
 				timeline,
-				VansTimelineTrackExtensionRegistry::BuiltIns(),
+				*catalog.trackExtensions,
 				[&](const VansTimelineDependency& reference, VansTimelineAsset& nested,
 					std::string& identity, std::string& error)
 				{
@@ -1178,6 +1809,10 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		{
 			if (layer.kind != VansGraphics::VansAnimationLayerKind::Overlay)
 				continue;
+			// Empty mask means a generic full-body overlay. It has no asset
+			// dependency; the runtime expands it to a full-body mask.
+			if (layer.maskGuid.empty() && layer.maskPathHint.empty())
+				continue;
 			pendingDependencies.push_back({ layer.maskGuid, VansAssetType::BoneMask,
 				dependency.chain + " -> Layer '" + layer.name + "' Bone Mask -> " + layer.maskGuid });
 		}
@@ -1185,8 +1820,28 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	if (!result.errors.empty())
 		return result;
 
+	ExpandUIAssetDependencies(assetRecordsByGuid, objectRepository, result);
+	// PCG 可以显式引用一个高度场，依赖处理不依赖它在场景中的先后位置。
+	ExpandTerrainDependencies(assetRecordsByGuid, objectRepository, result,
+		terrainHeightTextures, terrainSplatTextures);
+	if (!result.errors.empty())
+		return result;
+
     ExpandParticleDependencies(assetRecordsByGuid, objectRepository, result);
     if (!result.errors.empty()) return result;
+
+	// Runtime scene projection publishes every project Material into the scene material
+	// manager so name-based model material resolution keeps working even without an
+	// explicit scene GUID override.  The GPU resource closure must mirror that policy;
+	// otherwise a packaged build can contain the Material authoring snapshot while
+	// omitting its texture artifacts.
+	for (const VansAssetRecord& record : database.All())
+	{
+		if (record.type != VansAssetType::Material || record.state == VansAssetState::Missing)
+			continue;
+		result.requiredMaterials.insert(record.guid.ToString());
+		result.requiredAssets.insert(record.guid.ToString());
+	}
 
 	for (const VansAssetRecord& record : database.All())
 	{
@@ -1206,11 +1861,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		}
 
 		if (result.requiredMaterials.find(record.guid.ToString()) != result.requiredMaterials.end())
-		{
-			CollectSerializedAssetReferences(
-				WriteMaterialAuthoringAssetRoot(material), assetTypesByGuid, result);
-			CollectMaterialTextureDependencies(database, material, result.requiredTextures);
-		}
+			CollectMaterialDependencies(material, assetRecordsByGuid, result);
 	}
 	if (!result.errors.empty())
 		return result;
@@ -1253,14 +1904,17 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			request.name = record.guid.ToString();
 			request.assetGuid = record.guid.ToString();
 			request.path = relativePath;
-			if (!database.ArtifactRoot().empty())
-				request.artifactPath = (database.ArtifactRoot() / "Meshes" / (record.guid.ToString() + ".vmesh")).string();
+			const VansDerivedArtifactLocation artifact =
+				VansDerivedArtifactLayout::ImportedRuntimeCache(
+					database.ArtifactRoot(), record.type, record.guid);
+			if (artifact)
+				request.artifactPath = artifact.path.string();
 			request.needTangent = meta.ReadBoolSetting("generateTangents", true);
 			request.supportRayTracing = meta.ReadBoolSetting("buildRayTracingData", true);
 			request.needCpuData = meta.ReadBoolSetting("keepCpuMeshData", false) ||
 				pcgGrassModels.find(record.guid.ToString()) != pcgGrassModels.end() ||
 				meshColliderModels.find(record.guid.ToString()) != meshColliderModels.end();
-			request.scaleFactor = meta.ReadFloatSetting("scaleFactor", "scale", 1.0f);
+			request.scaleFactor = meta.ReadFloatSetting("scaleFactor", 1.0f);
 			request.loadMultiMesh = meta.ReadBoolSetting("loadMultiMesh", isFbx);
 			request.skeletalImport = ReadSkeletalMeshImportSettings(meta);
 			result.resourcePlan.meshes.push_back(std::move(request));
@@ -1276,8 +1930,8 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				const std::string colorSpace = LowerAsciiCopy(meta.ReadStringSetting("colorSpace"));
 				const bool linear = colorSpace == "linear" ||
 					(colorSpace.empty() && !meta.ReadBoolSetting("sRGB", true));
-				const bool uncompressed = !meta.ReadBoolSetting("useCompress", "compress", true);
-				const bool noMip = !meta.ReadBoolSetting("needMip", "generateMip", true);
+				const bool uncompressed = !meta.ReadBoolSetting("useCompress", true);
+				const bool noMip = !meta.ReadBoolSetting("needMip", true);
 				const int channels = meta.ReadIntSetting("importChannel", terrainHeight ? 1 : 4);
 				const std::string precision = LowerAsciiCopy(meta.ReadStringSetting("precision"));
 				const std::string addressMode = LowerAsciiCopy(meta.ReadStringSetting("addressMode"));
@@ -1307,8 +1961,8 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 					? meta.ReadBoolSetting("sRGB", true) : colorSpace != "linear";
 				const VansLocalFogFieldTextureImportSettings fieldImport{
 					!isSrgb,
-					meta.ReadBoolSetting("useCompress", "compress", true),
-					meta.ReadBoolSetting("needMip", "generateMip", true),
+					meta.ReadBoolSetting("useCompress", true),
+					meta.ReadBoolSetting("needMip", true),
 					meta.ReadIntSetting("importChannel", 4),
 					meta.ReadStringSetting("precision", "low8")
 				};
@@ -1332,6 +1986,15 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			request.artifactPath = record.artifactPath.string();
 			request.textureType = isCubemap ? SceneTextureCube : SceneTexture2D;
 			ApplyTextureImportSettings(request, meta);
+			request.retainRgba8Pixels =
+				rectLightEmissiveTextures.count(record.guid.ToString()) != 0;
+			if (request.retainRgba8Pixels && !SupportsRectLightEmissive(request))
+			{
+				AppendDependencyError(result,
+					"RectLight emissive texture " + record.guid.ToString() +
+					" must be a 2D, uncompressed, four-channel low8 texture");
+				continue;
+			}
 			result.resourcePlan.textures.push_back(std::move(request));
 		}
 		else if (record.type == VansAssetType::Shader)
@@ -1348,7 +2011,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				continue;
 			}
 			result.resourcePlan.shaders.push_back(BuildShaderResourceRequest(
-				*shader, record, projectRoot));
+				*shader, record, projectRoot, database.ArtifactRoot()));
 		}
 		else if (record.type == VansAssetType::Audio)
 		{
@@ -1426,12 +2089,15 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				request.name = record->guid.ToString();
 				request.assetGuid = record->guid.ToString();
 				request.path = record->sourcePath.string();
-				request.artifactPath = (
-					builtInAssetDatabase->ArtifactRoot() / "Meshes" / (request.assetGuid + ".vmesh")).string();
+				const VansDerivedArtifactLocation artifact =
+					VansDerivedArtifactLayout::ImportedRuntimeCache(
+						builtInAssetDatabase->ArtifactRoot(), record->type, record->guid);
+				if (artifact)
+					request.artifactPath = artifact.path.string();
 				request.needTangent = meta.ReadBoolSetting("generateTangents", true);
 				request.supportRayTracing = meta.ReadBoolSetting("buildRayTracingData", true);
 				request.needCpuData = meta.ReadBoolSetting("keepCpuMeshData", false);
-				request.scaleFactor = meta.ReadFloatSetting("scaleFactor", "scale", 1.0f);
+				request.scaleFactor = meta.ReadFloatSetting("scaleFactor", 1.0f);
 				request.loadMultiMesh = meta.ReadBoolSetting("loadMultiMesh", false);
 				result.resourcePlan.meshes.push_back(std::move(request));
 				break;
@@ -1446,6 +2112,15 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				request.artifactPath = record->artifactPath.string();
 				request.textureType = SceneTexture2D;
 				ApplyTextureImportSettings(request, meta);
+				request.retainRgba8Pixels =
+					rectLightEmissiveTextures.count(record->guid.ToString()) != 0;
+				if (request.retainRgba8Pixels && !SupportsRectLightEmissive(request))
+				{
+					AppendDependencyError(result,
+						"RectLight emissive texture " + record->guid.ToString() +
+						" must be a 2D, uncompressed, four-channel low8 texture");
+					break;
+				}
 				result.resourcePlan.textures.push_back(std::move(request));
 				break;
 			}
@@ -1485,6 +2160,9 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			(result.requiredSkinProfiles.count(guid) && type != VansAssetType::SkinProfile))
 			AppendDependencyError(result, "Required asset has the wrong type: " + guid);
 	}
+	if (!result.errors.empty()) return result;
+	ValidateNavigationSources(*entities, projectRoot, sceneSourcePath,
+		assetRecordsByGuid, objectRepository, result);
 	if (!result.errors.empty()) return result;
 	result.success = true;
 	return result;

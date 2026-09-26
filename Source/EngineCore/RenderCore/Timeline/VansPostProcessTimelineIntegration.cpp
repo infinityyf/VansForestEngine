@@ -4,6 +4,7 @@
 #include "../../AssetCore/VansAssetObjectRepository.h"
 #include "../../TimelineRuntime/VansTimelineEvaluator.h"
 #include "../../TimelineRuntime/VansTimelineModuleApplierState.h"
+#include "../../TimelineRuntime/VansTimelineSampleExtension.h"
 
 #include <algorithm>
 
@@ -167,6 +168,25 @@ private:
 	const Vans::VansAssetObjectRepository& m_Repository;
 	Vans::VansTimelineModuleApplierState<PostProcessRestoreState> m_State;
 };
+}
+
+bool VansRegisterPostProcessTimelineExtensions(
+	Vans::VansTimelineTrackExtensionRegistry& registry,
+	std::string& error)
+{
+	using F = Vans::VansTimelineValueType;
+	auto descriptor = Vans::VansMakeTimelineSampleExtension(
+		Vans::TimelineNames::FadePostProcess, "Fade / Post Process", "Cinematic",
+		Vans::VansTimelineEvaluationPhase::PostScript,
+		Vans::VansTimelineBindingRequirement::None,
+		Vans::VansTimelineContinuousTrackFlags(),
+		{ { Vans::VansMakeTimelineSourceField("mode", F::Enum, std::string("Fade"), false,
+				{ "Fade", "PostProcess" }),
+			Vans::VansMakeTimelineSourceField(
+				"color", F::ColorLinear, Vans::VansTimelineColorLinear{}) },
+			{ Vans::VansMakeTimelineChannelSchema("weight", F::Float) }, false, false });
+	descriptor.sectionAssetKind = "PostProcessProfile";
+	return registry.Register(std::move(descriptor), error);
 }
 
 bool VansRegisterPostProcessTimelineIntegration(

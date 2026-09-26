@@ -23,8 +23,8 @@ public:
 	{
 		if (physicsPolicy != "RejectDynamicBody")
 		{ error = "Transform physicsPolicy is not registered: " + std::string(physicsPolicy); return false; }
-		auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimePhysicsComponent>*>(
-			m_World.FindStorage(Vans::VansRuntimeComponentType_Physics));
+		auto* storage = m_World.FindStorage<Vans::VansRuntimePhysicsComponent>(
+			Vans::VansRuntimeComponentType_Physics);
 		if (!storage || !m_World.IsAlive(target.entity)) return true;
 		for (Vans::VansComponentHandle component : m_World.CollectComponentsOwnedBy(target.entity))
 			if (component.typeId == Vans::VansRuntimeComponentType_Physics)

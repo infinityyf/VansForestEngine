@@ -1,7 +1,9 @@
 #include "VansPcgSplineFieldStorage.h"
 #include <algorithm>
+#include "../../AssetCore/VansDerivedArtifactLayout.h"
 #include "../Serialization/VansPcgSplineAssetCodec.h"
 #include "../../AssetCore/Storage/VansFileStorage.h"
+#include "../../Util/VansFileFingerprint.h"
 #include <cstring>
 #include <stdexcept>
 #include <type_traits>
@@ -12,12 +14,6 @@ namespace Vans
 namespace
 {
 constexpr std::size_t MaxBytes=512u*1024u*1024u;
-std::uint64_t Digest(const char* bytes,std::size_t count)
-{
-    std::uint64_t hash=14695981039346656037ull;
-    for(std::size_t i=0;i<count;++i){hash^=static_cast<unsigned char>(bytes[i]);hash*=1099511628211ull;}
-    return hash;
-}
 struct Writer
 {
     std::string bytes;
@@ -47,7 +43,7 @@ struct Reader
 }
 const char* VansPcgSplineFieldStorage::CompilerFingerprint(){return VANS_PCG_SPLINE_COMPILER_FINGERPRINT;}
 std::filesystem::path VansPcgSplineFieldStorage::CachePath(const std::filesystem::path& root,VansAssetGuid guid)
-{return root/"Library"/"PCG"/"Splines"/(guid.ToString()+".pcgfields");}
+{return VansDerivedArtifactLayout::PcgSplineRegenerableCache(root,guid).path;}
 
 bool VansPcgSplineFieldStorage::Save(const std::filesystem::path& path,const VansPcgSplineFieldSnapshot& field,std::string& error)
 {
@@ -66,7 +62,7 @@ bool VansPcgSplineFieldStorage::Save(const std::filesystem::path& path,const Van
     for(const auto& [id,road]:field.roads){w.Text(id);w.Text(road->material.ToString());w.Text(road->roadDecalMaterial.ToString());w.Value(road->fingerprint);w.Array(road->vertices);w.Array(road->indices);}
     w.Value(std::uint32_t(field.warnings.size()));for(const auto& warning:field.warnings)w.Text(warning);
     w.Array(field.uncoveredBankPoints);
-    w.Value(Digest(w.bytes.data(),w.bytes.size()));
+    w.Value(ComputeMemoryFnv1a64(w.bytes.data(),w.bytes.size()));
     if(w.bytes.size()>MaxBytes){error="Spline bake exceeds the 512 MiB storage budget.";return false;}
     VansScopedIOContext scope(VansIODomain::Derived,"Pcg.BakeSplineFields");
     return VansFileStorage::WriteAtomicBytes(path,w.bytes,error);
@@ -82,7 +78,7 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldStorage::Loa
     try
     {
         std::uint64_t digest;std::memcpy(&digest,bytes.data()+bytes.size()-sizeof(digest),sizeof(digest));
-        if(Digest(bytes.data(),bytes.size()-sizeof(digest))!=digest)throw std::runtime_error("Spline cache checksum mismatch.");
+        if(ComputeMemoryFnv1a64(bytes.data(),bytes.size()-sizeof(digest))!=digest)throw std::runtime_error("Spline cache checksum mismatch.");
         Reader r{bytes};
         if(r.Text()!="ForestSplineFields" || r.Text()!=CompilerFingerprint())throw std::runtime_error("Spline compiler content changed; rebake required.");
         auto field=std::make_shared<VansPcgSplineFieldSnapshot>();

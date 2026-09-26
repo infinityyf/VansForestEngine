@@ -7,15 +7,11 @@
 #include <PxPhysicsAPI.h>
 #include <extensions/PxD6Joint.h>
 #include <../../GLM/glm.hpp>
+#include "../RuntimeCore/VansRagdollPose.h"
 
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-namespace VansGraphics
-{
-	class VansAnimationNode;
-}
 
 namespace VansEngine
 {
@@ -110,15 +106,17 @@ namespace VansEngine
 		glm::vec3 stationaryImpulse{0.0f};
 	};
 
-	// ── 单个 AnimationNode 对应的布娃娃实例 ─────────────────────────
+	// ── 单个运行时布娃娃实例 ───────────────────────────────────────
 	struct RagdollInstance
 	{
-		VansGraphics::VansAnimationNode* animNode = nullptr;
+		Vans::VansRagdollKey key;
 		RagdollDriveMode driveMode = RagdollDriveMode::Animation;
 		float blendWeight = 0.0f;
 
 		std::vector<RagdollBoneEntry> boneEntries;
 		std::unordered_map<std::string, int> boneNameToEntryIndex;
+		std::vector<int> parentIndices;
+		std::vector<int> topologicalOrder;
 	};
 	struct RagdollDiagnostics
 	{

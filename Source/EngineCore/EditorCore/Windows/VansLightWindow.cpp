@@ -1,6 +1,8 @@
 #include "VansLightWindow.h"
 #include "../VansEditorWindow.h"
 #include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../../EngineAPILayer/Public/IRuntimeCommandHistoryEditorAPI.h"
+#include "../../EngineAPILayer/Public/ISceneSettingsEditorAPI.h"
 
 #include "imgui.h"
 
@@ -315,7 +317,9 @@ bool DrawLightCookie(Vans::EditorAPI::LightCookieSettings& c)
 
 void VansGraphics::VansLightWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-    if (!VansEditorWindow::m_LightWindowOpen)
+	Vans::EditorAPI::IRuntimeCommandHistoryEditorAPI& runtimeHistoryAPI = editorAPI;
+	Vans::EditorAPI::ISceneSettingsEditorAPI& sceneSettingsAPI = editorAPI;
+    if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::Light))
         return;
 
     g_CommandMergeBoundaryReached = false;
@@ -323,7 +327,7 @@ void VansGraphics::VansLightWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
     g_SceneSettingsCommitMask = 0;
     ImGui::Begin("Light Info");
 
-    Vans::EditorAPI::LightingSettingsSnapshot lightingSettings = editorAPI.GetLightingSettings();
+    Vans::EditorAPI::LightingSettingsSnapshot lightingSettings = sceneSettingsAPI.GetLightingSettings();
 
     bool lightChanged = false;
     lightChanged |= DrawDirectionalLights(lightingSettings.directionalLights);
@@ -333,25 +337,25 @@ void VansGraphics::VansLightWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 
     if (lightChanged)
     {
-        editorAPI.ApplyLightingSettings(lightingSettings);
+        sceneSettingsAPI.ApplyLightingSettings(lightingSettings);
     }
 
 	ImGui::Separator();
 	// 天空数据源的作者控制独立于物理大气和 Reflection Probe 配置。
     if (ImGui::CollapsingHeader("Sky Lighting", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        auto environment = editorAPI.GetEnvironmentSettings();
+        auto environment = sceneSettingsAPI.GetEnvironmentSettings();
         if (ImGui::DragFloat("Intensity", &environment.skyLighting.intensity, 0.01f, 0.0f, 1000.0f, "%.3f"))
-            editorAPI.ApplyEnvironmentSettings(environment);
-        if (ImGui::IsItemDeactivatedAfterEdit()) editorAPI.CommitEnvironmentSettings();
+            sceneSettingsAPI.ApplyEnvironmentSettings(environment);
+        if (ImGui::IsItemDeactivatedAfterEdit()) sceneSettingsAPI.CommitEnvironmentSettings();
     }
-    DrawPhysicalAtmosphereParameters(editorAPI);
-	DrawHeightFogParameters(editorAPI);
-    DrawCloudParameters(editorAPI);
+    DrawPhysicalAtmosphereParameters(sceneSettingsAPI);
+	DrawHeightFogParameters(sceneSettingsAPI);
+    DrawCloudParameters(sceneSettingsAPI);
 
     if (g_CommandMergeBoundaryReached)
     {
-        editorAPI.BreakCommandMergeGroup();
+        runtimeHistoryAPI.BreakCommandMergeGroup();
     }
 
     ImGui::End();
@@ -488,7 +492,7 @@ bool VansGraphics::VansLightWindow::DrawRectLights(std::vector<Vans::EditorAPI::
 }
 
 void VansGraphics::VansLightWindow::DrawPhysicalAtmosphereParameters(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::ISceneSettingsEditorAPI& editorAPI)
 {
 	if (!ImGui::CollapsingHeader("Physical Atmosphere", ImGuiTreeNodeFlags_DefaultOpen))
 		return;
@@ -611,7 +615,7 @@ void VansGraphics::VansLightWindow::DrawPhysicalAtmosphereParameters(
 }
 
 void VansGraphics::VansLightWindow::DrawHeightFogParameters(
-	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+	Vans::EditorAPI::ISceneSettingsEditorAPI& editorAPI)
 {
 	if (!ImGui::CollapsingHeader("Near-Ground Height Fog", ImGuiTreeNodeFlags_DefaultOpen))
 		return;
@@ -666,7 +670,7 @@ void VansGraphics::VansLightWindow::DrawHeightFogParameters(
 	if (ConsumeSceneSettingsCommit(SceneSettingsGroup::HeightFog))
 		editorAPI.CommitEnvironmentSettings();
 }
-void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::ISceneSettingsEditorAPI& editorAPI)
 {
     if (!ImGui::CollapsingHeader("Volumetric Clouds", ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -777,7 +781,7 @@ void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::IEngine
         environment.volumetricClouds = {};
         editorAPI.ApplyEnvironmentSettings(environment);
         editorAPI.CommitEnvironmentSettings();
-        editorAPI.BreakCommandMergeGroup();
+        g_CommandMergeBoundaryReached = true;
         return;
     }
 

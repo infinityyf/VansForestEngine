@@ -8,39 +8,69 @@
 
 namespace Vans
 {
-VansTimelineRuntimeSystem::VansTimelineRuntimeSystem()
-	: m_Clocks(VansTimelineClockRegistry::BuiltIns()),
-	  m_Appliers(std::make_shared<VansTimelineApplierRegistry>()),
-	  m_Payloads(std::make_shared<VansPayloadSchemaRegistry>())
+VansTimelineRuntimeSystem::VansTimelineRuntimeSystem(const VansTimelineClockRegistry& clocks)
+	: m_Clocks(clocks),
+	  m_Appliers(std::make_shared<VansTimelineApplierRegistry>())
 {
-	std::string error;
-	m_Appliers->Seal(error);
-	m_Payloads->Seal(error);
-	m_Sessions = std::make_unique<VansTimelineSessionService>(m_Clocks, *m_Appliers, m_Payloads.get());
+	m_Sessions = std::make_unique<VansTimelineSessionService>(m_Clocks, *m_Appliers);
 }
 
 void VansTimelineRuntimeSystem::RegisterWorld(VansRuntimeWorld* world) { m_World = world; }
 void VansTimelineRuntimeSystem::SetAssetLoader(VansTimelineRuntimeAssetLoader loader) { m_AssetLoader = std::move(loader); }
 void VansTimelineRuntimeSystem::SetAssetGenerationQuery(VansTimelineRuntimeAssetGenerationQuery query) { m_AssetGenerationQuery = std::move(query); }
 
-void VansTimelineRuntimeSystem::SetApplierRegistry(
-	std::shared_ptr<VansTimelineApplierRegistry> appliers)
+bool VansTimelineRuntimeSystem::SetApplierRegistry(
+	std::shared_ptr<VansTimelineApplierRegistry> appliers,
+	std::uint64_t registryManifestHash,
+	std::string& error)
 {
+	error.clear();
+	if (!appliers)
+	{
+		error = "Timeline.ApplierRegistryUnavailable";
+		return false;
+	}
+	if (!appliers->IsSealed())
+	{
+		error = "Timeline.ApplierRegistryNotSealed";
+		return false;
+	}
+	if (appliers->Empty())
+	{
+		error = "Timeline.ApplierRegistryEmpty";
+		return false;
+	}
+	if (registryManifestHash == 0)
+	{
+		error = "Timeline.RegistryManifestMissing";
+		return false;
+	}
 	StopAll();
-	m_Appliers = appliers ? std::move(appliers) : std::make_shared<VansTimelineApplierRegistry>();
-	std::string error;
-	if (!m_Appliers->IsSealed()) m_Appliers->Seal(error);
+	m_Appliers = std::move(appliers);
+	m_RegistryManifestHash = registryManifestHash;
 	m_Sessions = std::make_unique<VansTimelineSessionService>(m_Clocks, *m_Appliers, m_Payloads.get());
+	return true;
 }
 
-void VansTimelineRuntimeSystem::SetPayloadSchemaRegistry(
-	std::shared_ptr<VansPayloadSchemaRegistry> payloads)
+bool VansTimelineRuntimeSystem::SetPayloadSchemaRegistry(
+	std::shared_ptr<const VansTimelinePayloadSchemaRegistry> payloads,
+	std::string& error)
 {
+	error.clear();
+	if (!payloads)
+	{
+		error = "Event.PayloadRegistryUnavailable";
+		return false;
+	}
+	if (!payloads->IsSealed())
+	{
+		error = "Event.PayloadRegistryNotSealed";
+		return false;
+	}
 	StopAll();
-	m_Payloads = payloads ? std::move(payloads) : std::make_shared<VansPayloadSchemaRegistry>();
-	std::string error;
-	if (!m_Payloads->IsSealed()) m_Payloads->Seal(error);
+	m_Payloads = std::move(payloads);
 	m_Sessions = std::make_unique<VansTimelineSessionService>(m_Clocks, *m_Appliers, m_Payloads.get());
+	return true;
 }
 
 bool VansTimelineRuntimeSystem::HasOutputApplier(VansTimelineOutputTypeId type) const
@@ -101,7 +131,7 @@ VansTimelineSessionHandle VansTimelineRuntimeSystem::CreateComponentSession(
 	desc.timeline = std::move(timeline);
 	desc.world = m_World;
 	desc.owner = header.owner;
-	desc.clockType = component.instance.clockType;
+	desc.clockType = std::string(TimelineClockNames::GameTime);
 	desc.bindingOverrides = component.instance.bindingOverrides;
 	desc.parameterOverrides = component.instance.parameterOverrides;
 	desc.loopMode = component.instance.loopMode;
@@ -117,8 +147,8 @@ VansTimelineSessionHandle VansTimelineRuntimeSystem::CreateComponentSession(
 void VansTimelineRuntimeSystem::SyncTimelineComponents()
 {
 	if (!m_World) return;
-	auto* storage = static_cast<VansComponentStorage<VansRuntimeTimelineComponent>*>(
-		m_World->FindStorage(VansRuntimeComponentType_Timeline));
+	auto* storage = m_World->FindStorage<VansRuntimeTimelineComponent>(
+		VansRuntimeComponentType_Timeline);
 	if (!storage)
 	{
 		for (auto& [key, facade] : m_Components) m_Sessions->Release(facade.session);

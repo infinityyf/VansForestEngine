@@ -2,6 +2,7 @@
 #include "Decal/VansRoadDecalGeometry.h"
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../PhysicsCore/VansTerrainPhysicsNode.h"
+#include "../PhysicsCore/VansPhysics.h"
 #include "TerrainCore/VansTerrain.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansMesh.h"

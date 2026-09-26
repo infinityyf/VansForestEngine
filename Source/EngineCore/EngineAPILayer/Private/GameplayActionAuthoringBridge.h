@@ -4,9 +4,13 @@
 
 #include <string>
 
+namespace Vans
+{
+class IVansAuthoringSaveHost;
+}
+
 namespace Vans::EditorAPI
 {
-class IEngineEditorAPI;
 
 class GameplayActionAuthoringBridge
 {
@@ -22,7 +26,9 @@ public:
 	static GAFEditorOperationResult Undo(const std::string& sourcePath);
 	static GAFEditorOperationResult Redo(const std::string& sourcePath);
 	static GAFEditorOperationResult Revert(const std::string& sourcePath);
-	static GAFEditorOperationResult Save(IEngineEditorAPI& editorAPI, const std::string& sourcePath);
+	static GAFEditorOperationResult Save(
+		Vans::IVansAuthoringSaveHost& saveHost,
+		const std::string& sourcePath);
 	static GAFSemanticDiffResult Diff(
 		const std::string& sourcePath,
 		const std::string& baselineCanonicalJson);

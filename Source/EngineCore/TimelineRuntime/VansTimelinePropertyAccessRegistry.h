@@ -11,9 +11,15 @@ namespace Vans
 class VansRuntimeWorld;
 struct VansTimelinePropertyAccessContext
 {
-	const VansResolvedTimelineTarget& target;
+	VansResolvedTimelineTarget target;
 	VansRuntimeWorld* world = nullptr;
 	VansTimelineResourceId resource;
+};
+
+enum class VansTimelinePropertyWriteDomain : std::uint8_t
+{
+	Property,
+	Transform
 };
 
 using VansTimelinePropertyReadFn = bool(*)(
@@ -31,6 +37,7 @@ struct VansTimelinePropertyAccessDescriptor
 	std::string stableName;
 	std::uint16_t componentTypeId = 0;
 	VansTimelineValueType valueType = VansTimelineValueType::Null;
+	VansTimelinePropertyWriteDomain writeDomain = VansTimelinePropertyWriteDomain::Property;
 	VansTimelinePropertyReadFn read = nullptr;
 	VansTimelinePropertyWriteFn write = nullptr;
 };
@@ -39,31 +46,18 @@ class VansTimelinePropertyAccessRegistry
 {
 public:
 	bool Register(VansTimelinePropertyAccessDescriptor descriptor, std::string& error);
-	bool Seal(std::string& error);
+	bool Seal(bool allowEmpty, std::string& error);
+	bool IsSealed() const { return m_Sealed; }
+	bool Empty() const { return m_Descriptors.empty(); }
 	const VansTimelinePropertyAccessDescriptor* Resolve(
 		VansStableId<VansTimelinePropertyAccessTag> id) const;
 	const VansTimelinePropertyAccessDescriptor* Resolve(std::string_view stableName) const;
 	std::uint64_t ManifestHash() const;
 	const std::vector<VansTimelinePropertyAccessDescriptor>& Descriptors() const { return m_Descriptors; }
-	static const VansTimelinePropertyAccessRegistry& BuiltIns();
 
 private:
 	bool m_Sealed = false;
 	std::vector<VansTimelinePropertyAccessDescriptor> m_Descriptors;
 	std::unordered_map<VansStableId<VansTimelinePropertyAccessTag>, std::size_t> m_ById;
 };
-
-bool VansRegisterSceneTimelinePropertyAccessors(
-	VansTimelinePropertyAccessRegistry& registry,
-	std::string& error);
-bool VansRegisterAudioTimelinePropertyAccessors(
-	VansTimelinePropertyAccessRegistry& registry,
-	std::string& error);
-}
-
-namespace VansGraphics
-{
-bool VansRegisterRenderTimelinePropertyAccessors(
-	Vans::VansTimelinePropertyAccessRegistry& registry,
-	std::string& error);
 }

@@ -12,15 +12,14 @@ class VansParticleRuntime
 public:
     void SetAsset(std::shared_ptr<const VansParticleAsset> asset);
     const std::shared_ptr<const VansParticleAsset>& GetAsset() const { return m_Asset; }
-    VansParticleEmitterRuntime* GetEmitter(std::size_t index)
-    { return index < m_Emitters.size() ? m_Emitters[index].get() : nullptr; }
     const VansParticleEmitterRuntime* GetEmitter(std::size_t index) const
     { return index < m_Emitters.size() ? m_Emitters[index].get() : nullptr; }
-    glm::mat4 m_LocalToWorld{1.0f};
-    glm::vec3 m_EmitterPositionLocal{0.0f};
-    std::atomic<uint32_t> m_AliveInstanceCount{0};
-    uint64_t m_SubstepOverruns = 0;
     void SetOwnerWorldTransform(const glm::mat4& ownerWorld);
+    void SetEmitterPositionLocal(const glm::vec3& position) { m_EmitterPositionLocal = position; }
+    const glm::mat4& OwnerWorldTransform() const { return m_LocalToWorld; }
+    const glm::vec3& EmitterPositionLocal() const { return m_EmitterPositionLocal; }
+    uint32_t AliveInstanceCount() const { return m_AliveInstanceCount.load(std::memory_order_acquire); }
+    uint64_t SubstepOverruns() const { return m_SubstepOverruns; }
     void DeferFirstUpdate() { m_DeferFirstUpdate = true; }
     void Update(float deltaTime);
     void Play();
@@ -37,7 +36,12 @@ public:
     void SetSimulationRate(float rate);
     float GetSimulationRate() const { return m_SimulationRate; }
     void Burst(uint32_t count = 1);
-    void SetEffectiveEnabled(bool enabled) { m_EffectiveEnabled = enabled; }
+    void SetEffectiveEnabled(bool enabled)
+    {
+        if (m_EffectiveEnabled == enabled) return;
+        m_EffectiveEnabled = enabled;
+        m_FrameDirty = true;
+    }
     bool IsEffectivelyEnabled() const { return m_EffectiveEnabled; }
     bool IsPlaying() const { return !m_Paused && (m_State == VansParticlePlaybackState::Delayed
         || m_State == VansParticlePlaybackState::Emitting || m_State == VansParticlePlaybackState::Draining); }
@@ -52,7 +56,13 @@ public:
     bool HasVolumetricInjectionEnabled() const;
     bool HasRibbon() const;
 private:
-    void Prewarm();
+    friend class VansParticleManager;
+    enum class VansParticleResimulationKind { None, Prewarm, Seek };
+    void BeginPrewarm();
+    uint32_t AdvanceResimulation(uint32_t stepBudget);
+    bool HasPendingResimulation() const { return m_ResimulationKind != VansParticleResimulationKind::None; }
+    bool NeedsWorkerTick() const { return m_FrameDirty || HasPendingResimulation(); }
+    void SetEmitterEnabled(std::size_t index, bool enabled);
     void Advance(float seconds, const glm::mat4& transform, bool skip = false);
     void Capture();
     void Finish();
@@ -63,9 +73,17 @@ private:
     VansParticlePlaybackState m_State = VansParticlePlaybackState::Stopped;
     bool m_Paused = false, m_EffectiveEnabled = true, m_DeferFirstUpdate = false, m_Prewarmed = false;
     bool m_OwnerInitialized = false, m_HasMovingSource = false;
+    bool m_FrameDirty = false, m_FrameReady = false;
     glm::mat4 m_PreviousOwner{1.0f};
     double m_Time = 0, m_CycleTime = 0, m_Accumulator = 0, m_DrainTime = 0, m_DelayRemaining = 0;
+    double m_ResimulationRemaining = 0;
+    float m_ResimulationStep = 1.0f/60.0f;
+    VansParticleResimulationKind m_ResimulationKind = VansParticleResimulationKind::None;
     uint32_t m_RandomSeed = 0x9e3779b9u;
     float m_SimulationRate = 1;
+    glm::mat4 m_LocalToWorld{1.0f};
+    glm::vec3 m_EmitterPositionLocal{0.0f};
+    std::atomic<uint32_t> m_AliveInstanceCount{0};
+    uint64_t m_SubstepOverruns = 0;
 };
 }

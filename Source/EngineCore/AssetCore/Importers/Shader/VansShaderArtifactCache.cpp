@@ -259,6 +259,12 @@ namespace Vans
 		prepared.artifactRoot = ResolveArtifactRoot(request);
 		prepared.compileResult.programId = request.programId;
 		prepared.compileResult.sourceRevision = request.sourceRevision;
+		if (prepared.artifactRoot.empty())
+		{
+			prepared.compileResult.diagnostics.emplace_back(
+				"Shader artifact root is not configured for '" + request.programId + "'");
+			return prepared;
+		}
 		if (IsCookedOnlyMode())
 		{
 			VansShaderArtifactPrepareResult cooked;
@@ -582,13 +588,7 @@ namespace Vans
 
 	bool VansShaderArtifactCache::IsCookedOnlyMode()
 	{
-		if (!g_RuntimeCookedArtifactRoot.empty())
-			return true;
-		const char* mode = std::getenv("FORESTENGINE_SHADER_MODE");
-		if (!mode)
-			return false;
-		const std::string normalized = Lower(mode);
-		return normalized == "cooked" || normalized == "cookedonly" || normalized == "cooked-only";
+		return !g_RuntimeCookedArtifactRoot.empty();
 	}
 
 	std::filesystem::path VansShaderArtifactCache::ResolveArtifactRoot(const VansShaderCompileRequest& request)
@@ -597,21 +597,7 @@ namespace Vans
 			return NormalizePath(request.artifactRoot);
 		if (!g_RuntimeCookedArtifactRoot.empty())
 			return g_RuntimeCookedArtifactRoot;
-		if (IsCookedOnlyMode())
-			if (const char* cookedRoot = std::getenv("FORESTENGINE_COOKED_SHADER_DIR"))
-				return NormalizePath(cookedRoot);
-		if (const char* overrideRoot = std::getenv("FORESTENGINE_SHADER_ARTIFACT_DIR"))
-			return NormalizePath(overrideRoot);
-
-		std::filesystem::path current = NormalizePath(request.sourceFolder);
-		while (!current.empty() && current != current.root_path())
-		{
-			const std::string name = Lower(current.filename().string());
-			if (name == "engineassets" || name == "assets")
-				return current.parent_path() / "Library" / "Artifacts" / "Shaders";
-			current = current.parent_path();
-		}
-		return std::filesystem::current_path() / "Library" / "Artifacts" / "Shaders";
+		return {};
 	}
 
 	void VansShaderArtifactCache::ConfigureCookedRuntime(const std::filesystem::path& artifactRoot)

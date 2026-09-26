@@ -1,10 +1,11 @@
 #include "VansLuaUIBridge.h"
 
 #include "VansLuaValueConverter.h"
-#include "../RuntimeUI/Public/VansUIActionBus.h"
+#include "../EventCore/VansEventBus.h"
 #include "../RuntimeUI/Public/VansUIComponent.h"
 #include "../RuntimeUI/Public/VansUIComponentRegistry.h"
 #include "../RuntimeUI/Public/VansUIElementHandle.h"
+#include "../RuntimeUI/Public/VansUIEvents.h"
 #include "../RuntimeUI/Public/VansUIResourceRegistry.h"
 #include "../RuntimeUI/Public/VansUIScreen.h"
 #include "../RuntimeUI/Public/VansUIScreenManager.h"
@@ -34,6 +35,8 @@ namespace VansRuntime
 		constexpr const char* kViewModelMeta = "Vans.UI.ViewModel";
 		constexpr const char* kComponentMeta = "Vans.UI.Component";
 		constexpr const char* kSubscriptionMeta = "Vans.UI.Subscription";
+		using LuaUIActionSubscriptionId = std::uint64_t;
+		constexpr LuaUIActionSubscriptionId kInvalidLuaUIActionSubscription = 0;
 
 		struct LuaUIScreenUserdata
 		{
@@ -49,7 +52,7 @@ namespace VansRuntime
 
 		struct LuaUISubscriptionUserdata
 		{
-			VansUISubscriptionToken token = kInvalidUISubscription;
+			LuaUIActionSubscriptionId id = kInvalidLuaUIActionSubscription;
 		};
 
 		struct LuaUIViewModelUserdata
@@ -62,21 +65,50 @@ namespace VansRuntime
 			VansUIHandleId componentId = kInvalidUIHandle;
 		};
 
-		struct LuaActionCallback
+		struct LuaUIActionSubscription
+		{
+			lua_State* L = nullptr;
+			int ref = LUA_NOREF;
+			Vans::VansEventConnection connection;
+		};
+
+		struct LuaCommandCallback
 		{
 			lua_State* L = nullptr;
 			int ref = LUA_NOREF;
 		};
 
-		std::unordered_map<VansUISubscriptionToken, LuaActionCallback> g_ActionCallbacks;
-		std::unordered_map<std::uint64_t, LuaActionCallback> g_CommandCallbacks;
-		std::unordered_map<VansUIHandleId, std::shared_ptr<VansUIViewModel>> g_ViewModels;
-		std::unordered_map<VansUIHandleId, std::vector<std::uint64_t>> g_ViewModelCommandTokens;
-		std::unordered_map<VansUIHandleId, std::vector<VansUISubscriptionToken>> g_ScreenElementSubscriptions;
-		std::unordered_map<VansUIHandleId, std::vector<VansUISubscriptionToken>> g_ComponentElementSubscriptions;
-		VansUIHandleId g_NextViewModelId = 1;
-		VansUIHandleId g_NextLuaElementActionId = 1;
-		std::uint64_t g_NextLuaCommandToken = 1;
+		struct LuaUIBridgeSession
+		{
+			std::uint64_t generation = AllocateUIHandle();
+			std::unordered_map<LuaUIActionSubscriptionId, LuaUIActionSubscription> actionSubscriptions;
+			std::unordered_map<std::uint64_t, LuaCommandCallback> commandCallbacks;
+			std::unordered_map<VansUIHandleId, std::shared_ptr<VansUIViewModel>> viewModels;
+			std::unordered_map<VansUIHandleId, std::vector<std::uint64_t>> viewModelCommandTokens;
+			std::unordered_map<VansUIHandleId, std::vector<LuaUIActionSubscriptionId>> screenElementSubscriptions;
+			std::unordered_map<VansUIHandleId, std::vector<LuaUIActionSubscriptionId>> componentElementSubscriptions;
+			LuaUIActionSubscriptionId nextActionSubscriptionId = 1;
+			std::uint64_t nextCommandToken = 1;
+		};
+
+		std::unordered_map<lua_State*, LuaUIBridgeSession> g_Sessions;
+
+		LuaUIBridgeSession* FindSession(lua_State* state)
+		{
+			const auto found = g_Sessions.find(state);
+			return found != g_Sessions.end() ? &found->second : nullptr;
+		}
+
+		LuaUIBridgeSession* FindSession(lua_State* state, std::uint64_t generation)
+		{
+			LuaUIBridgeSession* session = FindSession(state);
+			return session && session->generation == generation ? session : nullptr;
+		}
+
+		LuaUIBridgeSession& RequireSession(lua_State* state)
+		{
+			return g_Sessions.try_emplace(state).first->second;
+		}
 
 		LuaUIScreenUserdata* CheckScreen(lua_State* L, int index)
 		{
@@ -134,11 +166,11 @@ namespace VansRuntime
 			lua_setmetatable(L, -2);
 		}
 
-		void PushSubscription(lua_State* L, VansUISubscriptionToken token)
+		void PushSubscription(lua_State* L, LuaUIActionSubscriptionId id)
 		{
 			auto* userdata = static_cast<LuaUISubscriptionUserdata*>(
 				lua_newuserdatauv(L, sizeof(LuaUISubscriptionUserdata), 0));
-			new (userdata) LuaUISubscriptionUserdata{ token };
+			new (userdata) LuaUISubscriptionUserdata{ id };
 			luaL_getmetatable(L, kSubscriptionMeta);
 			lua_setmetatable(L, -2);
 		}
@@ -168,18 +200,35 @@ namespace VansRuntime
 			return VansUIComponentRegistry::Get().GetComponent(componentId);
 		}
 
-		std::shared_ptr<VansUIViewModel> ResolveViewModel(VansUIHandleId viewModelId)
+		std::shared_ptr<VansUIViewModel> ResolveViewModel(
+			lua_State* state,
+			VansUIHandleId viewModelId)
 		{
-			const auto it = g_ViewModels.find(viewModelId);
-			return it != g_ViewModels.end() ? it->second : nullptr;
+			const LuaUIBridgeSession* session = FindSession(state);
+			if (!session)
+				return nullptr;
+			const auto it = session->viewModels.find(viewModelId);
+			return it != session->viewModels.end() ? it->second : nullptr;
 		}
 
-		std::shared_ptr<VansUIViewModel> CreateViewModelFromTable(lua_State* L, int index)
+		std::shared_ptr<VansUIViewModel> CreateViewModelFromTable(
+			lua_State* L,
+			int index,
+			std::string* error = nullptr)
 		{
 			auto vm = std::make_shared<VansUIViewModel>();
 			if (lua_istable(L, index))
 			{
-				for (auto& [name, value] : VansLuaValueConverter::ToVariantMap(L, index))
+				VansUIVariantMap values;
+				std::string codecError;
+				if (!VansLuaValueConverter::TryToVariantMap(
+					L, index, values, codecError))
+				{
+					if (error)
+						*error = std::move(codecError);
+					return nullptr;
+				}
+				for (auto& [name, value] : values)
 					vm->SetValue(name, std::move(value));
 			}
 			return vm;
@@ -188,19 +237,21 @@ namespace VansRuntime
 		std::shared_ptr<VansUIViewModel> ReadOptionalViewModel(lua_State* L, int index)
 		{
 			if (luaL_testudata(L, index, kViewModelMeta))
-				return ResolveViewModel(CheckViewModel(L, index)->viewModelId);
+				return ResolveViewModel(L, CheckViewModel(L, index)->viewModelId);
 			if (lua_istable(L, index))
 				return CreateViewModelFromTable(L, index);
 			return nullptr;
 		}
 
-		VansUIHandleId RegisterViewModel(std::shared_ptr<VansUIViewModel> vm)
+		VansUIHandleId RegisterViewModel(
+			lua_State* state,
+			std::shared_ptr<VansUIViewModel> vm)
 		{
 			if (!vm)
 				return kInvalidUIHandle;
 
-			const VansUIHandleId id = g_NextViewModelId++;
-			g_ViewModels.emplace(id, std::move(vm));
+			const VansUIHandleId id = AllocateUIHandle();
+			RequireSession(state).viewModels.emplace(id, std::move(vm));
 			return id;
 		}
 
@@ -226,36 +277,108 @@ namespace VansRuntime
 			}, value.value);
 		}
 
-		void UnsubscribeLuaAction(lua_State* L, VansUISubscriptionToken token)
+		LuaUIActionSubscriptionId SubscribeLuaAction(
+			lua_State* L,
+			std::string actionName,
+			int ref,
+			bool includeParams,
+			const char* callbackName)
 		{
-			if (token == kInvalidUISubscription)
+			if (!L || actionName.empty() || ref == LUA_NOREF)
+				return kInvalidLuaUIActionSubscription;
+
+			LuaUIBridgeSession& session = RequireSession(L);
+			const std::uint64_t sessionGeneration = session.generation;
+			const LuaUIActionSubscriptionId id = session.nextActionSubscriptionId++;
+			Vans::VansEventConnection connection = Vans::VansEventBus::Get().Subscribe<VansUIActionEvent>(
+				[L, sessionGeneration, id, actionName = std::move(actionName), includeParams,
+					callbackName = std::string(callbackName ? callbackName : "UI action")](const VansUIActionEvent& action)
+				{
+					if (action.name != actionName)
+						return;
+
+					LuaUIBridgeSession* activeSession = FindSession(L, sessionGeneration);
+					if (!activeSession)
+						return;
+					const auto it = activeSession->actionSubscriptions.find(id);
+					if (it == activeSession->actionSubscriptions.end() ||
+						it->second.ref == LUA_NOREF)
+						return;
+
+					lua_rawgeti(L, LUA_REGISTRYINDEX, it->second.ref);
+					lua_newtable(L);
+					lua_pushstring(L, action.name.c_str());
+					lua_setfield(L, -2, "name");
+					if (includeParams)
+					{
+						std::string codecError;
+						if (!VansLuaValueConverter::TryPushVariantMap(
+							L, action.params, codecError))
+						{
+							lua_pop(L, 2);
+							VANS_LOG_ERROR("[LuaUI] Cannot encode action params: " << codecError);
+							return;
+						}
+						lua_setfield(L, -2, "params");
+					}
+					lua_pushinteger(L, static_cast<lua_Integer>(action.sourceScreen));
+					lua_setfield(L, -2, "source_screen");
+					lua_pushstring(L, action.sourceElement.c_str());
+					lua_setfield(L, -2, "source_element");
+
+					if (lua_pcall(L, 1, 0, 0) != LUA_OK)
+					{
+						const char* error = lua_tostring(L, -1);
+						VANS_LOG_ERROR("[LuaUI] " << callbackName << " callback failed: "
+							<< (error ? error : "unknown error"));
+						lua_pop(L, 1);
+					}
+				},
+				Vans::VansEventLane::MainThread);
+			session.actionSubscriptions.emplace(id,
+				LuaUIActionSubscription{ L, ref, std::move(connection) });
+			return id;
+		}
+
+		void UnsubscribeLuaAction(lua_State* L, LuaUIActionSubscriptionId id)
+		{
+			if (id == kInvalidLuaUIActionSubscription)
 				return;
 
-			if (const auto it = g_ActionCallbacks.find(token); it != g_ActionCallbacks.end())
+			LuaUIBridgeSession* session = FindSession(L);
+			if (!session)
+				return;
+			if (const auto it = session->actionSubscriptions.find(id);
+				it != session->actionSubscriptions.end())
 			{
 				if (it->second.L == L && it->second.ref != LUA_NOREF)
 					luaL_unref(L, LUA_REGISTRYINDEX, it->second.ref);
-				g_ActionCallbacks.erase(it);
+				session->actionSubscriptions.erase(it);
 			}
-			VansUIActionBus::Get().Unsubscribe(token);
 		}
 
 		void ReleaseScreenLuaSubscriptions(lua_State* L, VansUIHandleId screenId)
 		{
-			const auto it = g_ScreenElementSubscriptions.find(screenId);
-			if (it == g_ScreenElementSubscriptions.end())
+			LuaUIBridgeSession* session = FindSession(L);
+			if (!session)
+				return;
+			const auto it = session->screenElementSubscriptions.find(screenId);
+			if (it == session->screenElementSubscriptions.end())
 				return;
 
-			for (VansUISubscriptionToken token : it->second)
-				UnsubscribeLuaAction(L, token);
-			g_ScreenElementSubscriptions.erase(it);
+			for (LuaUIActionSubscriptionId id : it->second)
+				UnsubscribeLuaAction(L, id);
+			session->screenElementSubscriptions.erase(it);
 		}
 
 		void ReleaseAllScreenLuaSubscriptions(lua_State* L)
 		{
 			std::vector<VansUIHandleId> screenIds;
-			screenIds.reserve(g_ScreenElementSubscriptions.size());
-			for (const auto& [screenId, tokens] : g_ScreenElementSubscriptions)
+			LuaUIBridgeSession* session = FindSession(L);
+			if (!session)
+				return;
+			screenIds.reserve(session->screenElementSubscriptions.size());
+			for (const auto& [screenId, tokens] : session->screenElementSubscriptions)
 			{
 				(void)tokens;
 				screenIds.push_back(screenId);
@@ -266,20 +389,26 @@ namespace VansRuntime
 
 		void ReleaseComponentLuaSubscriptions(lua_State* L, VansUIHandleId componentId)
 		{
-			const auto it = g_ComponentElementSubscriptions.find(componentId);
-			if (it == g_ComponentElementSubscriptions.end())
+			LuaUIBridgeSession* session = FindSession(L);
+			if (!session)
+				return;
+			const auto it = session->componentElementSubscriptions.find(componentId);
+			if (it == session->componentElementSubscriptions.end())
 				return;
 
-			for (VansUISubscriptionToken token : it->second)
-				UnsubscribeLuaAction(L, token);
-			g_ComponentElementSubscriptions.erase(it);
+			for (LuaUIActionSubscriptionId id : it->second)
+				UnsubscribeLuaAction(L, id);
+			session->componentElementSubscriptions.erase(it);
 		}
 
 		void ReleaseAllComponentLuaSubscriptions(lua_State* L)
 		{
 			std::vector<VansUIHandleId> componentIds;
-			componentIds.reserve(g_ComponentElementSubscriptions.size());
-			for (const auto& [componentId, tokens] : g_ComponentElementSubscriptions)
+			LuaUIBridgeSession* session = FindSession(L);
+			if (!session)
+				return;
+			componentIds.reserve(session->componentElementSubscriptions.size());
+			for (const auto& [componentId, tokens] : session->componentElementSubscriptions)
 			{
 				(void)tokens;
 				componentIds.push_back(componentId);
@@ -293,24 +422,30 @@ namespace VansRuntime
 			if (token == 0)
 				return;
 
-			const auto it = g_CommandCallbacks.find(token);
-			if (it == g_CommandCallbacks.end())
+			LuaUIBridgeSession* session = FindSession(L);
+			if (!session)
+				return;
+			const auto it = session->commandCallbacks.find(token);
+			if (it == session->commandCallbacks.end())
 				return;
 
 			if (it->second.L == L && it->second.ref != LUA_NOREF)
 				luaL_unref(L, LUA_REGISTRYINDEX, it->second.ref);
-			g_CommandCallbacks.erase(it);
+			session->commandCallbacks.erase(it);
 		}
 
 		void ReleaseViewModelCommands(lua_State* L, VansUIHandleId viewModelId)
 		{
-			const auto it = g_ViewModelCommandTokens.find(viewModelId);
-			if (it == g_ViewModelCommandTokens.end())
+			LuaUIBridgeSession* session = FindSession(L);
+			if (!session)
+				return;
+			const auto it = session->viewModelCommandTokens.find(viewModelId);
+			if (it == session->viewModelCommandTokens.end())
 				return;
 
 			for (std::uint64_t token : it->second)
 				ReleaseCommandCallback(L, token);
-			g_ViewModelCommandTokens.erase(it);
+			session->viewModelCommandTokens.erase(it);
 		}
 
 		VansUIElementHandle ResolveElement(lua_State* L, LuaUIElementUserdata* userdata)
@@ -585,8 +720,13 @@ namespace VansRuntime
 			const char* actionName = luaL_checkstring(L, 1);
 			VansUIVariantMap params;
 			if (lua_istable(L, 2))
-				params = VansLuaValueConverter::ToVariantMap(L, 2);
-			VansUIActionBus::Get().Dispatch(VansUIAction{ actionName ? actionName : "", std::move(params) });
+			{
+				std::string error;
+				if (!VansLuaValueConverter::TryToVariantMap(L, 2, params, error))
+					return luaL_argerror(L, 2, error.c_str());
+			}
+			Vans::VansEventBus::Get().PublishNow(VansUIActionEvent{
+				actionName ? actionName : "", std::move(params) });
 			return 0;
 		}
 
@@ -597,52 +737,26 @@ namespace VansRuntime
 			lua_pushvalue(L, 2);
 			const int ref = luaL_ref(L, LUA_REGISTRYINDEX);
 
-			auto tokenBox = std::make_shared<VansUISubscriptionToken>(kInvalidUISubscription);
-			VansUISubscriptionToken token = kInvalidUISubscription;
-			token = VansUIActionBus::Get().Subscribe(actionName ? actionName : "",
-				[L, tokenBox](const VansUIAction& action)
-				{
-					const VansUISubscriptionToken token = *tokenBox;
-					const auto it = g_ActionCallbacks.find(token);
-					if (it == g_ActionCallbacks.end() || it->second.ref == LUA_NOREF)
-						return;
-
-					lua_rawgeti(L, LUA_REGISTRYINDEX, it->second.ref);
-					lua_newtable(L);
-					lua_pushstring(L, action.name.c_str());
-					lua_setfield(L, -2, "name");
-					VansLuaValueConverter::PushVariantMap(L, action.params);
-					lua_setfield(L, -2, "params");
-					lua_pushinteger(L, static_cast<lua_Integer>(action.sourceScreen));
-					lua_setfield(L, -2, "source_screen");
-					lua_pushstring(L, action.sourceElement.c_str());
-					lua_setfield(L, -2, "source_element");
-
-					if (lua_pcall(L, 1, 0, 0) != LUA_OK)
-					{
-						const char* error = lua_tostring(L, -1);
-						VANS_LOG_ERROR("[LuaUI] UI action callback failed: " << (error ? error : "unknown error"));
-						lua_pop(L, 1);
-					}
-				});
-
-			if (token == kInvalidUISubscription)
+			const LuaUIActionSubscriptionId id = SubscribeLuaAction(
+				L, actionName ? actionName : "", ref, true, "UI action");
+			if (id == kInvalidLuaUIActionSubscription)
 			{
 				luaL_unref(L, LUA_REGISTRYINDEX, ref);
 				lua_pushnil(L);
 				return 1;
 			}
 
-			*tokenBox = token;
-			g_ActionCallbacks[token] = LuaActionCallback{ L, ref };
-			PushSubscription(L, token);
+			PushSubscription(L, id);
 			return 1;
 		}
 
 		int UICreateViewModel(lua_State* L)
 		{
-			auto vm = CreateViewModelFromTable(L, 1);
-			const VansUIHandleId id = RegisterViewModel(std::move(vm));
+			std::string error;
+			auto vm = CreateViewModelFromTable(L, 1, &error);
+			if (!vm && !error.empty())
+				return luaL_argerror(L, 1, error.c_str());
+			const VansUIHandleId id = RegisterViewModel(L, std::move(vm));
 			if (id == kInvalidUIHandle)
 			{
 				lua_pushnil(L);
@@ -664,7 +778,9 @@ namespace VansRuntime
 				lua_pushnil(L);
 				return 1;
 			}
-			VansLuaValueConverter::PushVariant(L, *token);
+			std::string error;
+			if (!VansLuaValueConverter::TryPushVariant(L, *token, error))
+				return luaL_error(L, "%s", error.c_str());
 			return 1;
 		}
 
@@ -706,7 +822,7 @@ namespace VansRuntime
 			auto* screen = CheckScreen(L, 1);
 			auto* vm = CheckViewModel(L, 2);
 			auto resolvedScreen = ResolveScreen(screen->screenId);
-			auto resolvedVm = ResolveViewModel(vm->viewModelId);
+			auto resolvedVm = ResolveViewModel(L, vm->viewModelId);
 			if (resolvedScreen && resolvedVm)
 				resolvedScreen->SetViewModel(std::move(resolvedVm));
 			return 0;
@@ -821,7 +937,10 @@ namespace VansRuntime
 		{
 			auto* element = CheckElement(L, 1);
 			const char* property = luaL_checkstring(L, 2);
-			const VansUIVariant value = VansLuaValueConverter::ToVariant(L, 3);
+			VansUIVariant value;
+			std::string error;
+			if (!VansLuaValueConverter::TryToVariant(L, 3, value, error))
+				return luaL_argerror(L, 3, error.c_str());
 			ResolveElement(L, element).SetProperty(property ? property : "", VariantToString(value));
 			return 0;
 		}
@@ -847,54 +966,30 @@ namespace VansRuntime
 
 			lua_pushvalue(L, 3);
 			const int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-			const std::string actionName = "__lua.element." + std::to_string(g_NextLuaElementActionId++);
-			auto tokenBox = std::make_shared<VansUISubscriptionToken>(kInvalidUISubscription);
-			VansUISubscriptionToken token = VansUIActionBus::Get().Subscribe(actionName,
-				[L, tokenBox](const VansUIAction& action)
-				{
-					const VansUISubscriptionToken token = *tokenBox;
-					const auto it = g_ActionCallbacks.find(token);
-					if (it == g_ActionCallbacks.end() || it->second.ref == LUA_NOREF)
-						return;
-
-					lua_rawgeti(L, LUA_REGISTRYINDEX, it->second.ref);
-					lua_newtable(L);
-					lua_pushstring(L, action.name.c_str());
-					lua_setfield(L, -2, "name");
-					lua_pushinteger(L, static_cast<lua_Integer>(action.sourceScreen));
-					lua_setfield(L, -2, "source_screen");
-					lua_pushstring(L, action.sourceElement.c_str());
-					lua_setfield(L, -2, "source_element");
-
-					if (lua_pcall(L, 1, 0, 0) != LUA_OK)
-					{
-						const char* error = lua_tostring(L, -1);
-						VANS_LOG_ERROR("[LuaUI] UI element callback failed: " << (error ? error : "unknown error"));
-						lua_pop(L, 1);
-					}
-				});
-
-			if (token == kInvalidUISubscription)
+			const std::string actionName = "__lua.element." +
+				std::to_string(AllocateUIHandle());
+			const LuaUIActionSubscriptionId id = SubscribeLuaAction(
+				L, actionName, ref, false, "UI element");
+			if (id == kInvalidLuaUIActionSubscription)
 			{
 				luaL_unref(L, LUA_REGISTRYINDEX, ref);
 				lua_pushnil(L);
 				return 1;
 			}
 
-			*tokenBox = token;
-			g_ActionCallbacks[token] = LuaActionCallback{ L, ref };
 			const VansUIHandleId screenId = element->screenId;
 			const VansUIHandleId componentId = element->componentId;
 			const std::string elementName = element->elementName;
 			if (componentId != kInvalidUIHandle)
-				g_ComponentElementSubscriptions[componentId].push_back(token);
+				RequireSession(L).componentElementSubscriptions[componentId].push_back(id);
 			else
-				g_ScreenElementSubscriptions[screenId].push_back(token);
+				RequireSession(L).screenElementSubscriptions[screenId].push_back(id);
 			resolvedElement.BindClick([actionName, screenId, elementName]()
 			{
-				VansUIActionBus::Get().Dispatch(VansUIAction{ actionName, {}, screenId, elementName });
+				Vans::VansEventBus::Get().PublishNow(
+					VansUIActionEvent{ actionName, {}, screenId, elementName });
 			});
-			PushSubscription(L, token);
+			PushSubscription(L, id);
 			return 1;
 		}
 
@@ -902,8 +997,12 @@ namespace VansRuntime
 		{
 			auto* vm = CheckViewModel(L, 1);
 			const char* name = luaL_checkstring(L, 2);
-			if (auto resolvedVm = ResolveViewModel(vm->viewModelId))
-				resolvedVm->SetValue(name ? name : "", VansLuaValueConverter::ToVariant(L, 3));
+			VansUIVariant value;
+			std::string error;
+			if (!VansLuaValueConverter::TryToVariant(L, 3, value, error))
+				return luaL_argerror(L, 3, error.c_str());
+			if (auto resolvedVm = ResolveViewModel(L, vm->viewModelId))
+				resolvedVm->SetValue(name ? name : "", std::move(value));
 			return 0;
 		}
 
@@ -911,7 +1010,7 @@ namespace VansRuntime
 		{
 			auto* vm = CheckViewModel(L, 1);
 			const char* name = luaL_checkstring(L, 2);
-			auto resolvedVm = ResolveViewModel(vm->viewModelId);
+			auto resolvedVm = ResolveViewModel(L, vm->viewModelId);
 			if (!resolvedVm || !name)
 			{
 				lua_pushnil(L);
@@ -923,7 +1022,9 @@ namespace VansRuntime
 				lua_pushnil(L);
 				return 1;
 			}
-			VansLuaValueConverter::PushVariant(L, *value);
+			std::string error;
+			if (!VansLuaValueConverter::TryPushVariant(L, *value, error))
+				return luaL_error(L, "%s", error.c_str());
 			return 1;
 		}
 
@@ -932,20 +1033,25 @@ namespace VansRuntime
 			auto* vm = CheckViewModel(L, 1);
 			const char* commandName = luaL_checkstring(L, 2);
 			luaL_checktype(L, 3, LUA_TFUNCTION);
-			auto resolvedVm = ResolveViewModel(vm->viewModelId);
+			auto resolvedVm = ResolveViewModel(L, vm->viewModelId);
 			if (!resolvedVm || !commandName || commandName[0] == '\0')
 				return 0;
 
 			lua_pushvalue(L, 3);
 			const int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-			const std::uint64_t token = g_NextLuaCommandToken++;
-			g_CommandCallbacks[token] = LuaActionCallback{ L, ref };
-			g_ViewModelCommandTokens[vm->viewModelId].push_back(token);
+			LuaUIBridgeSession& session = RequireSession(L);
+			const std::uint64_t sessionGeneration = session.generation;
+			const std::uint64_t token = session.nextCommandToken++;
+			session.commandCallbacks[token] = LuaCommandCallback{ L, ref };
+			session.viewModelCommandTokens[vm->viewModelId].push_back(token);
 
-			resolvedVm->BindCommand(commandName, [L, token]()
+			resolvedVm->BindCommand(commandName, [L, sessionGeneration, token]()
 			{
-				const auto it = g_CommandCallbacks.find(token);
-				if (it == g_CommandCallbacks.end() || it->second.ref == LUA_NOREF)
+				LuaUIBridgeSession* activeSession = FindSession(L, sessionGeneration);
+				if (!activeSession)
+					return;
+				const auto it = activeSession->commandCallbacks.find(token);
+				if (it == activeSession->commandCallbacks.end() || it->second.ref == LUA_NOREF)
 					return;
 
 				lua_rawgeti(L, LUA_REGISTRYINDEX, it->second.ref);
@@ -957,10 +1063,14 @@ namespace VansRuntime
 				}
 			});
 
-			resolvedVm->BindCommandWithParam(commandName, [L, token](const std::string& parameter)
+			resolvedVm->BindCommandWithParam(commandName,
+				[L, sessionGeneration, token](const std::string& parameter)
 			{
-				const auto it = g_CommandCallbacks.find(token);
-				if (it == g_CommandCallbacks.end() || it->second.ref == LUA_NOREF)
+				LuaUIBridgeSession* activeSession = FindSession(L, sessionGeneration);
+				if (!activeSession)
+					return;
+				const auto it = activeSession->commandCallbacks.find(token);
+				if (it == activeSession->commandCallbacks.end() || it->second.ref == LUA_NOREF)
 					return;
 
 				lua_rawgeti(L, LUA_REGISTRYINDEX, it->second.ref);
@@ -979,7 +1089,7 @@ namespace VansRuntime
 		{
 			auto* vm = CheckViewModel(L, 1);
 			const char* commandName = luaL_checkstring(L, 2);
-			if (auto resolvedVm = ResolveViewModel(vm->viewModelId))
+			if (auto resolvedVm = ResolveViewModel(L, vm->viewModelId))
 				resolvedVm->SetCommandCanExecute(commandName ? commandName : "", lua_toboolean(L, 3) != 0);
 			return 0;
 		}
@@ -988,12 +1098,19 @@ namespace VansRuntime
 		{
 			auto* vm = CheckViewModel(L, 1);
 			const char* commandName = luaL_checkstring(L, 2);
-			auto resolvedVm = ResolveViewModel(vm->viewModelId);
+			auto resolvedVm = ResolveViewModel(L, vm->viewModelId);
 			bool ok = false;
 			if (resolvedVm && commandName)
 			{
 				if (lua_gettop(L) >= 3)
-					ok = resolvedVm->ExecuteCommandWithParam(commandName, VariantToString(VansLuaValueConverter::ToVariant(L, 3)));
+				{
+					VansUIVariant parameter;
+					std::string error;
+					if (!VansLuaValueConverter::TryToVariant(L, 3, parameter, error))
+						return luaL_argerror(L, 3, error.c_str());
+					ok = resolvedVm->ExecuteCommandWithParam(
+						commandName, VariantToString(parameter));
+				}
 				else
 					ok = resolvedVm->ExecuteCommand(commandName);
 			}
@@ -1004,7 +1121,7 @@ namespace VansRuntime
 		int ViewModelIsValid(lua_State* L)
 		{
 			auto* vm = CheckViewModel(L, 1);
-			lua_pushboolean(L, ResolveViewModel(vm->viewModelId) != nullptr);
+			lua_pushboolean(L, ResolveViewModel(L, vm->viewModelId) != nullptr);
 			return 1;
 		}
 
@@ -1050,8 +1167,12 @@ namespace VansRuntime
 		{
 			auto* component = CheckComponent(L, 1);
 			const char* propertyName = luaL_checkstring(L, 2);
+			VansUIVariant value;
+			std::string error;
+			if (!VansLuaValueConverter::TryToVariant(L, 3, value, error))
+				return luaL_argerror(L, 3, error.c_str());
 			if (auto resolvedComponent = ResolveComponent(component->componentId))
-				resolvedComponent->SetProperty(propertyName ? propertyName : "", VansLuaValueConverter::ToVariant(L, 3));
+				resolvedComponent->SetProperty(propertyName ? propertyName : "", std::move(value));
 			return 0;
 		}
 
@@ -1066,7 +1187,12 @@ namespace VansRuntime
 				return 1;
 			}
 
-			VansLuaValueConverter::PushVariant(L, resolvedComponent->GetProperty(propertyName));
+			std::string error;
+			if (!VansLuaValueConverter::TryPushVariant(
+				L, resolvedComponent->GetProperty(propertyName), error))
+			{
+				return luaL_error(L, "%s", error.c_str());
+			}
 			return 1;
 		}
 
@@ -1100,11 +1226,11 @@ namespace VansRuntime
 		int SubscriptionUnsubscribe(lua_State* L)
 		{
 			auto* subscription = CheckSubscription(L, 1);
-			if (subscription->token == kInvalidUISubscription)
+			if (subscription->id == kInvalidLuaUIActionSubscription)
 				return 0;
 
-			UnsubscribeLuaAction(L, subscription->token);
-			subscription->token = kInvalidUISubscription;
+			UnsubscribeLuaAction(L, subscription->id);
+			subscription->id = kInvalidLuaUIActionSubscription;
 			return 0;
 		}
 
@@ -1112,8 +1238,8 @@ namespace VansRuntime
 		{
 			auto* subscription = static_cast<LuaUISubscriptionUserdata*>(
 				luaL_checkudata(L, 1, kSubscriptionMeta));
-			UnsubscribeLuaAction(L, subscription->token);
-			subscription->token = kInvalidUISubscription;
+			UnsubscribeLuaAction(L, subscription->id);
+			subscription->id = kInvalidLuaUIActionSubscription;
 			return 0;
 		}
 
@@ -1128,7 +1254,8 @@ namespace VansRuntime
 		{
 			auto* vm = static_cast<LuaUIViewModelUserdata*>(luaL_checkudata(L, 1, kViewModelMeta));
 			ReleaseViewModelCommands(L, vm->viewModelId);
-			g_ViewModels.erase(vm->viewModelId);
+			if (LuaUIBridgeSession* session = FindSession(L))
+				session->viewModels.erase(vm->viewModelId);
 			vm->viewModelId = kInvalidUIHandle;
 			return 0;
 		}
@@ -1150,6 +1277,9 @@ namespace VansRuntime
 
 	void VansLuaUIBridge::Register(lua_State* L)
 	{
+		if (!L)
+			return;
+		RequireSession(L);
 		const luaL_Reg screenMethods[] = {
 			{ "is_valid", ScreenIsValid },
 			{ "get_name", ScreenGetName },
@@ -1203,55 +1333,57 @@ namespace VansRuntime
 		};
 		RegisterMeta(L, kSubscriptionMeta, subscriptionMethods, SubscriptionGC);
 
+		const luaL_Reg uiBindings[] = {
+			{ "is_available", UIIsAvailable },
+			{ "open_screen", UIOpenScreen },
+			{ "push_screen", UIPushScreen },
+			{ "replace_screen", UIReplaceScreen },
+			{ "pop_screen", UIPopScreen },
+			{ "preload_screen", UIPreloadScreen },
+			{ "release_screen", UIReleaseScreen },
+			{ "reload_screen", UIReloadScreen },
+			{ "show_hud", UIShowHUD },
+			{ "hide_hud", UIHideHUD },
+			{ "show_modal", UIShowModal },
+			{ "hide_modal", UIHideModal },
+			{ "show_overlay", UIShowOverlay },
+			{ "hide_overlay", UIHideOverlay },
+			{ "find_screen", UIFindScreen },
+			{ "close_all", UICloseAll },
+			{ "close_screen", UICloseScreen },
+			{ "close_screen_by_name", UICloseScreenByName },
+			{ "dispatch", UIDispatch },
+			{ "on_action", UIOnAction },
+			{ "create_vm", UICreateViewModel },
+			{ "bind_vm", UIBindViewModel },
+			{ "get_token", UIGetToken },
+			{ "localize", UILocalize },
+			{ "load_component", UILoadComponent },
+			{ nullptr, nullptr }
+		};
 		lua_newtable(L);
-		lua_pushcfunction(L, UIIsAvailable); lua_setfield(L, -2, "is_available");
-		lua_pushcfunction(L, UIOpenScreen); lua_setfield(L, -2, "open_screen");
-		lua_pushcfunction(L, UIPushScreen); lua_setfield(L, -2, "push_screen");
-		lua_pushcfunction(L, UIReplaceScreen); lua_setfield(L, -2, "replace_screen");
-		lua_pushcfunction(L, UIPopScreen); lua_setfield(L, -2, "pop_screen");
-		lua_pushcfunction(L, UIPreloadScreen); lua_setfield(L, -2, "preload_screen");
-		lua_pushcfunction(L, UIReleaseScreen); lua_setfield(L, -2, "release_screen");
-		lua_pushcfunction(L, UIReloadScreen); lua_setfield(L, -2, "reload_screen");
-		lua_pushcfunction(L, UIShowHUD); lua_setfield(L, -2, "show_hud");
-		lua_pushcfunction(L, UIHideHUD); lua_setfield(L, -2, "hide_hud");
-		lua_pushcfunction(L, UIShowModal); lua_setfield(L, -2, "show_modal");
-		lua_pushcfunction(L, UIHideModal); lua_setfield(L, -2, "hide_modal");
-		lua_pushcfunction(L, UIShowOverlay); lua_setfield(L, -2, "show_overlay");
-		lua_pushcfunction(L, UIHideOverlay); lua_setfield(L, -2, "hide_overlay");
-		lua_pushcfunction(L, UIFindScreen); lua_setfield(L, -2, "find_screen");
-		lua_pushcfunction(L, UICloseAll); lua_setfield(L, -2, "close_all");
-		lua_pushcfunction(L, UICloseScreen); lua_setfield(L, -2, "close_screen");
-		lua_pushcfunction(L, UICloseScreenByName); lua_setfield(L, -2, "close_screen_by_name");
-		lua_pushcfunction(L, UIDispatch); lua_setfield(L, -2, "dispatch");
-		lua_pushcfunction(L, UIOnAction); lua_setfield(L, -2, "on_action");
-		lua_pushcfunction(L, UICreateViewModel); lua_setfield(L, -2, "create_vm");
-		lua_pushcfunction(L, UIBindViewModel); lua_setfield(L, -2, "bind_vm");
-		lua_pushcfunction(L, UIGetToken); lua_setfield(L, -2, "get_token");
-		lua_pushcfunction(L, UILocalize); lua_setfield(L, -2, "localize");
-		lua_pushcfunction(L, UILoadComponent); lua_setfield(L, -2, "load_component");
-		lua_pushcfunction(L, UILoadComponent); lua_setfield(L, -2, "create_component");
+		luaL_setfuncs(L, uiBindings, 0);
 		lua_setfield(L, -2, "ui");
 	}
 
 	void VansLuaUIBridge::Shutdown(lua_State* L)
 	{
-		for (const auto& [token, callback] : g_ActionCallbacks)
+		const auto found = g_Sessions.find(L);
+		if (found == g_Sessions.end())
+			return;
+		LuaUIBridgeSession& session = found->second;
+		for (const auto& [id, subscription] : session.actionSubscriptions)
 		{
-			if (callback.L == L && callback.ref != LUA_NOREF)
-				luaL_unref(L, LUA_REGISTRYINDEX, callback.ref);
-			VansUIActionBus::Get().Unsubscribe(token);
+			(void)id;
+			if (subscription.L == L && subscription.ref != LUA_NOREF)
+				luaL_unref(L, LUA_REGISTRYINDEX, subscription.ref);
 		}
-		g_ActionCallbacks.clear();
-		g_ScreenElementSubscriptions.clear();
-		g_ComponentElementSubscriptions.clear();
-		for (const auto& [token, callback] : g_CommandCallbacks)
+		for (const auto& [token, callback] : session.commandCallbacks)
 		{
 			(void)token;
 			if (callback.L == L && callback.ref != LUA_NOREF)
 				luaL_unref(L, LUA_REGISTRYINDEX, callback.ref);
 		}
-		g_CommandCallbacks.clear();
-		g_ViewModelCommandTokens.clear();
-		g_ViewModels.clear();
+		g_Sessions.erase(found);
 	}
 }

@@ -1,3 +1,4 @@
+#include "../../SceneRuntime/Transform/VansTransformStore.h"
 #include "VansImpactDecalSystem.h"
 #include "../VansRenderNode.h"
 #include "../../SceneRuntime/VansRuntimeWorld.h"
@@ -14,7 +15,7 @@ namespace VansGraphics
 namespace
 {
 template<class T> Vans::VansComponentStorage<T>* Storage(Vans::VansRuntimeWorld& world, uint16_t type)
-{ return static_cast<Vans::VansComponentStorage<T>*>(world.FindStorage(type)); }
+{ return world.FindStorage<T>(type); }
 bool Supported(const VansRenderNode* node)
 {
     return node && node->IsEnabled() && node->GetNodeType() == OPAQUE_NODE && node->m_Material &&
@@ -56,7 +57,7 @@ std::vector<Vans::VansComponentHandle> VansImpactDecalSystem::FindReceivers(Vans
 {
     using namespace Vans;
     auto* renders = Storage<VansRuntimeRenderComponent>(m_World, VansRuntimeComponentType_Render);
-    auto* physics = m_World.FindStorage(VansRuntimeComponentType_Physics);
+    auto* physics = m_World.FindStorage<VansRuntimePhysicsComponent>(VansRuntimeComponentType_Physics);
     if (!renders) return {};
     std::vector<VansComponentHandle> result;
     auto collect = [&](VansEntityHandle current) {
@@ -110,7 +111,7 @@ bool VansImpactDecalSystem::SetReceiverGroup(const ReceiverGroup& group, uint32_
 }
 
 bool VansImpactDecalSystem::BuildPose(const glm::mat4& anchor, const glm::vec3& point,
-    const glm::vec3& normal, const glm::vec3& tangent, const Vans::VansSceneImpactDecalConfig& config, VansTransform& pose)
+    const glm::vec3& normal, const glm::vec3& tangent, const Vans::VansSceneImpactDecalConfig& config, Vans::VansTransform& pose)
 {
     if (!config.IsValid() || !std::isfinite(glm::determinant(anchor)) || std::abs(glm::determinant(anchor)) < 1e-8f) return false;
     const glm::vec3 position = glm::vec3(anchor * glm::vec4(point, 1));
@@ -166,15 +167,15 @@ bool VansImpactDecalSystem::Refresh(Entry& entry, bool force)
             anchorEnabled = body && body->physicsNode && body->physicsNode->IsEnabled();
         }
         if (!anchorEnabled || !m_World.IsComponentEffectivelyEnabled(entry.anchorComponent) ||
-            !VansTransformStore::IsAllocated(entry.transform) ||
-            VansTransformStore::GetGeneration(entry.transform) != entry.transformGeneration) return false;
-        const auto pose = VansTransformStore::GetTransform(entry.transform);
+            !Vans::VansTransformStore::IsAllocated(entry.transform) ||
+            Vans::VansTransformStore::GetGeneration(entry.transform) != entry.transformGeneration) return false;
+        const auto pose = Vans::VansTransformStore::Read(entry.transform);
         if (!force && pose.m_Position == entry.lastAnchor.m_Position && pose.m_Rotation == entry.lastAnchor.m_Rotation &&
             pose.m_Scale == entry.lastAnchor.m_Scale) return true;
         entry.lastAnchor = pose;
         matrix = entry.lastAnchor.GetModelMatrix();
     }
-    VansTransform pose;
+    Vans::VansTransform pose;
     if (!BuildPose(matrix, entry.localPosition, entry.localNormal, entry.localTangent, m_Pools[entry.pool].config, pose)) return false;
     entry.node->SetTransformData(pose.m_Position, pose.m_Rotation, pose.m_Scale);
     return true;
@@ -200,8 +201,8 @@ bool VansImpactDecalSystem::Spawn(const std::string& source, const Vans::VansSur
         const auto* render = storage ? storage->Get(collider) : nullptr;
         if (!header || header->owner != impact.hit.hitEntity || !header->effectiveEnabled || !render) return false;
         for (auto* node : Nodes(*render)) if (Supported(node)) { transform = node->m_TransformID; break; }
-        if (!VansTransformStore::IsAllocated(transform)) return false;
-        anchor = VansTransformStore::GetTransform(transform).GetModelMatrix();
+        if (!Vans::VansTransformStore::IsAllocated(transform)) return false;
+        anchor = Vans::VansTransformStore::Read(transform).GetModelMatrix();
         receivers = {collider};
     }
     else if (impact.kind == VansSurfaceImpactKind::Rigid)
@@ -213,8 +214,8 @@ bool VansImpactDecalSystem::Spawn(const std::string& source, const Vans::VansSur
         if (!header || header->owner != impact.hit.hitEntity || !header->effectiveEnabled || !body || !body->physicsNode ||
             !body->physicsNode->IsEnabled() || body->physicsNode->GetProperties().isTrigger) return false;
         transform = body->physicsNode->GetTransformID();
-        if (!VansTransformStore::IsAllocated(transform)) return false;
-        anchor = VansTransformStore::GetTransform(transform).GetModelMatrix();
+        if (!Vans::VansTransformStore::IsAllocated(transform)) return false;
+        anchor = Vans::VansTransformStore::Read(transform).GetModelMatrix();
         receivers = FindReceivers(header->owner);
         if (receivers.empty()) return false;
     }
@@ -255,7 +256,7 @@ bool VansImpactDecalSystem::Spawn(const std::string& source, const Vans::VansSur
     entry.receiver = receiver;
     entry.anchorComponent = collider;
     entry.transform = transform;
-    entry.transformGeneration = VansTransformStore::GetGeneration(transform);
+    entry.transformGeneration = Vans::VansTransformStore::GetGeneration(transform);
     entry.localPosition = glm::vec3(glm::inverse(anchor)*glm::vec4(point,1));
     entry.localNormal = glm::transpose(glm::mat3(anchor))*normal;
     entry.localTangent = glm::inverse(glm::mat3(anchor))*tangent;
@@ -284,7 +285,7 @@ std::vector<VansImpactDecalDebugEntry> VansImpactDecalSystem::CaptureDebug() con
     std::vector<VansImpactDecalDebugEntry> result;
     for (const auto& entry : m_Entries)
     {
-        auto pose = VansTransformStore::GetTransform(entry.node->m_TransformID);
+        auto pose = Vans::VansTransformStore::Read(entry.node->m_TransformID);
         result.push_back({entry.receiver != 0, entry.receiver, std::max(0.0, entry.expires-m_Time),
             pose.m_Position, glm::normalize(glm::vec3(pose.GetModelMatrix()[1])), pose.m_Scale});
     }

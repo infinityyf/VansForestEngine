@@ -54,7 +54,7 @@ namespace Vans
 		Shutdown();
 	}
 
-	void VansEditorShaderHotReloadController::Initialize(EditorAPI::IEngineEditorAPI& engineAPI)
+	void VansEditorShaderHotReloadController::Initialize(EditorAPI::IShaderEditorAPI& engineAPI)
 	{
 		if (m_Initialized)
 			return;
@@ -66,8 +66,7 @@ namespace Vans
 				HandleFileChangedEvent(event);
 			},
 			VansEventLane::Editor,
-			0,
-			"VansEditorShaderHotReloadController.FileChanged"));
+			0));
 		RefreshProgramRegistry(engineAPI);
 		m_FileWatcher.Start();
 		VANS_LOG("[ShaderHotReload] Editor shader watcher initialized for " << m_Programs.size() << " programs");
@@ -99,7 +98,8 @@ namespace Vans
 		std::ostringstream stream;
 		for (const auto& program : snapshots)
 		{
-			stream << program.programId << '|' << program.sourceFolder << '|' << program.rayTracing;
+			stream << program.programId << '|' << program.sourceFolder << '|'
+				<< program.artifactRoot << '|' << program.rayTracing;
 			for (const auto& stage : program.stages)
 				stream << '|' << stage.stage << ':' << stage.sourcePath << ':' << stage.entryPoint;
 			stream << '\n';
@@ -124,7 +124,7 @@ namespace Vans
 		return NormalizePath(sourcePath).parent_path();
 	}
 
-	void VansEditorShaderHotReloadController::RefreshProgramRegistry(EditorAPI::IEngineEditorAPI& engineAPI)
+	void VansEditorShaderHotReloadController::RefreshProgramRegistry(EditorAPI::IShaderEditorAPI& engineAPI)
 	{
 		const auto snapshots = engineAPI.QueryShaderProgramSources();
 		const std::string fingerprint = BuildRegistryFingerprint(snapshots);
@@ -145,6 +145,7 @@ namespace Vans
 			ProgramState state;
 			state.request.programId = snapshot.programId;
 			state.request.sourceFolder = NormalizePath(snapshot.sourceFolder);
+			state.request.artifactRoot = NormalizePath(snapshot.artifactRoot);
 			const std::filesystem::path shaderRoot = FindShaderRoot(state.request.sourceFolder);
 			state.request.includeRoots.push_back(shaderRoot);
 			for (const auto& stage : snapshot.stages)
@@ -197,7 +198,7 @@ namespace Vans
 			m_FileWatcher.WatchTree(dependency.parent_path());
 	}
 
-	void VansEditorShaderHotReloadController::TickAndApply(EditorAPI::IEngineEditorAPI& engineAPI)
+	void VansEditorShaderHotReloadController::TickAndApply(EditorAPI::IShaderEditorAPI& engineAPI)
 	{
 		if (!m_Initialized)
 			Initialize(engineAPI);
@@ -240,7 +241,7 @@ namespace Vans
 
 	void VansEditorShaderHotReloadController::BuildProgram(
 		const std::string& programId,
-		EditorAPI::IEngineEditorAPI& engineAPI)
+		EditorAPI::IShaderEditorAPI& engineAPI)
 	{
 		auto programIt = m_Programs.find(programId);
 		if (programIt == m_Programs.end())

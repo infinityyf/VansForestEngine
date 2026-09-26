@@ -1,7 +1,6 @@
 #include "VansIESProfile.h"
 #include "../VulkanCore/VansVKDevice.h"
 #include "../VulkanCore/VansVKCommandBuffer.h"
-#include "../../AssetCore/Storage/VansFileStorage.h"
 #include "../../Util/VansLog.h"
 #include <sstream>
 #include <algorithm>
@@ -302,33 +301,30 @@ namespace VansGraphics
     }
 
     // =======================================================================
-    // 公开接口：从文件加载
+    // 公开接口：按资产身份从内存加载
     // =======================================================================
-    bool VansIESProfileManager::LoadIESFile(const std::string& filePath, int& outProfileIndex)
-    {
-        if ((int)m_Profiles.size() >= kMaxProfiles)
-        {
-            VANS_LOG_WARN("[VansIESProfileManager] 已达到最大 profile 数量 " << kMaxProfiles);
-            return false;
-        }
-
-        std::string text;
-        std::string error;
-        if (!Vans::VansFileStorage::ReadAllBytes(filePath, text, error))
-        {
-            VANS_LOG_WARN("[VansIESProfileManager] 无法打开文件: " << filePath);
-            return false;
-        }
-
-        return LoadIESFromMemory(text.c_str(), text.size(), outProfileIndex);
-    }
-
-    // =======================================================================
-    // 公开接口：从内存加载
-    // =======================================================================
-    bool VansIESProfileManager::LoadIESFromMemory(const char* data, size_t dataSize,
+    bool VansIESProfileManager::LoadIESFromMemory(const std::string& assetGuid,
+                                                   const char* data, size_t dataSize,
                                                    int& outProfileIndex)
     {
+        outProfileIndex = -1;
+        const auto existing = m_ProfileIndicesByAssetGuid.find(assetGuid);
+        if (existing != m_ProfileIndicesByAssetGuid.end())
+        {
+            outProfileIndex = existing->second;
+            return true;
+        }
+        if (assetGuid.empty() || data == nullptr || dataSize == 0)
+        {
+            VANS_LOG_WARN("[VansIESProfileManager] IES asset identity or bytes are empty");
+            return false;
+        }
+        if (m_GPUResourcesCreated)
+        {
+            VANS_LOG_WARN("[VansIESProfileManager] Cannot add IES asset after GPU array creation: "
+                << assetGuid);
+            return false;
+        }
         if ((int)m_Profiles.size() >= kMaxProfiles)
         {
             VANS_LOG_WARN("[VansIESProfileManager] 已达到最大 profile 数量 " << kMaxProfiles);
@@ -342,8 +338,21 @@ namespace VansGraphics
 
         outProfileIndex = static_cast<int>(m_Profiles.size());
         m_Profiles.push_back(std::move(profile));
-        VANS_LOG("[VansIESProfileManager] 加载 IES profile [" << outProfileIndex << "] 成功");
+        m_ProfileIndicesByAssetGuid.emplace(assetGuid, outProfileIndex);
+        VANS_LOG("[VansIESProfileManager] 加载 IES asset '" << assetGuid
+            << "' 到 profile [" << outProfileIndex << "] 成功");
         return true;
+    }
+
+    void VansIESProfileManager::ClearProfiles()
+    {
+        if (m_GPUResourcesCreated)
+        {
+            VANS_LOG_WARN("[VansIESProfileManager] GPU resources must be destroyed before clearing profiles");
+            return;
+        }
+        m_Profiles.clear();
+        m_ProfileIndicesByAssetGuid.clear();
     }
 
     // =======================================================================

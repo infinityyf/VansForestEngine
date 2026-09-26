@@ -480,7 +480,7 @@ namespace VansGraphics
 			bool procedural = true;
 			switch (source->GetType())
 			{
-			case AnimGraphNodeType::PoseCheckpoint:
+			case VansAnimGraphNodeType::PoseCheckpoint:
 			{
 				node.kind = RuntimeNodeKind::Checkpoint;
 				const auto& checkpoint = *static_cast<const AnimGraphPoseCheckpointNode*>(source);
@@ -490,17 +490,17 @@ namespace VansGraphics
 				{ error = "Pose Checkpoint requires a unique id and explicit bones"; break; }
 				for (const auto& name : checkpoint.m_Bones)
 				{
-					const auto bone = rig.skeleton->boneNameToIndex.find(name);
-					if (bone == rig.skeleton->boneNameToIndex.end() ||
-						std::find(node.checkpointBones.begin(), node.checkpointBones.end(), bone->second) != node.checkpointBones.end())
+					const int boneIndex = rig.skeleton->FindBoneIndex(name);
+					if (boneIndex < 0 ||
+						std::find(node.checkpointBones.begin(), node.checkpointBones.end(), boneIndex) != node.checkpointBones.end())
 					{ error = "Pose Checkpoint references a missing or duplicate bone: " + name; break; }
-					node.checkpointBones.push_back(bone->second);
+					node.checkpointBones.push_back(boneIndex);
 				}
 				node.checkpointWorking.resize(node.checkpointBones.size(), glm::mat4(1.0f));
 				node.checkpointPublished.resize(node.checkpointBones.size(), glm::mat4(1.0f));
 				break;
 			}
-			case AnimGraphNodeType::Goal:
+			case VansAnimGraphNodeType::Goal:
 			{
 				node.kind = RuntimeNodeKind::Goal;
 				node.goal = static_cast<const AnimGraphGoalNode*>(source)->m_Goal;
@@ -508,7 +508,7 @@ namespace VansGraphics
 				if (node.goalIndex < 0) error = "Goal node references missing Rig goal '" + node.goal.goalId + "'";
 				break;
 			}
-			case AnimGraphNodeType::AimConstraint:
+			case VansAnimGraphNodeType::AimConstraint:
 			{
 				node.kind = RuntimeNodeKind::Aim;
 				const auto* aim = static_cast<const AnimGraphAimConstraintNode*>(source);
@@ -523,12 +523,12 @@ namespace VansGraphics
 				node.directionIsWorldSpace = aim->m_DirectionIsWorldSpace;
 				if (!aim->m_PivotBone.empty() && error.empty())
 				{
-					const auto pivot = rig.skeleton->boneNameToIndex.find(aim->m_PivotBone);
-					if (pivot == rig.skeleton->boneNameToIndex.end() || aim->m_Settings.mode != VansAimConstraintMode::PitchOffset)
+					const int pivotBone = rig.skeleton->FindBoneIndex(aim->m_PivotBone);
+					if (pivotBone < 0 || aim->m_Settings.mode != VansAimConstraintMode::PitchOffset)
 						error = "Aim pivot requires an existing bone and PitchOffset mode";
 					else
 					{
-						node.pivotBoneIndex = pivot->second;
+						node.pivotBoneIndex = pivotBone;
 						int ancestor = rig.skeleton->bones[rig.chains[chain].boneIndices.front()].parentIndex;
 						while (ancestor >= 0 && ancestor != node.pivotBoneIndex) ancestor = rig.skeleton->bones[ancestor].parentIndex;
 						if (ancestor < 0 || rig.chains[chain].boneIndices.size() != 1)
@@ -538,7 +538,7 @@ namespace VansGraphics
 				node.targetHalfLife = aim->m_TargetHalfLife;
 				break;
 			}
-			case AnimGraphNodeType::Grounding:
+			case VansAnimGraphNodeType::Grounding:
 			{
 				node.kind = RuntimeNodeKind::Grounding;
 				++groundingCount;
@@ -557,7 +557,7 @@ namespace VansGraphics
 					groundedChainIndices.insert(rig.contacts[static_cast<std::size_t>(contactIndex)].chainIndex);
 				break;
 			}
-			case AnimGraphNodeType::LimbIK:
+			case VansAnimGraphNodeType::LimbIK:
 			{
 				node.kind = RuntimeNodeKind::Limb;
 				const auto* limb = static_cast<const AnimGraphLimbIKNode*>(source);
@@ -574,7 +574,7 @@ namespace VansGraphics
 				}
 				break;
 			}
-			case AnimGraphNodeType::ChainIK:
+			case VansAnimGraphNodeType::ChainIK:
 			{
 				node.kind = RuntimeNodeKind::Chain;
 				const auto* chainNode = static_cast<const AnimGraphChainIKNode*>(source);
@@ -592,7 +592,7 @@ namespace VansGraphics
 				}
 				break;
 			}
-			case AnimGraphNodeType::RotationDistribution:
+			case VansAnimGraphNodeType::RotationDistribution:
 			{
 				node.kind = RuntimeNodeKind::RotationDistribution;
 				const auto& id = static_cast<const AnimGraphRotationDistributionNode*>(source)->m_RotationProfileId;

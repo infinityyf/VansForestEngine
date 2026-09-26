@@ -96,16 +96,44 @@ struct VansCameraLens
 	float farClip = 10000.0f;
 };
 
+struct VansCameraLensLimits
+{
+	float minimumFieldOfView = 1.0f;
+	float maximumFieldOfView = 179.0f;
+	float minimumNearClip = 0.1f;
+	float minimumClipSeparation = 0.001f;
+};
+
 struct VansCameraViewSnapshot
 {
 	VansCameraPose pose;
 	VansCameraLens lens;
 };
 
+bool VansValidateCameraLensLimits(
+	const VansCameraLensLimits& limits,
+	std::string& error);
+bool VansValidateCameraView(
+	const VansCameraViewSnapshot& view,
+	const VansCameraLensLimits& limits,
+	std::string& error);
+bool VansClampCameraView(
+	VansCameraViewSnapshot& view,
+	const VansCameraLensLimits& limits,
+	std::string& diagnostic);
+
+enum class VansCameraFollowMode : std::uint8_t
+{
+	Fixed,
+	SpringArm,
+	Orbit,
+	Rail
+};
+
 struct VansCameraFollowProfile
 {
 	bool enabled = false;
-	std::string mode = "Fixed";
+	VansCameraFollowMode mode = VansCameraFollowMode::Fixed;
 	std::string targetBinding;
 	glm::vec3 localOffset{ 0.0f };
 	float positionDamping = 0.0f;
@@ -240,7 +268,13 @@ struct VansCameraContributionSortKey
 	std::uint64_t stableSequence = 0;
 };
 
-struct VansCameraContribution
+enum class VansCameraContributionLifetime : std::uint8_t
+{
+	Persistent,
+	ResolveOnce
+};
+
+struct VansCameraContributionRequest
 {
 	VansCameraViewId view;
 	VansCameraContributionOwner owner;
@@ -252,25 +286,15 @@ struct VansCameraContribution
 	float weight = 1.0f;
 	std::uint32_t channels = VansCameraChannel_All;
 	bool enabled = true;
-	bool consumeAfterResolve = false;
+	VansCameraContributionLifetime lifetime = VansCameraContributionLifetime::Persistent;
 	VansCameraShakeHandle shake;
 	float shakeScale = 1.0f;
-	double shakeElapsedSeconds = 0.0;
 	std::uint64_t shakeSeed = 0;
 	bool hasShakeOrigin = false;
 	glm::vec3 shakeOrigin{ 0.0f };
 	VansCameraRigHandle rig;
 	VansGenerationHandle bindingContext;
-	bool rigSolveInitialized = false;
-	bool hasCollisionDistance = false;
-	float collisionDistance = 0.0f;
 	bool suppressUserLook = false;
-};
-
-struct VansCameraContributionSnapshot
-{
-	VansCameraContributionHandle handle;
-	VansCameraContribution contribution;
 };
 
 struct VansResolvedCameraView
@@ -284,6 +308,8 @@ class VansCameraRuntime
 {
 public:
 	static VansCameraViewId MainView();
+	bool SetLensLimits(VansCameraLensLimits limits, std::string& error);
+	const VansCameraLensLimits& LensLimits() const { return m_LensLimits; }
 
 	VansCameraRigHandle RegisterRig(VansCameraRigDefinition definition, std::string& error);
 	bool UnregisterRig(VansCameraRigHandle rig);
@@ -307,24 +333,24 @@ public:
 	void Advance(double deltaSeconds);
 
 	VansCameraContributionHandle AddContribution(
-		VansCameraContribution contribution, std::string& error);
+		VansCameraContributionRequest request, std::string& error);
 	VansCameraContributionHandle UpsertContribution(
-		VansCameraContribution contribution, std::string& error);
+		VansCameraContributionRequest request, std::string& error);
 	bool UpdateContribution(
 		VansCameraContributionHandle handle,
-		VansCameraContribution contribution,
+		VansCameraContributionRequest request,
 		std::string& error);
-	const VansCameraContribution* ResolveContribution(
-		VansCameraContributionHandle handle) const;
+	bool ReadContribution(
+		VansCameraContributionHandle handle,
+		VansCameraContributionRequest& outRequest) const;
 	bool ReleaseContribution(VansCameraContributionHandle handle);
 	bool ReleaseOwner(VansCameraContributionOwner owner);
 	std::size_t ReleaseDomain(VansCameraContributionDomainId domain);
 	void ClearContributions();
 	void Clear();
 
-	VansResolvedCameraView ResolveView(VansCameraViewId view) const;
+	VansResolvedCameraView ResolveView(VansCameraViewId view);
 	VansResolvedCameraView ResolveAndConsumeView(VansCameraViewId view);
-	std::vector<VansCameraContributionSnapshot> Contributions(VansCameraViewId view = {}) const;
 	bool IsUserLookSuppressed(VansCameraViewId view = {}) const;
 	std::size_t ContributionCount() const { return m_Contributions.ActiveCount(); }
 
@@ -344,9 +370,31 @@ private:
 		bool hasCollisionDistance = false;
 		float collisionDistance = 0.0f;
 	};
+	struct ContributionState
+	{
+		VansCameraContributionRequest request;
+		VansCameraViewSnapshot value;
+		double shakeElapsedSeconds = 0.0;
+		bool rigSolveInitialized = false;
+		bool hasCollisionDistance = false;
+		float collisionDistance = 0.0f;
+	};
+	struct ContributionSnapshot
+	{
+		VansCameraContributionHandle handle;
+		VansCameraViewSnapshot value;
+		VansCameraBlendMode blendMode = VansCameraBlendMode::Exclusive;
+		VansCameraSpace space = VansCameraSpace::World;
+		VansCameraContributionSortKey order;
+		float weight = 1.0f;
+		std::uint32_t channels = VansCameraChannel_All;
+		bool enabled = true;
+	};
 
-	static bool ValidateView(VansCameraViewSnapshot& view, std::string& error);
-	static bool ValidateContribution(VansCameraContribution& contribution, std::string& error);
+	bool ClampView(VansCameraViewSnapshot& view, std::string_view source, std::string& error) const;
+	bool ValidateContribution(VansCameraContributionRequest& request, std::string& error) const;
+	std::vector<ContributionSnapshot> SnapshotContributions(VansCameraViewId view) const;
+	void ReportResolvedClamp(VansCameraViewId view, const std::string& diagnostic);
 	VansCameraViewSnapshot SolveRig(
 		const VansCameraRigDefinition& definition,
 		VansGenerationHandle bindingContext,
@@ -358,14 +406,16 @@ private:
 	VansCameraViewSnapshot BaseFor(VansCameraViewId view) const;
 
 	VansGenerationPool<VansCameraRigDefinition> m_Rigs;
-	VansGenerationPool<VansCameraContribution> m_Contributions;
+	VansGenerationPool<ContributionState> m_Contributions;
 	VansGenerationPool<VansCameraShakeDefinition> m_Shakes;
 	std::unordered_map<VansCameraRigId, VansCameraRigHandle> m_RigIds;
 	std::unordered_map<VansCameraShakeId, VansCameraShakeHandle> m_ShakeIds;
 	std::unordered_map<VansCameraContributionOwner, VansCameraContributionHandle, OwnerHash> m_Owners;
 	std::unordered_map<VansCameraViewId, ViewState> m_Views;
+	std::unordered_map<VansCameraViewId, std::string> m_ReportedLensClamps;
 	VansCameraBindingResolver m_BindingResolver;
 	VansCameraCollisionResolver m_CollisionResolver;
+	VansCameraLensLimits m_LensLimits;
 	std::uint64_t m_NextSequence = 1;
 };
 }

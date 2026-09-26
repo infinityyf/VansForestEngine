@@ -10,7 +10,7 @@ class VansTimelineTrackExtensionRegistry;
 namespace VansGraphics
 {
 class VansVideoManager;
-bool VansRegisterMediaTimelineExtension(Vans::VansTimelineTrackExtensionRegistry&, std::string&);
+bool VansRegisterMediaTimelineExtensions(Vans::VansTimelineTrackExtensionRegistry&, std::string&);
 bool VansRegisterMediaTimelineIntegration(
 	Vans::VansRuntimeWorld&, VansVideoManager&, Vans::VansTimelineApplierRegistry&, std::string&);
 }

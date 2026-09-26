@@ -1,24 +1,23 @@
 #pragma once
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
+#include "../SceneRuntime/Transform/VansTransformStore.h"
 
-#include <PxPhysicsAPI.h>
-#include <characterkinematic/PxControllerManager.h>
 #include <glm/glm.hpp>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include "../VansNode.h"
-#include "../RuntimeCore/VansCharacterMotion.h"
-#include "../RuntimeCore/VansCharacterTrajectoryGenerator.h"
-
-// 前向声明 VansAnimationNode，避免包含整个动画系统头文件
-namespace VansGraphics { class VansAnimationNode; }
-
-using namespace physx;
+#include "../RuntimeCore/VansCharacterLocomotionResolver.h"
+#include "../RuntimeCore/VansRagdollPose.h"
 
 namespace VansEngine
 {
+	enum class VansCharacterClimbingMode : std::uint8_t
+	{
+		Easy,
+		Constrained
+	};
+
     // ── 角色控制器配置参数（对应 JSON "charController" 字段）──────────────
     struct CharControllerProperties
     {
@@ -38,14 +37,13 @@ namespace VansEngine
         // ── 攀爬模式 ─────────────────────────────────────────────────────
         // eEASY     : 按碰撞法线自然攀爬
         // eCONSTRAINED : 受 stepOffset 限制
-        PxCapsuleClimbingMode::Enum m_ClimbingMode = PxCapsuleClimbingMode::eEASY;
+        VansCharacterClimbingMode m_ClimbingMode = VansCharacterClimbingMode::Easy;
 
         // ── 碰撞层 ───────────────────────────────────────────────────────
         std::string m_LayerName     = "Default";
-        int         m_LayerIndex    = 0;
 
         // ── 位置偏移 ─────────────────────────────────────────────────────
-        // PxCapsuleController 的 position 指胶囊中心。
+        // 原生 capsule controller 的 position 指胶囊中心。
         // m_PositionOffset 可将 Transform 的 m_Position（通常为脚底/质心）
         // 偏移到物理胶囊中心。
         // 例：Transform 在脚底 → m_PositionOffset = (0, height/2 + radius, 0)
@@ -53,8 +51,8 @@ namespace VansEngine
     };
 
     // ── 角色控制器节点 ────────────────────────────────────────────────────
-    // 封装一个 PhysX PxCapsuleController，并负责在每帧将物理位置
-    // 同步回 VansTransformStore。
+    // 封装原生 capsule controller，并负责在每帧将物理位置
+    // 同步回 Vans::VansTransformStore。
     // 生命周期由 VansScene::m_CharControllerNodes 管理。
     class VansCharacterControllerNode : public VansGraphics::VansNode
     {
@@ -64,25 +62,22 @@ namespace VansEngine
 
         // ── 生命周期 ──────────────────────────────────────────────────────
         // 由 VansScenePhysicsComponentBuilder 调用。
-        // manager   : 来自 VansPhysicsSystem::GetControllerManager()
         // spawnPos  : 胶囊中心世界坐标 (= transform.m_Position + positionOffset)
         bool Initialize(const CharControllerProperties& props,
                         uint32_t transformID,
-                        PxControllerManager* manager,
-                        PxMaterial* defaultMaterial,
                         const glm::vec3& spawnPos);
         void Release();
 
         // ── 位移队列（供 Lua/C++ 脚本调用）──────────────────────────────
         // 将本帧期望的位移加入缓冲区，UpdateCharControllerTransforms() 会在
-        // SimulationMutex 锁内统一提交 PxController::move()。
+        // SimulationMutex 锁内统一提交 controller move。
         // displacement : 本帧期望的世界坐标偏移（已包含重力分量）
         // dt           : 本帧时间步长（秒）
         void QueueMove(const glm::vec3& displacement, float dt);
 
-		// CCT 是角色世界 Transform 的唯一运行时权威。Gameplay intent 和动画
-		// Root Motion 都在这里合成为一次带碰撞的 move；Root Motion 不要求存在
-		// gameplay intent，也不依赖 Motion Matching。
+		// CCT 是角色世界 Transform 的唯一运行时提交者。RuntimeCore resolver
+		// 已将 gameplay intent 与动画 Root Motion 合成为一条待碰撞位移；本节点
+		// 不解释 Motion Matching 状态或重新选择位移权威。
 		void SetMotionIntent(const Vans::VansCharacterMotionIntent& intent);
 		void AcquireGameplayMovementBlock();
 		void ReleaseGameplayMovementBlock();
@@ -91,14 +86,14 @@ namespace VansEngine
 		void ResolveLocomotion(const glm::vec3& animationRootDelta,
 		                       const glm::quat& animationRootRotation,
 		                       bool rootMotionValid,
-		                       bool prefersRootMotion,
+		                       const Vans::VansLocomotionAuthority& authority,
 		                       const Vans::VansCharacterMotionSettings& settings,
 		                       const glm::vec3& animationToWorldScale);
 		const Vans::VansCharacterTrajectory& GetTrajectory() const
 		{
-			return m_TrajectoryGenerator.GetTrajectory();
+			return m_Locomotion.GetTrajectory();
 		}
-		bool HasMotionIntent() const { return m_MotionIntent.valid; }
+		bool HasMotionIntent() const { return m_Locomotion.HasIntent(); }
 
         // ── 内部：提交 move() + 同步 Transform（由 UpdateCharControllerTransforms 调用）──
         // 调用方需已持有 SimulationMutex。
@@ -114,21 +109,18 @@ namespace VansEngine
         // [迁移到 VansNode] IsEnabled 由基类提供
         uint32_t GetTransformID() const { return m_TransformID; }
         const CharControllerProperties& GetProperties() const { return m_Properties; }
-        PxControllerCollisionFlags GetLastCollisionFlags() const { return m_LastCollisionFlags; }
 
         // ── Transform 同步（编辑器瞬移用）────────────────────────────────
-        // 将 VansTransformStore 当前位置推送到 PhysX
+        // 将 Vans::VansTransformStore 当前位置推送到 PhysX
         void SyncControllerFromTransform();
 
         // ── Ragdoll 接管接口 ────────────────────────────────────────
-        // 绑定指定 AnimNode，当其 ragdoll 处于 Physics/Blend 模式时接管 CCT 位置
-        // animNode : 非拥有指针，生命周期由场景保证
-        void SetFollowRagdoll(VansGraphics::VansAnimationNode* animNode,
+        // 绑定指定 Ragdoll，当其处于 Physics/Blend 模式时接管 CCT 位置。
+        void SetFollowRagdoll(const Vans::VansRagdollKey& key,
                               const std::string& rootBoneName = "pelvis");
         void ClearFollowRagdoll();
 
-        bool IsFollowRagdollEnabled() const { return m_FollowRagdollAnimNode != nullptr; }
-        VansGraphics::VansAnimationNode* GetFollowRagdollAnimNode() const { return m_FollowRagdollAnimNode; }
+        bool IsFollowRagdollEnabled() const { return m_FollowRagdollKey.IsValid(); }
         const std::string& GetFollowRagdollBone() const { return m_FollowRagdollBone; }
 
         // ── 场景加载器延迟绑定辅助接口 ──────────────────────────
@@ -139,28 +131,26 @@ namespace VansEngine
         void ConsumePendingFollowRagdoll() { m_PendingFollowRagdoll = false; }
 
     private:
-        // ── 将 PhysX 当前胶囊位置写回 VansTransformStore ─────────────────
+        struct NativeState;
+
+        // ── 将 PhysX 当前胶囊位置写回 Vans::VansTransformStore ─────────────────
         // （胶囊中心 - positionOffset = Transform 原点）
         void SyncTransformFromController();
+		void DiscardPendingMove();
 
     private:
         CharControllerProperties          m_Properties;
-        PxCapsuleController*              m_Controller        = nullptr;
-        PxFilterData                      m_FilterData;
+        std::unique_ptr<NativeState>       m_Native;
         uint32_t                          m_TransformID       = UINT32_MAX;  // UINT32_MAX 表示「尚未绑定」
-        PxControllerCollisionFlags        m_LastCollisionFlags;
 
         // ── 待执行位移缓冲 ────────────────────────────────────────────────
         glm::vec3                         m_PendingDisplacement = { 0.0f, 0.0f, 0.0f };
         float                             m_PendingDt           = 0.0f;
 		bool                              m_HasPendingMove      = false;
-		Vans::VansCharacterMotionIntent     m_MotionIntent;
-		Vans::VansCharacterTrajectoryGenerator m_TrajectoryGenerator;
-		float                               m_VerticalVelocity = 0.0f;
-		float                               m_LocomotionDt = 0.0f;
+		Vans::VansCharacterLocomotionResolver m_Locomotion;
 		std::uint32_t                       m_GameplayMovementBlockCount = 0;
-        // ── Ragdoll 接管（非拥有指针，生命周期由场景保证）────────────────
-        VansGraphics::VansAnimationNode*  m_FollowRagdollAnimNode    = nullptr;
+        // ── Ragdoll 接管 ───────────────────────────────────────────
+        Vans::VansRagdollKey              m_FollowRagdollKey;
         std::string                       m_FollowRagdollBone        = "pelvis";
 
         // ── 场景加载器延迟绑定标志 ─────────────────────────────────

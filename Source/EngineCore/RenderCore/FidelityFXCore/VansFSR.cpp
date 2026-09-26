@@ -9,6 +9,7 @@
 #include <cmath>
 #include <locale>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -55,6 +56,57 @@ namespace VansGraphics
 	VansFSR::~VansFSR()
 	{
 		Cleanup();
+	}
+
+	bool VansFSR::QueryRuntimeCapability(
+		std::string& featureVersion,
+		std::string& unavailableReason)
+	{
+		featureVersion.clear();
+		unavailableReason.clear();
+
+		ffx::QueryDescGetVersions query{};
+		query.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+		query.device = nullptr;
+		std::uint64_t providerCount = 0;
+		query.outputCount = &providerCount;
+		const ffx::ReturnCode countResult = ffx::Query(query);
+		if (countResult != ffx::ReturnCode::Ok || providerCount == 0)
+		{
+			unavailableReason = countResult == ffx::ReturnCode::Ok
+				? "FidelityFX FSR upscale provider is unavailable"
+				: "FidelityFX FSR provider query failed, code=" +
+					std::to_string(static_cast<std::uint32_t>(countResult));
+			return false;
+		}
+
+		std::vector<std::uint64_t> versionIds(providerCount);
+		std::vector<const char*> versionNames(providerCount, nullptr);
+		std::uint64_t capacity = providerCount;
+		query.outputCount = &capacity;
+		query.versionIds = versionIds.data();
+		query.versionNames = versionNames.data();
+		const ffx::ReturnCode versionResult = ffx::Query(query);
+		if (versionResult != ffx::ReturnCode::Ok || capacity == 0)
+		{
+			unavailableReason = "FidelityFX FSR provider version query failed, code=" +
+				std::to_string(static_cast<std::uint32_t>(versionResult));
+			return false;
+		}
+
+		std::size_t newestIndex = 0;
+		for (std::size_t index = 1; index < static_cast<std::size_t>(capacity); ++index)
+		{
+			if ((versionIds[index] & 0x7FFFFFFFu) >
+				(versionIds[newestIndex] & 0x7FFFFFFFu))
+			{
+				newestIndex = index;
+			}
+		}
+		featureVersion = versionNames[newestIndex] != nullptr
+			? std::string("FidelityFX FSR ") + versionNames[newestIndex]
+			: "FidelityFX FSR";
+		return true;
 	}
 
 	bool VansFSR::InitializeContext(
@@ -372,6 +424,13 @@ namespace VansGraphics
 
 	void VansFSR::Cleanup()
 	{
+		if (m_Diagnostics.contextReady || m_UpscalingContext != nullptr)
+		{
+			VANS_LOG("[FSR] Releasing context: successfulDispatches="
+				<< m_Diagnostics.successfulDispatchCount
+				<< " failedDispatches=" << m_Diagnostics.failedDispatchCount
+				<< " reactiveMasks=" << m_Diagnostics.generatedReactiveMaskCount);
+		}
 		m_Diagnostics.contextReady = false;
 		m_OutputImage = nullptr;
 		if (m_ReactiveMaskImage)

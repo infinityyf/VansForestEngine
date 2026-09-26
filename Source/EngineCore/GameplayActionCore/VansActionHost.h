@@ -4,6 +4,8 @@
 #include "VansActionResourceLedger.h"
 #include "VansActionServices.h"
 #include "../GameplayActionExecution/VansActionExecution.h"
+#include "../GameplayActionSchema/VansGAFPerformanceBudget.h"
+#include "../GameplayActionSchema/VansGAFDiagnosticsSettings.h"
 #include "../GameplayAttributes/VansGameplayAttributes.h"
 #include "../GameplayCues/VansGameplayCues.h"
 #include "../GameplayEffects/VansGameplayEffects.h"
@@ -168,23 +170,16 @@ struct VansActionEndedEvent
 	std::uint64_t correlationId = 0;
 };
 
-// 已接受的动作消息在 GameLogic 队列转发，脚本不会在服务执行栈或物理锁内重入。
-struct VansActionMessageEvent
+// 只读观察通知：ActionHost 不消费该对象，执行器输入只来自实例 inbox。
+// 通知在 GameLogic 队列分发，脚本不会在服务执行栈或物理锁内重入。
+struct VansActionEventNotification
 {
 	VansEntityHandle owner;
 	VansActionHandle action;
 	VansActionId definition;
 	std::uint64_t correlationId = 0;
 	std::uint64_t sequence = 0;
-	VansActionEvent message;
-};
-
-struct VansActionHostLimits
-{
-	std::size_t maximumActiveActions = 64;
-	std::size_t maximumTasksPerAction = 64;
-	std::size_t maximumActiveEffects = 256;
-	std::size_t maximumPayloadBytes = 4096;
+	VansActionEvent event;
 };
 
 struct VansActionExternalCostRequest
@@ -223,8 +218,9 @@ struct VansPersistentActionCooldownState
 struct VansActionHostPersistentState
 {
 	std::vector<VansPersistentActionGrantState> grants;
-	std::vector<VansAttributeSnapshot> attributes;
+	std::vector<VansAttributeBaseState> attributes;
 	std::vector<VansPersistentActionCooldownState> cooldowns;
+	VansPersistentEffectServiceState effectService;
 };
 
 struct VansActionHostDependencies
@@ -243,7 +239,8 @@ struct VansActionHostDependencies
 		actionSetInitializers = nullptr;
 	IVansActionExternalCostProvider* externalCosts = nullptr;
 	VansActionResourceLedger* worldResources = nullptr;
-	VansActionHostLimits limits;
+	VansGAFDiagnosticsSettings diagnostics;
+	VansGAFPerformanceBudget performance;
 };
 
 class VansActionHost
@@ -258,7 +255,6 @@ public:
 	bool Revoke(VansActionSpecHandle spec, VansActionRevokePolicy policy, std::string& error);
 	VansActionSetHandle ApplyActionSet(const VansActionSetDefinition& set, std::string& error);
 	bool RevokeActionSet(VansActionSetHandle set, std::string& error);
-	std::size_t RevokeSource(std::uint64_t source, VansActionRevokePolicy policy);
 
 	VansActionResult Activate(const VansActionActivationRequest& request);
 	VansActionResult ActivateAction(VansActionId action, VansActionContext context);
@@ -276,7 +272,7 @@ public:
 	bool Cancel(VansActionHandle action, VansActionCancelReason reason, std::string& error);
 	bool Interrupt(VansActionHandle action, std::string& error);
 	bool EnqueueEvent(VansActionHandle action, VansActionEvent event, std::string& error);
-	// Host 级消息不依附某个运行中的动作，延迟到 GameLogic 分发。
+	// Host 级事件不依附某个运行中的动作，只发布延迟到 GameLogic 的观察通知。
 	void PublishGameplayEvent(VansActionEvent event);
 	VansTargetDataHandle StoreTargetData(VansTargetData data) { return m_TargetData.Store(std::move(data)); }
 	const VansTargetData* ResolveTargetData(VansTargetDataHandle handle) const
@@ -355,6 +351,12 @@ private:
 		std::uint64_t source = 0;
 	};
 
+	enum class DrivePhase : std::uint8_t
+	{
+		Frame,
+		LateContinuation
+	};
+
 	struct CooldownState
 	{
 		double remainingSeconds = 0.0;
@@ -382,6 +384,11 @@ private:
 		VansActionHandle handle,
 		ActionInstance& instance,
 		double deltaSeconds);
+	void DriveInstance(
+		VansActionHandle handle,
+		ActionInstance& instance,
+		double deltaSeconds,
+		DrivePhase phase);
 	bool ValidateActivation(
 		const VansActionActivationRequest& request,
 		const GrantedSpec& spec,
@@ -422,6 +429,8 @@ private:
 		VansActionError error,
 		std::string message);
 	void Transition(ActionInstance& instance, VansActionInstanceState state, std::string message);
+	void RecordTrace(ActionInstance& instance, VansActionInstanceState state, std::string message);
+	void RecordEvent(ActionInstance& instance, VansActionDebugEventSnapshot event);
 	VansActionInstanceSnapshot BuildSnapshot(VansActionHandle handle, const ActionInstance& instance) const;
 	bool HasRunningActionForSpec(VansActionSpecHandle spec) const;
 	void ReleaseDeferredSpecs();

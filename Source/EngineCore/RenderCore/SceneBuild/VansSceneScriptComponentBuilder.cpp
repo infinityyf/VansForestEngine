@@ -5,12 +5,32 @@
 namespace VansGraphics
 {
 
-std::vector<VansScriptUIComponent*> VansSceneScriptComponentBuilder::BuildUIControllers(
+VansSceneScriptBuildResult VansSceneScriptComponentBuilder::Build(
 	VansScriptObject& object,
-	const VansScriptUIComponentDescriptors& uiComponents)
+	const VansScriptUIComponentDescriptors& uiComponents,
+	const VansScriptComponentDescriptors& scriptComponents)
 {
-	std::vector<VansScriptUIComponent*> result;
-	result.reserve(uiComponents.size());
+	VansSceneScriptBuildResult result;
+	VansScriptContext* scriptContext = nullptr;
+	if (!scriptComponents.empty())
+	{
+		scriptContext = VansScriptContext::GetInstance();
+		if (!scriptContext)
+		{
+			result.error = "Lua components require an initialized ScriptContext";
+			return result;
+		}
+		for (const VansScriptComponentDescriptor& descriptor : scriptComponents)
+		{
+			if (descriptor.language != VansScriptLanguage::Lua)
+			{
+				result.error = "Scene contains an unsupported script language";
+				return result;
+			}
+		}
+	}
+
+	result.uiControllers.reserve(uiComponents.size());
 	for (const VansScriptUIComponentDescriptor& descriptor : uiComponents)
 	{
 		auto* uiComp = new VansScriptUIComponent();
@@ -22,22 +42,12 @@ std::vector<VansScriptUIComponent*> VansSceneScriptComponentBuilder::BuildUICont
 		object.AddComponent(uiComp);
 		if (descriptor.enabled)
 			uiComp->SetEnabled(true);
-		result.push_back(uiComp);
+		result.uiControllers.push_back(uiComp);
 	}
-	return result;
-}
 
-std::vector<VansLuaScriptComponent*> VansSceneScriptComponentBuilder::BuildScripts(
-	VansScriptObject& object,
-	const VansScriptComponentDescriptors& scriptComponents)
-{
-	std::vector<VansLuaScriptComponent*> result;
-	result.reserve(scriptComponents.size());
+	result.scripts.reserve(scriptComponents.size());
 	for (const VansScriptComponentDescriptor& descriptor : scriptComponents)
 	{
-		if (descriptor.language != VansScriptLanguage::Lua)
-			continue;
-
 		auto* luaComp = new VansLuaScriptComponent();
 		luaComp->m_ComponentName = "LuaScript";
 		luaComp->m_ComponentGuid = descriptor.componentGuid;
@@ -48,12 +58,14 @@ std::vector<VansLuaScriptComponent*> VansSceneScriptComponentBuilder::BuildScrip
 		luaComp->m_EnableRequested = descriptor.enabled;
 
 		object.AddComponent(luaComp);
-		if (auto* scriptContext = VansScriptContext::GetInstance())
+		if (!scriptContext->RegisterScriptComponent(&object, luaComp))
 		{
-			scriptContext->RegisterScriptComponent(&object, luaComp);
+			result.error = "Could not register Lua component with ScriptContext";
+			return result;
 		}
-		result.push_back(luaComp);
+		result.scripts.push_back(luaComp);
 	}
+	result.success = true;
 	return result;
 }
 

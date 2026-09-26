@@ -1,6 +1,6 @@
 #pragma once
 
-#include "VansEditorObjectReference.h"
+#include "../AuthoringCore/VansEditorObjectReference.h"
 #include "../AssetCore/Serialization/VansSerializedValue.h"
 
 #include <optional>

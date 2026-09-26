@@ -1,7 +1,7 @@
 #include "VansEditorPropertyDescriptorRegistry.h"
 
 #include "../ScriptCore/VansLuaScriptInspectorService.h"
-#include "../SceneRuntime/VansRuntimeComponentTypes.h"
+#include "../SceneCore/VansComponentTypeCatalog.h"
 
 #include <algorithm>
 #include <cctype>
@@ -11,9 +11,8 @@ namespace Vans
 {
 namespace
 {
-struct AssetReferenceRule
+struct GlobalAssetReferenceRule
 {
-    const char* component;
     const char* parent;
     const char* field;
     EditorAPI::AssetType assetType;
@@ -32,40 +31,19 @@ bool MatchesRuleToken(const std::string& actual, const char* expected)
     return expected == nullptr || *expected == '\0' || actual == expected;
 }
 
-const AssetReferenceRule* ResolveDeclaredAssetReferenceRule(
-    const std::string& component,
+const GlobalAssetReferenceRule* ResolveGlobalAssetReferenceRule(
     const std::string& parent,
     const std::string& field)
 {
-    static constexpr AssetReferenceRule rules[] = {
-        { "directionallight", "cookie", "texture", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "pointlight", "cookie", "texture", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "spotlight", "cookie", "texture", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "rectlight", "cookie", "texture", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "modelrenderer", "data", "model", EditorAPI::AssetType::Model, ObjectReferenceStoragePolicy::GuidObject },
-        { "modelrenderer", "materialoverrides", "", EditorAPI::AssetType::Material, ObjectReferenceStoragePolicy::GuidObject },
-        { "audio", "data", "source", EditorAPI::AssetType::Audio, ObjectReferenceStoragePolicy::GuidObject },
-        { "audiovolume", "data", "presetasset", EditorAPI::AssetType::AudioReverbPreset, ObjectReferenceStoragePolicy::GuidObject },
-        { "audioreverbzone", "data", "presetasset", EditorAPI::AssetType::AudioReverbPreset, ObjectReferenceStoragePolicy::GuidObject },
-        { "video", "data", "source", EditorAPI::AssetType::Video, ObjectReferenceStoragePolicy::GuidObject },
-		{ "localvolumetricfog", "source", "asset", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "particle", "data", "asset", EditorAPI::AssetType::Particle, ObjectReferenceStoragePolicy::GuidObject },
-        { "animation", "data", "animator", EditorAPI::AssetType::AnimatorController, ObjectReferenceStoragePolicy::GuidString },
-        { "animation", "ragdoll", "profile", EditorAPI::AssetType::RagdollProfile, ObjectReferenceStoragePolicy::GuidString },
-		{ "cloth", "data", "profile", EditorAPI::AssetType::ClothProfile, ObjectReferenceStoragePolicy::GuidObject },
-		{ "actionhost", "actionsets", "", EditorAPI::AssetType::ActionSet, ObjectReferenceStoragePolicy::GuidObject },
-		{ "actionhost", "autoactivate", "", EditorAPI::AssetType::ActionDefinition, ObjectReferenceStoragePolicy::GuidObject },
-		{ "actionhost", "", "action", EditorAPI::AssetType::ActionDefinition, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "", "shader", EditorAPI::AssetType::Shader, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "skinprofile", EditorAPI::AssetType::SkinProfile, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "textures", "", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "customTextures", "", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
+    static constexpr GlobalAssetReferenceRule rules[] = {
+        { "", "shader", EditorAPI::AssetType::Shader, ObjectReferenceStoragePolicy::GuidObject },
+        { "parameters", "skinprofile", EditorAPI::AssetType::SkinProfile, ObjectReferenceStoragePolicy::GuidObject },
+        { "textures", "", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
     };
 
-    for (const AssetReferenceRule& rule : rules)
+    for (const GlobalAssetReferenceRule& rule : rules)
     {
-        if (MatchesRuleToken(component, rule.component) &&
-            MatchesRuleToken(parent, rule.parent) &&
+        if (MatchesRuleToken(parent, rule.parent) &&
             MatchesRuleToken(field, rule.field))
         {
             return &rule;
@@ -129,53 +107,25 @@ EditorPropertyDescriptor VansEditorPropertyDescriptorRegistry::Resolve(
     const std::string component = Lower(componentType);
 
     EditorPropertyDescriptor descriptor;
-    const AssetReferenceRule* rule = ResolveDeclaredAssetReferenceRule(component, parent, field);
-    if (rule && rule->assetType != EditorAPI::AssetType::Unknown)
+    if (const VansComponentAssetReferenceRule* rule =
+        VansComponentTypeCatalog::FindAssetReferenceRule(component, parent, field))
     {
+        const EditorAPI::AssetType assetType = EditorAssetTypeFromString(std::string(rule->assetType));
+        if (assetType == EditorAPI::AssetType::Unknown) return descriptor;
         descriptor.kind = EditorPropertyKind::ObjectReference;
         descriptor.source = EditorPropertyDescriptorSource::Declared;
-        descriptor.objectReferenceSlot = ProjectAssetReferenceSlot(rule->assetType, rule->storagePolicy);
+        descriptor.objectReferenceSlot = ProjectAssetReferenceSlot(
+            assetType,
+            rule->storage == VansComponentAssetReferenceStorage::GuidString
+                ? ObjectReferenceStoragePolicy::GuidString
+                : ObjectReferenceStoragePolicy::GuidObject);
+        return descriptor;
     }
+    const GlobalAssetReferenceRule* rule = ResolveGlobalAssetReferenceRule(parent, field);
+    if (!rule || rule->assetType == EditorAPI::AssetType::Unknown) return descriptor;
+    descriptor.kind = EditorPropertyKind::ObjectReference;
+    descriptor.source = EditorPropertyDescriptorSource::Declared;
+    descriptor.objectReferenceSlot = ProjectAssetReferenceSlot(rule->assetType, rule->storagePolicy);
     return descriptor;
-}
-
-const std::vector<EditorAnimatablePropertyDescriptor>& VansEditorPropertyDescriptorRegistry::AllAnimatable()
-{
-	static const std::vector<EditorAnimatablePropertyDescriptor> descriptors{
-		{ "Transform.Position", "Position", VansRuntimeComponentType_Transform, VansTimelineChannelType::Vec3, "m", -100000.0, 100000.0, 0.01 },
-		{ "Transform.Rotation", "Rotation", VansRuntimeComponentType_Transform, VansTimelineChannelType::Quaternion, "", -1.0, 1.0, 0.001 },
-		{ "Transform.Scale", "Scale", VansRuntimeComponentType_Transform, VansTimelineChannelType::Vec3, "", 0.0, 1000.0, 0.01 },
-		{ "Camera.FieldOfView", "Field of View", VansRuntimeComponentType_Camera, VansTimelineChannelType::Float, "deg", 1.0, 179.0, 0.1 },
-		{ "Camera.NearClip", "Near Clip", VansRuntimeComponentType_Camera, VansTimelineChannelType::Float, "m", 0.001, 1000.0, 0.001 },
-		{ "Camera.FarClip", "Far Clip", VansRuntimeComponentType_Camera, VansTimelineChannelType::Float, "m", 0.01, 1000000.0, 0.1 },
-		{ "Audio.Volume", "Volume", VansRuntimeComponentType_Audio, VansTimelineChannelType::Float, "", 0.0, 4.0, 0.01 },
-		{ "Audio.Pitch", "Pitch", VansRuntimeComponentType_Audio, VansTimelineChannelType::Float, "", 0.01, 4.0, 0.01 },
-		{ "Audio.ReferenceDistance", "Reference Distance", VansRuntimeComponentType_Audio, VansTimelineChannelType::Float, "m", 0.0, 100000.0, 0.01 },
-		{ "Audio.MaxDistance", "Max Distance", VansRuntimeComponentType_Audio, VansTimelineChannelType::Float, "m", 0.0, 1000000.0, 0.1 },
-		{ "Audio.Rolloff", "Rolloff", VansRuntimeComponentType_Audio, VansTimelineChannelType::Float, "", 0.0, 16.0, 0.01 },
-		{ "Audio.ReverbSend", "Reverb Send", VansRuntimeComponentType_Audio, VansTimelineChannelType::Float, "", 0.0, 1.0, 0.01 },
-		{ "Audio.Loop", "Loop", VansRuntimeComponentType_Audio, VansTimelineChannelType::Bool },
-		{ "Audio.Spatial", "Spatial", VansRuntimeComponentType_Audio, VansTimelineChannelType::Bool },
-		{ "Audio.Bus", "Bus", VansRuntimeComponentType_Audio, VansTimelineChannelType::String }
-	};
-	return descriptors;
-}
-
-const EditorAnimatablePropertyDescriptor* VansEditorPropertyDescriptorRegistry::FindAnimatable(
-	const std::string& stableId)
-{
-	const auto& descriptors = AllAnimatable();
-	const auto found = std::find_if(descriptors.begin(), descriptors.end(),
-		[&](const auto& descriptor) { return descriptor.stableId == stableId; });
-	return found == descriptors.end() ? nullptr : &*found;
-}
-
-std::vector<EditorAnimatablePropertyDescriptor>
-VansEditorPropertyDescriptorRegistry::AnimatableForComponent(std::uint16_t componentTypeId)
-{
-	std::vector<EditorAnimatablePropertyDescriptor> result;
-	for (const auto& descriptor : AllAnimatable())
-		if (descriptor.componentTypeId == componentTypeId) result.push_back(descriptor);
-	return result;
 }
 }

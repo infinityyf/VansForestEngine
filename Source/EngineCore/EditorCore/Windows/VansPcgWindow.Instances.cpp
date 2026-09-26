@@ -1,11 +1,12 @@
 #include "VansPcgWindow.h"
+#include "../../EngineAPILayer/Public/IPcgEditorAPI.h"
 #include <imgui.h>
 #include <algorithm>
 #include <vector>
 
 namespace VansGraphics
 {
-void VansPcgWindow::ShowInstances(Vans::EditorAPI::IEngineEditorAPI& api,const Vans::EditorAPI::PcgBrushSnapshot& brush)
+void VansPcgWindow::ShowInstances(Vans::EditorAPI::IPcgEditorAPI& api,const Vans::EditorAPI::PcgBrushSnapshot& brush)
 {
     using namespace Vans::EditorAPI;
     if (!ImGui::CollapsingHeader("Individual instances")) return;

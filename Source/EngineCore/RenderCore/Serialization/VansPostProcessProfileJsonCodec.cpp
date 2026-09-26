@@ -1,5 +1,7 @@
 #include "VansPostProcessProfileJsonCodec.h"
 
+#include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
+
 #include <nlohmann/json.hpp>
 
 #include <exception>
@@ -9,6 +11,8 @@ namespace VansGraphics
 {
 namespace
 {
+using PostProcessProfileJson = nlohmann::ordered_json;
+
 const PostProcessProfileJson& SectionOrEmpty(const PostProcessProfileJson& root, const char* key)
 {
 	static const PostProcessProfileJson empty = PostProcessProfileJson::object();
@@ -17,7 +21,8 @@ const PostProcessProfileJson& SectionOrEmpty(const PostProcessProfileJson& root,
 }
 }
 
-PostProcessProfileJson VansPostProcessProfileJsonCodec::Encode(const VansPostProcessProfile& profile)
+Vans::VansSerializedValue VansPostProcessProfileJsonCodec::Encode(
+	const VansPostProcessProfile& profile)
 {
 	const VansPostProcessProfile& p = profile;
 	PostProcessProfileJson root;
@@ -76,17 +81,19 @@ PostProcessProfileJson VansPostProcessProfileJsonCodec::Encode(const VansPostPro
 
 	root["aa"]["enableSharpen"] = p.m_EnableSharpen;
 	root["aa"]["sharpenIntensity"] = p.m_SharpenIntensity;
-	return root;
+	return Vans::DecodeSerializedValueJson(root);
 }
 
 bool VansPostProcessProfileJsonCodec::Decode(
-	const PostProcessProfileJson& root,
+	const Vans::VansSerializedValue& serializedRoot,
 	const std::filesystem::path& filePath,
 	VansPostProcessProfile& profile,
 	std::string& error)
 {
 	try
 	{
+		const PostProcessProfileJson root =
+			Vans::EncodeSerializedValueJson<PostProcessProfileJson>(serializedRoot);
 		VansPostProcessProfile decoded;
 		const PostProcessProfileJson& general = SectionOrEmpty(root, "general");
 		const PostProcessProfileJson& exposure = SectionOrEmpty(root, "exposure");

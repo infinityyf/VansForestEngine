@@ -23,7 +23,6 @@ namespace VansRuntime
     private:
         VansUIComponentRegistry() = default;
 
-        VansUIHandleId m_NextHandle = 1;
         std::unordered_map<VansUIHandleId, std::shared_ptr<VansUIComponentInstance>> m_Components;
     };
 }

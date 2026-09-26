@@ -4,15 +4,18 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace Vans
 {
 	enum class VansGamePackagePlatform
 	{
+		Unknown,
 		Windows
 	};
 
 	const char* ToString(VansGamePackagePlatform platform);
+	bool ParseGamePackagePlatform(std::string_view value, VansGamePackagePlatform& platform);
 
 	struct VansGamePackageRequest
 	{

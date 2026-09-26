@@ -4,6 +4,9 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "../CameraCore/VansCameraCore.h"
+#include "../NavigationCore/VansNavigationTypes.h"
+#include "../PhysicsCore/VansPhysicsTiming.h"
 #include "../RenderCore/VansRenderRuntimeConfig.h"
 
 namespace Vans
@@ -42,12 +45,21 @@ namespace Vans
 		bool ApplyRenderSettingsData(
 			const VansProjectRenderSettingsData& settings,
 			std::string& error);
-		void ApplyPhysicsSettingsData(const VansProjectPhysicsSettingsData& settings);
+		bool ApplyPhysicsSettingsData(
+			const VansProjectPhysicsSettingsData& settings,
+			std::string& error);
 		VansProjectRenderSettingsData BuildRenderSettingsData() const;
 		VansProjectPhysicsSettingsData BuildPhysicsSettingsData() const;
+		bool SetNavigationSettings(
+			const VansNavigationSettings& settings,
+			std::string* error = nullptr);
+		const VansNavigationSettings& GetNavigationSettings() const
+		{
+			return m_NavigationSettings;
+		}
 
-		float GetFixedTimeStep() const { return m_FixedTimeStep; }
-		void SetFixedTimeStep(float fixedTimeStep);
+		const VansEngine::VansPhysicsTiming& GetPhysicsTiming() const { return m_PhysicsTiming; }
+		bool SetPhysicsTiming(const VansEngine::VansPhysicsTiming& timing, std::string& error);
 		bool ResolvePhysicsQueryProfile(
 			const std::string& profile,
 			std::uint32_t& collisionMask,
@@ -85,9 +97,11 @@ namespace Vans
 			bool asyncComputeEnabled);
 		const VansProjectMainCameraHiZCullSettings& GetMainCameraHiZCullSettings() const { return m_MainCameraHiZCullSettings; }
 		void SetMainCameraHiZCullSettings(const VansProjectMainCameraHiZCullSettings& settings);
+		const VansCameraLensLimits& GetCameraLensLimits() const { return m_CameraLensLimits; }
+		bool SetCameraLensLimits(const VansCameraLensLimits& limits, std::string& error);
 
 private:
-		float m_FixedTimeStep = 1.0f / 60.0f;
+		VansEngine::VansPhysicsTiming m_PhysicsTiming;
 		std::unordered_map<std::string, std::vector<std::string>> m_PhysicsQueryProfiles;
 		VansProjectUpscalerSettings m_UpscalerSettings;
 		VansProjectCommandRecordingSettings m_CommandRecordingSettings;
@@ -96,5 +110,7 @@ private:
 		VansProjectNearMediaQualitySettings m_NearMediaQualitySettings;
 		VansProjectCloudShadowQualitySettings m_CloudShadowQualitySettings;
 		VansProjectMainCameraHiZCullSettings m_MainCameraHiZCullSettings;
+		VansCameraLensLimits m_CameraLensLimits;
+		VansNavigationSettings m_NavigationSettings;
 	};
 }

@@ -1,9 +1,14 @@
 #pragma once
 
 #include "EngineCommandContext.h"
+#include "IVansEditorRuntimeCommand.h"
+#include "ModelAssetPlacementPreparationService.h"
 #include "VansLocalFogFieldPreviewService.h"
 
 #include "../Public/IEngineEditorAPI.h"
+#include "../../AuthoringCore/IVansAuthoringSaveHost.h"
+#include "../../AuthoringCore/IVansSceneAuthoringHost.h"
+#include "../../AuthoringCore/VansAuthoringHistory.h"
 #include "../../GameplayActionDebug/VansGameplayActionDebug.h"
 #include "../../RuntimeUI/Public/VansUIRuntimeHandles.h"
 #include "../../RenderCore/VulkanCore/VansVKImage.h"
@@ -16,6 +21,8 @@
 namespace Vans::EditorAPI
 {
 	class EngineAPIImpl;
+	class VansEditorPreviewRegistry;
+	class VansAnimationPreviewSessionOwner;
 	class VansEditorSceneQuery;
 }
 
@@ -28,6 +35,7 @@ namespace VansRuntime
 namespace VansGraphics
 {
 	class VansRenderSystem;
+	class VansPcgSplinePreviewSession;
 	struct GIProbeLayoutSnapshot;
 }
 
@@ -37,9 +45,10 @@ namespace Vans
 	class VansGameplayReplaySession;
 	class VansTerrainAuthoringSession;
 	class VansPcgMaskAuthoringSession;
+	class VansPcgSplineAuthoringSession;
 	class VansSceneDocument;
-	class VansSceneEditService;
 	struct VansPcgBatchUpdate;
+	struct VansTerrainAsset;
 }
 
 namespace Vans::EditorAPI
@@ -47,19 +56,17 @@ namespace Vans::EditorAPI
 	class EngineAPIImpl final : public IEngineEditorAPI
 	{
 	public:
-		EngineAPIImpl() = default;
+		EngineAPIImpl();
 		EngineAPIImpl(RuntimeSceneHandle scene, RuntimeRenderDeviceHandle device);
+		~EngineAPIImpl() override;
 
 		void BindRuntime(RuntimeSceneHandle scene, RuntimeRenderDeviceHandle device);
 		void BindGlobalRuntime(RuntimeRenderDeviceHandle device);
 		void BindRenderSystem(VansGraphics::VansRenderSystem* renderSystem);
 		void BindScriptContext(VansScriptContext* scriptContext);
+		void BindAuthoringSaveHost(Vans::IVansAuthoringSaveHost* host);
+		void ReleaseRuntimePreviewResources();
 
-		SceneDataSnapshot GetSceneSnapshot() const override;
-		EntityDataSnapshot GetEntitySnapshot(EntityId id) const override;
-		ComponentDataSnapshot GetComponentSnapshot(EntityId entityId, ComponentId componentId) const override;
-
-		void SubmitCommand(std::unique_ptr<IEngineCommand> command) override;
 		void BreakCommandMergeGroup() override;
 
 		std::vector<AssetEntry> QueryAssets(AssetTypeFilter filter) const override;
@@ -71,7 +78,7 @@ namespace Vans::EditorAPI
 		PcgEditorOperationResult ApplyPcgSplineEdit(const PcgSplineEditRequest& request) override;
 		PcgEditorOperationResult ExecutePcgSplineCommand(const PcgSplineCommandRequest& request) override;
 		PcgEditorOperationResult AppendPcgSplinePoint(const Ray& ray) override;
-		void BindPcgSceneAuthoring(VansSceneDocument* document,VansSceneEditService* edits);
+		void BindSceneAuthoring(Vans::IVansSceneAuthoringHost* host);
 		PcgLayerCreateResult CreatePcgLayer(const PcgLayerCreateRequest& request) override;
 		PcgEditorOperationResult RemovePcgLayer(const PcgBrushTarget& target) override;
 		PcgEditorOperationResult BindPcgRecipeToScene(const std::string& guid) override;
@@ -92,11 +99,9 @@ namespace Vans::EditorAPI
 		PcgEditorOperationResult CreatePcgExclusionMask(const PcgBrushTarget& target) override;
 		PcgInstanceSnapshot GetPcgInstances(const PcgBrushTarget& target,uint64_t offset) override;
 		PcgEditorOperationResult EditPcgInstance(const PcgInstanceEditRequest& request) override;
-		AssetMetaSnapshot GetAssetMeta(AssetId id) const override;
 		ProjectBrowserRootSnapshot GetProjectBrowserRoot() const override;
 		AssetDragPayload CreateAssetDragPayload(const std::string& assetPath) override;
 		AssetGuidResolution ResolveAssetGuid(const std::string& assetGuid) const override;
-        ParticleDiagnosticsSnapshot GetParticleDiagnostics(bool includePoints = false) const override;
         ParticleAuthoringSchemaSnapshot GetParticleAuthoringSchema() const override;
 		ShaderAuthoringSchemaSnapshot GetShaderAuthoringSchema(
 			const std::string& shaderAssetGuid) const override;
@@ -105,7 +110,7 @@ namespace Vans::EditorAPI
 		ProjectAssetCreateResult CreateProjectAsset(const ProjectAssetCreateRequest& request) override;
         EditorViewportCameraState CaptureEditorViewportCamera() const override;
         void RestoreEditorViewportCamera(const EditorViewportCameraState& state) override;
-		ScenePropertyValue QueryPrefabAsset(const std::string& guid) const override;
+		Vans::VansSerializedValue QueryPrefabAsset(const std::string& guid) const override;
 		AssetRefreshResult RefreshProjectAsset(const std::string& assetPath, bool importIfMissing) override;
 		AssetWorkingCopyPublishResult PublishAssetWorkingCopy(
 			const AssetWorkingCopyPublishRequest& request) override;
@@ -140,10 +145,9 @@ namespace Vans::EditorAPI
 		ProjectConfigEditResult SetProjectScriptSearchPaths(const std::vector<std::string>& paths) override;
 		ProjectConfigEditResult SetProjectAssetDirectory(const std::string& key, const std::string& relativePath) override;
 		ProjectConfigEditResult SaveProjectDocuments() override;
-		float GetProjectPhysicsFixedTimeStep() const override;
-		ProjectConfigEditResult SetProjectPhysicsFixedTimeStep(float fixedTimeStep) override;
+		VansProjectPhysicsTiming GetProjectPhysicsTiming() const override;
+		ProjectConfigEditResult SetProjectPhysicsTiming(const VansProjectPhysicsTiming& timing) override;
 		bool SetCurrentProjectScenePath(const std::string& scenePath) override;
-		EditorTextureHandle GetViewportTexture(ViewportId id) const override;
 		RenderTexturePreview GetViewportPreview(ViewportId id) const override;
 		UpscalerSettingsSnapshot GetUpscalerSettings() const override;
 		std::vector<UpscalerCapabilitiesSnapshot> GetUpscalerCapabilities() const override;
@@ -175,7 +179,6 @@ namespace Vans::EditorAPI
 		std::vector<ShaderProgramSourceSnapshot> QueryShaderProgramSources() const override;
 		ShaderCandidateApplyResult ApplyShaderCandidateAtRenderSafePoint(
 			const ShaderCandidatePackage& package) override;
-		void RebuildReflectionProbeResources() override;
 		void BakeQueuedReflectionProbesNow() override;
 		ReflectionProbeSettingsSnapshot GetReflectionProbeSettings() const override;
 		bool ApplyReflectionProbeSettings(const ReflectionProbeSettingsSnapshot& settings) override;
@@ -199,26 +202,20 @@ namespace Vans::EditorAPI
 		WaterSettingsSnapshot GetWaterSettings() const override;
 		void ApplyWaterSettings(const WaterSettingsSnapshot& settings) override;
 		WaterRuntimeStats GetWaterRuntimeStats() const override;
-		MeshLoadResult EnsureProjectMeshLoaded(const MeshLoadRequest& request) override;
-		ProjectMeshInfoSnapshot GetProjectMeshInfo(const std::string& meshName) const override;
-		void RegisterProjectMeshAlias(const ProjectMeshAliasRequest& request) override;
-		std::string GetDefaultMaterialAssetName() const override;
 		RuntimeSceneEntitiesCreateResult CreateRuntimeSceneEntities(const RuntimeSceneEntitiesCreateRequest& request) override;
 		ModelAssetPlacementPayload PrepareModelAssetPlacement(const ModelAssetPlacementRequest& request) override;
 		RuntimeEntityDestroyResult DestroyRuntimeEntity(const RuntimeEntityDestroyRequest& request) override;
 		RuntimeEntityReparentResult ReparentRuntimeEntity(const RuntimeEntityReparentRequest& request) override;
-		std::string MakeUniqueRuntimeEntityName(const std::string& baseName) const override;
 		std::string GetProjectRootPath() const override;
 		bool IsRuntimeSceneReady() const override;
 		bool IsRuntimeSceneSwitching() const override;
 		RuntimeSceneLoadResult LoadRuntimeScene(const RuntimeSceneLoadRequest& request) override;
 		void UnloadRuntimeScene() override;
-		bool AreRuntimeProjectResourcesLoaded() const override;
 		void UnloadRuntimeProjectResources() override;
 		VehicleDebugSnapshot GetVehicleDebugSnapshot() const override;
-		bool HasAnimationDebugNodes() const override;
 		AnimationAssetBindingSnapshot GetAnimationAssetBinding(const std::string& entityGuid) const override;
 		MotionMatchingDebugSnapshot GetMotionMatchingDebugSnapshot() const override;
+		VansAIDiagnosticsSnapshot GetAIDiagnosticsSnapshot() const override;
 		SceneSkeletonHierarchySnapshot GetSceneSkeletonHierarchy(
 			const std::string& entityGuidFilter) const override;
 		SceneSkeletonNodePoseSnapshot GetSceneSkeletonNodePose(
@@ -233,13 +230,13 @@ namespace Vans::EditorAPI
 		BoneMaskDocumentDecodeResult DecodeBoneMaskDocument(
 			const std::string& canonicalJson) const override;
 		BoneMaskDocumentEncodeResult EncodeBoneMaskDocument(
-			const BoneMaskDocumentDTO& document) const override;
+			const VansBoneMaskDocumentDTO& document) const override;
 		AnimationRigDocumentDecodeResult DecodeAnimationRigDocument(
 			const std::string& canonicalJson) const override;
 		AnimationRigDocumentEncodeResult EncodeAnimationRigDocument(
 			const AnimationRigDocumentDTO& document) const override;
 		BoneMaskCompileResult CompileBoneMaskDocument(
-			const BoneMaskDocumentDTO& document,
+			const VansBoneMaskDocumentDTO& document,
 			const AssetSkeletonSnapshot& skeleton) const override;
 		AnimationPreviewCreateResult CreateAnimationPreview(
 			const AnimationPreviewCreateRequest& request) override;
@@ -249,7 +246,6 @@ namespace Vans::EditorAPI
 		bool SetAnimationPreviewParameter(const AnimationPreviewParameterValue& value) override;
 		bool SwitchAnimationPreviewGraphSet(const AnimationPreviewGraphSetRequest& request) override;
 		bool TriggerAnimationPreviewSlot(const AnimationPreviewSlotRequest& request) override;
-		bool SetAnimationPreviewViewport(const AnimationPreviewViewportRequest& request) override;
 		void TickAnimationPreview(AnimationPreviewSessionId sessionId, float deltaTime) override;
 		AnimationPreviewSnapshot GetAnimationPreviewSnapshot(
 			AnimationPreviewSessionId sessionId) const override;
@@ -297,7 +293,6 @@ namespace Vans::EditorAPI
 		bool ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change) override;
 		bool ApplyRuntimeMaterialPreviewChange(const RuntimeMaterialPreviewChange& change) override;
 
-		void CommitLightingChanges() override;
 		LightingSettingsSnapshot GetLightingSettings() const override;
 		void ApplyLightingSettings(const LightingSettingsSnapshot& settings) override;
 		PostProcessSettingsSnapshot GetPostProcessSettings() const override;
@@ -306,7 +301,6 @@ namespace Vans::EditorAPI
 		EnvironmentSettings GetEnvironmentSettings() const override;
 		void ApplyEnvironmentSettings(const EnvironmentSettings& settings) override;
 		void CommitEnvironmentSettings() override;
-		std::vector<ScenePropertyEdit> ConsumeScenePropertyEdits() override;
 
         void UpdateGameCursorViewport(bool interactive) override;
         bool IsGameCursorHidden() const override;
@@ -316,15 +310,13 @@ namespace Vans::EditorAPI
 		EditorSceneBounds QueryEditorSceneBounds(const std::vector<std::string>& entityGuids) override;
 		RuntimeTransformSnapshot GetRuntimeTransform(
 			const std::string& entityGuid, RuntimeTransformSpace space) const override;
-		RuntimeTransformEditResult ApplyRuntimeTransform(
-			const RuntimeTransformEdit& edit) override;
 		std::vector<RuntimeMultiMeshGroupSnapshot> BuildRuntimeMultiMeshExpansionSnapshot() override;
 		AudioBusDebugSnapshot GetAudioBusDebugSnapshot() const override;
 		void SetAudioBusGain(const std::string& busName, float gain) override;
 		void SetAudioBusMuted(const std::string& busName, bool muted) override;
 		void SetAudioBusSoloed(const std::string& busName, bool soloed) override;
 		void SetAudioMaxActiveVoices(int maxActiveVoices) override;
-		void SetRuntimePhysicsFixedTimeStep(float deltaTimeSeconds) override;
+		void SetAudioSourceLimit(int sourceLimit) override;
 		std::vector<std::string> GetRuntimeCollisionLayerNames() const override;
 		void InstallRuntimeVehiclePhysicsStepCallback() override;
 		void ClearRuntimePhysicsStepCallback() override;
@@ -332,12 +324,11 @@ namespace Vans::EditorAPI
 		void StartRuntimePhysicsIfNeeded() override;
 		void PauseRuntimePhysics() override;
 		void ResumeRuntimePhysics() override;
-		void StepRuntimeVehicle(float deltaTimeSeconds) override;
-		void SetRuntimeVehicleInput(float throttle, float brake, float steer, float handbrake) override;
 		void SyncRuntimePhysicsTransforms() override;
 		void PrepareRuntimeCharacterLocomotion(double deltaSeconds) override;
 		void FlushRuntimeCharacterControllerTransforms() override;
 		void UpdateRuntimeNonCameraScripts() override;
+		void AdvanceCameraRuntime(double deltaSeconds) override;
 		void UpdateRuntimeActionsEarly(double deltaSeconds) override;
 		void UpdateRuntimeAI(double deltaSeconds) override;
 		void RunRuntimeActionLateContinuation() override;
@@ -352,15 +343,27 @@ namespace Vans::EditorAPI
 		void InitializeRuntimeScripts() override;
 		void SetupRuntimeScriptProjectVenv(const std::string& projectRootPath) override;
 		void ReloadRuntimeScripts() override;
-		void ReloadRuntimeScriptModule() override;
 
-		bool CanUndo() const override;
-		bool CanRedo() const override;
+		EditorCommandHistorySnapshot GetRuntimeCommandHistory() const override;
 		void Undo() override;
 		void Redo() override;
 
 	private:
+		friend class ModelAssetPlacementPreparationService;
+		ProjectMeshLoadResult EnsureProjectMeshLoaded(
+			const ProjectMeshLoadRequest& request);
+		ProjectMeshSnapshot GetProjectMeshInfo(const std::string& meshName) const;
+		std::string GetDefaultMaterialAssetName() const;
+		Vans::VansAuthoringSaveResult SaveAuthoringDocument(
+			const std::shared_ptr<Vans::VansOpenAssetDocument>& document) const;
+		bool CommitScenePropertyValue(
+			std::string propertyPointer,
+			Vans::VansSerializedValue value) const;
+		void SubmitCommand(std::unique_ptr<IVansEditorRuntimeCommand> command);
+		void StepRuntimeVehicle(float deltaTimeSeconds);
 		std::shared_ptr<VansEditorSceneQuery> m_EditorSceneQueryCache;
+		std::unique_ptr<VansEditorPreviewRegistry> m_EditorPreviewRegistry;
+		std::unique_ptr<VansAnimationPreviewSessionOwner> m_AnimationPreviewSessionOwner;
 		RenderTexturePreview BuildReflectionProbePreview(RenderTextureFilter filter) const;
 		RenderTexturePreview BuildWaterTexturePreview(RenderTextureFilter filter) const;
 		bool SetRuntimeComponentEnabled(
@@ -374,9 +377,10 @@ namespace Vans::EditorAPI
 		void QueueTerrainPixelChange();
 		void ApplyTerrainRuntimeSettings(const TerrainSettingsSnapshot& settings);
 		struct PcgAuthoringState;
-		struct PcgSplineAuthoringState;
-		std::shared_ptr<PcgSplineAuthoringState> m_PcgSplineAuthoring;
+		std::unique_ptr<Vans::VansPcgSplineAuthoringSession> m_PcgSplineAuthoring;
+		std::unique_ptr<VansGraphics::VansPcgSplinePreviewSession> m_PcgSplinePreview;
 		void TickPcgSplineAuthoring();
+		std::shared_ptr<const Vans::VansTerrainAsset> ResolvePcgSplineTerrainOverride() const;
 		PcgEditorOperationResult RequestPcgSplinePreview();
 		PcgEditorOperationResult FinishPcgSplineEdit();
 		void EnsurePcgAuthoringContext() const;
@@ -386,19 +390,26 @@ namespace Vans::EditorAPI
 		mutable std::shared_ptr<PcgAuthoringState> m_PcgAuthoring;
 		std::string m_PcgSceneRecipeGuid;
 		PcgEditorOperationResult CommitPcgPreview(std::shared_ptr<const VansPcgBatchUpdate> update);
+		Vans::IVansSceneAuthoringHost* m_SceneAuthoringHost = nullptr;
 		VansSceneDocument* m_PcgSceneDocument = nullptr;
-		VansSceneEditService* m_PcgSceneEdits = nullptr;
 		std::uint64_t m_PcgSceneAuthoringState = 0;
 
 		RuntimeSceneHandle m_Scene = nullptr;
 		RuntimeRenderDeviceHandle m_Device = nullptr;
 		VansGraphics::VansRenderSystem* m_RenderSystem = nullptr;
 		VansScriptContext* m_ScriptContext = nullptr;
+		Vans::IVansAuthoringSaveHost* m_AuthoringSaveHost = nullptr;
 		EnginePlayState m_PlayState = EnginePlayState::Edit;
 		std::uint64_t m_SceneContentRevision = 0;
-		std::vector<std::unique_ptr<IEngineCommand>> m_UndoStack;
-		std::vector<std::unique_ptr<IEngineCommand>> m_RedoStack;
-		std::vector<ScenePropertyEdit> m_PendingScenePropertyEdits;
+		struct RuntimeHistoryEntry
+		{
+			std::unique_ptr<IVansEditorRuntimeCommand> command;
+			Vans::VansHistorySequence sequence = 0;
+		};
+		void DiscardStaleRuntimeRedo() const;
+		std::vector<RuntimeHistoryEntry> m_UndoStack;
+		mutable std::vector<RuntimeHistoryEntry> m_RedoStack;
+		mutable Vans::VansHistorySequence m_RedoRevision = 0;
 		std::shared_ptr<Vans::VansGameplayTraceRecorder> m_GAFTraceRecorder;
 		std::shared_ptr<Vans::VansGameplayReplaySession> m_GAFReplaySession;
 		Vans::VansGameplayActionBreakpointSet m_GAFBreakpoints;
@@ -432,6 +443,7 @@ namespace Vans::EditorAPI
 			VkRenderPass renderPass = VK_NULL_HANDLE;
 			VkFramebuffer framebuffer = VK_NULL_HANDLE;
 			EditorTextureHandle texture = nullptr;
+			std::uint64_t textureRegistration = 0;
 		};
 		struct UIPreviewTransactionState;
 		class UIPreviewRenderTransaction;

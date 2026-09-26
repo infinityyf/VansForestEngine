@@ -33,7 +33,7 @@ namespace VansEngine
         if (lowered == "ambient") return "Ambient";
         if (lowered == "voice") return "Voice";
         if (lowered == "preview") return "Preview";
-        return trimmed;
+        return lowered;
     }
 
     struct AudioBusState
@@ -216,5 +216,16 @@ namespace VansEngine
                 (busIsMaster ? 1.0f : bus.duckingGain),
             0.0f,
             4.0f);
+    }
+
+    inline float ComputeAudioBusEffectiveLowpassGain(
+        AudioBusState master,
+        AudioBusState bus,
+        bool busIsMaster)
+    {
+        master.Normalize();
+        bus.Normalize();
+        return master.lowpassHighFrequencyGain *
+            (busIsMaster ? 1.0f : bus.lowpassHighFrequencyGain);
     }
 }

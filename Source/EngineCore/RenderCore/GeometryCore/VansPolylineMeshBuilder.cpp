@@ -76,19 +76,39 @@ void BuildRun(const std::vector<const VansPolylinePoint*>& run, const glm::vec3&
     }
 }
 }
-void VansPolylineMeshBuilder::Append(const std::vector<VansPolylinePoint>& points,
+VansPolylineBuildResult VansPolylineMeshBuilder::Append(const std::vector<VansPolylinePoint>& points,
     const glm::vec3& camera, const glm::vec3& right, const glm::vec3& up, VansPolylineMesh& mesh)
 {
-    if (!Finite(camera) || !Finite(right) || !Finite(up)) return;
+    VansPolylineBuildResult result;
+    const std::size_t firstVertex = mesh.vertices.size();
+    const std::size_t firstIndex = mesh.indices.size();
+    if (!Finite(camera) || !Finite(right) || !Finite(up))
+    {
+        result.viewValid = false;
+        return result;
+    }
     std::vector<const VansPolylinePoint*> run;
     run.reserve(points.size());
     for (const auto& point : points)
     {
-        if (!Valid(point)) { BuildRun(run,camera,right,up,mesh); run.clear(); continue; }
+        if (!Valid(point))
+        {
+            ++result.rejectedPointCount;
+            if (!run.empty())
+            {
+                ++result.splitRunCount;
+                BuildRun(run,camera,right,up,mesh);
+                run.clear();
+            }
+            continue;
+        }
         if (!run.empty() && glm::length(point.position-run.back()->position) < 1.0e-5f)
             continue;
         run.push_back(&point);
     }
     BuildRun(run,camera,right,up,mesh);
+    result.verticesAdded = mesh.vertices.size() - firstVertex;
+    result.indicesAdded = mesh.indices.size() - firstIndex;
+    return result;
 }
 }

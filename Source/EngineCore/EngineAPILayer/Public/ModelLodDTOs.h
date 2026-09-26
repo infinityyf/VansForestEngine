@@ -11,7 +11,7 @@ struct ModelLodBuildRequest
     // 编辑器可只提供实体 GUID；运行时场景会从其 RenderNode 识别源模型、材质和子网格。
     std::string entityGuid;
     std::vector<ModelLodSourcePart> parts;
-    std::array<float,2> ratios{.5f,.18f};
+    std::vector<float> ratios{.5f,.18f};
     float maximumError=.04f;
 };
 struct ModelLodPart { std::string model,material;int submesh=-1;uint32_t sourcePart=0,triangleCount=0;float error=0; };

@@ -49,7 +49,7 @@ namespace VansRuntime
         }
 
         auto component = std::make_shared<VansUIComponentInstance>(
-            m_NextHandle++,
+            AllocateUIHandle(),
             std::move(config),
             std::move(uiDocument));
         m_Components[component->GetHandleId()] = component;

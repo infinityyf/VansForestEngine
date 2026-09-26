@@ -98,19 +98,10 @@ namespace VansGraphics
 			glm::vec3& translation,
 			glm::quat& rotation,
 			glm::vec3& scale);
-		static void BuildLocalFromModel(
-			const std::vector<glm::mat4>& modelTransforms,
-			const Skeleton& skeleton,
-			std::vector<glm::mat4>& outLocalTransforms);
-		static void BuildModelFromLocal(
-			const std::vector<glm::mat4>& localTransforms,
-			const Skeleton& skeleton,
-			std::vector<glm::mat4>& outModelTransforms);
 		static std::vector<glm::mat4> BuildBindModelTransforms(const Skeleton& skeleton);
 		static bool TryBuildHumanoidBasis(
 			const Skeleton& skeleton,
 			const std::vector<glm::mat4>& modelTransforms,
 			glm::mat3& outBasis);
-		static int FindBone(const Skeleton& skeleton, const char* name);
 	};
 }

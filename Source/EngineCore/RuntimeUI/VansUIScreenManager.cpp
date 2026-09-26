@@ -1,7 +1,7 @@
 #include "Public/VansUIScreenManager.h"
 #include "Public/VansUISystem.h"
 #include "Public/VansUIDocument.h"
-#include "Public/VansUIActionBus.h"
+#include "Public/VansUIEvents.h"
 #include "Public/VansUIElementHandle.h"
 #include "Public/VansUIScreen.h"
 #include "Public/VansUIResourceRegistry.h"
@@ -9,6 +9,7 @@
 #include "Serialization/VansUIDocumentValidator.h"
 #include "Serialization/VansUIScreenConfigReader.h"
 #include "VansUIAssetResolver.h"
+#include "../EventCore/VansEventBus.h"
 #include "../Util/VansLog.h"
 
 #include <cassert>
@@ -83,7 +84,7 @@ std::shared_ptr<VansUIScreen> VansUIScreenManager::CreateScreenFromConfig(
     uiDocument->Show();
 
     auto screen = std::make_shared<VansUIScreen>(
-        m_NextHandle++,
+        AllocateUIHandle(),
         std::move(config),
         std::move(uiDocument),
         std::move(vm));
@@ -151,7 +152,7 @@ void VansUIScreenManager::BindConfiguredEvents(const std::shared_ptr<VansUIScree
         {
             VANS_LOG("[RuntimeUI] Click event dispatched: " << source
                 << " -> " << actionName);
-            VansUIActionBus::Get().Dispatch(VansUIAction{
+            Vans::VansEventBus::Get().PublishNow(VansUIActionEvent{
                 actionName,
                 params,
                 screenId,

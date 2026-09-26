@@ -4,7 +4,8 @@
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AssetCore/Serialization/VansSerializedValue.h"
 #include "../EventCore/VansEventBus.h"
-#include "../GameplayActionCore/VansActionSystem.h"
+#include "../GameplayActionCore/VansActionHost.h"
+#include "../GameplayActionCore/VansGameplayRuntime.h"
 #include "../RenderCore/VansScene.h"
 #include "../GameplayActionAdapters/Decal/VansDecalActionService.h"
 #include "../SceneRuntime/VansRuntimeWorld.h"
@@ -249,42 +250,31 @@ bool ReadContext(lua_State* state, int index,
 		error = "Action Context entity GUID could not be resolved";
 		return false;
 	}
-	Vans::VansSerializedValue targetPayload;
-	bool hasTargetPayload = false;
+	Vans::VansTargetData targetData;
+	bool hasTargetData = false;
 	lua_getfield(state, index, "target");
+	if (!lua_isnil(state, -1) && !lua_istable(state, -1))
+	{
+		lua_pop(state, 1);
+		error = "Action Context target must come from a target builder";
+		return false;
+	}
 	if (lua_istable(state, -1))
 	{
-		lua_getfield(state, -1, "kind");
-		const char* kind = lua_isstring(state, -1) ? lua_tostring(state, -1) : nullptr;
-		lua_pop(state, 1);
-		if (kind && std::string_view(kind) == "Entity")
+		const VansLuaTargetEntityResolver resolveTargetEntity = [](std::string_view guid)
 		{
-			lua_getfield(state, -1, "guid");
-			const char* guid = lua_isstring(state, -1) ? lua_tostring(state, -1) : nullptr;
 			auto* scriptContext = ::VansScriptContext::GetInstance();
 			auto* scene = scriptContext ? scriptContext->GetScene() : nullptr;
 			auto* world = scene ? scene->GetRuntimeWorld() : nullptr;
-			const Vans::VansEntityHandle primaryTarget = guid && world
-				? world->Entities().FindByGuid(guid) : Vans::VansEntityHandle{};
-			lua_pop(state, 1);
-			if (!primaryTarget.IsValid())
-			{
-				lua_pop(state, 1);
-				error = "Action Context target entity could not be resolved";
-				return false;
-			}
-			context.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, primaryTarget);
-		}
-		else
+			return world ? world->Entities().FindByGuid(std::string(guid))
+				: Vans::VansEntityHandle{};
+		};
+		if (!VansDecodeLuaTargetData(state, -1, resolveTargetEntity, targetData, error))
 		{
-			if (!kind || !LuaToSerialized(state, -1, targetPayload, 0, error))
-			{
-				lua_pop(state, 1);
-				if (error.empty()) error = "Action Context target builder is invalid";
-				return false;
-			}
-			hasTargetPayload = true;
+			lua_pop(state, 1);
+			return false;
 		}
+		hasTargetData = true;
 	}
 	lua_pop(state, 1);
 	Vans::VansSerializedValue payload = Vans::VansSerializedValue::Object({});
@@ -295,17 +285,31 @@ bool ReadContext(lua_State* state, int index,
 		return false;
 	}
 	lua_pop(state, 1);
-	if (hasTargetPayload)
-	{
-		if (payload.kind != Vans::VansSerializedValue::Kind::Object)
-		{
-			error = "Action Context payload must be an object when using target builders";
-			return false;
-		}
-		Vans::SetSerializedObjectField(payload, "target", std::move(targetPayload));
-	}
 	context.SetSerialized(Vans::VansActionContextSlots::Payload, std::move(payload));
+	if (hasTargetData)
+	{
+		for (const Vans::VansTargetDataValue& value : targetData.values)
+		{
+			if (const auto* entity = std::get_if<Vans::VansEntityHandle>(&value))
+				{ context.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, *entity); break; }
+			if (const auto* hit = std::get_if<Vans::VansTargetHitResult>(&value);
+				hit && hit->entity.IsValid())
+				{ context.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, hit->entity); break; }
+		}
+		context.SetTargetData(Vans::VansActionContextSlots::TargetData,
+			host->StoreTargetData(std::move(targetData)));
+	}
 	return true;
+}
+
+void ReleaseContextTargetData(const std::shared_ptr<Vans::VansActionHost>& host,
+	Vans::VansActionContext& context)
+{
+	const Vans::VansTargetDataHandle handle =
+		context.TargetData(Vans::VansActionContextSlots::TargetData);
+	if (!handle) return;
+	host->ReleaseTargetData(handle);
+	context.Remove(Vans::VansActionContextSlots::TargetData);
 }
 
 Vans::VansActionId ResolveActionId(
@@ -466,6 +470,7 @@ int CanActivate(lua_State* state)
 	Vans::VansActionContext context;
 	if (!ReadContext(state, 3, host, context, error)) return Fail(state, error);
 	const auto result = host->CanActivateAction(action, context);
+	ReleaseContextTargetData(host, context);
 	PushResult(state, result);
 	return 1;
 }
@@ -482,11 +487,17 @@ int TryActivate(lua_State* state)
 	const auto grants = host->GrantedActions();
 	const auto found = std::find_if(grants.begin(), grants.end(),
 		[action](const auto& grant) { return grant.action == action; });
-	if (found == grants.end()) return Fail(state, "Action is not granted");
+	if (found == grants.end())
+	{
+		ReleaseContextTargetData(host, context);
+		return Fail(state, "Action is not granted");
+	}
 	Vans::VansActionActivationRequest request;
 	request.spec = found->handle;
 	request.context = std::move(context);
-	PushResult(state, host->Activate(request));
+	const Vans::VansActionResult result = host->Activate(request);
+	if (!result.action) ReleaseContextTargetData(host, request.context);
+	PushResult(state, result);
 	return 1;
 }
 
@@ -574,12 +585,12 @@ void DispatchLifecycle(const char* name, const Event& event)
 		lua_pushlstring(state, actionId.data(), actionId.size()); lua_setfield(state, -2, "action_id");
 		lua_pushinteger(state, static_cast<lua_Integer>(event.correlationId));
 		lua_setfield(state, -2, "correlation_id");
-		if constexpr (std::is_same_v<Event, Vans::VansActionMessageEvent>)
+		if constexpr (std::is_same_v<Event, Vans::VansActionEventNotification>)
 		{
 			lua_pushinteger(state, static_cast<lua_Integer>(event.sequence)); lua_setfield(state, -2, "sequence");
-			PushSerialized(state, event.message.payload); lua_setfield(state, -2, "payload");
-			PushHandle(state, {event.message.source.index, event.message.source.generation}); lua_setfield(state, -2, "source");
-			PushHandle(state, {event.message.target.index, event.message.target.generation}); lua_setfield(state, -2, "target");
+			PushSerialized(state, event.event.payload); lua_setfield(state, -2, "payload");
+			PushHandle(state, {event.event.source.index, event.event.source.generation}); lua_setfield(state, -2, "source");
+			PushHandle(state, {event.event.target.index, event.event.target.generation}); lua_setfield(state, -2, "target");
 		}
 		if constexpr (std::is_same_v<Event, Vans::VansActionEndedEvent>)
 		{
@@ -598,18 +609,18 @@ void EnsureEventConnections()
 {
 	if (g_EventConnectionsInitialized) return;
 	auto& events = Vans::VansEventBus::Get();
-	g_EventConnections.Add(events.Subscribe<Vans::VansActionMessageEvent>(
-		[](const auto& event) { DispatchLifecycle(event.message.stableName.c_str(), event); },
-		Vans::VansEventLane::GameLogic, 0, "Lua.GAF.Message"));
+	g_EventConnections.Add(events.Subscribe<Vans::VansActionEventNotification>(
+		[](const auto& notification) { DispatchLifecycle(notification.event.stableName.c_str(), notification); },
+		Vans::VansEventLane::GameLogic, 0));
 	g_EventConnections.Add(events.Subscribe<Vans::VansActionStartedEvent>(
 		[](const auto& event) { DispatchLifecycle("started", event); },
-		Vans::VansEventLane::GameLogic, 0, "Lua.GAF.Started"));
+		Vans::VansEventLane::GameLogic, 0));
 	g_EventConnections.Add(events.Subscribe<Vans::VansActionQueuedEvent>(
 		[](const auto& event) { DispatchLifecycle("queued", event); },
-		Vans::VansEventLane::GameLogic, 0, "Lua.GAF.Queued"));
+		Vans::VansEventLane::GameLogic, 0));
 	g_EventConnections.Add(events.Subscribe<Vans::VansActionEndedEvent>(
 		[](const auto& event) { DispatchLifecycle("ended", event); },
-		Vans::VansEventLane::GameLogic, 0, "Lua.GAF.Ended"));
+		Vans::VansEventLane::GameLogic, 0));
 	g_EventConnectionsInitialized = true;
 }
 
@@ -645,34 +656,52 @@ int UnsubscribeActionEvent(lua_State* state)
 int TargetEntity(lua_State* state)
 {
 	const char* guid = luaL_checkstring(state, 1);
+	lua_createtable(state, 0, 1);
+	lua_createtable(state, 1, 0);
 	lua_createtable(state, 0, 2);
 	lua_pushstring(state, "Entity"); lua_setfield(state, -2, "kind");
 	lua_pushstring(state, guid); lua_setfield(state, -2, "guid");
+	lua_rawseti(state, -2, 1);
+	lua_setfield(state, -2, "values");
 	return 1;
 }
 
 int TargetLocation(lua_State* state)
 {
-	lua_createtable(state, 0, 4);
+	lua_createtable(state, 0, 1);
+	lua_createtable(state, 1, 0);
+	lua_createtable(state, 0, 2);
 	lua_pushstring(state, "Location"); lua_setfield(state, -2, "kind");
+	lua_createtable(state, 0, 3);
 	lua_pushnumber(state, luaL_checknumber(state, 1)); lua_setfield(state, -2, "x");
 	lua_pushnumber(state, luaL_checknumber(state, 2)); lua_setfield(state, -2, "y");
 	lua_pushnumber(state, luaL_checknumber(state, 3)); lua_setfield(state, -2, "z");
+	lua_setfield(state, -2, "value");
+	lua_rawseti(state, -2, 1);
+	lua_setfield(state, -2, "values");
 	return 1;
 }
 
 int TargetRay(lua_State* state)
 {
-	lua_createtable(state, 0, 8);
+	lua_createtable(state, 0, 1);
+	lua_createtable(state, 1, 0);
+	lua_createtable(state, 0, 4);
 	lua_pushstring(state, "Ray"); lua_setfield(state, -2, "kind");
-	static constexpr const char* fields[] = { "ox", "oy", "oz", "dx", "dy", "dz" };
-	for (int index = 0; index < 6; ++index)
-	{
-		lua_pushnumber(state, luaL_checknumber(state, index + 1));
-		lua_setfield(state, -2, fields[index]);
-	}
+	lua_createtable(state, 0, 3);
+	lua_pushnumber(state, luaL_checknumber(state, 1)); lua_setfield(state, -2, "x");
+	lua_pushnumber(state, luaL_checknumber(state, 2)); lua_setfield(state, -2, "y");
+	lua_pushnumber(state, luaL_checknumber(state, 3)); lua_setfield(state, -2, "z");
+	lua_setfield(state, -2, "origin");
+	lua_createtable(state, 0, 3);
+	lua_pushnumber(state, luaL_checknumber(state, 4)); lua_setfield(state, -2, "x");
+	lua_pushnumber(state, luaL_checknumber(state, 5)); lua_setfield(state, -2, "y");
+	lua_pushnumber(state, luaL_checknumber(state, 6)); lua_setfield(state, -2, "z");
+	lua_setfield(state, -2, "direction");
 	lua_pushnumber(state, luaL_optnumber(state, 7, 0.0));
 	lua_setfield(state, -2, "length");
+	lua_rawseti(state, -2, 1);
+	lua_setfield(state, -2, "values");
 	return 1;
 }
 
@@ -696,11 +725,79 @@ int SpawnImpactDecal(lua_State* state)
 int TargetSet(lua_State* state)
 {
 	luaL_checktype(state, 1, LUA_TTABLE);
-	lua_createtable(state, 0, 2);
-	lua_pushstring(state, "Set"); lua_setfield(state, -2, "kind");
-	lua_pushvalue(state, 1); lua_setfield(state, -2, "targets");
+	const int sources = lua_absindex(state, 1);
+	lua_createtable(state, 0, 1);
+	lua_createtable(state, 0, 0);
+	const int values = lua_absindex(state, -1);
+	lua_Integer outputIndex = 1;
+	const std::size_t sourceCount = lua_rawlen(state, sources);
+	for (std::size_t sourceIndex = 1; sourceIndex <= sourceCount; ++sourceIndex)
+	{
+		lua_rawgeti(state, sources, static_cast<lua_Integer>(sourceIndex));
+		if (!lua_istable(state, -1))
+			return luaL_error(state, "Target set entries must be target builder values");
+		lua_getfield(state, -1, "values");
+		if (!lua_istable(state, -1))
+			return luaL_error(state, "Target set entries must contain a values array");
+		const std::size_t itemCount = lua_rawlen(state, -1);
+		for (std::size_t itemIndex = 1; itemIndex <= itemCount; ++itemIndex)
+		{
+			lua_rawgeti(state, -1, static_cast<lua_Integer>(itemIndex));
+			lua_rawseti(state, values, outputIndex++);
+		}
+		lua_pop(state, 2);
+	}
+	lua_setfield(state, -2, "values");
 	return 1;
 }
+}
+
+bool VansDecodeLuaTargetData(lua_State* state, int index,
+	const VansLuaTargetEntityResolver& resolveEntity,
+	Vans::VansTargetData& targetData,
+	std::string& error)
+{
+	if (!state || !lua_istable(state, index))
+	{
+		error = "Lua TargetData root must be a table";
+		return false;
+	}
+	Vans::VansSerializedValue encoded;
+	if (!LuaToSerialized(state, index, encoded, 0, error)) return false;
+	Vans::VansSerializedValue* values = Vans::FindObjectField(encoded, "values");
+	if (!values || values->kind != Vans::VansSerializedValue::Kind::Array)
+	{
+		error = "Lua TargetData root must contain a values array";
+		return false;
+	}
+	for (Vans::VansSerializedValue& item : values->arrayItems)
+	{
+		const std::string kind = Vans::ReadSerializedStringField(item, "kind");
+		if (kind == "Entity")
+		{
+			const std::string guid = Vans::ReadSerializedStringField(item, "guid");
+			const Vans::VansEntityHandle entity =
+				!guid.empty() && resolveEntity ? resolveEntity(guid) : Vans::VansEntityHandle{};
+			if (!entity.IsValid())
+			{
+				error = "Lua TargetData Entity GUID could not be resolved";
+				return false;
+			}
+			item = Vans::VansSerializedValue::Object({
+				{ "kind", Vans::VansSerializedValue::String("Entity") },
+				{ "entity", Vans::VansSerializedValue::Object({
+					{ "index", Vans::VansSerializedValue::Int(entity.index) },
+					{ "generation", Vans::VansSerializedValue::Int(entity.generation) }
+				}) }
+			});
+		}
+		else if (kind != "Location" && kind != "Ray")
+		{
+			error = "Lua TargetData item kind is unsupported";
+			return false;
+		}
+	}
+	return Vans::VansDecodeTargetData(encoded, targetData, error);
 }
 
 void VansLuaGameplayActionBridge::Register(lua_State* state)

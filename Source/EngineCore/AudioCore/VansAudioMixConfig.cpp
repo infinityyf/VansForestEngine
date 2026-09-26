@@ -9,7 +9,7 @@ namespace VansEngine
 {
 bool VansAudioMixConfigStorage::Load(
 	const std::filesystem::path& path,
-	AudioMixConfig& config,
+	VansAudioMixConfig& config,
 	std::string& error)
 {
 	nlohmann::json root;
@@ -25,7 +25,7 @@ bool VansAudioMixConfigStorage::Load(
 
 bool VansAudioMixConfigStorage::SaveAtomic(
 	const std::filesystem::path& path,
-	const AudioMixConfig& config,
+	const VansAudioMixConfig& config,
 	std::string& error)
 {
 	return Vans::VansJsonFileStorage::WriteAtomic(

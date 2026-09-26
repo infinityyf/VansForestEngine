@@ -2,13 +2,14 @@
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../SceneCore/Serialization/VansVegetationConfigCodec.h"
 #include "../../PcgCore/VansPcgMaskAsset.h"
+#include "../../PcgCore/VansPcgMaskBrush.h"
 #include "../../PcgCore/VansPcgBatchPlan.h"
+#include "../../PcgCore/VansPcgUpdatePlanner.h"
 #include <algorithm>
 #include <chrono>
 
-#include "../../EditorCore/Pcg/VansPcgMaskAuthoringSession.h"
-#include "../../EditorCore/VansAssetDocumentEditService.h"
-#include "../../EditorCore/VansEditorAssetSaveService.h"
+#include "../../AuthoringCore/Pcg/VansPcgMaskAuthoringSession.h"
+#include "../../AuthoringCore/VansAssetDocumentEditService.h"
 #include "../../PcgCore/VansPcgTerrainSurface.h"
 #include "../../TerrainCore/VansTerrainAsset.h"
 #include "../../RenderCore/VansScene.h"
@@ -17,10 +18,11 @@
 #include <limits>
 #include "../../PcgCore/Serialization/VansPcgMaskAssetCodec.h"
 #include "../../AssetCore/Storage/VansFileStorage.h"
-#include <stb_image.h>
 
 namespace Vans::EditorAPI {
 namespace {
+constexpr auto PcgMaskPreviewThrottle = std::chrono::milliseconds(100);
+
 bool PcgMaskUnlocked(const PcgBrushTarget& target)
 {
  VansAssetGuid guid;VansAssetGuid::TryParse(target.recipeGuid,guid);
@@ -40,6 +42,7 @@ struct EngineAPIImpl::PcgAuthoringState
  std::unordered_map<std::string,VansPcgPixelRect> pendingPixels;
  std::chrono::steady_clock::time_point lastRefresh;
  PcgBrushTarget target;
+	VansPcgBrushSettings brush;
  bool enabled=false;
  PcgBrushSpace strokeSpace=PcgBrushSpace::Scene;
  bool fullRefresh=false;
@@ -78,21 +81,18 @@ PcgEditorOperationResult EngineAPIImpl::RefreshPcgRecipePreview()
  const auto& repository=VansProjectManager::Get().GetAssetObjectRepository();
  const auto recipe=repository.ResolveLatest<VansVegetationConfigAsset>(guid);
  if (!recipe) return {false,"The scene PCG recipe is unavailable."};
- const auto generated=VansPcgExecutor::Generate(recipe->config,repository,
+ VansPcgUpdatePlan plan;
+ std::string error;
+ if (!VansPcgUpdatePlanner::PlanRecipe(recipe->config,repository,
   [&](const VansPcgSurfaceBinding& binding,std::string& message){
    return CreatePcgTerrainSurface(static_cast<VansGraphics::VansScene*>(m_Scene)->ResolveEffectiveTerrain(binding.terrain),message);
-  },std::nullopt,static_cast<VansGraphics::VansScene*>(m_Scene)->GetSplineFieldSnapshot());
- if (!generated) return {false,"Configuration applied; preview retained: "+generated.error};
+  },std::nullopt,static_cast<VansGraphics::VansScene*>(m_Scene)->GetSplineFieldSnapshot(),
+  VansPcgUpdatePartition::PerLayer,plan,error))
+  return {false,"Configuration applied; preview retained: "+error};
  auto update=std::make_shared<VansPcgBatchUpdate>();
  update->replaceAll=true;
- for (const auto& layer : generated.layers) {
-  const auto region=std::find_if(recipe->config.regions.begin(),recipe->config.regions.end(),
-   [&](const auto& value){return value.id==layer.regionId;});
-  VansPcgBatchUpdate part;
-  std::string error;
-  if (!BuildPcgBatchUpdate(*region,layer,std::nullopt,part,error)) return {false,error};
+ for (const auto& part : plan.updates)
   update->batches.insert(part.batches.begin(),part.batches.end());
- }
  return CommitPcgPreview(std::move(update));
 }
 PcgEditorOperationResult EngineAPIImpl::RefreshPcgMaskVegetation(bool force)
@@ -105,7 +105,7 @@ PcgEditorOperationResult EngineAPIImpl::RefreshPcgMaskVegetation(bool force)
  state.fullRefresh=found->second->TakeFullRefresh() || state.fullRefresh;
  if (pending.Empty()) return {true,{}};
  const auto now=std::chrono::steady_clock::now();
- if (!force && now-state.lastRefresh<std::chrono::milliseconds(100)) return {true,{}};
+ if (!force && now-state.lastRefresh<PcgMaskPreviewThrottle) return {true,{}};
  state.lastRefresh=now;
  std::string error;
  if (!found->second->PublishWorkingSnapshot(error)) return {false,error};
@@ -125,19 +125,16 @@ PcgEditorOperationResult EngineAPIImpl::RefreshPcgMaskVegetation(bool force)
  const auto* collection=static_cast<VansGraphics::VansScene*>(m_Scene)->GetVegetationCollection();
  const auto coverage=state.fullRefresh || (collection && !collection->LastUpdateError().empty())?std::nullopt:
   PcgMaskUpdateCoverage(*region,*layer,*plant,found->second->WorkingAsset().mask,pending);
- VansPcgRecipeAsset selected;
- selected.name=asset->config.name;selected.regions.push_back(*region);selected.regions.front().layers={*layer};
- const auto generated=VansPcgExecutor::Generate(selected,repository,
+ VansPcgUpdatePlan plan;
+ if (!VansPcgUpdatePlanner::PlanLayer(asset->config.name,*region,*layer,repository,
   [&](const VansPcgSurfaceBinding& binding,std::string& message){
    return CreatePcgTerrainSurface(static_cast<VansGraphics::VansScene*>(m_Scene)->ResolveEffectiveTerrain(binding.terrain),message);
-  },coverage,static_cast<VansGraphics::VansScene*>(m_Scene)->GetSplineFieldSnapshot());
- if (!generated) {state.message=generated.error;return {false,generated.error};}
- VansPcgLayerResult empty;
- empty.regionId=region->id;empty.layerId=layer->id;empty.plant=plant;
- auto update=std::make_shared<VansPcgBatchUpdate>();
- if (!BuildPcgBatchUpdate(*region,generated.layers.empty()?empty:generated.layers.front(),
-     generated.layers.empty()?std::nullopt:coverage,*update,error)) return {false,error};
- static_cast<VansGraphics::VansScene*>(m_Scene)->QueueVegetationUpdate(std::move(update));
+  },coverage,static_cast<VansGraphics::VansScene*>(m_Scene)->GetSplineFieldSnapshot(),
+  VansPcgUpdatePartition::PerLayer,true,plan,error))
+ {state.message=error;return {false,error};}
+ if (plan.updates.size()!=1) return {false,"PCG layer update planner returned an invalid update count."};
+ static_cast<VansGraphics::VansScene*>(m_Scene)->QueueVegetationUpdate(
+  std::make_shared<VansPcgBatchUpdate>(std::move(plan.updates.front())));
  pending={};state.fullRefresh=false;state.lastRefresh=now;state.message.clear();
  return {true,{}};
 }
@@ -223,7 +220,7 @@ PcgBrushSnapshot EngineAPIImpl::GetPcgBrushSnapshot() const
  if (found==state.sessions.end()) return snapshot;
  std::string error;
  if (!found->second->SyncDefinitionFromDocument(error)) { snapshot.message=error; return snapshot; }
- const auto& brush=found->second->WorkingAsset().brush;
+	const auto& brush=state.brush;
  snapshot.settings={static_cast<PcgBrushOperation>(brush.operation),brush.radius,brush.strength,
   brush.hardness,brush.targetValue,brush.spacingFraction};
  snapshot.available=true;
@@ -298,12 +295,15 @@ PcgEditorOperationResult EngineAPIImpl::ConfigurePcgBrush(const PcgBrushSettings
  if (!PcgMaskUnlocked(m_PcgAuthoring->target)) return {false,"Unlock the layer before editing its brush."};
  const auto found=m_PcgAuthoring->sessions.find(m_PcgAuthoring->target.maskGuid);
  if (found==m_PcgAuthoring->sessions.end()) return {false,"Select a Mask first."};
- VansPcgBrushSettings brush;
- brush.operation=static_cast<VansPcgBrushOperation>(settings.operation);
- brush.radius=settings.radius; brush.strength=settings.strength; brush.hardness=settings.hardness;
- brush.targetValue=settings.targetValue; brush.spacingFraction=settings.spacingFraction;
- std::string error;
- return {found->second->SetBrush(brush,error),error};
+	VansPcgBrushSettings brush;
+	brush.operation=static_cast<VansPcgBrushOperation>(settings.operation);
+	brush.radius=settings.radius; brush.strength=settings.strength; brush.hardness=settings.hardness;
+	brush.targetValue=settings.targetValue; brush.spacingFraction=settings.spacingFraction;
+	if (!brush.IsValid()) return {false,"PCG brush settings are outside their valid range."};
+	if (found->second->StrokeActive())
+		return {false,"Finish the current PCG stroke before changing brush settings."};
+	m_PcgAuthoring->brush=brush;
+	return {true,{}};
 }
 PcgBrushResult EngineAPIImpl::ApplyPcgBrushInput(const PcgBrushInput& input)
 {
@@ -371,7 +371,7 @@ PcgBrushResult EngineAPIImpl::ApplyPcgBrushInput(const PcgBrushInput& input)
  if (result.hit && !mask.bounds.Contains(hit.position[0],hit.position[2])) result.hit=false;
  result.success=true; result.position=hit.position; result.normal=hit.normal;
  if (result.hit && !canvas) {
-  const float radius=session->WorkingAsset().brush.radius;
+	  const float radius=state.brush.radius;
   for (int i=0;i<=64;++i) {
    const float angle=static_cast<float>(i)*6.28318530718f/64;
    const float x=hit.position[0]+std::cos(angle)*radius,z=hit.position[2]+std::sin(angle)*radius;
@@ -383,7 +383,7 @@ PcgBrushResult EngineAPIImpl::ApplyPcgBrushInput(const PcgBrushInput& input)
  if (input.phase==PcgBrushPhase::Hover) { result.strokeActive=session->StrokeActive(); return result; }
  if (input.phase==PcgBrushPhase::Begin) {
   if (!result.hit) return result;
-  if (!session->BeginStroke(mask.target,result.message)) { result.success=false;return result; }
+	  if (!session->BeginStroke(mask.target,state.brush,result.message)) { result.success=false;return result; }
   state.strokeSpace=input.space;
  }
  if (session->StrokeActive()) {
@@ -409,8 +409,8 @@ PcgEditorOperationResult EngineAPIImpl::EditPcgMaskDocument(PcgMaskDocumentActio
  const auto finished=FinishPcgStroke(false);
  if (!finished.success) return finished;
  if (action==PcgMaskDocumentAction::Save) {
-  const auto saved=VansEditorAssetSaveService::Get().SaveAsset(*this,session->Document());
-  return {static_cast<bool>(saved),saved.message};
+  const auto saved=SaveAuthoringDocument(session->Document());
+  return {saved.success,saved.message};
  }
  AssetDocumentEditResult edit;
  switch (action) {
@@ -444,21 +444,18 @@ PcgEditorOperationResult EngineAPIImpl::EditPcgMaskData(const PcgMaskDataRequest
  case PcgMaskDataAction::Import: {
   std::error_code ec;
   const auto size=std::filesystem::file_size(request.path,ec);
-  if (ec || size>256*1024*1024) return {false,"Choose an image smaller than 256 MiB."};
+  if (ec || size>MaximumPcgMaskImportBytes) return {false,"Choose an image smaller than 256 MiB."};
   VansScopedIOContext io(VansIODomain::Authoring,"Pcg.ImportMask");
   std::string bytes;
   if (!VansFileStorage::ReadAllBytes(request.path,bytes,error)) return {false,error};
-  int w=0,h=0,c=0;
-  if (!stbi_info_from_memory(reinterpret_cast<const stbi_uc*>(bytes.data()),static_cast<int>(bytes.size()),&w,&h,&c) ||
-      w<1 || h<1 || w>8192 || h>8192) return {false,"Image dimensions must be in [1,8192]."};
-  asset.mask.width=w;asset.mask.height=h;
   if (!VansPcgMaskAssetCodec::ImportPixels(bytes,request.channel,asset,error)) return {false,error};
   break;
  }
  case PcgMaskDataAction::Remap: {
   const auto source=asset.mask;
   const VansPcgBounds bounds{request.boundsMin,request.boundsMax};
-  if (!bounds.IsValid() || !request.width || !request.height || request.width>8192 || request.height>8192)
+  if (!bounds.IsValid() || !request.width || !request.height ||
+      request.width>MaximumPcgMaskDimension || request.height>MaximumPcgMaskDimension)
    return {false,"Choose valid world bounds and dimensions in [1,8192]."};
   asset.mask.bounds=bounds;asset.mask.width=request.width;asset.mask.height=request.height;
   asset.mask.pixels.resize(static_cast<size_t>(request.width)*request.height);

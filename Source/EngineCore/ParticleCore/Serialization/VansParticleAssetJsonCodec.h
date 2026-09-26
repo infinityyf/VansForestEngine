@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../VansParticleAsset.h"
-#include "../VansParticleJson.h"
+#include "../../AssetCore/Serialization/VansSerializedValue.h"
 
 #include <filesystem>
 #include <string>
@@ -11,9 +11,9 @@ namespace VansGraphics
 class VansParticleAssetJsonCodec
 {
 public:
-    static Vans::ParticleJson Encode(const VansParticleAsset& asset);
+    static Vans::VansSerializedValue Encode(const VansParticleAsset& asset);
     static bool Decode(
-        const Vans::ParticleJson& root,
+        const Vans::VansSerializedValue& root,
         const std::filesystem::path& filePath,
         VansParticleAsset& asset,
         std::string& error);

@@ -112,7 +112,8 @@ bool TestReflectionProbeResourcesGpuContract()
         auto& shaders = VansShaderManager::Get();
         shaders.RegisterComputeShader("ReflectionProbePrefilter", "EngineAssets/Shaders/ReflectionProbePrefilter",
             sizeof(VansReflectionProbeSystem::PrefilterPushConstants));
-        Check(shaders.LoadAll(std::filesystem::current_path().generic_string() + "/", device->GetLogicDevice()),
+        Check(shaders.LoadAll(std::filesystem::current_path().generic_string() + "/",
+            std::filesystem::current_path()/"Library/Artifacts/Shaders", device->GetLogicDevice()),
             "Production prefilter shader load failed");
         {
             const auto cacheRoot = std::filesystem::temp_directory_path() /

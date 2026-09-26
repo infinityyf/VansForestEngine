@@ -1086,6 +1086,76 @@ VansGraphics::VansMesh::VansMesh(bool needCPUData, bool supportRayTracing)
 	m_SupportRayTracing = supportRayTracing;
 }
 
+bool VansGraphics::VansMesh::CopyTriangleMeshData(
+	Vans::VansTriangleMeshData& output,
+	std::string& error) const
+{
+	Vans::VansTriangleMeshData data;
+	const auto append = [&data, &error](const VansMesh& mesh) -> bool
+	{
+		if (mesh.m_VertexCount <= 0)
+		{
+			error = "Mesh has no CPU vertices: " + mesh.m_AssetName;
+			return false;
+		}
+		const std::size_t vertexCount = static_cast<std::size_t>(mesh.m_VertexCount);
+		const std::size_t rawFloatCount = mesh.m_MeshRawPositionData.size();
+		const std::size_t stride = rawFloatCount >= vertexCount * 8u ? 8u
+			: rawFloatCount >= vertexCount * 4u ? 4u
+			: rawFloatCount >= vertexCount * 3u ? 3u : 0u;
+		if (stride == 0u || mesh.m_MeshTriangleIndex.size() < 3u ||
+			mesh.m_MeshTriangleIndex.size() % 3u != 0u)
+		{
+			error = "Mesh has no valid CPU triangle data: " + mesh.m_AssetName;
+			return false;
+		}
+
+		const std::uint32_t vertexOffset =
+			static_cast<std::uint32_t>(data.VertexCount());
+		data.positions.reserve(data.positions.size() + vertexCount * 3u);
+		for (std::size_t vertex = 0; vertex < vertexCount; ++vertex)
+		{
+			const std::size_t base = vertex * stride;
+			data.positions.push_back(mesh.m_MeshRawPositionData[base]);
+			data.positions.push_back(mesh.m_MeshRawPositionData[base + 1u]);
+			data.positions.push_back(mesh.m_MeshRawPositionData[base + 2u]);
+		}
+		data.indices.reserve(data.indices.size() + mesh.m_MeshTriangleIndex.size());
+		for (int index : mesh.m_MeshTriangleIndex)
+		{
+			if (index < 0 || static_cast<std::size_t>(index) >= vertexCount)
+			{
+				error = "Mesh contains an out-of-range CPU triangle index: " +
+					mesh.m_AssetName;
+				return false;
+			}
+			data.indices.push_back(vertexOffset + static_cast<std::uint32_t>(index));
+		}
+		return true;
+	};
+
+	if (m_IsMultiMesh)
+	{
+		if (m_SubMeshes.empty())
+		{
+			error = "Multi-mesh has no submeshes: " + m_AssetName;
+			return false;
+		}
+		for (const VansMesh* subMesh : m_SubMeshes)
+		{
+			if (!subMesh || !append(*subMesh)) return false;
+		}
+	}
+	else if (!append(*this))
+	{
+		return false;
+	}
+
+	output = std::move(data);
+	error.clear();
+	return true;
+}
+
 void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer, const std::string& file_name, bool import_tangent, const std::string& cachePath, bool trustCacheWithoutSource, float scaleFactor)
 {
 	VANS_LOG("Load Mesh : " << file_name);

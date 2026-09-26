@@ -1,8 +1,7 @@
 #include "VansEditorCameraController.h"
 
 #include "../RenderCore/VansCamera.h"
-#include "../RenderCore/VansCameraControlArbiter.h"
-#include "VansEditorSceneMath.h"
+#include "../Util/VansSceneViewMath.h"
 #include <algorithm>
 
 bool VansGraphics::VansEditorCameraController::Frame(
@@ -10,8 +9,12 @@ bool VansGraphics::VansEditorCameraController::Frame(
 {
     if (!camera) return false;
     float farClip = 0;
-    if (!Vans::CalculateEditorFramePosition(bounds, glm::vec3(camera->GetForward()), camera->GetFov(),
-        aspect, camera->GetNearClip(), m_FrameTarget, farClip)) return false;
+    if (!Vans::VansSceneViewMath::CalculateFramePosition(
+        bounds.available,
+        glm::vec3(bounds.minimum.x, bounds.minimum.y, bounds.minimum.z),
+        glm::vec3(bounds.maximum.x, bounds.maximum.y, bounds.maximum.z),
+        glm::vec3(camera->GetForward()), camera->GetFov(), aspect, camera->GetNearClip(),
+        m_FrameTarget, farClip)) return false;
     m_FrameStart = glm::vec3(camera->GetPosition());
     camera->SetFarClip(std::max(camera->GetFarClip(), farClip));
     m_FrameElapsed = 0;
@@ -23,6 +26,9 @@ void VansGraphics::VansEditorCameraController::Update(
     VansCamera* camera,
     const VansEditorCameraInputState& input)
 {
+	// SceneWindow composes after the current frame's camera Resolve and before the
+	// next frame's CaptureBase.  These edits intentionally become the next base
+	// view; VansCameraControlArbiter asserts the Begin/Capture/Resolve lifecycle.
     if (!camera || !input.editMode)
     {
         Reset(camera);
@@ -40,9 +46,9 @@ void VansGraphics::VansEditorCameraController::Update(
     {
         m_FrameElapsed += std::max(input.deltaTime, 0.0f);
         const float t = std::min(m_FrameElapsed / .2f, 1.0f);
-        auto pose = camera->CaptureControlPose();
-        pose.position = glm::mix(m_FrameStart, m_FrameTarget, t * t * (3 - 2 * t));
-        camera->ApplyControlPose(pose);
+        auto view = camera->CaptureView();
+        view.pose.position = glm::mix(m_FrameStart, m_FrameTarget, t * t * (3 - 2 * t));
+        camera->ApplyView(view);
         if (t >= 1) m_IsFraming = false;
     }
 

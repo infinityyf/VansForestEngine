@@ -2,7 +2,7 @@
 #include "../PcgCore/VansPcgSplineFieldResources.h"
 #include "VansWaterFFT.h"
 #include "../../Util/VansLog.h"
-#include "../../Configration/VansConfigration.h"
+#include "../../ProjectSystem/VansProjectManager.h"
 #include "../VansShaderManager.h"
 #include "../VulkanCore/VansVKDevice.h"
 #include "../VulkanCore/VansVKCommandBuffer.h"
@@ -483,8 +483,8 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     if (!m_GeometryClipmap->Initialize(device, geometryConfig))
         VANS_LOG_ERROR("[VansWaterSystem] geometry clipmap initialization failed");
 
-    auto*       cfg         = VansConfigration::GetInstance();
-    std::string projectRoot = cfg->GetProjectRootPath();
+    const std::string& projectRoot =
+        Vans::VansProjectManager::Get().GetPathResolver().GetEngineRoot();
     VkDevice    logicDev    = device->GetLogicDevice();
 
     auto& shaderManager = VansShaderManager::Get();

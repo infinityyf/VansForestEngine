@@ -4,9 +4,12 @@
 #include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/Storage/VansStagedFileTransaction.h"
 #include "../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../EngineAPILayer/Public/IAssetAuthoringEditorAPI.h"
+#include "../EngineAPILayer/Public/IPcgEditorAPI.h"
 
 #include "../SceneCore/VansSceneDocument.h"
 #include "../AssetCore/Storage/VansFileStorage.h"
+#include <unordered_set>
 #include <utility>
 
 namespace Vans
@@ -25,6 +28,28 @@ void AppendError(VansAssetSaveResult& result, const std::filesystem::path& path,
     result.errors.push_back(path.string() + ": " + error);
     if (result.message.empty())
         result.message = error;
+}
+
+VansEditorAssetSaveOperations OperationsFor(EditorAPI::IEngineEditorAPI& editorAPI)
+{
+    EditorAPI::IAssetAuthoringEditorAPI& assetAuthoringAPI = editorAPI;
+    EditorAPI::IPcgEditorAPI& pcgAPI = editorAPI;
+    auto* assetAuthoring = &assetAuthoringAPI;
+    auto* pcg = &pcgAPI;
+    return {
+        [pcg](const std::string& guid, std::string& error)
+        {
+            const auto built = pcg->BuildPcgPlantLods(guid);
+            error = built.message;
+            return built.success;
+        },
+        [assetAuthoring](const std::filesystem::path& path, std::string& error)
+        {
+            const auto refreshed = assetAuthoring->RefreshProjectAsset(path.string(), false);
+            error = refreshed.message;
+            return refreshed.success;
+        }
+    };
 }
 }
 
@@ -45,21 +70,35 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(
     EditorAPI::IEngineEditorAPI& editorAPI,
     const std::shared_ptr<VansOpenAssetDocument>& document)
 {
-    return SaveDocuments(editorAPI, {document}, nullptr);
+    return SaveDocuments(OperationsFor(editorAPI), {document}, nullptr);
 }
 
 VansAssetSaveResult VansEditorAssetSaveService::SaveAllDirtyAssets(EditorAPI::IEngineEditorAPI& editorAPI)
 {
-    return SaveDocuments(editorAPI, VansAssetDocumentRegistry::Get().DirtyDocuments(), nullptr);
+    return SaveDocuments(OperationsFor(editorAPI), VansAssetDocumentRegistry::Get().DirtyDocuments(), nullptr);
 }
 
 VansAssetSaveResult VansEditorAssetSaveService::SaveSceneAndOwnedAssets(
     EditorAPI::IEngineEditorAPI& editorAPI, VansSceneDocument* scene)
 {
-    return SaveDocuments(editorAPI, VansAssetDocumentRegistry::Get().SceneOwnedDirtyDocuments(), scene);
+    return SaveDocuments(OperationsFor(editorAPI), VansAssetDocumentRegistry::Get().SceneOwnedDirtyDocuments(), scene);
 }
 
-VansAssetSaveResult VansEditorAssetSaveService::SaveDocuments(EditorAPI::IEngineEditorAPI& editorAPI,
+VansAssetSaveResult VansEditorAssetSaveService::SaveSceneAndAssets(
+    EditorAPI::IEngineEditorAPI& editorAPI, VansSceneDocument& scene,
+    const std::vector<std::shared_ptr<VansOpenAssetDocument>>& documents)
+{
+    return SaveDocuments(OperationsFor(editorAPI), documents, &scene);
+}
+
+VansAssetSaveResult VansEditorAssetSaveService::SaveSceneAndAssets(
+    const VansEditorAssetSaveOperations& operations, VansSceneDocument& scene,
+    const std::vector<std::shared_ptr<VansOpenAssetDocument>>& documents)
+{
+    return SaveDocuments(operations, documents, &scene);
+}
+
+VansAssetSaveResult VansEditorAssetSaveService::SaveDocuments(const VansEditorAssetSaveOperations& operations,
     const std::vector<std::shared_ptr<VansOpenAssetDocument>>& documents, VansSceneDocument* scene)
 {
     VansScopedIOContext io(VansIODomain::Authoring, "EditorDocuments.Save", true);
@@ -73,9 +112,13 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveDocuments(EditorAPI::IEngine
     if (scene && !scene->StageSave(sceneStage, error))
     { AppendError(result, scene->SourcePath(), error); return result; }
     if (!sceneStage.targetPath.empty()) transaction.Add({sceneStage.targetPath, sceneStage.temporaryPath});
+    std::unordered_set<const VansOpenAssetDocument*> seen;
     for (const auto& document : documents)
     {
         if (!document) { AppendError(result, {}, "No asset document"); return result; }
+        if (!seen.insert(document.get()).second) continue;
+        if (!document->sourceDocument.IsLoaded())
+        { AppendError(result, document->sourcePath, "Asset authoring document is unavailable"); return result; }
         // 所有显式保存入口（含 Save All）在提交作者文档前准备派生模型。
         if (VansAssetDatabase::Classify(document->sourcePath) == VansAssetType::PlantType)
         {
@@ -83,13 +126,13 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveDocuments(EditorAPI::IEngine
             std::string guid;
             for (const auto& field : meta.objectFields)
                 if (field.first == "guid") guid = field.second.stringValue;
-            const auto built = editorAPI.BuildPcgPlantLods(guid);
-            if (!built.success)
+            if (!operations.buildPcgPlantLods)
             {
-                document->lastError = built.message;
-                AppendError(result, document->sourcePath, built.message);
+                AppendError(result, document->sourcePath, "Plant LOD build operation is unavailable");
                 return result;
             }
+            if (!operations.buildPcgPlantLods(guid, document->lastError))
+            { AppendError(result, document->sourcePath, document->lastError); return result; }
         }
 
         document->lastError.clear();
@@ -166,10 +209,18 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveDocuments(EditorAPI::IEngine
     { AppendError(result, scene->SourcePath(), error); return result; }
     for (const auto& document : changed)
     {
-        const auto refresh = editorAPI.RefreshProjectAsset(document->sourcePath.string(), false);
-        if (!refresh.success)
+        if (!operations.refreshProjectAsset)
         {
-            AppendError(result, document->sourcePath, "Asset refresh failed: " + refresh.message);
+            AppendError(result, document->sourcePath, "Asset refresh operation is unavailable");
+            transaction.Cleanup();
+            for (const auto& restored : changed)
+                VansAssetDocumentRegistry::Get().PublishWorkingCopy(restored->sourceDocument);
+            return result;
+        }
+        std::string refreshError;
+        if (!operations.refreshProjectAsset(document->sourcePath, refreshError))
+        {
+            AppendError(result, document->sourcePath, "Asset refresh failed: " + refreshError);
             transaction.Cleanup();
             // 磁盘回滚后重新发布仍未保存的作者内存，保持编辑状态可重试。
             for (const auto& restored : changed)

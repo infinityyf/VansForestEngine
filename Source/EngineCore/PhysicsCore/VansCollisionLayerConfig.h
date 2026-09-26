@@ -16,23 +16,25 @@ namespace VansEngine
 
 		void ResetToDefaults()
 		{
-			for (int index = 0; index < MAX_PHYSICS_LAYERS; ++index)
-			{
-				layerNames[index].clear();
-				collisionMasks[index] = 0xFFFFFFFF;
-			}
+			layerNames.fill({});
+			collisionMasks.fill(0u);
 			layerNames[0] = "Default";
+			collisionMasks[0] = 1u;
 			layerCount = 1;
 		}
 
-		int GetLayerIndex(const std::string& name) const
+		bool TryGetLayerIndex(const std::string& name, int& layerIndex) const
 		{
-			for (int index = 0; index < MAX_PHYSICS_LAYERS; ++index)
+			for (int index = 0; index < layerCount; ++index)
 			{
 				if (layerNames[index] == name)
-					return index;
+				{
+					layerIndex = index;
+					return true;
+				}
 			}
-			return 0;
+			layerIndex = -1;
+			return false;
 		}
 	};
 }

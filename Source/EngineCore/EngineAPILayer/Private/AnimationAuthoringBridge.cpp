@@ -19,16 +19,15 @@ namespace Vans::EditorAPI
 			return static_cast<To>(static_cast<int>(value));
 		}
 
-		static_assert(static_cast<int>(AnimGraphNodeType::ChainIK) ==
-			static_cast<int>(VansGraphics::AnimGraphNodeType::ChainIK));
-		static_assert(static_cast<int>(AnimGraphNodeType::RotationDistribution) ==
-			static_cast<int>(VansGraphics::AnimGraphNodeType::RotationDistribution));
 		static_assert(static_cast<int>(AnimatorParamType::Quaternion) ==
 			static_cast<int>(VansGraphics::AnimatorParamType::Quaternion));
 		static_assert(static_cast<int>(CompareOp::LessEqual) ==
 			static_cast<int>(VansGraphics::CompareOp::LessEqual));
 		static_assert(static_cast<int>(VansLayerSyncMode::SyncedGraph) ==
 			static_cast<int>(VansGraphics::VansLayerSyncMode::SyncedGraph));
+
+		VansBoneMaskDocumentDTO ToDTO(const VansGraphics::VansBoneMaskAsset& source);
+		VansGraphics::VansBoneMaskAsset ToNative(const VansBoneMaskDocumentDTO& source);
 
 		AnimationVector3DTO ToDTO(const glm::vec3& value)
 		{
@@ -199,36 +198,36 @@ namespace Vans::EditorAPI
 		std::unique_ptr<AnimationNodeDTO> ToDTO(const VansGraphics::VansAnimGraphNode& source)
 		{
 			auto result = AnimationGraphDTO::CreateNodeByType(
-				BridgeEnum<AnimGraphNodeType>(source.GetType()));
+				source.GetType());
 			if (!result)
 				return nullptr;
 			result->m_NodeId = source.GetNodeId();
 			result->m_Name = source.GetName();
-			result->m_EditorPosX = source.m_EditorPosX;
-			result->m_EditorPosY = source.m_EditorPosY;
+			result->m_EditorLayout.x = source.m_EditorLayout.x;
+			result->m_EditorLayout.y = source.m_EditorLayout.y;
 
 			switch (source.GetType())
 			{
-			case VansGraphics::AnimGraphNodeType::Clip:
+			case VansGraphics::VansAnimGraphNodeType::Clip:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphClipNode&>(source);
 				result->m_ClipName = n.m_ClipName; result->m_Speed = n.m_Speed; result->m_Loop = n.m_Loop;
 				result->m_RootMotion = n.m_RootMotion;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::Blend:
+			case VansGraphics::VansAnimGraphNodeType::Blend:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphBlendNode&>(source);
 				result->m_ParamName = n.m_ParamName; result->m_FixedAlpha = n.m_FixedAlpha; result->m_UseParam = n.m_UseParam;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::Blend1D:
+			case VansGraphics::VansAnimGraphNodeType::Blend1D:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphBlend1DNode&>(source);
 				result->m_ParamName = n.m_ParamName; result->m_Thresholds = n.m_Thresholds;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::BlendSpace2D:
+			case VansGraphics::VansAnimGraphNodeType::BlendSpace2D:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphBlendSpace2DNode&>(source);
 				result->m_XParamName = n.m_XParamName;
@@ -237,32 +236,32 @@ namespace Vans::EditorAPI
 					result->m_BlendSpaceSamples.push_back({ sample.x, sample.y });
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::IfCondition:
+			case VansGraphics::VansAnimGraphNodeType::IfCondition:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphIfConditionNode&>(source);
 				result->m_ParamName = n.m_ParamName; result->m_CompareOp = BridgeEnum<CompareOp>(n.m_CompareOp);
 				result->m_FloatVal = n.m_FloatVal; result->m_BoolVal = n.m_BoolVal; result->m_IntVal = n.m_IntVal;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::Switch:
+			case VansGraphics::VansAnimGraphNodeType::Switch:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphSwitchNode&>(source);
 				result->m_ParamName = n.m_ParamName; result->m_CaseCount = n.m_CaseCount;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::AdditiveBlend:
+			case VansGraphics::VansAnimGraphNodeType::AdditiveBlend:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphAdditiveBlendNode&>(source);
 				result->m_ParamName = n.m_ParamName; result->m_FixedWeight = n.m_FixedWeight; result->m_UseParam = n.m_UseParam;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::SpeedScale:
+			case VansGraphics::VansAnimGraphNodeType::SpeedScale:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphSpeedScaleNode&>(source);
 				result->m_ParamName = n.m_ParamName; result->m_FixedSpeed = n.m_FixedSpeed; result->m_UseParam = n.m_UseParam;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::StateMachine:
+			case VansGraphics::VansAnimGraphNodeType::StateMachine:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphStateMachineNode&>(source);
 				for (const auto& state : n.m_States) result->m_States.push_back(ToDTO(state));
@@ -270,27 +269,27 @@ namespace Vans::EditorAPI
 				result->m_DefaultStateName = n.m_DefaultStateName;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::MotionMatching:
+			case VansGraphics::VansAnimGraphNodeType::MotionMatching:
 				result->m_EnableFallbackInput = static_cast<const VansGraphics::AnimGraphMotionMatchingNode&>(source).m_EnableFallbackInput; break;
-			case VansGraphics::AnimGraphNodeType::Slot:
+			case VansGraphics::VansAnimGraphNodeType::Slot:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphSlotNode&>(source);
 				result->m_SlotId = n.m_SlotId; result->m_EnableFallbackInput = n.m_EnableFallbackInput;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::PoseCheckpoint:
+			case VansGraphics::VansAnimGraphNodeType::PoseCheckpoint:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphPoseCheckpointNode&>(source);
 				result->m_CheckpointId = n.m_CheckpointId;
 				result->m_CheckpointBones = n.m_Bones;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::Goal:
+			case VansGraphics::VansAnimGraphNodeType::Goal:
 			{
 				result->m_Goal = ToDTO(static_cast<const VansGraphics::AnimGraphGoalNode&>(source).m_Goal);
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::AimConstraint:
+			case VansGraphics::VansAnimGraphNodeType::AimConstraint:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphAimConstraintNode&>(source);
 				result->m_ChainId = n.m_ChainId;
@@ -309,13 +308,13 @@ namespace Vans::EditorAPI
 				result->m_TargetHalfLife = n.m_TargetHalfLife;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::Grounding:
+			case VansGraphics::VansAnimGraphNodeType::Grounding:
 			{
 				result->m_GroundingSettings = ToDTO(
 					static_cast<const VansGraphics::AnimGraphGroundingNode&>(source).m_Settings);
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::LimbIK:
+			case VansGraphics::VansAnimGraphNodeType::LimbIK:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphLimbIKNode&>(source);
 				result->m_ChainIds = n.m_ChainIds;
@@ -325,10 +324,10 @@ namespace Vans::EditorAPI
 				result->m_LimbSettings.commitClampedPose = n.m_Settings.commitClampedPose;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::RotationDistribution:
+			case VansGraphics::VansAnimGraphNodeType::RotationDistribution:
 				result->m_RotationProfileId = static_cast<const VansGraphics::AnimGraphRotationDistributionNode&>(source).m_RotationProfileId;
 				break;
-			case VansGraphics::AnimGraphNodeType::ChainIK:
+			case VansGraphics::VansAnimGraphNodeType::ChainIK:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphChainIKNode&>(source);
 				result->m_ChainIds = n.m_ChainIds;
@@ -336,6 +335,24 @@ namespace Vans::EditorAPI
 				result->m_ChainSettings.positionTolerance = n.m_Settings.positionTolerance;
 				result->m_ChainSettings.weight = n.m_Settings.weight;
 				result->m_ChainSettings.commitClampedPose = n.m_Settings.commitClampedPose;
+				break;
+			}
+			case VansGraphics::VansAnimGraphNodeType::SaveCachedPose:
+				result->m_CacheName = static_cast<const VansGraphics::AnimGraphSaveCachedPoseNode&>(source).m_CacheName;
+				break;
+			case VansGraphics::VansAnimGraphNodeType::UseCachedPose:
+				result->m_CacheName = static_cast<const VansGraphics::AnimGraphUseCachedPoseNode&>(source).m_CacheName;
+				break;
+			case VansGraphics::VansAnimGraphNodeType::LayeredBlendPerBone:
+			{
+				const auto& n = static_cast<const VansGraphics::AnimGraphLayeredBlendPerBoneNode&>(source);
+				result->m_LayerMask = ToDTO(n.m_Mask);
+				result->m_LayerBlendMode = BridgeEnum<VansLayerBlendMode>(n.m_BlendMode);
+				result->m_LayerRotationSpace = BridgeEnum<VansRotationBlendSpace>(n.m_RotationSpace);
+				result->m_LayerWeightParameter = n.m_WeightParameter;
+				result->m_LayerFixedWeight = n.m_FixedWeight;
+				result->m_UseLayerWeightParameter = n.m_UseWeightParameter;
+				result->m_ApplyLayerAdditiveInput = n.m_ApplyAdditiveInput;
 				break;
 			}
 			default: break;
@@ -346,35 +363,35 @@ namespace Vans::EditorAPI
 		std::unique_ptr<VansGraphics::VansAnimGraphNode> ToNative(const AnimationNodeDTO& source)
 		{
 			auto result = VansGraphics::VansAnimGraph::CreateNodeByType(
-				BridgeEnum<VansGraphics::AnimGraphNodeType>(source.m_Type));
+				source.m_Type);
 			if (!result)
 				return nullptr;
 			result->SetName(source.m_Name);
-			result->m_EditorPosX = source.m_EditorPosX;
-			result->m_EditorPosY = source.m_EditorPosY;
+			result->m_EditorLayout.x = source.m_EditorLayout.x;
+			result->m_EditorLayout.y = source.m_EditorLayout.y;
 
 			switch (result->GetType())
 			{
-			case VansGraphics::AnimGraphNodeType::Clip:
+			case VansGraphics::VansAnimGraphNodeType::Clip:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphClipNode&>(*result);
 				n.m_ClipName = source.m_ClipName; n.m_Speed = source.m_Speed; n.m_Loop = source.m_Loop;
 				n.m_RootMotion = source.m_RootMotion;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::Blend:
+			case VansGraphics::VansAnimGraphNodeType::Blend:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphBlendNode&>(*result);
 				n.m_ParamName = source.m_ParamName; n.m_FixedAlpha = source.m_FixedAlpha; n.m_UseParam = source.m_UseParam;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::Blend1D:
+			case VansGraphics::VansAnimGraphNodeType::Blend1D:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphBlend1DNode&>(*result);
 				n.m_ParamName = source.m_ParamName; n.m_Thresholds = source.m_Thresholds;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::BlendSpace2D:
+			case VansGraphics::VansAnimGraphNodeType::BlendSpace2D:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphBlendSpace2DNode&>(*result);
 				n.m_XParamName = source.m_XParamName;
@@ -383,32 +400,32 @@ namespace Vans::EditorAPI
 					n.m_Samples.push_back({ sample.x, sample.y });
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::IfCondition:
+			case VansGraphics::VansAnimGraphNodeType::IfCondition:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphIfConditionNode&>(*result);
 				n.m_ParamName = source.m_ParamName; n.m_CompareOp = BridgeEnum<VansGraphics::CompareOp>(source.m_CompareOp);
 				n.m_FloatVal = source.m_FloatVal; n.m_BoolVal = source.m_BoolVal; n.m_IntVal = source.m_IntVal;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::Switch:
+			case VansGraphics::VansAnimGraphNodeType::Switch:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphSwitchNode&>(*result);
 				n.m_ParamName = source.m_ParamName; n.m_CaseCount = source.m_CaseCount;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::AdditiveBlend:
+			case VansGraphics::VansAnimGraphNodeType::AdditiveBlend:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphAdditiveBlendNode&>(*result);
 				n.m_ParamName = source.m_ParamName; n.m_FixedWeight = source.m_FixedWeight; n.m_UseParam = source.m_UseParam;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::SpeedScale:
+			case VansGraphics::VansAnimGraphNodeType::SpeedScale:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphSpeedScaleNode&>(*result);
 				n.m_ParamName = source.m_ParamName; n.m_FixedSpeed = source.m_FixedSpeed; n.m_UseParam = source.m_UseParam;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::StateMachine:
+			case VansGraphics::VansAnimGraphNodeType::StateMachine:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphStateMachineNode&>(*result);
 				for (const auto& state : source.m_States) n.m_States.push_back(ToNative(state));
@@ -416,27 +433,27 @@ namespace Vans::EditorAPI
 				n.m_DefaultStateName = source.m_DefaultStateName;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::MotionMatching:
+			case VansGraphics::VansAnimGraphNodeType::MotionMatching:
 				static_cast<VansGraphics::AnimGraphMotionMatchingNode&>(*result).m_EnableFallbackInput = source.m_EnableFallbackInput; break;
-			case VansGraphics::AnimGraphNodeType::Slot:
+			case VansGraphics::VansAnimGraphNodeType::Slot:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphSlotNode&>(*result);
 				n.m_SlotId = source.m_SlotId; n.m_EnableFallbackInput = source.m_EnableFallbackInput;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::PoseCheckpoint:
+			case VansGraphics::VansAnimGraphNodeType::PoseCheckpoint:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphPoseCheckpointNode&>(*result);
 				n.m_CheckpointId = source.m_CheckpointId;
 				n.m_Bones = source.m_CheckpointBones;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::Goal:
+			case VansGraphics::VansAnimGraphNodeType::Goal:
 			{
 				static_cast<VansGraphics::AnimGraphGoalNode&>(*result).m_Goal = ToNative(source.m_Goal);
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::AimConstraint:
+			case VansGraphics::VansAnimGraphNodeType::AimConstraint:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphAimConstraintNode&>(*result);
 				n.m_ChainId = source.m_ChainId;
@@ -453,13 +470,13 @@ namespace Vans::EditorAPI
 				n.m_TargetHalfLife = source.m_TargetHalfLife;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::Grounding:
+			case VansGraphics::VansAnimGraphNodeType::Grounding:
 			{
 				static_cast<VansGraphics::AnimGraphGroundingNode&>(*result).m_Settings =
 					ToNative(source.m_GroundingSettings);
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::LimbIK:
+			case VansGraphics::VansAnimGraphNodeType::LimbIK:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphLimbIKNode&>(*result);
 				n.m_ChainIds = source.m_ChainIds;
@@ -469,10 +486,10 @@ namespace Vans::EditorAPI
 				n.m_Settings.commitClampedPose = source.m_LimbSettings.commitClampedPose;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::RotationDistribution:
+			case VansGraphics::VansAnimGraphNodeType::RotationDistribution:
 				static_cast<VansGraphics::AnimGraphRotationDistributionNode&>(*result).m_RotationProfileId = source.m_RotationProfileId;
 				break;
-			case VansGraphics::AnimGraphNodeType::ChainIK:
+			case VansGraphics::VansAnimGraphNodeType::ChainIK:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphChainIKNode&>(*result);
 				n.m_ChainIds = source.m_ChainIds;
@@ -480,6 +497,24 @@ namespace Vans::EditorAPI
 				n.m_Settings.positionTolerance = source.m_ChainSettings.positionTolerance;
 				n.m_Settings.weight = source.m_ChainSettings.weight;
 				n.m_Settings.commitClampedPose = source.m_ChainSettings.commitClampedPose;
+				break;
+			}
+			case VansGraphics::VansAnimGraphNodeType::SaveCachedPose:
+				static_cast<VansGraphics::AnimGraphSaveCachedPoseNode&>(*result).m_CacheName = source.m_CacheName;
+				break;
+			case VansGraphics::VansAnimGraphNodeType::UseCachedPose:
+				static_cast<VansGraphics::AnimGraphUseCachedPoseNode&>(*result).m_CacheName = source.m_CacheName;
+				break;
+			case VansGraphics::VansAnimGraphNodeType::LayeredBlendPerBone:
+			{
+				auto& n = static_cast<VansGraphics::AnimGraphLayeredBlendPerBoneNode&>(*result);
+				n.m_Mask = ToNative(source.m_LayerMask);
+				n.m_BlendMode = BridgeEnum<VansGraphics::VansLayerBlendMode>(source.m_LayerBlendMode);
+				n.m_RotationSpace = BridgeEnum<VansGraphics::VansRotationBlendSpace>(source.m_LayerRotationSpace);
+				n.m_WeightParameter = source.m_LayerWeightParameter;
+				n.m_FixedWeight = source.m_LayerFixedWeight;
+				n.m_UseWeightParameter = source.m_UseLayerWeightParameter;
+				n.m_ApplyAdditiveInput = source.m_ApplyLayerAdditiveInput;
 				break;
 			}
 			default: break;
@@ -735,23 +770,23 @@ namespace Vans::EditorAPI
 			return true;
 		}
 
-		BoneMaskDocumentDTO ToDTO(const VansGraphics::VansBoneMaskAsset& source)
+		VansBoneMaskDocumentDTO ToDTO(const VansGraphics::VansBoneMaskAsset& source)
 		{
-			BoneMaskDocumentDTO result;
+			VansBoneMaskDocumentDTO result;
 			result.id = source.id; result.name = source.name;
 			result.previewSkeletonGuid = source.previewSkeletonGuid;
 			result.previewSkeletonPathHint = source.previewSkeletonPathHint;
 			result.defaultWeight = source.defaultWeight;
 			for (const auto& rule : source.branchRules)
-				result.branchRules.push_back({ rule.id, BridgeEnum<BoneMaskRuleMode>(rule.mode),
+				result.branchRules.push_back({ rule.id, BridgeEnum<VansBoneMaskRuleModeDTO>(rule.mode),
 					rule.rootBone, rule.includeDescendants, rule.maxDepth, rule.rootWeight,
-					rule.endWeight, BridgeEnum<BoneMaskFalloff>(rule.falloff) });
+					rule.endWeight, BridgeEnum<VansBoneMaskFalloffDTO>(rule.falloff) });
 			result.explicitWeights = source.explicitWeights;
 			result.editorExpandedBones = source.editorExpandedBones;
 			return result;
 		}
 
-		VansGraphics::VansBoneMaskAsset ToNative(const BoneMaskDocumentDTO& source)
+		VansGraphics::VansBoneMaskAsset ToNative(const VansBoneMaskDocumentDTO& source)
 		{
 			VansGraphics::VansBoneMaskAsset result;
 			result.id = source.id; result.name = source.name;
@@ -1024,7 +1059,7 @@ namespace Vans::EditorAPI
 		return result;
 	}
 
-	BoneMaskDocumentEncodeResult AnimationAuthoringBridge::EncodeBoneMask(const BoneMaskDocumentDTO& document)
+	BoneMaskDocumentEncodeResult AnimationAuthoringBridge::EncodeBoneMask(const VansBoneMaskDocumentDTO& document)
 	{
 		BoneMaskDocumentEncodeResult result;
 		nlohmann::json root;
@@ -1067,7 +1102,7 @@ namespace Vans::EditorAPI
 	}
 
 	BoneMaskCompileResult AnimationAuthoringBridge::CompileBoneMask(
-		const BoneMaskDocumentDTO& document, const AssetSkeletonSnapshot& snapshot)
+		const VansBoneMaskDocumentDTO& document, const AssetSkeletonSnapshot& snapshot)
 	{
 		BoneMaskCompileResult result;
 		if (!snapshot.available || snapshot.bones.empty())
@@ -1082,7 +1117,6 @@ namespace Vans::EditorAPI
 			auto& bone = skeleton.bones[index];
 			bone.id = static_cast<int>(index); bone.name = snapshot.bones[index].name;
 			bone.parentIndex = snapshot.bones[index].parentIndex;
-			skeleton.boneNameToIndex[bone.name] = static_cast<int>(index);
 		}
 		for (std::size_t index = 0; index < skeleton.bones.size(); ++index)
 		{
@@ -1091,11 +1125,12 @@ namespace Vans::EditorAPI
 				skeleton.bones[static_cast<std::size_t>(parent)].children.push_back(static_cast<int>(index));
 		}
 		skeleton.BuildTopologicalOrder();
+		skeleton.RebuildIdentityMapsAndSignature();
 		const auto compiled = VansGraphics::VansBoneMaskCompiler::Compile(ToNative(document), skeleton);
 		result.valid = compiled.valid; result.allZero = compiled.allZero; result.allOne = compiled.allOne;
 		result.rootWeight = compiled.rootWeight; result.weights = compiled.weights; result.activeBones = compiled.activeBones;
 		for (const auto& diagnostic : compiled.diagnostics)
-			result.diagnostics.push_back({ BridgeEnum<BoneMaskDiagnosticSeverity>(diagnostic.severity),
+			result.diagnostics.push_back({ BridgeEnum<VansBoneMaskDiagnosticSeverityDTO>(diagnostic.severity),
 				diagnostic.ruleId, diagnostic.message });
 		if (!result.valid) result.message = "Bone mask compilation failed";
 		return result;
@@ -1136,9 +1171,9 @@ namespace Vans::EditorAPI
 			VansGraphics::AnimatorGraphAsset graph; graph.id = Vans::VansAssetGuid::New().ToString();
 			graph.name = "Base Graph"; graph.role = VansGraphics::AnimatorGraphAsset::Role::Pose;
 			graph.graph = std::make_unique<VansGraphics::VansAnimGraph>();
-			const int entry = graph.graph->AddNode(VansGraphics::VansAnimGraph::CreateNodeByType(VansGraphics::AnimGraphNodeType::Entry));
-			const int output = graph.graph->AddNode(VansGraphics::VansAnimGraph::CreateNodeByType(VansGraphics::AnimGraphNodeType::Output));
-			graph.graph->GetNode(entry)->m_EditorPosX = 40.0f; graph.graph->GetNode(output)->m_EditorPosX = 360.0f;
+			const int entry = graph.graph->AddNode(VansGraphics::VansAnimGraph::CreateNodeByType(VansGraphics::VansAnimGraphNodeType::Entry));
+			const int output = graph.graph->AddNode(VansGraphics::VansAnimGraph::CreateNodeByType(VansGraphics::VansAnimGraphNodeType::Output));
+			graph.graph->GetNode(entry)->m_EditorLayout.x = 40.0f; graph.graph->GetNode(output)->m_EditorLayout.x = 360.0f;
 			graph.graph->AddLink(entry, 0, output, 0); const std::string graphId = graph.id; asset.graphs.push_back(std::move(graph));
 			VansGraphics::VansAnimationLayerDefinition base; base.id = Vans::VansAssetGuid::New().ToString();
 			base.name = "Base"; base.kind = VansGraphics::VansAnimationLayerKind::Base;

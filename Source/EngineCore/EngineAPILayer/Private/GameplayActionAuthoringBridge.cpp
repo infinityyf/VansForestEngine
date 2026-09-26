@@ -1,11 +1,10 @@
 #include "GameplayActionAuthoringBridge.h"
 
-#include "../Public/IEngineEditorAPI.h"
+#include "../../AuthoringCore/IVansAuthoringSaveHost.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
-#include "../../EditorCore/GameplayAction/VansGameplayAssetEditorModel.h"
-#include "../../EditorCore/VansAssetDocumentEditService.h"
-#include "../../EditorCore/VansEditorAssetSaveService.h"
+#include "../../AuthoringCore/GameplayAction/VansGameplayAssetEditorModel.h"
+#include "../../AuthoringCore/VansAssetDocumentEditService.h"
 #include "../../GameplayActionExecution/VansActionExecutionGraph.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 
@@ -875,16 +874,15 @@ GAFEditorOperationResult GameplayActionAuthoringBridge::Revert(const std::string
 }
 
 GAFEditorOperationResult GameplayActionAuthoringBridge::Save(
-	IEngineEditorAPI& editorAPI,
+	Vans::IVansAuthoringSaveHost& saveHost,
 	const std::string& sourcePath)
 {
 	VansGameplayAssetEditorModel model;
 	std::string error;
 	if (!OpenModel(sourcePath, model, error)) return { false, std::move(error), {} };
-	const VansAssetSaveResult save =
-		VansEditorAssetSaveService::Get().SaveAsset(editorAPI, model.Document());
+	const VansAuthoringSaveResult save = saveHost.SaveAssetDocument(model.Document());
 	GAFEditorOperationResult result;
-	result.success = static_cast<bool>(save);
+	result.success = save.success;
 	result.message = save.message;
 	result.document = BuildSnapshot(model);
 	return result;
@@ -952,12 +950,7 @@ GAFProjectConfigurationSnapshot GameplayActionAuthoringBridge::GetProjectConfigu
 	result.stripEditorMetadata = configuration.settings.stripEditorMetadata;
 	result.treatCookWarningsAsErrors = configuration.settings.treatCookWarningsAsErrors;
 	result.templateDirectory = configuration.settings.templateDirectory;
-	result.maximumActiveActionsPerHost = configuration.settings.performance.maximumActiveActionsPerHost;
-	result.maximumTasksPerAction = configuration.settings.performance.maximumTasksPerAction;
-	result.maximumGraphTransitionsPerTick =
-		configuration.settings.performance.maximumGraphTransitionsPerTick;
-	result.maximumEffectsPerHost = configuration.settings.performance.maximumEffectsPerHost;
-	result.maximumPayloadBytes = configuration.settings.performance.maximumPayloadBytes;
+	result.performance = configuration.settings.performance;
 	result.allowedNodeTypes = Sorted(configuration.allowlist.nodeTypes);
 	result.allowedModules = Sorted(configuration.allowlist.modules);
 	result.allowedCapabilities = Sorted(configuration.allowlist.capabilities);
@@ -1036,12 +1029,7 @@ GAFProjectConfigurationResult GameplayActionAuthoringBridge::ApplyProjectConfigu
 	configuration.settings.stripEditorMetadata = source.stripEditorMetadata;
 	configuration.settings.treatCookWarningsAsErrors = source.treatCookWarningsAsErrors;
 	configuration.settings.templateDirectory = source.templateDirectory;
-	configuration.settings.performance.maximumActiveActionsPerHost = source.maximumActiveActionsPerHost;
-	configuration.settings.performance.maximumTasksPerAction = source.maximumTasksPerAction;
-	configuration.settings.performance.maximumGraphTransitionsPerTick =
-		source.maximumGraphTransitionsPerTick;
-	configuration.settings.performance.maximumEffectsPerHost = source.maximumEffectsPerHost;
-	configuration.settings.performance.maximumPayloadBytes = source.maximumPayloadBytes;
+	configuration.settings.performance = source.performance;
 	configuration.allowlist.nodeTypes.insert(source.allowedNodeTypes.begin(), source.allowedNodeTypes.end());
 	configuration.allowlist.modules.insert(source.allowedModules.begin(), source.allowedModules.end());
 	configuration.allowlist.capabilities.insert(source.allowedCapabilities.begin(), source.allowedCapabilities.end());

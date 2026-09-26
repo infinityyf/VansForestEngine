@@ -16,6 +16,7 @@ enum class VansAssetType
     Unknown,
     Model,
     Texture,
+	IESProfile,
     Material,
     Shader,
 	Audio,
@@ -61,6 +62,14 @@ enum class VansAssetType
 	PcgSpline,
 	DamageProfile,
         Prefab
+};
+
+struct VansAssetTypeDescriptor
+{
+	VansAssetType type = VansAssetType::Unknown;
+	std::string_view serializedName;
+	std::string_view canonicalExtension;
+	std::string_view importer;
 };
 
 enum class VansAssetState
@@ -191,6 +200,7 @@ public:
     const std::filesystem::path& ArtifactRoot() const { return m_ArtifactRoot; }
 
     static VansAssetType Classify(const std::filesystem::path& sourcePath);
+    static const VansAssetTypeDescriptor* Describe(VansAssetType type) noexcept;
     static std::string ImporterFor(VansAssetType type);
     static std::string_view SerializedTypeName(VansAssetType type) noexcept;
     static VansAssetType ParseSerializedType(std::string_view value) noexcept;

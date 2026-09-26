@@ -3,6 +3,7 @@
 #include "../AssetCore/VansSkeletalMeshImportSettings.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
@@ -43,6 +44,7 @@ struct VansSceneTextureResourceRequest
 	std::string precision = "low8";
 	int importChannel = 4;
 	std::string addressMode = "repeat";
+	bool retainRgba8Pixels = false;
 	bool cookedOnly = false;
 };
 
@@ -81,6 +83,7 @@ struct VansSceneShaderResourceRequest
 	std::string name;
 	std::string assetGuid;
 	std::string source;
+	std::filesystem::path artifactRoot;
 	std::string kind = "graphics";
 	int pushConstantSize = -1;
 	bool depthTest = true;

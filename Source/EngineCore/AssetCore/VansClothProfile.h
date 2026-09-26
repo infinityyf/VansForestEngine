@@ -9,14 +9,8 @@
 #include <GLM/glm.hpp>
 #include <GLM/gtc/matrix_transform.hpp>
 
-// 前向声明，避免循环包含
-namespace VansGraphics { struct Skeleton; }
-
 namespace VansEngine
 {
-    // 前向声明（ClothNodeProperties 在 VansClothNode.h 中定义，此处需前向声明以支持 ResolveBoneBindings 返回类型）
-    struct ClothNodePinSkinData;
-
     // =========================================================================
     // VansClothProfile
     // 布料配置文件数据，可序列化为 .clothprofile（UTF-8 JSON）。
@@ -26,9 +20,6 @@ namespace VansEngine
     // =========================================================================
     struct VansClothProfile
     {
-        // 配置文件版本号，V2 添加骨骼绑定支持
-        static constexpr int32_t PROFILE_VERSION = 2;
-
         // ── 元信息 ─────────────────────────────────────────────────────────
         std::string m_Name;
         std::string m_Description;
@@ -39,6 +30,7 @@ namespace VansEngine
 
         // ── 物理模拟参数 ────────────────────────────────────────────────────
         float m_Stiffness     = 0.8f;      // 拉伸约束刚度 [0,1]，作用于所有 PhaseConfig
+        float m_StiffnessFrequency = 60.0f;// NvCloth 约束/阻尼归一化频率（Hz）
         float m_Damping       = 0.1f;      // 速度阻尼大小，三轴统一
         float m_Friction      = 0.0f;      // 布料自碰撞摩擦
         float m_Gravity       = -9.81f;    // Y 轴重力分量（m/s²）
@@ -47,7 +39,7 @@ namespace VansEngine
 
         // ── 固定点数据（局部空间位置坐标列表）─────────────────────────────
         // 存储固定粒子的网格局部空间坐标，对模型重导出具有鲁棒性。
-        // 运行时通过 ResolveIndices() 在局部空间做近邻匹配，转换为顶点索引。
+        // 运行时由 VansClothMeshPrep 在局部空间做近邻匹配并转换为粒子索引。
         std::vector<glm::vec3> m_PinnedLocalPositions;
 
         // 固定点近邻匹配容差（局部空间单位），默认 0.01 m
@@ -85,25 +77,11 @@ namespace VansEngine
         };
         std::vector<PinBoneBinding> m_PinnedBoneBindings;
 
-        // ── V2 辅助：SkeletonOffset → glm::mat4 ────────────────────────────
+        // SkeletonOffset → glm::mat4
         glm::mat4 GetSkeletonOffsetMatrix() const;
 
         // ── 序列化 / 反序列化 ───────────────────────────────────────────────
         void ResetToDefaults();
-
-        // ── 运行时辅助：将局部坐标与网格顶点匹配，返回原始顶点索引列表 ────
-        // rawPosFloat4 来自 VansMesh::GetMeshRawPositionData()，每顶点 8 float：
-        //   [x, y, z, pad,  nx, ny, nz, npad]（位置 float4 + 法线 float4）。
-        // 按近邻距离（容差 m_PinnedMatchTolerance）在局部空间匹配，未找到的点被跳过。
-        std::vector<uint32_t> ResolveIndices(
-            const std::vector<float>& rawPosFloat4,
-            int vertexCount) const;
-
-        // ── 运行时辅助：骨骼名称 → 骨骼索引解析，返回每个固定点的蒙皮数据 ──
-        // 需要 Skeleton 中的 boneNameToIndex 映射。
-        // 返回的 ClothNodePinSkinData 列表与 m_PinnedLocalPositions 平行。
-        std::vector<ClothNodePinSkinData> ResolveBoneBindings(
-            const VansGraphics::Skeleton& skeleton) const;
     };
 
 }

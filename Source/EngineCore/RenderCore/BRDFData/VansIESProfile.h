@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "../VulkanCore/VansVKImage.h"
 #include "vulkan/vulkan.h"
@@ -50,12 +51,13 @@ namespace VansGraphics
         static constexpr int kBakeHeight  = 128;
         static constexpr int kMaxProfiles = 32;  // Texture2DArray 最大层数
 
-        // 从文件加载 IES profile，返回 atlas 层索引（写入光源的 m_IESProfileIndex）
-        // 返回 false 表示解析失败
-        bool LoadIESFile(const std::string& filePath, int& outProfileIndex);
+        // 按稳定资产 GUID 从内存加载；同一资产在当前场景只占一个 atlas 层。
+        bool LoadIESFromMemory(const std::string& assetGuid,
+                              const char* data, size_t dataSize,
+                              int& outProfileIndex);
 
-        // 从内存加载（支持从 ieslibrary.com 下载的字节流）
-        bool LoadIESFromMemory(const char* data, size_t dataSize, int& outProfileIndex);
+        // GPU 资源释放后清空当前场景的 CPU profile 与资产索引。
+        void ClearProfiles();
 
         // 获取已加载的 profile 数量
         uint32_t GetProfileCount() const { return static_cast<uint32_t>(m_Profiles.size()); }
@@ -98,6 +100,7 @@ namespace VansGraphics
         float ApplyHorizontalSymmetry(const IESProfileData& data, float horizDeg) const;
 
         std::vector<IESProfileData> m_Profiles;
+        std::unordered_map<std::string, int> m_ProfileIndicesByAssetGuid;
         VansVKImage                 m_IESTextureArray;  // sampler2DArray，格式 VK_FORMAT_R16_SFLOAT
         VkImageView                 m_IESArrayView = VK_NULL_HANDLE;
         bool                        m_GPUResourcesCreated = false;

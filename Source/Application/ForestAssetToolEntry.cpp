@@ -1,4 +1,4 @@
-#include "../EngineCore/EditorCore/ModelLod/VansModelLodBuilder.h"
+#include "../EngineCore/AuthoringCore/Pcg/VansPlantLodOrchestrator.h"
 #include "../EngineCore/PcgCore/Storage/VansPlantTypeAssetStorage.h"
 #include "../EngineCore/AnimationCore/VansAnimatorIO.h"
 #include "../EngineCore/AnimationCore/VansAnimationClip.h"
@@ -8,15 +8,23 @@
 #include "../EngineCore/AnimationCore/Storage/VansRetargetProfileStorage.h"
 #include "../EngineCore/AnimationCore/Serialization/VansRetargetProfileJsonCodec.h"
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
+#include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../EngineCore/AssetCore/Importers/VansModelImporter.h"
 #include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../EngineCore/AssetCore/Storage/VansJsonFileStorage.h"
 #include "../EngineCore/NavigationCore/VansNavigationMesh.h"
+#include "../EngineCore/NavigationCore/VansNavigationSource.h"
 #include "../EngineCore/NavigationCore/VansSceneNavigationGeometry.h"
+#include "../EngineCore/ProjectSystem/Storage/VansProjectSettingsStorage.h"
+#include "../EngineCore/ProjectSystem/VansEnginePaths.h"
+#include "../EngineCore/ProjectSystem/VansProjectConfig.h"
+#include "../EngineCore/ProjectSystem/VansProjectManager.h"
 #include "../EngineCore/SceneCore/VansSceneContentBuildPlan.h"
 #include "../EngineCore/SceneCore/VansSceneDocumentLoader.h"
 #include "../EngineCore/SceneCore/VansSceneRuntimeProjection.h"
 #include "../EngineCore/ScriptCore/VansLuaScriptInspectorService.h"
+#include "../EngineCore/RenderCore/VulkanCore/VansMesh.h"
+#include "../EngineCore/Util/VansFileFingerprint.h"
 
 #include <algorithm>
 #include <cctype>
@@ -24,6 +32,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
@@ -71,10 +80,12 @@ namespace
 	{
 		Command command = Command::Invalid;
 		fs::path projectRoot;
+		fs::path engineRoot;
 		fs::path sourcePath;
 		fs::path skeletonClipPath;
 		fs::path destinationRoot;
 		fs::path outputPath;
+		fs::path navigationSettingsPath;
 		std::vector<fs::path> sourceRoots;
 		fs::path scriptPath;
 		std::string entryName;
@@ -88,7 +99,7 @@ namespace
 		std::cout
 			<< "ForestAssetTool\n"
 			<< "Usage:\n"
-            << "  ForestAssetTool build-pcg-lods --project <path> --source <asset-relative-vplant> --write\n"
+            << "  ForestAssetTool build-pcg-lods --project <path> --source <asset-relative-vplant> (--dry-run|--write)\n"
 			<< "  ForestAssetTool rewrite-animation-assets --project <path> --dry-run\n"
 			<< "  ForestAssetTool rewrite-animation-assets --project <path> --write\n"
 			<< "  ForestAssetTool validate-animation-assets --project <path>\n"
@@ -104,7 +115,8 @@ namespace
 			<< "  ForestAssetTool validate-lua-script --project <path> --script <project-relative-lua>"
 				" --entry <table-name>\n"
 			<< "  ForestAssetTool bake-navigation --project <path> --source <project-relative-scene>"
-				" --output <asset-relative-vnavmesh> --write\n";
+				" --output <asset-relative-vnavmesh> [--settings <project-relative-json>]"
+				" [--engine-root <path>] --write\n";
 	}
 
 	bool ParseOptions(int argc, char** argv, Options& options, std::string& error)
@@ -143,6 +155,15 @@ namespace
 					return false;
 				}
 				options.projectRoot = argv[index];
+			}
+			else if (argument == "--engine-root")
+			{
+				if (++index >= argc)
+				{
+					error = "Missing value for --engine-root.";
+					return false;
+				}
+				options.engineRoot = argv[index];
 			}
 			else if (argument == "--source")
 			{
@@ -188,6 +209,15 @@ namespace
 					return false;
 				}
 				options.outputPath = argv[index];
+			}
+			else if (argument == "--settings")
+			{
+				if (++index >= argc)
+				{
+					error = "Missing value for --settings.";
+					return false;
+				}
+				options.navigationSettingsPath = argv[index];
 			}
 			else if (argument == "--script")
 			{
@@ -281,13 +311,24 @@ namespace
 			error = "Lua validation requires --script and --entry and does not accept a rewrite mode.";
 			return false;
 		}
-        if (options.command == Command::BuildPcgLods && (modeCount != 1 || !options.write || options.sourcePath.empty()))
-        { error = "LOD build requires --source and --write."; return false; }
+        if (options.command == Command::BuildPcgLods && (modeCount != 1 || options.sourcePath.empty()))
+        { error = "LOD build requires --source and exactly one of --dry-run or --write."; return false; }
 		if (options.command == Command::BakeNavigation
 			&& (modeCount != 1 || !options.write || options.sourcePath.empty()
 				|| options.outputPath.empty()))
 		{
 			error = "Navigation bake requires --source, --output, and --write.";
+			return false;
+		}
+		if (options.command != Command::BakeNavigation &&
+			!options.navigationSettingsPath.empty())
+		{
+			error = "--settings is only valid for bake-navigation.";
+			return false;
+		}
+		if (options.command != Command::BakeNavigation && !options.engineRoot.empty())
+		{
+			error = "--engine-root is only valid for bake-navigation.";
 			return false;
 		}
 		return true;
@@ -451,7 +492,7 @@ namespace
 	}
 
 	int BakeNavigation(const fs::path& projectRoot, const fs::path& assetsRoot,
-		const Options& options)
+		Vans::VansAssetDatabase& database, const Options& options)
 	{
 		std::error_code fileError;
 		const fs::path scenePath = fs::weakly_canonical(
@@ -474,39 +515,139 @@ namespace
 			return 2;
 		}
 
+		Vans::VansProjectConfig projectConfig;
+		if (!projectConfig.LoadFromFile((projectRoot / "ForestProject.json").string()))
+		{
+			std::cerr << "Could not load ForestProject.json for navigation settings.\n";
+			return 1;
+		}
+		const fs::path requestedSettings = options.navigationSettingsPath.empty()
+			? fs::path(projectConfig.navigationSettings)
+			: options.navigationSettingsPath;
+		const fs::path settingsPath = fs::weakly_canonical(
+			projectRoot / requestedSettings, fileError);
+		if (fileError || !fs::is_regular_file(settingsPath) ||
+			!IsWithin(settingsPath, projectRoot))
+		{
+			std::cerr << "Invalid project navigation settings: "
+				<< requestedSettings << '\n';
+			return 2;
+		}
+		Vans::VansNavigationSettings navigationSettings;
+		std::string error;
+		if (!Vans::VansProjectSettingsStorage::LoadNavigationSettings(
+			settingsPath.string(), navigationSettings, error))
+		{
+			std::cerr << "Could not load navigation settings: " << error << '\n';
+			return 1;
+		}
+
 		Vans::SceneDocumentLoadResult loaded = Vans::VansSceneDocumentLoader::Load(scenePath);
 		if (!loaded)
 		{
 			std::cerr << "Could not load Scene document: " << scenePath << '\n';
 			return 1;
 		}
+		const Vans::VansSerializedValue sceneRoot =
+			loaded.document->SerializedRootSnapshot();
+		const Vans::VansSerializedValue* entities =
+			Vans::FindObjectField(sceneRoot, "entities");
+		if (entities == nullptr)
+		{
+			std::cerr << "Could not project Scene for navigation: Scene has no entities.\n";
+			return 1;
+		}
 		Vans::VansSceneContentBuildPlan contentPlan;
-		std::string error;
-		if (!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
-			loaded.document->SerializedRootSnapshot(), projectRoot.generic_string(),
-			contentPlan, error))
+		if (!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+			*entities, projectRoot.generic_string(), contentPlan, error))
 		{
 			std::cerr << "Could not project Scene for navigation: " << error << '\n';
 			return 1;
 		}
-		const Vans::VansNavigationGeometry geometry =
-			Vans::VansSceneNavigationGeometry::BuildEnvironmentGeometry(contentPlan.objects);
-		if (geometry.Empty())
+		std::unordered_map<std::string, std::unique_ptr<VansGraphics::VansMesh>> meshes;
+		std::vector<Vans::VansNavigationColliderSource> colliderSources;
+		const Vans::VansNavigationMeshResolver resolveMesh =
+			[&](const std::string& guidText,
+				Vans::VansTriangleMeshData& data,
+				std::string& resolveError) -> bool
 		{
-			std::cerr << "Scene contains no enabled Environment box collider geometry.\n";
+			const auto cached = meshes.find(guidText);
+			if (cached != meshes.end())
+				return cached->second->CopyTriangleMeshData(data, resolveError);
+
+			Vans::VansAssetGuid guid;
+			if (!Vans::VansAssetGuid::TryParse(guidText, guid))
+			{
+				resolveError = "Navigation collider has an invalid Model GUID: " + guidText;
+				return false;
+			}
+			const auto record = database.Find(guid);
+			if (!record || record->type != Vans::VansAssetType::Model ||
+				record->state == Vans::VansAssetState::Missing)
+			{
+				resolveError = "Navigation collider Model is missing: " + guidText;
+				return false;
+			}
+			Vans::VansAssetMeta meta;
+			if (!Vans::VansAssetMetaStorage::Load(record->metaPath, meta, resolveError))
+				return false;
+			const bool isFbx = record->sourcePath.extension() == ".fbx" ||
+				record->sourcePath.extension() == ".FBX";
+			const bool loadMultiMesh = meta.ReadBoolSetting("loadMultiMesh", isFbx);
+			const bool importTangents = meta.ReadBoolSetting("generateTangents", true);
+			const float scaleFactor = meta.ReadFloatSetting("scaleFactor", 1.0f);
+			auto mesh = std::make_unique<VansGraphics::VansMesh>(true, false);
+			mesh->m_AssetName = guidText;
+			VkDevice nullDevice = VK_NULL_HANDLE;
+			VkQueue nullQueue = VK_NULL_HANDLE;
+			if (loadMultiMesh)
+			{
+				mesh->LoadMultiMesh(nullDevice, nullQueue, nullptr,
+					record->sourcePath.string(), importTangents, false, true,
+					scaleFactor, Vans::ReadSkeletalMeshImportSettings(meta), {}, false);
+			}
+			else
+			{
+				mesh->LoadMesh(nullDevice, nullQueue, nullptr,
+					record->sourcePath.string(), importTangents, {}, false, scaleFactor);
+			}
+			if (!mesh->CopyTriangleMeshData(data, resolveError)) return false;
+			colliderSources.push_back({ guidText, record->sourceHash, record->metaHash });
+			meshes.emplace(guidText, std::move(mesh));
+			return true;
+		};
+		Vans::VansNavigationGeometry geometry;
+		if (!Vans::VansSceneNavigationGeometry::BuildEnvironmentGeometry(
+			contentPlan.objects, navigationSettings.areas, resolveMesh, geometry, error))
+		{
+			std::cerr << "Could not build Scene navigation geometry: " << error << '\n';
 			return 1;
 		}
+		if (geometry.Empty())
+		{
+			std::cerr << "Scene contains no enabled Environment navigation collider geometry.\n";
+			return 1;
+		}
+		Vans::VansFileFingerprint sceneFingerprint;
+		if (!Vans::ComputeFileFingerprint(scenePath, sceneFingerprint, &error))
+		{
+			std::cerr << "Could not fingerprint navigation Scene: " << error << '\n';
+			return 1;
+		}
+		Vans::VansNavigationSource source;
+		source.scene = fs::relative(scenePath, projectRoot).generic_string();
+		source.sceneHash = sceneFingerprint.contentHash;
+		source.colliderHash = Vans::HashNavigationColliders(std::move(colliderSources));
+		source.settingsHash = Vans::HashNavigationSettings(navigationSettings);
 
 		Vans::VansNavigationMesh navigationMesh;
-		const Vans::VansNavigationBuildSettings settings;
-		if (!navigationMesh.Build(geometry, settings, error) ||
-			!navigationMesh.Save(outputPath, error))
+		if (!navigationMesh.Build(geometry, navigationSettings, error) ||
+			!navigationMesh.Save(outputPath, source, error))
 		{
 			std::cerr << "Navigation bake failed: " << error << '\n';
 			return 1;
 		}
 
-		Vans::VansAssetDatabase database(assetsRoot);
 		if (!database.RegisterOrRefresh(
 			outputPath, Vans::VansAssetOperationPolicy::Authoring(), error))
 		{
@@ -516,6 +657,7 @@ namespace
 		const auto record = database.Find(outputPath);
 		std::cout << "Navigation bake complete: vertices=" << geometry.VertexCount()
 			<< " triangles=" << geometry.TriangleCount()
+			<< " settings=" << fs::relative(settingsPath, projectRoot).generic_string()
 			<< " output=" << fs::relative(outputPath, projectRoot).generic_string();
 		if (record) std::cout << " guid=" << record->guid.ToString();
 		std::cout << '\n';
@@ -1086,18 +1228,19 @@ namespace
         if(!scan){for(const auto& error:scan.errors)std::cerr<<error<<'\n';return 2;}
         Vans::VansPlantTypeAsset plant;std::string error;
         if(!Vans::VansPlantTypeAssetStorage::Load(path,plant,error)){std::cerr<<error<<'\n';return 1;}
-        if(plant.category!=Vans::VansPlantCategory::Tree){std::cerr<<"Select a tree plant.\n";return 1;}
-        for(auto& variant:plant.variants){
-            if(variant.geometry!=Vans::VansPlantGeometry::Mesh || variant.parts.empty())continue;
-            std::vector<Vans::VansModelLodSourcePart> sources;
-            for(const auto& part:variant.parts)sources.push_back({part.mesh,part.material,part.submesh,part.kind==Vans::VansPlantPartKind::Leaves});
-            if(!Vans::VansModelLodBuilder::Build(database,sources,variant.lodSettings,variant.lod,error)){std::cerr<<error<<'\n';return 1;}
-            std::cout<<variant.id<<" key="<<variant.lod.buildKey;
-            for(size_t l=0;l<variant.lod.levels.size();++l){uint64_t triangles=0;for(const auto& part:variant.lod.levels[l].parts)triangles+=part.triangleCount;
-                std::cout<<" LOD"<<l+1<<"="<<triangles;}
+        Vans::VansPlantTypeAsset built;
+        std::vector<Vans::VansPlantLodVariantSummary> summaries;
+        const auto mode=options.write?Vans::VansModelLodBuildMode::Publish:Vans::VansModelLodBuildMode::Inspect;
+        if(!Vans::VansPlantLodOrchestrator::Build(database,plant,mode,built,summaries,error))
+        {std::cerr<<error<<'\n';return 1;}
+        for(const auto& summary:summaries){
+            std::cout<<summary.variantId<<" key="<<summary.buildKey;
+            for(size_t l=0;l<summary.triangleCounts.size();++l)
+                std::cout<<" LOD"<<l+1<<"="<<summary.triangleCounts[l];
             std::cout<<'\n';
         }
-        if(!Vans::VansPlantTypeAssetStorage::SaveAtomic(path,plant,error)){std::cerr<<error<<'\n';return 1;}
+        if(options.write&&!Vans::VansPlantTypeAssetStorage::SaveAtomic(path,built,error))
+        {std::cerr<<error<<'\n';return 1;}
         return 0;
     }
 
@@ -1142,7 +1285,62 @@ namespace
 			return 0;
 		}
 		if (options.command == Command::BakeNavigation)
-			return BakeNavigation(projectRoot, fs::weakly_canonical(assetsRoot), options);
+		{
+			std::string engineRoot;
+			std::string projectError;
+			if (!options.engineRoot.empty())
+			{
+				engineRoot = options.engineRoot.generic_string();
+			}
+			else if (!Vans::VansEnginePaths::DiscoverEngineRoot(engineRoot, projectError))
+			{
+				const std::string executableDiscoveryError = projectError;
+				if (!Vans::VansEnginePaths::FindEngineRoot(
+						fs::current_path(), engineRoot, projectError))
+				{
+					std::cerr << "Could not resolve the engine root for navigation projection. "
+						<< executableDiscoveryError << ' ' << projectError
+						<< " Pass --engine-root <path>.\n";
+					return 2;
+				}
+			}
+
+			Vans::VansProjectManager& projectManager = Vans::VansProjectManager::Get();
+			if (!projectManager.ConfigureEngineRoot(engineRoot, projectError))
+			{
+				std::cerr << "Could not configure the engine root for navigation projection: "
+					<< projectError << '\n';
+				return 2;
+			}
+			Vans::VansProjectOpenRequest openRequest;
+			openRequest.m_ProjectRootPath = projectRoot.generic_string();
+			openRequest.m_Options.m_UpdateLastOpenedAt = false;
+			openRequest.m_Options.m_UpdateRecentProjects = false;
+			openRequest.m_Options.m_LoadProjectSettings = true;
+			openRequest.m_Options.m_ScanAssets = true;
+			openRequest.m_Options.m_AssetPolicy =
+				Vans::VansAssetOperationPolicy::ReadOnly();
+			const Vans::VansProjectOpenResult openResult =
+				projectManager.OpenProject(openRequest);
+			if (!openResult.m_Opened)
+			{
+				std::cerr << "Could not open the project for navigation projection: "
+					<< openResult.m_Message << '\n';
+				return 1;
+			}
+
+			Vans::VansAssetDatabase* database = projectManager.GetAssetDatabase();
+			if (database == nullptr)
+			{
+				std::cerr << "Navigation projection opened without a project asset database.\n";
+				projectManager.CloseProject();
+				return 1;
+			}
+			const int result = BakeNavigation(
+				projectRoot, fs::weakly_canonical(assetsRoot), *database, options);
+			projectManager.CloseProject();
+			return result;
+		}
 
 		Vans::VansAssetDatabase database(assetsRoot);
 		const Vans::VansAssetScanResult scanResult = database.Scan(

@@ -201,6 +201,7 @@ VansScenePhysicsNodeConfig VansScenePhysicsComponentReader::ReadPhysicsNode(
 	config.layer = ReadOptionalStringField(physicsNode, "layer");
 	config.isTrigger = ReadOptionalBoolField(physicsNode, "isTrigger");
 	config.hitRegion = ReadOptionalStringField(physicsNode, "hitRegion");
+	config.navigationArea = ReadOptionalStringField(physicsNode, "navigationArea");
 	config.mesh = ReadOptionalStringField(physicsNode, "mesh");
 	config.name = ReadOptionalStringField(physicsNode, "name");
 	return config;

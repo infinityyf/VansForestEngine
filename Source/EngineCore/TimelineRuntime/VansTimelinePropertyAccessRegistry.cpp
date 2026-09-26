@@ -12,6 +12,8 @@ bool VansTimelinePropertyAccessRegistry::Register(
 	if (m_Sealed) { error = "Timeline.PropertyAccessRegistrySealed"; return false; }
 	if (!descriptor.id || descriptor.stableName.empty() || descriptor.componentTypeId == 0 ||
 		descriptor.valueType == VansTimelineValueType::Null || !descriptor.read || !descriptor.write ||
+		static_cast<std::uint8_t>(descriptor.writeDomain) >
+			static_cast<std::uint8_t>(VansTimelinePropertyWriteDomain::Transform) ||
 		descriptor.id != VansMakeStableId<VansTimelinePropertyAccessTag>(descriptor.stableName))
 	{ error = "Timeline.PropertyAccessRegistrationInvalid"; return false; }
 	if (m_ById.find(descriptor.id) != m_ById.end())
@@ -21,9 +23,14 @@ bool VansTimelinePropertyAccessRegistry::Register(
 	return true;
 }
 
-bool VansTimelinePropertyAccessRegistry::Seal(std::string& error)
+bool VansTimelinePropertyAccessRegistry::Seal(bool allowEmpty, std::string& error)
 {
 	error.clear();
+	if (m_Descriptors.empty() && !allowEmpty)
+	{
+		error = "Timeline.PropertyAccessRegistryEmpty";
+		return false;
+	}
 	std::sort(m_Descriptors.begin(), m_Descriptors.end(), [](const auto& left, const auto& right)
 	{ return left.stableName < right.stableName; });
 	m_ById.clear();
@@ -48,28 +55,15 @@ const VansTimelinePropertyAccessDescriptor* VansTimelinePropertyAccessRegistry::
 
 std::uint64_t VansTimelinePropertyAccessRegistry::ManifestHash() const
 {
+	if (!m_Sealed) return 0;
 	std::uint64_t hash = VansStableHash64("Timeline.PropertyAccessManifest");
 	for (const auto& descriptor : m_Descriptors)
 	{
 		hash ^= descriptor.id.value + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
 		hash ^= static_cast<std::uint64_t>(descriptor.valueType) +
 			(static_cast<std::uint64_t>(descriptor.componentTypeId) << 32);
+		hash ^= static_cast<std::uint64_t>(descriptor.writeDomain) << 48;
 	}
 	return hash;
-}
-
-const VansTimelinePropertyAccessRegistry& VansTimelinePropertyAccessRegistry::BuiltIns()
-{
-	static const VansTimelinePropertyAccessRegistry registry = []
-	{
-		VansTimelinePropertyAccessRegistry value; std::string error;
-		if (!VansRegisterSceneTimelinePropertyAccessors(value, error) ||
-			!VansRegisterAudioTimelinePropertyAccessors(value, error) ||
-			!VansGraphics::VansRegisterRenderTimelinePropertyAccessors(value, error) ||
-			!value.Seal(error))
-			return VansTimelinePropertyAccessRegistry{};
-		return value;
-	}();
-	return registry;
 }
 }

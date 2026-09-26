@@ -2,10 +2,9 @@
 #include "../EngineCore/RenderCore/GICore/VansGIScrollingGrid.h"
 #include "../EngineCore/RenderCore/VansScene.h"
 #include "../EngineCore/EngineAPILayer/Private/EngineAPIImpl.h"
-#include "../EngineCore/EngineAPILayer/Private/ScenePropertyValueBuilders.h"
 #include "../EngineCore/EditorCore/VansSceneEditService.h"
+#include "../EngineCore/EditorCore/VansEditorAssetSaveService.h"
 #include "../EngineCore/SceneCore/VansSceneDocumentLoader.h"
-#include "../EngineCore/SceneCore/VansSceneSaveService.h"
 #include "../EngineCore/SceneCore/VansSceneRenderSettingsConfigReader.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include <chrono>
@@ -22,6 +21,34 @@ namespace
 {
     using namespace VansGraphics;
     void Check(bool passed, const char* message) { if (!passed) throw std::runtime_error(message); }
+
+	class CapturingSceneAuthoringHost final : public Vans::IVansSceneAuthoringHost
+	{
+	public:
+		Vans::VansSceneDocument* SceneDocument() const override { return document; }
+		Vans::VansSceneAuthoringResult SetSceneValue(
+			const Vans::DocumentPropertyPath& path,
+			Vans::VansSerializedValue value) override
+		{
+			captured.push_back({ path.propertyPointer, value });
+			if (!edits)
+				return { true, {} };
+			const Vans::SceneEditResult result = edits->Set(path, std::move(value));
+			return { result.success, result.message };
+		}
+		std::vector<Vans::EditorAPI::ScenePropertyEdit> Take()
+		{
+			auto result = std::move(captured);
+			captured.clear();
+			return result;
+		}
+
+		Vans::VansSceneDocument* document = nullptr;
+		Vans::VansSceneEditService* edits = nullptr;
+
+	private:
+		std::vector<Vans::EditorAPI::ScenePropertyEdit> captured;
+	};
 
 
     void LocalLightingEdits()
@@ -444,7 +471,9 @@ namespace
         // 通过生产 API、文档编辑/保存与加载器验证，不复制一套设置投影。
         auto scene = std::make_unique<VansScene>();
         Vans::EditorAPI::EngineAPIImpl api(scene.get(), nullptr);
-        struct Detach { Vans::EditorAPI::EngineAPIImpl& api; ~Detach() { api.BindRuntime(nullptr, nullptr); } } detach{api};
+		CapturingSceneAuthoringHost authoring;
+		api.BindSceneAuthoring(&authoring);
+        struct Detach { Vans::EditorAPI::EngineAPIImpl& api; ~Detach() { api.BindSceneAuthoring(nullptr); api.BindRuntime(nullptr, nullptr); } } detach{api};
         VansGISettings initial;
         initial.regions.resize(2);
         initial.regions[0].size = {13.2f, 8.1f, 6.7f}; initial.regions[0].probeSpacing = 1.25f;
@@ -459,17 +488,17 @@ namespace
             scene->GetGISettings().gizmoStride == 3 && !scene->AreGIProbeResourcesDirty() &&
             GISettingsResourceLayoutEquals(initial, scene->GetGISettings()),
             "position display changed GI layout or requested resource recreation");
-        Check(api.ConsumeScenePropertyEdits().empty() && !api.GetGIProbeDebugSnapshot(),
+		Check(authoring.Take().empty() && !api.GetGIProbeDebugSnapshot(),
             "display controls staged a scene write or exposed positions before resources were ready");
         api.SetGIProbeVisualization(false, false, 0);
         Check(!scene->GetGISettings().showProbeGizmos && !scene->GetGISettings().showProbeVolume &&
             scene->GetGISettings().gizmoStride == 1 && !scene->AreGIProbeResourcesDirty(),
             "position display toggle or stride normalization failed");
         api.SaveReflectionProbeConfiguration();
-        const auto reflectionEdits = api.ConsumeScenePropertyEdits();
+		const auto reflectionEdits = authoring.Take();
         Check(reflectionEdits.size() == 1 && reflectionEdits[0].propertyPointer == "/settings/reflectionProbes",
             "reflection configuration saved outside the scene settings block");
-        const auto reflectionBefore = Vans::EditorAPI::ScenePropertyValues::ToSerializedValue(reflectionEdits[0].value);
+        const auto& reflectionBefore = reflectionEdits[0].value;
 
         const auto directory = std::filesystem::temp_directory_path() /
             ("ForestGIConfig_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -486,6 +515,8 @@ namespace
         auto document = Vans::VansSceneDocumentLoader::Load(path);
         Check(bool(document), "GI save fixture failed to load");
         Vans::VansSceneEditService edits(*document.document);
+		authoring.document = document.document.get();
+		authoring.edits = &edits;
         for (bool enabled : {false, true, false})
         {
             const auto fingerprint = Vans::VansSceneDocumentLoader::Fingerprint(path);
@@ -502,7 +533,7 @@ namespace
             settings.placement.maxProbeUpdatesPerFrame = 777;
             settings.placement.maxRaysPerFrame = 23456;
             Check(api.ApplyGISettings(settings), "GI authoring settings Apply failed");
-            Check(api.ConsumeScenePropertyEdits().empty(), "Apply GI implicitly staged a scene write");
+			Check(authoring.Take().empty(), "Apply GI implicitly staged a scene write");
             const auto& applied = scene->GetGISettings();
             Check(applied.regions[1].worldOnly&&!applied.regions[0].worldOnly,"World region scope did not pass the editor API");
             Check(applied.regions[1].followView&&!applied.regions[0].followView,"Scrolling mode did not pass the editor API");
@@ -517,12 +548,12 @@ namespace
                 && applied.regions[1].gridDimensions == initial.regions[1].gridDimensions && !applied.regions[1].enabled,
                 "GI placement toggle modified the authored region definition");
             api.SaveGIConfiguration();
-            const auto saved = api.ConsumeScenePropertyEdits();
+			const auto saved = authoring.Take();
             Check(saved.size() == 1 && saved[0].propertyPointer == "/settings/globalIllumination", "GI configuration save path is not loader-visible");
-            Check(bool(edits.Set(Vans::MakeDocumentPropertyPath(Vans::DocumentPropertySpace::Scene, saved[0].propertyPointer),
-                Vans::EditorAPI::ScenePropertyValues::ToSerializedValue(saved[0].value))), "GI configuration could not enter the scene document");
             Check(Vans::VansSceneDocumentLoader::Fingerprint(path) == fingerprint, "Apply or document staging wrote the file before Save Scene");
-            Check(bool(Vans::VansSceneSaveService().Save(*document.document)), "explicit GI scene save failed");
+            const Vans::VansEditorAssetSaveOperations saveOperations;
+            Check(bool(Vans::VansEditorAssetSaveService::Get().SaveSceneAndAssets(
+                saveOperations, *document.document, {})), "explicit GI scene save failed");
             auto reloaded = Vans::VansSceneDocumentLoader::Load(path);
             Check(bool(reloaded), "saved GI document failed to reload");
             const auto json = Vans::EncodeSerializedValueJson<nlohmann::json>(reloaded.document->SerializedRootSnapshot());
@@ -545,9 +576,9 @@ namespace
                 && decoded.regions[1].gridDimensions.has_value() && !decoded.regions[1].size.has_value()
                 && decoded.regions[1].enabled == false, "saved derived grid replaced authored region mode");
             api.SaveReflectionProbeConfiguration();
-            const auto reflectionAfter = api.ConsumeScenePropertyEdits();
+			const auto reflectionAfter = authoring.Take();
             Check(reflectionAfter.size() == 1 && Vans::EncodeSerializedValueJson<nlohmann::json>(reflectionBefore)
-                == Vans::EncodeSerializedValueJson<nlohmann::json>(Vans::EditorAPI::ScenePropertyValues::ToSerializedValue(reflectionAfter[0].value)),
+                == Vans::EncodeSerializedValueJson<nlohmann::json>(reflectionAfter[0].value),
                 "GI configuration changed reflection ownership");
         }
     }

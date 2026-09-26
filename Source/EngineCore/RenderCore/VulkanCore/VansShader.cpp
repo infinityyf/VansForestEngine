@@ -91,6 +91,7 @@ bool CompileShaderModuleData(
 	VansGraphics::ShaderType shaderType,
 	const std::map<VkShaderStageFlagBits, std::string>& explicitStageFiles,
 	const std::string& programId,
+	const std::filesystem::path& artifactRoot,
 	std::map<VkShaderStageFlagBits, VansGraphics::ShaderModuleData>& outModuleData,
 	Vans::VansShaderArtifactPrepareResult& outPrepared)
 {
@@ -169,6 +170,7 @@ bool CompileShaderModuleData(
 	Vans::VansShaderCompileRequest request;
 	request.programId = programId.empty() ? shader_folder : programId;
 	request.sourceFolder = shader_folder;
+	request.artifactRoot = artifactRoot;
 	request.includeRoots.push_back(FindShaderRoot(request.sourceFolder));
 	for (const auto& [stage, moduleData] : outModuleData)
 	{
@@ -294,7 +296,7 @@ bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::str
 	Vans::VansShaderArtifactPrepareResult prepared;
 	bool result = CompileShaderModuleData(
 		m_ShaderFolder, m_ShaderType, m_ExplicitStageFiles,
-		m_PipelineProgramDesc.name, moduleData, prepared);
+		m_PipelineProgramDesc.name, m_ArtifactRoot, moduleData, prepared);
 	if (!result)
 	{
 		VANS_LOG_ERROR("shader translation failed");
@@ -408,7 +410,7 @@ bool VansGraphics::VansShader::InitRayTracingShader(VkDevice& logic_device, cons
 	Vans::VansShaderArtifactPrepareResult prepared;
 	bool result = CompileShaderModuleData(
 		shader_folder_string, ShaderType::RayTracing, m_ExplicitStageFiles,
-		m_PipelineProgramDesc.name, moduleData, prepared);
+		m_PipelineProgramDesc.name, m_ArtifactRoot, moduleData, prepared);
 	if (!result)
 	{
 		VANS_LOG_ERROR("shader translation failed");

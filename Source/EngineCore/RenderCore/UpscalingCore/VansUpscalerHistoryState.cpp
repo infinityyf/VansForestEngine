@@ -42,13 +42,13 @@ namespace VansGraphics
 
 	void VansUpscalerHistoryState::OnTemporalDispatchSucceeded()
 	{
-		m_LastConsumedReasons = m_PendingReasons;
+		m_LastConsumedResetReasons = m_PendingReasons;
 		m_PendingReasons = VansUpscalerResetReason::None;
 	}
 
 	void VansUpscalerHistoryState::ClearForOffBackend()
 	{
-		m_LastConsumedReasons = VansUpscalerResetReason::None;
+		m_LastConsumedResetReasons = VansUpscalerResetReason::None;
 		m_PendingReasons |= VansUpscalerResetReason::FirstFrame;
 	}
 }

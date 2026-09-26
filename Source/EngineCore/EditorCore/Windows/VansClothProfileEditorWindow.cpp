@@ -3,8 +3,10 @@
 #include "../../AssetCore/VansClothProfile.h"
 #include "../../AssetCore/Serialization/VansClothProfileJsonCodec.h"
 #include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
-#include "../VansAssetDocumentEditService.h"
-#include "../VansAssetDocumentRegistry.h"
+#include "../../AuthoringCore/VansAssetDocumentEditService.h"
+#include "../../AuthoringCore/VansAssetDocumentRegistry.h"
+#include "../../EngineAPILayer/Public/IAssetAuthoringEditorAPI.h"
+#include "../../EngineAPILayer/Public/IProjectEditorAPI.h"
 #include "../VansEditorAssetSaveService.h"
 
 #include "../../Util/VansLog.h"
@@ -213,7 +215,9 @@ namespace VansGraphics
     {
 
         m_ActiveAPI = &api;
-        m_ProjectRootPath = api.GetProjectRootPath();
+        m_AssetAuthoringAPI = &api;
+		Vans::EditorAPI::IProjectEditorAPI& projectAPI = api;
+        m_ProjectRootPath = projectAPI.GetProjectRootPath();
         if (m_Document && m_Document->sourceDocument.IsLoaded() &&
             m_DocumentStateId != m_Document->sourceDocument.CurrentStateId())
         {
@@ -329,13 +333,13 @@ namespace VansGraphics
                         ? requestedPath.parent_path()
                         : fs::path(m_ProjectRootPath);
                     const std::string name = requestedPath.stem().string();
-                    if (!m_ActiveAPI)
+                    if (!m_AssetAuthoringAPI)
                     {
                         VANS_LOG_ERROR("[VansClothProfileEditor] Project asset API is unavailable");
                     }
                     else
                     {
-                        const auto creation = m_ActiveAPI->CreateProjectAsset({
+                        const auto creation = m_AssetAuthoringAPI->CreateProjectAsset({
                             directory.string(),
                             Vans::EditorAPI::ProjectAssetCreationKind::ClothProfile,
                             name.empty() ? std::string("Cloth Profile") : name });
@@ -345,7 +349,8 @@ namespace VansGraphics
                         }
                         else
                         {
-                            const auto refresh = m_ActiveAPI->RefreshProjectAsset(creation.assetPath, true);
+                            const auto refresh = m_AssetAuthoringAPI->RefreshProjectAsset(
+								creation.assetPath, true);
                             if (!refresh.success)
                                 VANS_LOG_ERROR("[VansClothProfileEditor] Profile import failed: " << refresh.message);
                             else
@@ -925,6 +930,12 @@ namespace VansGraphics
 
 
         if (ImGui::SliderFloat("刚度 (Stiffness)", &m_Profile->m_Stiffness, 0.0f, 1.0f))
+
+            PublishProfileEdit();
+
+
+
+        if (ImGui::SliderFloat("刚度频率 Hz", &m_Profile->m_StiffnessFrequency, 1.0f, 240.0f))
 
             PublishProfileEdit();
 

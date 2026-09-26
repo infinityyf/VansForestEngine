@@ -1,5 +1,7 @@
 #include "VansActionTask.h"
 
+#include "../Util/VansLog.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -59,8 +61,9 @@ void VansActionTaskSet::CancelAll()
 	m_Tasks.ForEach([&](VansGenerationHandle handle, const Task&) { handles.push_back({ handle }); });
 	for (VansActionTaskHandle handle : handles)
 	{
-		std::string ignored;
-		Cancel(handle, ignored);
+		std::string cancelError;
+		if (!Cancel(handle, cancelError))
+			VANS_LOG_ERROR("[GAF] Action Task cancellation failed: " << cancelError);
 	}
 }
 
@@ -77,8 +80,9 @@ void VansActionTaskSet::Tick(double deltaSeconds)
 	});
 	for (VansActionTaskHandle handle : timedOut)
 	{
-		std::string ignored;
-		End(handle, VansActionTaskState::TimedOut, ignored);
+		std::string timeoutError;
+		if (!End(handle, VansActionTaskState::TimedOut, timeoutError))
+			VANS_LOG_ERROR("[GAF] Action Task timeout cleanup failed: " << timeoutError);
 	}
 }
 

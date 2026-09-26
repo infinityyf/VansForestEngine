@@ -1,4 +1,5 @@
 #include "VansPcgMask.h"
+#include "../Util/VansFileFingerprint.h"
 
 #include <algorithm>
 #include <cmath>
@@ -90,10 +91,9 @@ float VansPcgMask::Sample(float worldX, float worldZ) const
 
 std::uint64_t VansPcgMask::ContentHash() const
 {
-	std::uint64_t hash = 14695981039346656037ull;
+	std::uint64_t hash = VANS_FNV1A64_OFFSET_BASIS;
 	const auto append = [&](const void* data, std::size_t size) {
-		const auto* bytes = static_cast<const unsigned char*>(data);
-		for (std::size_t i = 0; i < size; ++i) { hash ^= bytes[i]; hash *= 1099511628211ull; }
+		hash = ContinueMemoryFnv1a64(hash, data, size);
 	};
 	for (const auto* id : { &target.regionId, &target.layerId, &target.maskId })
 	{

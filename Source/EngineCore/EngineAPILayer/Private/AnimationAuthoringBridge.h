@@ -25,11 +25,11 @@ namespace Vans::EditorAPI
 		static AnimatorDocumentDecodeResult DecodeAnimator(const std::string& canonicalJson);
 		static AnimatorDocumentEncodeResult EncodeAnimator(const AnimatorDocumentDTO& document);
 		static BoneMaskDocumentDecodeResult DecodeBoneMask(const std::string& canonicalJson);
-		static BoneMaskDocumentEncodeResult EncodeBoneMask(const BoneMaskDocumentDTO& document);
+		static BoneMaskDocumentEncodeResult EncodeBoneMask(const VansBoneMaskDocumentDTO& document);
 		static AnimationRigDocumentDecodeResult DecodeAnimationRig(const std::string& canonicalJson);
 		static AnimationRigDocumentEncodeResult EncodeAnimationRig(const AnimationRigDocumentDTO& document);
 		static BoneMaskCompileResult CompileBoneMask(
-			const BoneMaskDocumentDTO& document,
+			const VansBoneMaskDocumentDTO& document,
 			const AssetSkeletonSnapshot& skeleton);
 		static AnimationAuthoringAssetCreateResult CreateAsset(
 			const AnimationAuthoringAssetCreateRequest& request);

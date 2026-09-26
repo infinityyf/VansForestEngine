@@ -2,6 +2,7 @@
 #include "VansCombatSceneBackend.h"
 
 #include "../../GameplayActionCore/VansActionServices.h"
+#include "../../GameplayActionCore/VansGameplayServiceRuntime.h"
 #include "../../RuntimeCore/VansGenerationPool.h"
 #include "../../GameplayTargeting/VansGameplayTargeting.h"
 
@@ -15,7 +16,7 @@
 
 namespace Vans
 {
-class VansGameplayRuntime;
+class VansGameplayAssetLibrary;
 class VansRuntimeWorld;
 
 const VansActionServiceCapability& VansCombatActionCapability();
@@ -86,7 +87,8 @@ class VansCombatActionService final : public IVansActionService
 public:
 	static std::shared_ptr<VansCombatActionService> Create(
 		VansRuntimeWorld& world,
-		VansGameplayRuntime& gameplayRuntime,
+		IVansGameplayServiceRuntime& runtime,
+		const VansGameplayAssetLibrary& assets,
 		std::string& error, VansCombatSceneBackend backend = {});
 
 	const VansActionServiceCapability& Capability() const override { return m_Capability; }
@@ -126,7 +128,8 @@ private:
 
 	VansCombatActionService(
 		VansRuntimeWorld& world,
-		VansGameplayRuntime& gameplayRuntime,
+		IVansGameplayServiceRuntime& runtime,
+		const VansGameplayAssetLibrary& assets,
 		VansActionServiceCapability capability, VansCombatSceneBackend backend);
 
 	bool SampleWindow(MeleeWindow& window);
@@ -151,7 +154,8 @@ private:
 		const VansTargetHitResult& hit);
 
 	VansRuntimeWorld& m_World;
-	VansGameplayRuntime& m_GameplayRuntime;
+	IVansGameplayServiceRuntime& m_Runtime;
+	const VansGameplayAssetLibrary& m_Assets;
 	VansActionServiceCapability m_Capability;
 	VansCombatSceneBackend m_Backend;
 	VansGenerationPool<MeleeWindow> m_Windows;

@@ -181,7 +181,8 @@ namespace
             for (int i = 0; i < count; ++i)
             {
                 int index = -1;
-                Check(ies.LoadIESFromMemory(profile.data(), profile.size(), index) && index == i,
+                Check(ies.LoadIESFromMemory("test-profile-" + std::to_string(i),
+                    profile.data(), profile.size(), index) && index == i,
                     "IES profile fixture parse failed");
             }
             ies.CreateGPUResources(logic);
@@ -394,6 +395,7 @@ namespace
             ~NoDeviceIdle(){vkDeviceWaitIdle=originalWaitIdle;}
         } noDeviceIdle;
         VansComputeShader query;query.SetName("GIWorldPcgQuery");
+        query.SetArtifactRoot(std::filesystem::current_path()/"Library/Artifacts/Shaders");
         Check(query.InitShader(device.GetLogicDevice(),"Source/Tests/Shaders",{{VK_SHADER_STAGE_COMPUTE_BIT,"GIWorldLodBoundary.comp"}}),"PCG query shader failed");
         VansPipelineProgramDesc description{};description.kind=VansPipelineProgramKind::Compute;description.pushConstantSize=32;
         query.SetPipelineProgramDesc(description);query.SetPushConstant(32);
@@ -469,8 +471,7 @@ namespace
         while(world.HasPendingUpdates() || gi.HasPendingWorldUpdates())
         {
             pump();hit=sample(-2,12,-.875f);
-            VansSceneGeometrySnapshot queries;world.AddLayoutQueries(queries);
-            Check(queries.additionalPositionValid({6.125f,.125f,.125f},0),"Superseded PCG source snapshot reached probe placement");
+            Check(world.IsPositionValid({6.125f,.125f,.125f},0),"Superseded PCG source snapshot reached probe placement");
             Check(hit.z==0 || hit.x<6.5f,"Superseded PCG source snapshot reached the GPU");
             Check(std::chrono::steady_clock::now()<deadline,"Coalesced PCG edit stalled");
         }
@@ -531,6 +532,7 @@ namespace
     {
         auto* manager=VansVKDescriptorManager::GetInstance();auto& command=device.GetImmediateGraphicsCommandBuffer();
         VansComputeShader shader;shader.SetName("GIWorldTextureFootprint");
+        shader.SetArtifactRoot(std::filesystem::current_path()/"Library/Artifacts/Shaders");
         Check(shader.InitShader(device.GetLogicDevice(),"EngineAssets/Shaders/GIWorld",{{VK_SHADER_STAGE_COMPUTE_BIT,"GIWorldTexture.comp"}}),"Terrain footprint shader load failed");
         VansPipelineProgramDesc description{};description.name="GIWorldTextureFootprint";description.kind=VansPipelineProgramKind::Compute;description.pushConstantSize=16;
         shader.SetPipelineProgramDesc(description);shader.SetPushConstant(16);
@@ -607,6 +609,7 @@ namespace
         manager->BeginDescriptorUpdate();for(uint32_t i=0;i<8;++i)manager->WriteBufferDescriptor(sets[0],i,i?VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,{{buffers[i].GetNativeBuffer(),0,sizes[i]}});manager->UpdateDescriptorSets();
         {
             VansComputeShader shader;shader.SetName("GIWorldContract");
+            shader.SetArtifactRoot(std::filesystem::current_path()/"Library/Artifacts/Shaders");
             Check(shader.InitShader(device.GetLogicDevice(),"Source/Tests/Shaders",{{VK_SHADER_STAGE_COMPUTE_BIT,"GIWorldContract.comp"}}),"Query fixture shader failed");
             auto& command=device.GetImmediateGraphicsCommandBuffer();Check(command.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT),"Query fixture begin failed");
             command.EnsureComputeShader(shader,{layout});command.DispatchCompute(shader,2,1,1,sets);
@@ -744,6 +747,7 @@ namespace
             std::cout<<"[GIWorldGPU] adaptive root: level 15, sparse level mask, pending fine fallback, root missing/uncovered rejection PASS"<<std::endl;
             {
                 VansComputeShader boundary;boundary.SetName("GIWorldLodBoundary");
+                boundary.SetArtifactRoot(std::filesystem::current_path()/"Library/Artifacts/Shaders");
                 Check(boundary.InitShader(device.GetLogicDevice(),"Source/Tests/Shaders",{{VK_SHADER_STAGE_COMPUTE_BIT,"GIWorldLodBoundary.comp"}}),"LOD boundary shader load failed");
                 VansPipelineProgramDesc description{};description.name="GIWorldLodBoundary";description.kind=VansPipelineProgramKind::Compute;description.pushConstantSize=32;
                 boundary.SetPipelineProgramDesc(description);boundary.SetPushConstant(32);
@@ -898,7 +902,8 @@ bool TestGIProbeResourcesGpuContract()
         for (const char* name : {"GIPointLight", "GIVisibilityUpdate", "GIProbeState"})
             shaders.RegisterComputeShader(name, std::string("EngineAssets/Shaders/") + name, sizeof(RayTracingPushConstant));
         shaders.RegisterComputeShader("GIRTPreview", "EngineAssets/Shaders/GIRTPreview", sizeof(GIRTPreviewPushConstant));
-        Check(shaders.LoadAll(std::filesystem::current_path().generic_string() + "/", device->GetLogicDevice()), "GI shader load failed");
+        Check(shaders.LoadAll(std::filesystem::current_path().generic_string() + "/",
+            std::filesystem::current_path()/"Library/Artifacts/Shaders", device->GetLogicDevice()), "GI shader load failed");
         VerifyArrayLayerUpload(*device);
         VerifyIESArrayResources(*device);
         VerifyTerrainFootprint(*device);
@@ -986,6 +991,7 @@ bool TestGIProbeResourcesGpuContract()
                     Check(readback.CreatVulkanBuffer(device->GetLogicDevice(),readBytes,VK_FORMAT_UNDEFINED,VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)&&readback.PersistentMap(),"Scatter range readback allocation failed");
                     VansComputeShader shader;shader.SetName("GIWorldScatterRanges");
+                    shader.SetArtifactRoot(std::filesystem::current_path()/"Library/Artifacts/Shaders");
                     Check(shader.InitShader(device->GetLogicDevice(),"Source/Tests/Shaders",{{VK_SHADER_STAGE_COMPUTE_BIT,"GIWorldScatterRanges.comp"}}),"Scatter range shader failed");
                     VansPipelineProgramDesc description{};description.kind=VansPipelineProgramKind::Compute;description.pushConstantSize=16;
                     shader.SetPipelineProgramDesc(description);shader.SetPushConstant(16);

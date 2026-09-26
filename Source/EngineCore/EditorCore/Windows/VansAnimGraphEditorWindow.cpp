@@ -1,6 +1,8 @@
 #include "VansAnimGraphEditorWindow.h"
-#include "../VansAssetDocumentEditService.h"
-#include "../VansAssetDocumentRegistry.h"
+#include "../../EngineAPILayer/Public/IAnimationEditorAPI.h"
+#include "../../EngineAPILayer/Public/IAssetEditorAPI.h"
+#include "../../AuthoringCore/VansAssetDocumentEditService.h"
+#include "../../AuthoringCore/VansAssetDocumentRegistry.h"
 #include "../VansEditorAssetSaveService.h"
 #include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
@@ -43,7 +45,6 @@ namespace VansGraphics
 	using AnimGraphGroundingNode = Vans::EditorAPI::AnimationNodeDTO;
 	using AnimGraphLimbIKNode = Vans::EditorAPI::AnimationNodeDTO;
 	using AnimGraphChainIKNode = Vans::EditorAPI::AnimationNodeDTO;
-	using AnimGraphNodeType = Vans::EditorAPI::AnimGraphNodeType;
 	using AnimGraphPin = Vans::EditorAPI::AnimGraphPinDTO;
 	using AnimGraphPinKind = Vans::EditorAPI::AnimGraphPinKind;
 	using CompareOp = Vans::EditorAPI::CompareOp;
@@ -212,7 +213,8 @@ void VansAnimGraphEditorWindow::CloseImmediately()
 	m_AssetData.reset();
 	m_Document.reset();
 	m_DocumentStateId = 0;
-	m_ActiveAPI = nullptr;
+	m_AnimationAPI = nullptr;
+	m_AssetAPI = nullptr;
 	m_AnimatorFilePath.clear();
 	m_NavigationStack.clear();
 	m_CloseRequested = false;
@@ -224,7 +226,8 @@ void VansAnimGraphEditorWindow::CloseImmediately()
 void VansAnimGraphEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
 	if (!m_IsOpen) return;
-	m_ActiveAPI = &editorAPI;
+	m_AnimationAPI = &editorAPI;
+	m_AssetAPI = &editorAPI;
 	if (m_NeedsDecode)
 	{
 		if (!ReloadWorkingCopyFromDocument())
@@ -273,7 +276,7 @@ void VansAnimGraphEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 	if (ImGui::BeginPopupModal("UnsavedChanges", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 	{
 		ImGui::Text("You have unsaved changes. Save before closing?");
-		if (ImGui::Button("Save") && Save())
+		if (ImGui::Button("Save") && Save(editorAPI))
 		{
 			ImGui::CloseCurrentPopup();
 			closeAfterPopup = true;
@@ -299,7 +302,7 @@ void VansAnimGraphEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 		ImGui::End();
 		return;
 	}
-	DrawMenuBar();
+	DrawMenuBar(editorAPI);
 	DrawNavigationBar();
 	float leftPanelWidth = 220.0f;
 	ImGui::BeginChild("LeftPanel", ImVec2(leftPanelWidth, -ImGui::GetFrameHeightWithSpacing()),
@@ -321,7 +324,7 @@ void VansAnimGraphEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 	if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows))
 	{
 		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
-			Save();
+			Save(editorAPI);
 		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))
 			Undo();
 		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y))
@@ -548,8 +551,8 @@ void VansAnimGraphEditorWindow::DrawClipsPanel()
 		ImGui::InputText("Path (.vclip)", newClipPath, sizeof(newClipPath));
 		if (ImGui::Button("Add") && strlen(newClipName) > 0 && strlen(newClipPath) > 0)
 		{
-			const Vans::EditorAPI::AssetDragPayload asset = m_ActiveAPI
-				? m_ActiveAPI->CreateAssetDragPayload(newClipPath)
+			const Vans::EditorAPI::AssetDragPayload asset = m_AssetAPI
+				? m_AssetAPI->CreateAssetDragPayload(newClipPath)
 				: Vans::EditorAPI::AssetDragPayload{};
 			if (!asset.available || asset.assetType != Vans::EditorAPI::AssetType::AnimationClip
 				|| asset.guid.empty())
@@ -578,14 +581,14 @@ void VansAnimGraphEditorWindow::DrawClipsPanel()
 // ============================================================================
 // ============================================================================
 // ============================================================================
-void VansAnimGraphEditorWindow::DrawMenuBar()
+void VansAnimGraphEditorWindow::DrawMenuBar(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
 	if (ImGui::BeginMenuBar())
 	{
 		if (ImGui::BeginMenu("File"))
 		{
 			if (ImGui::MenuItem("Save", "Ctrl+S"))
-				Save();
+				Save(editorAPI);
 			ImGui::Separator();
 			if (ImGui::MenuItem("Close"))
 				Close();
@@ -891,13 +894,13 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 		graphAsset.name = "Overlay Graph";
 		graphAsset.role = AnimatorGraphAsset::Role::Pose;
 		graphAsset.graph = std::make_unique<VansAnimGraph>();
-		auto clipNode = VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Clip);
+		auto clipNode = VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Clip);
 		if (!m_EditState->clipRefs.empty())
 			clipNode->m_ClipName = m_EditState->clipRefs.front().name;
 		const int clipId = graphAsset.graph->AddNode(std::move(clipNode));
-		const int outputId = graphAsset.graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
-		graphAsset.graph->GetNode(clipId)->m_EditorPosX = 40.0f;
-		graphAsset.graph->GetNode(outputId)->m_EditorPosX = 360.0f;
+		const int outputId = graphAsset.graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
+		graphAsset.graph->GetNode(clipId)->m_EditorLayout.x = 40.0f;
+		graphAsset.graph->GetNode(outputId)->m_EditorLayout.x = 360.0f;
 		graphAsset.graph->AddLink(clipId, 0, outputId, 0);
 		m_AssetData->graphs.push_back(std::move(graphAsset));
 		VansAnimationLayerDefinition layer;
@@ -1118,8 +1121,8 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 							graph.name = "Pose Graph";
 							graph.role = AnimatorGraphAsset::Role::Pose;
 							graph.graph = std::make_unique<VansAnimGraph>();
-							const int entry = graph.graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Entry));
-							const int output = graph.graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+							const int entry = graph.graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Entry));
+							const int output = graph.graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
 							graph.graph->AddLink(entry, 0, output, 0);
 							binding->graphId = graph.id;
 							m_AssetData->graphs.push_back(std::move(graph));
@@ -1134,8 +1137,8 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 				if (EditStringProperty("Mask Path", layer.maskPathHint)) m_EditState->isDirty = true;
 				if (ImGui::SmallButton("Assign Mask From Path"))
 				{
-					const Vans::EditorAPI::AssetDragPayload asset = m_ActiveAPI
-						? m_ActiveAPI->CreateAssetDragPayload(layer.maskPathHint)
+					const Vans::EditorAPI::AssetDragPayload asset = m_AssetAPI
+						? m_AssetAPI->CreateAssetDragPayload(layer.maskPathHint)
 						: Vans::EditorAPI::AssetDragPayload{};
 					if (asset.available && asset.assetType == Vans::EditorAPI::AssetType::BoneMask && !asset.guid.empty())
 					{
@@ -1242,11 +1245,11 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 		graphAsset.role = AnimatorGraphAsset::Role::TargetPostProcess;
 		graphAsset.graph = std::make_unique<VansAnimGraph>();
 		const int inputId = graphAsset.graph->AddNode(
-			VansAnimGraph::CreateNodeByType(AnimGraphNodeType::TargetPoseInput));
+			VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::TargetPoseInput));
 		const int outputId = graphAsset.graph->AddNode(
-			VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
-		graphAsset.graph->GetNode(inputId)->m_EditorPosX = 40.0f;
-		graphAsset.graph->GetNode(outputId)->m_EditorPosX = 360.0f;
+			VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
+		graphAsset.graph->GetNode(inputId)->m_EditorLayout.x = 40.0f;
+		graphAsset.graph->GetNode(outputId)->m_EditorLayout.x = 360.0f;
 		graphAsset.graph->AddLink(inputId, 0, outputId, 0);
 		m_AssetData->graphs.push_back(std::move(graphAsset));
 		m_ActiveGraphId = graphId;
@@ -1280,7 +1283,7 @@ void VansAnimGraphEditorWindow::DrawSlotsPanel()
 	{
 		VansAnimGraphNode* selectedNode = m_TargetGraph
 			? m_TargetGraph->GetNode(m_EditState->selectedNodeId) : nullptr;
-		if (!selectedNode || selectedNode->GetType() != AnimGraphNodeType::Slot)
+		if (!selectedNode || selectedNode->GetType() != VansAnimGraphNodeType::Slot)
 		{
 			m_LastError = "Select a Slot node in a Layer Graph before binding a Slot definition";
 		}
@@ -1380,8 +1383,8 @@ bool VansAnimGraphEditorWindow::CanOpenNodeSubgraph(VansAnimGraphNode* node) con
 {
     if (!node)
         return false;
-    return node->GetType() == AnimGraphNodeType::StateMachine ||
-           node->GetType() == AnimGraphNodeType::MotionMatching;
+    return node->GetType() == VansAnimGraphNodeType::StateMachine ||
+           node->GetType() == VansAnimGraphNodeType::MotionMatching;
 }
 void VansAnimGraphEditorWindow::OpenNodeSubgraph(int nodeId)
 {
@@ -1414,9 +1417,9 @@ void VansAnimGraphEditorWindow::DrawSubgraphPreviewCanvas()
     }
     ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "[%s] %s", VansAnimGraphNode::TypeToString(node->GetType()), node->GetName().c_str());
     ImGui::Separator();
-    if (node->GetType() == AnimGraphNodeType::StateMachine)
+    if (node->GetType() == VansAnimGraphNodeType::StateMachine)
         DrawStateMachineSubgraphPreview(node);
-    else if (node->GetType() == AnimGraphNodeType::MotionMatching)
+    else if (node->GetType() == VansAnimGraphNodeType::MotionMatching)
         DrawMotionMatchingSubgraphPreview(node);
 }
 void VansAnimGraphEditorWindow::DrawStateMachineSubgraphPreview(VansAnimGraphNode* node)
@@ -1505,8 +1508,8 @@ void VansAnimGraphEditorWindow::DrawGraphEditorCanvas()
 		{
 			const int nodeId = static_cast<int>(deletedNode.Get());
 			VansAnimGraphNode* node = m_TargetGraph->GetNode(nodeId);
-			if (node && node->GetType() != AnimGraphNodeType::Output
-				&& node->GetType() != AnimGraphNodeType::TargetPoseInput
+			if (node && node->GetType() != VansAnimGraphNodeType::Output
+				&& node->GetType() != VansAnimGraphNodeType::TargetPoseInput
 				&& ne::AcceptDeletedItem())
 			{
 				m_TargetGraph->RemoveNode(nodeId);
@@ -1526,7 +1529,7 @@ void VansAnimGraphEditorWindow::DrawGraphEditorCanvas()
 	}
 	if (ImGui::BeginPopup("CreateAnimGraphNode"))
 	{
-		auto addNode = [&](AnimGraphNodeType type)
+		auto addNode = [&](VansAnimGraphNodeType type)
 		{
 			auto node = VansAnimGraph::CreateNodeByType(type);
 			const int nodeId = m_TargetGraph->AddNode(std::move(node));
@@ -1538,24 +1541,24 @@ void VansAnimGraphEditorWindow::DrawGraphEditorCanvas()
 			ImGui::CloseCurrentPopup();
 		};
 		const bool targetPostProcess = IsEditingTargetPostProcessGraph();
-		if (!targetPostProcess && ImGui::MenuItem("Clip")) addNode(AnimGraphNodeType::Clip);
-		if (ImGui::MenuItem("Blend")) addNode(AnimGraphNodeType::Blend);
-		if (ImGui::MenuItem("Blend 1D")) addNode(AnimGraphNodeType::Blend1D);
-		if (ImGui::MenuItem("Blend Space 2D")) addNode(AnimGraphNodeType::BlendSpace2D);
-		if (ImGui::MenuItem("If Condition")) addNode(AnimGraphNodeType::IfCondition);
-		if (ImGui::MenuItem("Switch")) addNode(AnimGraphNodeType::Switch);
-		if (ImGui::MenuItem("Additive Blend")) addNode(AnimGraphNodeType::AdditiveBlend);
-		if (!targetPostProcess && ImGui::MenuItem("Speed Scale")) addNode(AnimGraphNodeType::SpeedScale);
-		if (!targetPostProcess && ImGui::MenuItem("State Machine")) addNode(AnimGraphNodeType::StateMachine);
-		if (!targetPostProcess && ImGui::MenuItem("Motion Matching")) addNode(AnimGraphNodeType::MotionMatching);
-		if (!targetPostProcess && ImGui::MenuItem("Slot")) addNode(AnimGraphNodeType::Slot);
-		if (ImGui::MenuItem("Goal")) addNode(AnimGraphNodeType::Goal);
-		if (ImGui::MenuItem("Aim Constraint")) addNode(AnimGraphNodeType::AimConstraint);
-		if (targetPostProcess && ImGui::MenuItem("Grounding")) addNode(AnimGraphNodeType::Grounding);
-		if (targetPostProcess && ImGui::MenuItem("Limb IK")) addNode(AnimGraphNodeType::LimbIK);
-		if (targetPostProcess && ImGui::MenuItem("Chain IK")) addNode(AnimGraphNodeType::ChainIK);
-		if (targetPostProcess && ImGui::MenuItem("Pose Checkpoint")) addNode(AnimGraphNodeType::PoseCheckpoint);
-		if (targetPostProcess && ImGui::MenuItem("Rotation Distribution")) addNode(AnimGraphNodeType::RotationDistribution);
+		if (!targetPostProcess && ImGui::MenuItem("Clip")) addNode(VansAnimGraphNodeType::Clip);
+		if (ImGui::MenuItem("Blend")) addNode(VansAnimGraphNodeType::Blend);
+		if (ImGui::MenuItem("Blend 1D")) addNode(VansAnimGraphNodeType::Blend1D);
+		if (ImGui::MenuItem("Blend Space 2D")) addNode(VansAnimGraphNodeType::BlendSpace2D);
+		if (ImGui::MenuItem("If Condition")) addNode(VansAnimGraphNodeType::IfCondition);
+		if (ImGui::MenuItem("Switch")) addNode(VansAnimGraphNodeType::Switch);
+		if (ImGui::MenuItem("Additive Blend")) addNode(VansAnimGraphNodeType::AdditiveBlend);
+		if (!targetPostProcess && ImGui::MenuItem("Speed Scale")) addNode(VansAnimGraphNodeType::SpeedScale);
+		if (!targetPostProcess && ImGui::MenuItem("State Machine")) addNode(VansAnimGraphNodeType::StateMachine);
+		if (!targetPostProcess && ImGui::MenuItem("Motion Matching")) addNode(VansAnimGraphNodeType::MotionMatching);
+		if (!targetPostProcess && ImGui::MenuItem("Slot")) addNode(VansAnimGraphNodeType::Slot);
+		if (ImGui::MenuItem("Goal")) addNode(VansAnimGraphNodeType::Goal);
+		if (ImGui::MenuItem("Aim Constraint")) addNode(VansAnimGraphNodeType::AimConstraint);
+		if (targetPostProcess && ImGui::MenuItem("Grounding")) addNode(VansAnimGraphNodeType::Grounding);
+		if (targetPostProcess && ImGui::MenuItem("Limb IK")) addNode(VansAnimGraphNodeType::LimbIK);
+		if (targetPostProcess && ImGui::MenuItem("Chain IK")) addNode(VansAnimGraphNodeType::ChainIK);
+		if (targetPostProcess && ImGui::MenuItem("Pose Checkpoint")) addNode(VansAnimGraphNodeType::PoseCheckpoint);
+		if (targetPostProcess && ImGui::MenuItem("Rotation Distribution")) addNode(VansAnimGraphNodeType::RotationDistribution);
 		ImGui::EndPopup();
 	}
 
@@ -1566,24 +1569,24 @@ void VansAnimGraphEditorWindow::DrawGraphEditorCanvas()
 	// ????
 	SyncSelection();
 }
-static ImU32 GetNodeHeaderColor(AnimGraphNodeType type)
+static ImU32 GetNodeHeaderColor(VansAnimGraphNodeType type)
 {
 	switch (type)
 	{
-    case AnimGraphNodeType::Entry:         return IM_COL32(80,  200, 120, 255);  // 绿
-    case AnimGraphNodeType::Output:        return IM_COL32(220, 80,  80,  255);  // 红
-    case AnimGraphNodeType::Clip:          return IM_COL32(80,  140, 220, 255);  // 蓝
-    case AnimGraphNodeType::Blend:         return IM_COL32(160, 100, 220, 255);  // 紫
-	case AnimGraphNodeType::Blend1D:       return IM_COL32(140, 110, 200, 255);
-	case AnimGraphNodeType::BlendSpace2D:  return IM_COL32(120, 100, 220, 255);
-	case AnimGraphNodeType::IfCondition:   return IM_COL32(230, 160, 50,  255);  // ?
-	case AnimGraphNodeType::Switch:        return IM_COL32(210, 200, 60,  255);  // ?
-	case AnimGraphNodeType::AdditiveBlend: return IM_COL32(100, 180, 180, 255);  // ?
-	case AnimGraphNodeType::SpeedScale:    return IM_COL32(180, 140, 100, 255);  // ?
-	case AnimGraphNodeType::StateMachine:  return IM_COL32(180, 180, 180, 255);  // ?
-	case AnimGraphNodeType::MotionMatching:return IM_COL32(90,  190, 150, 255);
-	case AnimGraphNodeType::Slot:          return IM_COL32(205, 105, 145, 255);
-	case AnimGraphNodeType::TargetPoseInput:return IM_COL32(70, 190, 210, 255);
+    case VansAnimGraphNodeType::Entry:         return IM_COL32(80,  200, 120, 255);  // 绿
+    case VansAnimGraphNodeType::Output:        return IM_COL32(220, 80,  80,  255);  // 红
+    case VansAnimGraphNodeType::Clip:          return IM_COL32(80,  140, 220, 255);  // 蓝
+    case VansAnimGraphNodeType::Blend:         return IM_COL32(160, 100, 220, 255);  // 紫
+	case VansAnimGraphNodeType::Blend1D:       return IM_COL32(140, 110, 200, 255);
+	case VansAnimGraphNodeType::BlendSpace2D:  return IM_COL32(120, 100, 220, 255);
+	case VansAnimGraphNodeType::IfCondition:   return IM_COL32(230, 160, 50,  255);  // ?
+	case VansAnimGraphNodeType::Switch:        return IM_COL32(210, 200, 60,  255);  // ?
+	case VansAnimGraphNodeType::AdditiveBlend: return IM_COL32(100, 180, 180, 255);  // ?
+	case VansAnimGraphNodeType::SpeedScale:    return IM_COL32(180, 140, 100, 255);  // ?
+	case VansAnimGraphNodeType::StateMachine:  return IM_COL32(180, 180, 180, 255);  // ?
+	case VansAnimGraphNodeType::MotionMatching:return IM_COL32(90,  190, 150, 255);
+	case VansAnimGraphNodeType::Slot:          return IM_COL32(205, 105, 145, 255);
+	case VansAnimGraphNodeType::TargetPoseInput:return IM_COL32(70, 190, 210, 255);
 	}
 	return IM_COL32(150, 150, 150, 255);
 }
@@ -1591,39 +1594,39 @@ static const char* GetNodeSubtitle(VansAnimGraphNode* node)
 {
 	switch (node->GetType())
 	{
-	case AnimGraphNodeType::Clip:
+	case VansAnimGraphNodeType::Clip:
 	{
 		auto* n = static_cast<AnimGraphClipNode*>(node);
 		return n->m_ClipName.c_str();
 	}
-	case AnimGraphNodeType::Blend:
+	case VansAnimGraphNodeType::Blend:
 	{
 		auto* n = static_cast<AnimGraphBlendNode*>(node);
 		return n->m_UseParam ? n->m_ParamName.c_str() : "(fixed)";
 	}
-	case AnimGraphNodeType::Blend1D:
+	case VansAnimGraphNodeType::Blend1D:
 	{
 		auto* n = static_cast<AnimGraphBlend1DNode*>(node);
 		return n->m_ParamName.c_str();
 	}
-	case AnimGraphNodeType::BlendSpace2D:
+	case VansAnimGraphNodeType::BlendSpace2D:
 	{
 		auto* n = static_cast<AnimGraphBlendSpace2DNode*>(node);
 		return n->m_XParamName.c_str();
 	}
-	case AnimGraphNodeType::IfCondition:
+	case VansAnimGraphNodeType::IfCondition:
 	{
 		auto* n = static_cast<AnimGraphIfConditionNode*>(node);
 		return n->m_ParamName.c_str();
 	}
-	case AnimGraphNodeType::Switch:
+	case VansAnimGraphNodeType::Switch:
 	{
 		auto* n = static_cast<AnimGraphSwitchNode*>(node);
 		return n->m_ParamName.c_str();
 	}
-	case AnimGraphNodeType::MotionMatching:
+	case VansAnimGraphNodeType::MotionMatching:
 		return "UseMotionMatching";
-	case AnimGraphNodeType::Slot:
+	case VansAnimGraphNodeType::Slot:
 		return static_cast<AnimGraphSlotNode*>(node)->m_SlotId.c_str();
 	default:
 		return "";
@@ -1796,7 +1799,7 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 	};
 	switch (node->GetType())
 	{
-	case AnimGraphNodeType::Clip:
+	case VansAnimGraphNodeType::Clip:
 	{
 		auto* n = static_cast<AnimGraphClipNode*>(node);
 		if (EditStringProperty("Clip", n->m_ClipName)) m_EditState->isDirty = true;
@@ -1804,7 +1807,7 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (ImGui::Checkbox("Loop", &n->m_Loop)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::Blend:
+	case VansAnimGraphNodeType::Blend:
 	{
 		auto* n = static_cast<AnimGraphBlendNode*>(node);
 		if (EditStringProperty("Parameter", n->m_ParamName)) m_EditState->isDirty = true;
@@ -1812,7 +1815,7 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (ImGui::Checkbox("Use Parameter", &n->m_UseParam)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::Blend1D:
+	case VansAnimGraphNodeType::Blend1D:
 	{
 		auto* n = static_cast<AnimGraphBlend1DNode*>(node);
 		if (EditStringProperty("Parameter", n->m_ParamName)) m_EditState->isDirty = true;
@@ -1826,7 +1829,7 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		}
 		break;
 	}
-	case AnimGraphNodeType::BlendSpace2D:
+	case VansAnimGraphNodeType::BlendSpace2D:
 	{
 		auto* n = static_cast<AnimGraphBlendSpace2DNode*>(node);
 		if (EditStringProperty("X Parameter", n->m_XParamName)) m_EditState->isDirty = true;
@@ -1841,7 +1844,7 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		}
 		break;
 	}
-	case AnimGraphNodeType::IfCondition:
+	case VansAnimGraphNodeType::IfCondition:
 	{
 		auto* n = static_cast<AnimGraphIfConditionNode*>(node);
 		const char* opStr[] = { ">", "<", "==", "!=", ">=", "<=" };
@@ -1857,7 +1860,7 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (ImGui::Checkbox("Bool Value", &n->m_BoolVal)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::Switch:
+	case VansAnimGraphNodeType::Switch:
 	{
 		auto* n = static_cast<AnimGraphSwitchNode*>(node);
 		if (EditStringProperty("Parameter", n->m_ParamName)) m_EditState->isDirty = true;
@@ -1868,7 +1871,7 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		}
 		break;
 	}
-	case AnimGraphNodeType::AdditiveBlend:
+	case VansAnimGraphNodeType::AdditiveBlend:
 	{
 		auto* n = static_cast<AnimGraphAdditiveBlendNode*>(node);
 		if (EditStringProperty("Parameter", n->m_ParamName)) m_EditState->isDirty = true;
@@ -1876,7 +1879,7 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (ImGui::Checkbox("Use Parameter", &n->m_UseParam)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::SpeedScale:
+	case VansAnimGraphNodeType::SpeedScale:
 	{
 		auto* n = static_cast<AnimGraphSpeedScaleNode*>(node);
 		if (EditStringProperty("Parameter", n->m_ParamName)) m_EditState->isDirty = true;
@@ -1884,7 +1887,7 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (ImGui::Checkbox("Use Parameter", &n->m_UseParam)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::StateMachine:
+	case VansAnimGraphNodeType::StateMachine:
 	{
 		auto* n = static_cast<AnimGraphStateMachineNode*>(node);
 		auto chooseState = [&](const char* label, std::string& value, bool allowAny)
@@ -2125,14 +2128,14 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		}
 		break;
 	}
-	case AnimGraphNodeType::MotionMatching:
+	case VansAnimGraphNodeType::MotionMatching:
 	{
 		auto* n = static_cast<AnimGraphMotionMatchingNode*>(node);
 		if (ImGui::Checkbox("Fallback Input", &n->m_EnableFallbackInput)) m_EditState->isDirty = true;
 		ImGui::Text("Runtime Param: UseMotionMatching");
 		break;
 	}
-	case AnimGraphNodeType::Slot:
+	case VansAnimGraphNodeType::Slot:
 	{
 		auto* n = static_cast<AnimGraphSlotNode*>(node);
 		const std::string previousSlotId = n->m_SlotId;
@@ -2150,13 +2153,13 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (ImGui::Checkbox("Fallback Input", &n->m_EnableFallbackInput)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::Goal:
+	case VansAnimGraphNodeType::Goal:
 	{
 		auto* n = static_cast<AnimGraphGoalNode*>(node);
 		if (editGoal("Goal Definition", n->m_Goal)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::AimConstraint:
+	case VansAnimGraphNodeType::AimConstraint:
 	{
 		auto* n = static_cast<AnimGraphAimConstraintNode*>(node);
 		if (EditStringProperty("Rig Chain ID", n->m_ChainId)) m_EditState->isDirty = true;
@@ -2184,7 +2187,7 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (ImGui::DragFloat("Target Half-Life", &n->m_TargetHalfLife, 0.005f, 0.0f)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::Grounding:
+	case VansAnimGraphNodeType::Grounding:
 	{
 		auto* n = static_cast<AnimGraphGroundingNode*>(node);
 		auto& settings = n->m_GroundingSettings;
@@ -2226,7 +2229,7 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (ImGui::SliderFloat("Weight", &settings.weight, 0.0f, 1.0f)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::LimbIK:
+	case VansAnimGraphNodeType::LimbIK:
 	{
 		auto* n = static_cast<AnimGraphLimbIKNode*>(node);
 		if (editStringList("Rig Chain IDs", n->m_ChainIds)) m_EditState->isDirty = true;
@@ -2241,14 +2244,14 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (ImGui::Checkbox("Commit Clamped Pose", &n->m_LimbSettings.commitClampedPose)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::PoseCheckpoint:
+	case VansAnimGraphNodeType::PoseCheckpoint:
 		if (EditStringProperty("Checkpoint", node->m_CheckpointId) | editStringList("Captured Bones", node->m_CheckpointBones)) m_EditState->isDirty = true;
 		break;
-	case AnimGraphNodeType::RotationDistribution:
+	case VansAnimGraphNodeType::RotationDistribution:
 		if (EditStringProperty("Rig Rotation Profile", node->m_RotationProfileId)) m_EditState->isDirty = true;
 		ImGui::TextWrapped("Connect after position IK. Rig defines the segment, recipients and limits; Goal supplies rotation and activation.");
 		break;
-	case AnimGraphNodeType::ChainIK:
+	case VansAnimGraphNodeType::ChainIK:
 	{
 		auto* n = static_cast<AnimGraphChainIKNode*>(node);
 		if (editStringList("Rig Chain IDs", n->m_ChainIds)) m_EditState->isDirty = true;
@@ -2291,7 +2294,7 @@ void VansAnimGraphEditorWindow::ApplyNodePositions()
 	{
 		ne::SetNodePosition(
 			AnimGraphIds::MakeNodeId(id),
-			ImVec2(node->m_EditorPosX, node->m_EditorPosY));
+			ImVec2(node->m_EditorLayout.x, node->m_EditorLayout.y));
 	}
 }
 void VansAnimGraphEditorWindow::ReadNodePositions()
@@ -2300,11 +2303,11 @@ void VansAnimGraphEditorWindow::ReadNodePositions()
 	for (auto& [id, node] : m_TargetGraph->GetNodes())
 	{
 		ImVec2 pos = ne::GetNodePosition(AnimGraphIds::MakeNodeId(id));
-		if (std::fabs(node->m_EditorPosX - pos.x) > 0.01f
-		    || std::fabs(node->m_EditorPosY - pos.y) > 0.01f)
+		if (std::fabs(node->m_EditorLayout.x - pos.x) > 0.01f
+		    || std::fabs(node->m_EditorLayout.y - pos.y) > 0.01f)
 			m_EditState->isDirty = true;
-		node->m_EditorPosX = pos.x;
-		node->m_EditorPosY = pos.y;
+		node->m_EditorLayout.x = pos.x;
+		node->m_EditorLayout.y = pos.y;
 	}
 }
 // ============================================================================
@@ -2314,7 +2317,7 @@ bool VansAnimGraphEditorWindow::CommitWorkingCopyToDocument()
 {
 	if (!m_EditState->isDirty)
 		return true;
-	if (!m_AssetData || !m_Document || !m_ActiveAPI)
+	if (!m_AssetData || !m_Document || !m_AnimationAPI)
 	{
 		m_LastError = "Animator authoring API is not available";
 		return false;
@@ -2323,7 +2326,7 @@ bool VansAnimGraphEditorWindow::CommitWorkingCopyToDocument()
 	m_AssetData->parameters = m_EditState->parameters;
 	m_AssetData->clipRefs = m_EditState->clipRefs;
 
-	const auto encoded = m_ActiveAPI->EncodeAnimatorDocument(*m_AssetData);
+	const auto encoded = m_AnimationAPI->EncodeAnimatorDocument(*m_AssetData);
 	if (!encoded.success)
 	{
 		m_LastError = encoded.message;
@@ -2346,11 +2349,11 @@ bool VansAnimGraphEditorWindow::CommitWorkingCopyToDocument()
 
 bool VansAnimGraphEditorWindow::ReloadWorkingCopyFromDocument()
 {
-	if (!m_Document || !m_Document->sourceDocument.IsLoaded() || !m_ActiveAPI)
+	if (!m_Document || !m_Document->sourceDocument.IsLoaded() || !m_AnimationAPI)
 		return false;
 	const nlohmann::json root = Vans::EncodeSerializedValueJson<nlohmann::json>(
 		m_Document->sourceDocument.SerializedRootSnapshot());
-	auto decoded = m_ActiveAPI->DecodeAnimatorDocument(root.dump());
+	auto decoded = m_AnimationAPI->DecodeAnimatorDocument(root.dump());
 	if (!decoded.success || !decoded.document)
 	{
 		m_LastError = decoded.message;
@@ -2443,19 +2446,14 @@ bool VansAnimGraphEditorWindow::Redo()
 	return ReloadWorkingCopyFromDocument();
 }
 
-bool VansAnimGraphEditorWindow::Save()
+bool VansAnimGraphEditorWindow::Save(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
 	if (!m_EditState->isDirty)
 	{
 		if (!m_Document || !m_Document->IsDirty())
 			return true;
-		if (!m_ActiveAPI)
-		{
-			m_LastError = "Animator save API is not available";
-			return false;
-		}
 		const Vans::VansAssetSaveResult pendingSave =
-			Vans::VansEditorAssetSaveService::Get().SaveAsset(*m_ActiveAPI, m_Document);
+			Vans::VansEditorAssetSaveService::Get().SaveAsset(editorAPI, m_Document);
 		if (!pendingSave)
 		{
 			m_LastError = pendingSave.message.empty() ? "Animator save failed" : pendingSave.message;
@@ -2464,7 +2462,7 @@ bool VansAnimGraphEditorWindow::Save()
 		m_LastError.clear();
 		return true;
 	}
-	if (!m_AssetData || !m_TargetGraph || !m_Document || !m_ActiveAPI)
+	if (!m_AssetData || !m_TargetGraph || !m_Document)
 	{
 		m_LastError = "Animator document is not available";
 		return false;
@@ -2483,7 +2481,7 @@ bool VansAnimGraphEditorWindow::Save()
 	}
 
 	const Vans::VansAssetSaveResult saveResult =
-		Vans::VansEditorAssetSaveService::Get().SaveAsset(*m_ActiveAPI, m_Document);
+		Vans::VansEditorAssetSaveService::Get().SaveAsset(editorAPI, m_Document);
 	if (!saveResult)
 	{
 		m_LastError = saveResult.message.empty() ? "Animator save failed" : saveResult.message;

@@ -1,5 +1,6 @@
 #pragma once
 #include "../AudioCore/VansAudioOcclusion.h"
+#include "../AudioCore/VansAudioDirectionality.h"
 #include "../AudioCore/VansAudioReverbPreset.h"
 #include "../AudioCore/VansAudioSourceBinding.h"
 
@@ -228,6 +229,7 @@ public:
 	std::shared_ptr<const VansEngine::RagdollProfile> m_Profile;
 	float m_BlendWeight = 0.f;
 
+	Vans::VansRagdollKey GetRagdollKey() const;
 	void SetDriveMode(int mode);
 	void SetDriveModeWithVelocity(int mode, float vx, float vy, float vz);
 	int GetDriveMode() const;
@@ -303,7 +305,6 @@ public:
 	VansScriptRectLightComponent() { m_ComponentName = "RectLight"; }
 	VansGraphics::VansLightManager* m_LightManager = nullptr;
 	int m_LightIndex = -1;
-	std::string m_EmissiveTexturePath;
 	VansScriptVideoComponent* m_VideoComponent = nullptr;
 	void RebindSceneLightIndex(
 		VansScriptLightIndexKind kind,
@@ -316,6 +317,7 @@ class VansScriptCameraComponent : public VansScriptComponent
 public:
 	VansScriptCameraComponent() { m_ComponentName = "camera"; }
 	VansGraphics::VansCamera* m_Camera = nullptr;
+	std::uint32_t m_TransformID = UINT32_MAX;
 protected:
 	void OnEnable() override;
 	void OnDisable() override;
@@ -335,7 +337,7 @@ public:
 	float m_LastAudioPositionX = 0.0f;
 	float m_LastAudioPositionY = 0.0f;
 	float m_LastAudioPositionZ = 0.0f;
-	bool SwitchSource(const std::string& name);
+	bool SwitchSource(const std::string& assetGuid);
 protected:
 	void OnEnable() override;
 	void OnDisable() override;
@@ -375,15 +377,12 @@ class VansScriptVideoComponent : public VansScriptComponent
 {
 public:
 	VansScriptVideoComponent() { m_ComponentName = "Video"; }
-	std::string m_VideoName;
+	std::string m_VideoAssetGuid;
 	VansGraphics::VansVideoTexture* m_VideoTex = nullptr;
 	VansGraphics::VansVideoManager* m_VideoManager = nullptr;
 	int m_BindlessFirstSlot = -1;
 	VansGraphics::VansMaterialManager* m_MaterialManagerRef = nullptr;
-	bool SwitchSource(const std::string& name);
-
-protected:
-	void OnDestroy() override;
+	bool SwitchSource(const std::string& assetGuid);
 };
 
 class VansScriptParticleComponent : public VansScriptComponent
@@ -394,7 +393,7 @@ public:
 	std::shared_ptr<const VansGraphics::VansParticleAsset> m_ParticleAsset;
     VansGraphics::VansParticleManager* m_Manager = nullptr;
     Vans::VansGenerationHandle m_Instance;
-    VansGraphics::VansParticleRuntime* GetRuntime() const
+    const VansGraphics::VansParticleRuntime* GetRuntime() const
     { return m_Manager ? m_Manager->Resolve(m_Instance) : nullptr; }
     bool IsPlaying() const { const auto* rt = GetRuntime(); return rt && rt->IsPlaying(); }
     float GetPlayTime() const { const auto* rt = GetRuntime(); return rt ? rt->GetPlayTime() : 0.0f; }
@@ -503,7 +502,7 @@ public:
 
 	void SetScene(VansGraphics::VansScene* scene);
 	void AttachSceneWithoutRebuild(VansGraphics::VansScene* scene);
-	void RegisterScriptComponent(VansScriptObject* owner, VansLuaScriptComponent* component);
+	bool RegisterScriptComponent(VansScriptObject* owner, VansLuaScriptComponent* component);
 	void UnregisterScriptComponent(VansLuaScriptComponent* component);
 	VansGraphics::VansScene* GetScene() const { return m_Scene; }
 

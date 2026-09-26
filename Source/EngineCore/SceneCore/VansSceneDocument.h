@@ -62,7 +62,6 @@ struct SceneDocumentSaveStage
 };
 
 class VansSceneEditService;
-class VansSceneSaveService;
 class VansSetScenePropertyCommand;
 class VansRemoveScenePropertyCommand;
 class VansAppendSceneEntitiesCommand;
@@ -100,7 +99,6 @@ public:
 private:
     friend class VansSceneDocumentLoader;
     friend class VansSceneEditService;
-    friend class VansSceneSaveService;
     friend class VansSetScenePropertyCommand;
     friend class VansRemoveScenePropertyCommand;
     friend class VansAppendSceneEntitiesCommand;
@@ -110,6 +108,7 @@ private:
     friend class VansApplyPrefabCommand;
 
     void RestoreAuthoringRoot(VansSerializedValue root, SceneStateId state);
+    bool RebuildResolvedViewFromAuthoring(VansSerializedValue authoringRoot, std::string& error);
     SceneStateId AllocateStateId();
     SceneStateId ApplyEditedSerializedRoot(VansSerializedValue root);
     void RestoreEditedSerializedRoot(VansSerializedValue root, SceneStateId stateId);

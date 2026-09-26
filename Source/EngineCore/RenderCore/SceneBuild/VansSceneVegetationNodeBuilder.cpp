@@ -1,39 +1,37 @@
 #include "VansSceneEnvironmentNodeBuilder.h"
 #include "../VansScene.h"
 #include "../VegetationCore/VansVegetationCollection.h"
-#include "../../PcgCore/VansPcgBatchPlan.h"
+#include "../../PcgCore/VansPcgUpdatePlanner.h"
 #include "../../PcgCore/VansPcgTerrainSurface.h"
 #include "../../TerrainCore/VansTerrainAsset.h"
 #include "../../ProjectSystem/VansProjectManager.h"
-#include "../../Util/VansLog.h"
 #include <algorithm>
 namespace VansGraphics
 {
-bool VansSceneEnvironmentNodeBuilder::AddVegetationNode(VansScene& scene,VkDevice& device,
-    const Vans::VansPcgRecipeAsset& recipe)
+bool VansSceneEnvironmentNodeBuilder::BuildVegetationNode(
+    VansScene& scene,
+    VkDevice& device,
+    const Vans::VansPcgRecipeAsset& recipe,
+    std::string& error)
 {
     auto& repository=Vans::VansProjectManager::Get().GetAssetObjectRepository();
-    const auto generated=Vans::VansPcgExecutor::Generate(recipe,repository,
+    Vans::VansPcgUpdatePlan plan;
+    if (!Vans::VansPcgUpdatePlanner::PlanRecipe(recipe,repository,
         [&](const Vans::VansPcgSurfaceBinding& binding,std::string& error){
             return Vans::CreatePcgTerrainSurface(scene.ResolveEffectiveTerrain(binding.terrain),error);
-        },std::nullopt,scene.GetSplineFieldSnapshot());
-    if (!generated)
+        },std::nullopt,scene.GetSplineFieldSnapshot(),Vans::VansPcgUpdatePartition::PerLayer,plan,error))
     {
-        VANS_LOG_ERROR("[PCG] Recipe '" << recipe.name << "' generation failed: " << generated.error);
+        error = "Recipe '" + recipe.name + "' update planning failed: " + error;
         return false;
     }
     auto collection=std::make_unique<VansVegetationCollection>();
-    for (const auto& layer : generated.layers)
+    for (const auto& update : plan.updates)
     {
-        const auto region=std::find_if(recipe.regions.begin(),recipe.regions.end(),
-            [&](const auto& value){return value.id==layer.regionId;});
-        Vans::VansPcgBatchUpdate update;
-        std::string error;
-        if (!Vans::BuildPcgBatchUpdate(*region,layer,std::nullopt,update,error) ||
-            !collection->Apply(scene,device,update,nullptr,error))
+        std::string detail;
+        if (!collection->Apply(scene,device,update,nullptr,detail))
         {
-            VANS_LOG_ERROR("[PCG] Recipe '" << recipe.name << "', region '" << layer.regionId
-                << "', layer '" << layer.layerId << "' build failed: " << error);
+            error = "Recipe '" + recipe.name + "', region '" + update.region +
+                "', layer '" + update.layer + "' apply failed: " + detail;
             return false;
         }
     }

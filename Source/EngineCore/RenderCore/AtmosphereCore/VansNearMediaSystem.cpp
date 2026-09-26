@@ -14,7 +14,7 @@
 #include "../VulkanCore/VansVKSampler.h"
 #include "../VulkanCore/VansTexture.h"
 #include "../../ScriptCore/VansScriptContext.h"
-#include "../../ScriptCore/VansTransform.h"
+#include "../../SceneRuntime/Transform/VansTransformStore.h"
 #include "../../Util/VansLog.h"
 
 #include <algorithm>
@@ -1020,14 +1020,14 @@ void VansNearMediaSystem::CollectLocalFogVolumes(
 		if (!object || !component || !object->IsActive() ||
 			outVolumes.size() >= MaxLocalFogVolumes ||
 			!component->IsEffectivelyEnabled() ||
-			!VansTransformStore::IsAllocated(object->m_TransformID))
+			!Vans::VansTransformStore::IsAllocated(object->m_TransformID))
 			continue;
 		auto settings = component->m_Settings;
 		Vans::NormalizeLocalVolumetricFogConfig(settings);
-		const VansTransform& transform =
-			VansTransformStore::GetTransform(object->m_TransformID);
+		const Vans::VansTransform& transform =
+			Vans::VansTransformStore::Read(object->m_TransformID);
 		glm::mat4 localToWorld =
-			const_cast<VansTransform&>(transform).GetModelMatrix();
+			const_cast<Vans::VansTransform&>(transform).GetModelMatrix();
 		const glm::vec3 dimensions = glm::max(glm::vec3(
 			glm::length(glm::vec3(localToWorld[0])),
 			glm::length(glm::vec3(localToWorld[1])),

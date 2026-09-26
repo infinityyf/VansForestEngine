@@ -1,5 +1,6 @@
 #pragma once
 #include "VansParticleInstanceData.h"
+#include "VansParticleSortPolicy.h"
 #include <vector>
 #include <cstdint>
 
@@ -17,11 +18,14 @@ struct VansParticleRibbonStrip
 {
     uint64_t ribbonId = 0;
     bool hasSourceRoot = false;
+    // ParticleCore 已完成断带、根部附着、宽度、颜色和 UV 计算；点按 sequence
+    // 严格递减。RenderCore 只能依据当前视图把该不可变点串展开为三角形带。
     std::vector<VansParticleRibbonPoint> points;
 };
 struct VansParticleEmitterRange
 {
     uint32_t emitterIndex = 0;
+    VansParticleRenderSortMode renderSortMode = VansParticleRenderSortMode::None;
     uint32_t surfaceFirst = 0, surfaceCount = 0;
     uint32_t mediumFirst = 0, mediumCount = 0;
     uint32_t ribbonFirst = 0, ribbonCount = 0;

@@ -1,4 +1,5 @@
 #include "VansAnimationController.h"
+#include "VansAnimatorValidator.h"
 #include <nlohmann/json.hpp>
 #include "VansAnimGraph.h"
 #include "VansAnimationSampler.h"
@@ -119,7 +120,7 @@ namespace
 		for (int nodeId : executionPlan)
 		{
 			const VansAnimGraphNode* node = graph.GetNode(nodeId);
-			if (node && node->GetType() == AnimGraphNodeType::StateMachine)
+			if (node && node->GetType() == VansAnimGraphNodeType::StateMachine)
 				return static_cast<const AnimGraphStateMachineNode*>(node);
 		}
 		return nullptr;
@@ -212,7 +213,9 @@ bool VansAnimationController::SetAnimationGraphSets(
 				return false;
 			}
 		}
-		else if (!layer.mask)
+		else if (!layer.mask
+			&& !(layer.definition.maskGuid.empty()
+				&& layer.definition.maskPathHint.empty()))
 		{
 			error = "Overlay animation layer '" + layer.definition.name + "' is missing its Bone Mask asset";
 			return false;
@@ -527,7 +530,7 @@ bool VansAnimationController::ApplyGraphSetPhaseHandoff(
 		auto hasStateMachine = [](const GraphBindingRuntime& binding)
 		{
 			for (int id : binding.instance->GetExecutionPlan())
-				if (binding.graph->GetNode(id)->GetType() == AnimGraphNodeType::StateMachine)
+				if (binding.graph->GetNode(id)->GetType() == VansAnimGraphNodeType::StateMachine)
 					return true;
 			return false;
 		};
@@ -666,44 +669,10 @@ bool VansAnimationController::SetTargetPostProcessGraph(
 		return false;
 	}
 
-	VansAnimGraphInstance validation(*graph);
-	if (!validation.IsCompiled())
-	{
-		error = "Target Post Process Graph failed compilation: " + validation.GetCompileError();
+	if (!VansAnimatorValidator::ValidateGraph(
+			*graph, AnimatorGraphAsset::Role::TargetPostProcess,
+			"Target Post Process", error))
 		return false;
-	}
-
-	std::size_t targetInputCount = 0;
-	bool targetInputReachable = false;
-	for (const auto& [nodeId, node] : graph->GetNodes())
-	{
-		if (!node)
-			continue;
-		if (node->GetType() == AnimGraphNodeType::TargetPoseInput)
-		{
-			++targetInputCount;
-			targetInputReachable = std::find(validation.GetExecutionPlan().begin(),
-				validation.GetExecutionPlan().end(), nodeId) != validation.GetExecutionPlan().end();
-		}
-		switch (node->GetType())
-		{
-		case AnimGraphNodeType::Entry:
-		case AnimGraphNodeType::Clip:
-		case AnimGraphNodeType::SpeedScale:
-		case AnimGraphNodeType::StateMachine:
-		case AnimGraphNodeType::MotionMatching:
-		case AnimGraphNodeType::Slot:
-			error = "Target Post Process Graph cannot contain pose-source or playback nodes";
-			return false;
-		default:
-			break;
-		}
-	}
-	if (targetInputCount != 1 || !targetInputReachable)
-	{
-		error = "Target Post Process Graph requires exactly one reachable Target Pose Input";
-		return false;
-	}
 	if (!m_AnimationRig)
 	{
 		error = "Target Post Process Graph requires a compiled Animation Rig";
@@ -775,7 +744,7 @@ bool VansAnimationController::BindAnimationRigSkeleton(
 std::unique_ptr<VansAnimGraph> VansAnimationController::CloneTargetPostProcessGraph() const
 {
 	if (!m_TargetPostProcessGraph) return nullptr;
-	AnimGraphJson json;
+	nlohmann::json json;
 	m_TargetPostProcessGraph->SerializeToJsonObject(json);
 	return VansAnimGraph::DeserializeFromJsonObject(json);
 }
@@ -813,7 +782,7 @@ bool VansAnimationController::SetSlots(
 				continue;
 			std::size_t matchingNodeCount = 0;
 			for (const auto& [nodeId, node] : binding.graph->GetNodes())
-				if (node && node->GetType() == AnimGraphNodeType::Slot
+				if (node && node->GetType() == VansAnimGraphNodeType::Slot
 					&& static_cast<const AnimGraphSlotNode*>(node.get())->m_SlotId == slot.id)
 					++matchingNodeCount;
 			if (matchingNodeCount != 1)
@@ -1567,6 +1536,22 @@ std::string VansAnimationController::GetCurrentStateName() const
 	return {};
 }
 
+std::string VansAnimationController::GetActiveStatePath() const
+{
+	const GraphSetRuntime* graphSet = GetActiveGraphSetRuntime();
+	if (graphSet && !graphSet->bindings.empty() && graphSet->bindings.front().instance)
+		return graphSet->bindings.front().instance->GetActiveStatePath();
+	return {};
+}
+
+std::string VansAnimationController::GetPrimaryClipName() const
+{
+	const GraphSetRuntime* graphSet = GetActiveGraphSetRuntime();
+	if (graphSet && !graphSet->bindings.empty() && graphSet->bindings.front().instance)
+		return graphSet->bindings.front().instance->GetPrimaryClipName();
+	return {};
+}
+
 AnimationState VansAnimationController::GetPlaybackState() const
 {
 	return m_PlaybackState;
@@ -1725,7 +1710,7 @@ bool VansAnimationController::PrepareLayerStack(
 {
 	if (m_LayerRuntimes.empty())
 		return false;
-	const std::uint64_t skeletonSignature = VansBoneMaskCompiler::ComputeSkeletonSignature(skeleton);
+	const std::uint64_t skeletonSignature = skeleton.ComputeSignature();
 	for (size_t layerIndex = 0; layerIndex < m_LayerRuntimes.size(); ++layerIndex)
 	{
 		LayerRuntime& layer = m_LayerRuntimes[layerIndex];
@@ -1752,7 +1737,26 @@ bool VansAnimationController::PrepareLayerStack(
 		{
 			if (layerIndex == 0)
 				return false;
-			continue;
+			// An overlay without a mask is a valid generic full-body layer. This
+			// is required for source-relative additive poses such as ALS
+			// SecondaryMotion; requiring a project-specific mask would silently
+			// drop the layer before it reaches the mixer.
+			if (!layer.maskAsset)
+			{
+				layer.compiledMask = {};
+				layer.compiledMask.assetId = "__full_body_overlay__";
+				layer.compiledMask.skeletonSignature = skeletonSignature;
+				layer.compiledMask.weights.assign(skeleton.bones.size(), 1.0f);
+				layer.compiledMask.activeBones.reserve(skeleton.bones.size());
+				for (size_t bone = 0; bone < skeleton.bones.size(); ++bone)
+					layer.compiledMask.activeBones.push_back(static_cast<std::uint32_t>(bone));
+				layer.compiledMask.rootWeight = skeleton.bones.empty() ? 0.0f : 1.0f;
+				layer.compiledMask.allZero = skeleton.bones.empty();
+				layer.compiledMask.allOne = !skeleton.bones.empty();
+				layer.compiledMask.valid = true;
+			}
+			else
+				continue;
 		}
 		float targetWeight = layer.definition.fixedWeight;
 		if (layer.definition.kind == VansAnimationLayerKind::Base)
@@ -1828,6 +1832,7 @@ bool VansAnimationController::EvaluateGraphSet(
 	graphSet.evaluatedSync.clear();
 	graphSet.evaluatedSync.resize(m_LayerRuntimes.size());
 	auto& evaluatedSync = graphSet.evaluatedSync;
+	const VansAnimGraphMotionMatchingPort motionMatchingPort(motionMatching);
 
 	for (size_t layerIndex = 0; layerIndex < m_LayerRuntimes.size(); ++layerIndex)
 	{
@@ -1866,15 +1871,13 @@ bool VansAnimationController::EvaluateGraphSet(
 		context.skeleton = &skeleton;
 		context.parameters = &binding.parameterScratch;
 		context.clips = &m_Clips;
-		context.motionMatching = motionMatching;
+		context.motionMatching = motionMatching ? &motionMatchingPort : nullptr;
 		context.characterTrajectory = m_CharacterTrajectory;
 		context.slotPayloads = &m_SlotPayloads;
 		context.ownerWorldTransform = m_OwnerWorldTransform;
-		if (layer.definition.sync == VansLayerSyncMode::Independent)
-		{
-			binding.instance->AdvanceTime(context.deltaTime, context);
-		}
-		else if (layer.definition.sync == VansLayerSyncMode::SyncedGraph)
+		const bool advancesIndependently =
+			layer.definition.sync == VansLayerSyncMode::Independent;
+		if (layer.definition.sync == VansLayerSyncMode::SyncedGraph)
 		{
 			const GraphBindingRuntime& leader = graphSet.bindings[
 				static_cast<size_t>(binding.syncLeaderIndex)];
@@ -1882,7 +1885,7 @@ bool VansAnimationController::EvaluateGraphSet(
 				return false;
 			context.synchronizedStateFollower = true;
 		}
-		else
+		else if (!advancesIndependently)
 		{
 			const GraphBindingRuntime& leader = graphSet.bindings[
 				static_cast<size_t>(binding.syncLeaderIndex)];
@@ -1907,7 +1910,9 @@ bool VansAnimationController::EvaluateGraphSet(
 		}
 		const auto evaluationBegin = m_DebugMetricsEnabled
 			? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-		VansPosePayload sampled = binding.instance->Evaluate(context);
+		VansPosePayload sampled = advancesIndependently
+			? binding.instance->EvaluateFrame(context)
+			: binding.instance->Evaluate(context);
 		if (m_DebugMetricsEnabled)
 			binding.lastEvaluationMilliseconds = std::chrono::duration<float, std::milli>(
 				std::chrono::steady_clock::now() - evaluationBegin).count();
@@ -2027,15 +2032,12 @@ bool VansAnimationController::ConvertModelPoseToLocalPayload(
 		return false;
 
 	auto& localTransforms = m_LocalTransformScratch;
-	localTransforms.assign(modelSpaceTransforms.size(), glm::mat4(1.0f));
-	for (std::size_t boneIndex = 0; boneIndex < skeleton.bones.size(); ++boneIndex)
+	std::string topologyError;
+	if (!VansPoseMath::BuildLocalTransforms(
+		modelSpaceTransforms, skeleton, localTransforms, &topologyError))
 	{
-		const int parentIndex = skeleton.bones[boneIndex].parentIndex;
-		if (parentIndex >= 0 && parentIndex < static_cast<int>(modelSpaceTransforms.size()))
-			localTransforms[boneIndex] = glm::inverse(modelSpaceTransforms[static_cast<std::size_t>(parentIndex)])
-				* modelSpaceTransforms[boneIndex];
-		else
-			localTransforms[boneIndex] = modelSpaceTransforms[boneIndex];
+		VANS_LOG_WARN("[AnimController] Model pose rejected: " << topologyError);
+		return false;
 	}
 	if (!VansPoseMath::FromMatrices(localTransforms, outPayload.localPose))
 		return false;
@@ -2108,7 +2110,13 @@ bool VansAnimationController::FinalizeLocalPose(
 			ResolvePreparedWorldQueries({}, skeleton);
 		return true;
 	}
-	UpdateHierarchy(localTransforms, skeleton);
+	std::string topologyError;
+	if (!VansPoseMath::BuildModelTransforms(
+		localTransforms, skeleton, localTransforms, &topologyError))
+	{
+		VANS_LOG_WARN("[AnimController] Local pose rejected: " << topologyError);
+		return false;
+	}
 	BuildFinalMatrices(localTransforms, skeleton);
 	return true;
 }
@@ -2150,7 +2158,12 @@ bool VansAnimationController::GatherPreparedWorldQueries(const Skeleton& skeleto
 	{
 		VANS_LOG_WARN("[AnimController] Target Procedural transaction rejected: " << error);
 		m_LocalTransformScratch = m_PreparedLocalTransforms;
-		UpdateHierarchy(m_LocalTransformScratch, skeleton);
+		if (!VansPoseMath::BuildModelTransforms(
+			m_LocalTransformScratch, skeleton, m_LocalTransformScratch, &error))
+		{
+			VANS_LOG_WARN("[AnimController] Prepared pose rollback rejected: " << error);
+			m_LocalTransformScratch.clear();
+		}
 		BuildFinalMatrices(m_LocalTransformScratch, skeleton);
 		m_PreparedWorldQueries.clear();
 		m_HasPreparedFrame = false;
@@ -2161,7 +2174,16 @@ bool VansAnimationController::GatherPreparedWorldQueries(const Skeleton& skeleto
 		m_LocalTransformScratch.resize(completedPose.size());
 		for (std::size_t index = 0; index < completedPose.size(); ++index)
 			m_LocalTransformScratch[index] = VansPoseMath::Compose(completedPose[index]);
-		UpdateHierarchy(m_LocalTransformScratch, skeleton);
+		if (!VansPoseMath::BuildModelTransforms(
+			m_LocalTransformScratch, skeleton, m_LocalTransformScratch, &error))
+		{
+			VANS_LOG_WARN("[AnimController] Prepared pose rejected: " << error);
+			m_PreparedLocalTransforms.clear();
+			m_PreparedProceduralPose.clear();
+			m_PreparedProceduralNodeIds.clear();
+			m_HasPreparedFrame = false;
+			return false;
+		}
 		BuildFinalMatrices(m_LocalTransformScratch, skeleton);
 		m_PreparedLocalTransforms.clear();
 		m_PreparedProceduralPose.clear();
@@ -2196,7 +2218,18 @@ bool VansAnimationController::ResolvePreparedWorldQueries(
 			VANS_LOG_WARN("[AnimController] Target Procedural transaction rolled back: " << error);
 		}
 	}
-	UpdateHierarchy(m_LocalTransformScratch, skeleton);
+	std::string topologyError;
+	if (!VansPoseMath::BuildModelTransforms(
+		m_LocalTransformScratch, skeleton, m_LocalTransformScratch, &topologyError))
+	{
+		VANS_LOG_WARN("[AnimController] Resolved pose rejected: " << topologyError);
+		m_PreparedLocalTransforms.clear();
+		m_PreparedProceduralPose.clear();
+		m_PreparedProceduralNodeIds.clear();
+		m_PreparedWorldQueries.clear();
+		m_HasPreparedFrame = false;
+		return false;
+	}
 	BuildFinalMatrices(m_LocalTransformScratch, skeleton);
 	m_PreparedLocalTransforms.clear();
 	m_PreparedProceduralPose.clear();
@@ -2309,13 +2342,9 @@ void VansAnimationController::ApplyBoneOverrides(std::vector<glm::mat4>& localTr
 
 	for (const auto& [boneName, overrideTransform] : *m_BoneOverrides)
 	{
-		auto it = skeleton.boneNameToIndex.find(boneName);
-		if (it != skeleton.boneNameToIndex.end())
-		{
-			int idx = it->second;
-			if (idx >= 0 && idx < static_cast<int>(localTransforms.size()))
-				localTransforms[idx] = overrideTransform;
-		}
+		const int boneIndex = skeleton.FindBoneIndex(boneName);
+		if (boneIndex >= 0 && boneIndex < static_cast<int>(localTransforms.size()))
+			localTransforms[static_cast<std::size_t>(boneIndex)] = overrideTransform;
 	}
 }
 
@@ -2338,39 +2367,6 @@ void VansAnimationController::NormalizeRootTransform(std::vector<glm::mat4>& loc
 }
 
 // ---------------------------------------------------------------------------
-// Internal method: UpdateHierarchy
-// ---------------------------------------------------------------------------
-
-void VansAnimationController::UpdateHierarchy(std::vector<glm::mat4>& localTransforms,
-                                               const Skeleton& skeleton)
-{
-	uint32_t boneCount = static_cast<uint32_t>(skeleton.bones.size());
-
-	// Iterate in topological order so parents are processed before children.
-	// Iterate in topological order to avoid incorrect results when parent indices
-	// are greater than child indices.
-	if (!skeleton.topologicalOrder.empty())
-	{
-		for (int b : skeleton.topologicalOrder)
-		{
-			const BoneInfo& bone = skeleton.bones[b];
-			if (bone.parentIndex >= 0 && bone.parentIndex < static_cast<int>(boneCount))
-				localTransforms[b] = localTransforms[bone.parentIndex] * localTransforms[b];
-		}
-	}
-	else
-	{
-		// Fallback: index order only works when parentIndex < childIndex.
-		for (uint32_t b = 0; b < boneCount; b++)
-		{
-			const BoneInfo& bone = skeleton.bones[b];
-			if (bone.parentIndex >= 0 && bone.parentIndex < static_cast<int>(boneCount))
-				localTransforms[b] = localTransforms[bone.parentIndex] * localTransforms[b];
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Internal method: BuildFinalMatrices
 // ---------------------------------------------------------------------------
 
@@ -2386,15 +2382,14 @@ void VansAnimationController::BuildFinalMatrices(const std::vector<glm::mat4>& g
 
 	// 最终姿态是动画、程序化处理和布娃娃写回之后的统一只读快照。
 	m_CachedGlobalTransforms = globalTransforms;
-	m_CachedLocalTransforms.resize(globalTransforms.size());
-	for (std::size_t boneIndex = 0; boneIndex < globalTransforms.size(); ++boneIndex)
+	std::string topologyError;
+	if (!VansPoseMath::BuildLocalTransforms(
+		globalTransforms, skeleton, m_CachedLocalTransforms, &topologyError))
 	{
-		const int parentIndex = skeleton.bones[boneIndex].parentIndex;
-		m_CachedLocalTransforms[boneIndex] = parentIndex >= 0
-			&& parentIndex < static_cast<int>(globalTransforms.size())
-			? glm::inverse(globalTransforms[static_cast<std::size_t>(parentIndex)])
-				* globalTransforms[boneIndex]
-			: globalTransforms[boneIndex];
+		VANS_LOG_WARN("[AnimController] Final pose cache rejected: " << topologyError);
+		m_CachedLocalTransforms.clear();
+		m_CachedGlobalTransforms.clear();
+		return;
 	}
 	if (++m_FinalPoseRevision == 0)
 		++m_FinalPoseRevision;
@@ -2417,9 +2412,6 @@ void VansAnimationController::BuildFinalMatrices(const std::vector<glm::mat4>& g
 
 int VansAnimationController::DetectRootBoneIndex(const Skeleton& skeleton) const
 {
-	auto rootIt = skeleton.boneNameToIndex.find("root");
-	if (rootIt != skeleton.boneNameToIndex.end())
-		return rootIt->second;
 	// Find the skeleton root node (parentIndex == -1).
 	int skeletonRoot = -1;
 	for (uint32_t i = 0; i < static_cast<uint32_t>(skeleton.bones.size()); i++)

@@ -2,19 +2,26 @@
 #include "../Serialization/VansParticleAssetJsonCodec.h"
 #include "../Serialization/VansParticleEmitterJsonCodec.h"
 #include "../../AssetCore/Serialization/VansSerializedPathPattern.h"
+#include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
+#include "../../AssetCore/VansAssetDocumentJson.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <stdexcept>
 
+namespace
+{
+using ParticleJsonValue = Vans::AssetDocumentJson;
+}
+
 namespace VansGraphics
 {
-const std::vector<VansParticleAuthoringField>& VansParticleAuthoringSchema::Fields()
+const std::vector<VansParticleFieldRule>& VansParticleAuthoringSchema::Fields()
 {
     static const auto fields = []
     {
-        std::vector<VansParticleAuthoringField> result;
+        std::vector<VansParticleFieldRule> result;
         const auto choice = [&](std::string path, std::vector<std::string> values)
         { result.push_back({std::move(path), std::move(values)}); };
         const auto range = [&](std::string path, double minimum, double maximum, double step = 0.01)
@@ -39,7 +46,8 @@ const std::vector<VansParticleAuthoringField>& VansParticleAuthoringSchema::Fiel
         range(emitter + "spawn/bursts/*/cycles", 0, 100000, 1);
         range(emitter + "spawn/bursts/*/interval", 0, 3600);
         choice(renderer + "type", {"None", "Billboard", "Ribbon"});
-        choice(renderer + "sortMode", {"None", "ByDistance", "OldestFirst", "NewestFirst"});
+        choice(renderer + "simulationOrder", {"Stable", "OldestFirst", "NewestFirst"});
+        choice(renderer + "renderSortMode", {"None", "ByDistance"});
         choice(renderer + "lightingMode", {"UnlitFlipbook", "SixWayLit"});
         choice(renderer + "ribbon/rootMode", {"None", "FollowSource"});
         choice(renderer + "ribbon/stopAttachment", {"KeepUntilInvisible", "DetachOnStop"});
@@ -61,54 +69,55 @@ const std::vector<VansParticleAuthoringField>& VansParticleAuthoringSchema::Fiel
         range(renderer + "volumetric/anisotropy", -0.9, 0.9);
         range(renderer + "volumetric/edgeSoftness", 0.001, 1);
         range(renderer + "volumetric/injectionPriority", 0, 255, 1);
-        choice(emitter + "initialize/*/mode", {"Cone", "Random"});
-        choice(emitter + "initialize/*/shape", {"Sphere", "Box", "Cone", "Disk", "Edge"});
-        range(emitter + "initialize/*/speed", 0, 10000);
-        range(emitter + "initialize/*/radius", 0, 10000);
-        range(emitter + "initialize/*/angle", 0, 180, 0.25);
-        range(emitter + "initialize/*/arc", 0, 360, 0.25);
-        for (const char* phase : {"initialize", "update"})
+        std::vector<std::string> initializeModules;
+        std::vector<std::string> updateModules;
+        for (const VansParticleModuleSchema& module :
+            VansParticleEmitterJsonCodec::ModuleSchemas())
         {
-            const auto module = emitter + phase + "/*/";
-            for (const char* curve : {"lifetime", "size", "angle", "angularVelocity"})
+            const bool initialize = module.phase == VansParticleModulePhase::Initialize;
+            auto& names = initialize ? initializeModules : updateModules;
+            names.push_back(module.name);
+            const std::string prefix = emitter +
+                (initialize ? "initialize/*" : "update/*");
+            for (const VansParticleFieldRule& source : module.fields)
             {
-                const auto path = module + curve + "/";
-                choice(path + "mode", {"Constant", "RandomBetween", "Curve", "RandomBetweenCurves"});
-                for (const char* keys : {"keys", "minKeys", "maxKeys"})
-                    range(path + keys + "/*/t", 0, 1);
+                auto field = source;
+                field.pathPattern = prefix + field.pathPattern;
+                result.push_back(std::move(field));
             }
         }
-        range(emitter + "update/*/curve/*/t", 0, 1);
-        range(emitter + "update/*/gradient/stops/*/t", 0, 1);
-        range(emitter + "update/*/drag", 0, 100);
-        for (const char* field : {"strength", "frequency", "scrollSpeed"})
-            range(emitter + "update/*/turbulence/" + field, 0, 100);
-        for (const char* dimension : {"columns", "rows"})
-            range(emitter + "update/*/" + dimension, 1, 256, 1);
-        range(emitter + "update/*/fps", 0, 1000, 0.1);
+        choice(emitter + "initialize/*/module", std::move(initializeModules));
+        choice(emitter + "update/*/module", std::move(updateModules));
         return result;
     }();
     return fields;
 }
 
-Vans::ParticleJson VansParticleAuthoringSchema::Defaults()
+Vans::VansSerializedValue VansParticleAuthoringSchema::Defaults()
 {
     VansParticleAsset asset;
     VansParticleEmitter emitter;
     const BurstConfig burst;
-    auto key = Vans::ParticleJson{{"t", 1.0}, {"value", 1.0}};
-    auto stop = Vans::ParticleJson{{"t", 1.0}, {"color", {1.0, 1.0, 1.0, 0.0}}};
-    return {{"asset", VansParticleAssetJsonCodec::Encode(asset)},
-        {"emitter", VansParticleEmitterJsonCodec::EncodeEmitter(emitter)},
-        {"modules", VansParticleEmitterJsonCodec::ModuleDefaults()},
+    auto key = ParticleJsonValue{{"t", 1.0}, {"value", 1.0}};
+    auto stop = ParticleJsonValue{{"t", 1.0}, {"color", {1.0, 1.0, 1.0, 0.0}}};
+    const ParticleJsonValue root = {{"asset", Vans::EncodeSerializedValueJson<ParticleJsonValue>(
+            VansParticleAssetJsonCodec::Encode(asset))},
+        {"emitter", Vans::EncodeSerializedValueJson<ParticleJsonValue>(
+            VansParticleEmitterJsonCodec::EncodeEmitter(emitter))},
+        {"modules", Vans::EncodeSerializedValueJson<ParticleJsonValue>(
+            VansParticleEmitterJsonCodec::ModuleDefaults())},
         {"arrayElements", {{"curve", key}, {"keys", key}, {"minKeys", key}, {"maxKeys", key}, {"stops", stop},
             {"bursts", {{"time", burst.time}, {"count", burst.count}, {"cycles", burst.cycles}, {"interval", burst.interval}}}}}};
+    return Vans::DecodeSerializedValueJson(root);
 }
 
-void VansParticleAuthoringSchema::ValidateFields(const Vans::ParticleJson& root)
+void VansParticleAuthoringSchema::ValidateFields(
+    const Vans::VansSerializedValue& serializedRoot)
 {
+    const ParticleJsonValue root =
+        Vans::EncodeSerializedValueJson<ParticleJsonValue>(serializedRoot);
     if (!root.is_object()) throw std::invalid_argument("Particle asset must be an object");
-    std::function<void(const Vans::ParticleJson&, const std::string&)> visit;
+    std::function<void(const ParticleJsonValue&, const std::string&)> visit;
     visit = [&](const auto& value, const auto& path)
     {
         for (const auto& field : Fields())

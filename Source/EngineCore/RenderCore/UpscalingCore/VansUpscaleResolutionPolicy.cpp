@@ -15,6 +15,69 @@ namespace
 
 namespace VansGraphics
 {
+	bool VansUpscaleResolutionPolicy::ValidateConfig(
+		const VansUpscalerConfig& config,
+		std::string& error)
+	{
+		if (config.backend < VansUpscalerBackend::Off ||
+			config.backend > VansUpscalerBackend::DLSS)
+		{
+			error = "Unknown upscaler backend";
+			return false;
+		}
+		if (config.quality < VansUpscaleQualityMode::NativeAA ||
+			config.quality > VansUpscaleQualityMode::UltraPerformance)
+		{
+			error = "Unknown upscaler quality";
+			return false;
+		}
+		if (!std::isfinite(config.fsrSharpness) ||
+			config.fsrSharpness < 0.0f || config.fsrSharpness > 1.0f)
+		{
+			error = "upscaler.fsrSharpness must be finite and in [0, 1]";
+			return false;
+		}
+		if (config.backend == VansUpscalerBackend::Off &&
+			config.quality != VansUpscaleQualityMode::NativeAA)
+		{
+			error = "Off upscaler backend requires NativeAA quality";
+			return false;
+		}
+		error.clear();
+		return true;
+	}
+
+	bool VansUpscaleResolutionPolicy::ValidateOutputExtent(
+		VansExtent2D outputExtent,
+		bool allowWindowExtent,
+		std::uint32_t deviceMaximumDimension,
+		std::string& error)
+	{
+		if (allowWindowExtent && outputExtent.width == 0u && outputExtent.height == 0u)
+		{
+			error.clear();
+			return true;
+		}
+		const std::uint32_t maximumDimension = deviceMaximumDimension == 0u
+			? MaximumOutputDimension
+			: std::min(MaximumOutputDimension, deviceMaximumDimension);
+		if (!outputExtent.IsValid() ||
+			outputExtent.width < MinimumOutputWidth ||
+			outputExtent.height < MinimumOutputHeight ||
+			outputExtent.width > maximumDimension ||
+			outputExtent.height > maximumDimension)
+		{
+			error = "outputResolution must be 0x0 (follow window) or an explicit "
+				"resolution between " + std::to_string(MinimumOutputWidth) + "x" +
+				std::to_string(MinimumOutputHeight) + " and " +
+				std::to_string(maximumDimension) + "x" +
+				std::to_string(maximumDimension);
+			return false;
+		}
+		error.clear();
+		return true;
+	}
+
 	float VansUpscaleResolutionPolicy::GetFSRScale(VansUpscaleQualityMode quality)
 	{
 		switch (quality)

@@ -481,10 +481,10 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 			}
 
 			// Record per-slice vertex offsets (used by the render node to push the offset
-			// into the shader so it can index VansAnimationNode's bone weight buffer correctly).
+			// into the shader so it can index its RenderCore bone-weight binding correctly).
 			// m_SubMeshBoneData is still populated for reference.
-			// The actual GPU upload happens in ExpandMultiMeshToRenderNodes after
-			// VansAnimationNode is created and InitGPUResources has been called.
+			// The actual GPU upload happens while the scene animation component builds
+			// its VansAnimationGpuBinding.
 			const auto& vbd = m_AnimImportResult.vertexBoneData;
 			for (size_t i = 0; i < allMeshes.size(); ++i)
 			{

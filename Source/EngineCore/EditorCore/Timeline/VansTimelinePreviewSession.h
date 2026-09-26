@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <string>
 
-namespace Vans::EditorAPI { class IEngineEditorAPI; }
+namespace Vans::EditorAPI { class ITimelineEditorAPI; }
 
 namespace Vans
 {
@@ -25,7 +25,7 @@ class VansTimelinePreviewSession
 public:
 	~VansTimelinePreviewSession();
 
-	bool Attach(EditorAPI::IEngineEditorAPI& editorAPI, const VansTimelineAsset& asset,
+	bool Attach(EditorAPI::ITimelineEditorAPI& editorAPI, const VansTimelineAsset& asset,
 		std::string sourceAssetPath, std::string ownerEntityGuid,
 		bool safeEvents, bool includeSubTimelines,
 		int playbackDirection, bool loopPlaybackRange, std::string& error);
@@ -48,7 +48,7 @@ private:
 	bool Start(const VansTimelineAsset& asset, std::string& error);
 	static std::string MakeSessionId();
 
-	EditorAPI::IEngineEditorAPI* m_EditorAPI = nullptr;
+	EditorAPI::ITimelineEditorAPI* m_EditorAPI = nullptr;
 	std::string m_SessionId;
 	std::string m_SourceAssetPath;
 	std::string m_OwnerEntityGuid;

@@ -1,6 +1,7 @@
 #include "VansSceneAssetRegistry.h"
 
 #include <algorithm>
+#include <iterator>
 
 namespace VansGraphics
 {
@@ -209,10 +210,21 @@ namespace VansGraphics
 
 	void VansSceneAssetRegistry::RemoveSceneSubMesh(VansAsset* asset)
 	{
-		auto it = std::remove(m_SceneSubMeshes.begin(), m_SceneSubMeshes.end(), asset);
-		m_SceneSubMeshes.erase(it, m_SceneSubMeshes.end());
+		const auto found = std::find(m_SceneSubMeshes.rbegin(), m_SceneSubMeshes.rend(), asset);
+		if (found != m_SceneSubMeshes.rend())
+			m_SceneSubMeshes.erase(std::next(found).base());
 		m_SceneSubMeshAssetLookup.clear();
 		for (auto* subMesh : m_SceneSubMeshes)
 			RegisterSceneSubMesh(subMesh);
+	}
+
+	void VansSceneAssetRegistry::RemoveMaterial(VansAsset* asset)
+	{
+		const auto found = std::find(m_Materials.rbegin(), m_Materials.rend(), asset);
+		if (found != m_Materials.rend())
+			m_Materials.erase(std::next(found).base());
+		m_MaterialAssetLookup.clear();
+		for (auto* material : m_Materials)
+			RegisterMaterial(material);
 	}
 }

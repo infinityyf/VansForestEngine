@@ -1,7 +1,9 @@
 #include "VansSkeletonDebugWindow.h"
 
-#include "../VansEditorSelection.h"
+#include "../VansEditorSelectionService.h"
+#include "../VansEditorDebugViewState.h"
 #include "../VansEditorWindow.h"
+#include "../../EngineAPILayer/Public/IAnimationEditorAPI.h"
 
 #include <imgui.h>
 
@@ -9,24 +11,25 @@ namespace VansGraphics
 {
 	void VansSkeletonDebugWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	{
-		if (!VansEditorWindow::m_SkeletonDebugWindowOpen)
+		if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::SkeletonDebug))
 			return;
 
-		if (!ImGui::Begin("Skeleton Debug", &VansEditorWindow::m_SkeletonDebugWindowOpen))
+		if (!ImGui::Begin("Skeleton Debug", VansEditorWindow::WindowOpenState(VansEditorWindowId::SkeletonDebug)))
 		{
 			ImGui::End();
 			return;
 		}
 
-		ImGui::Checkbox("Scene View Overlay", &VansEditorWindow::m_SkeletonDebugGizmos);
-		ImGui::Checkbox("Selected Entity Only", &VansEditorWindow::m_SkeletonDebugSelectedOnly);
-		ImGui::Checkbox("Bone Names", &VansEditorWindow::m_SkeletonDebugShowNames);
-		ImGui::Checkbox("Retarget Source", &VansEditorWindow::m_SkeletonDebugShowRetargetSource);
+		ImGui::Checkbox("Scene View Overlay", &m_DebugViewState.skeletonDebugGizmos);
+		ImGui::Checkbox("Selected Entity Only", &m_DebugViewState.skeletonDebugSelectedOnly);
+		ImGui::Checkbox("Bone Names", &m_DebugViewState.skeletonDebugShowNames);
+		ImGui::Checkbox("Retarget Source", &m_DebugViewState.skeletonDebugShowRetargetSource);
 
-		const std::string selectedGuid = VansEditorWindow::m_SkeletonDebugSelectedOnly
-			? Vans::VansEditorSelection::EntityGuid()
+		const std::string selectedGuid = m_DebugViewState.skeletonDebugSelectedOnly
+			? Vans::VansEditorSelectionService::Get().EntityGuid()
 			: std::string();
-		const auto snapshot = editorAPI.GetSkeletonDebugSnapshot(selectedGuid);
+		Vans::EditorAPI::IAnimationEditorAPI& animationAPI = editorAPI;
+		const auto snapshot = animationAPI.GetSkeletonDebugSnapshot(selectedGuid);
 
 		ImGui::Separator();
 		if (!snapshot.available)
@@ -39,7 +42,7 @@ namespace VansGraphics
 		ImGui::Text("Rigs: %d", static_cast<int>(snapshot.rigs.size()));
 		for (const auto& rig : snapshot.rigs)
 		{
-			if (rig.retargetSource && !VansEditorWindow::m_SkeletonDebugShowRetargetSource)
+			if (rig.retargetSource && !m_DebugViewState.skeletonDebugShowRetargetSource)
 				continue;
 			if (ImGui::TreeNode(rig.nodeName.empty() ? "(unnamed rig)" : rig.nodeName.c_str()))
 			{

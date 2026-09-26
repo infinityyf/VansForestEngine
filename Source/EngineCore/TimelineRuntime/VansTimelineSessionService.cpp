@@ -1,5 +1,7 @@
 #include "VansTimelineSessionService.h"
 
+#include "VansTimelineBuiltInRegistry.h"
+
 #include "../Util/VansLog.h"
 
 #include "Events/VansTimelineRuntimeEvents.h"
@@ -13,16 +15,6 @@ namespace Vans
 {
 namespace
 {
-VansEventLane EventLane(const std::string& name)
-{
-	if (name == "Script") return VansEventLane::Script;
-	if (name == "MainThread") return VansEventLane::MainThread;
-	if (name == "Editor") return VansEventLane::Editor;
-	if (name == "Diagnostics") return VansEventLane::Diagnostics;
-	if (name == "RenderPrep") return VansEventLane::RenderPrep;
-	return VansEventLane::GameLogic;
-}
-
 bool PolicyAllows(
 	const std::string& policy,
 	const VansTimelineTraversalSegment& segment,
@@ -41,9 +33,9 @@ bool PolicyAllows(
 }
 
 VansTimelineSessionService::VansTimelineSessionService(
-	VansTimelineClockRegistry& clocks,
+	const VansTimelineClockRegistry& clocks,
 	VansTimelineApplierRegistry& appliers,
-	VansPayloadSchemaRegistry* payloads)
+	const VansTimelinePayloadSchemaRegistry* payloads)
 	: m_Clocks(clocks), m_Appliers(appliers), m_Payloads(payloads)
 {
 	m_PreAnimated.BindAppliers(&m_Appliers);
@@ -151,7 +143,14 @@ void VansTimelineSessionService::PublishSignalOutputs(Session& session)
 		event.signalId = signalId;
 		event.payloadType = payloadType;
 		event.payload = payload->value;
-		const VansEventLane lane = EventLane(stringAt(3));
+		const std::string laneName = stringAt(3);
+		VansEventLane lane = VansEventLane::GameLogic;
+		if (!VansResolveTimelineSignalLane(laneName, lane))
+		{
+			AddDiagnostic(session.handle, "Timeline.SignalLaneUnavailable",
+				"Timeline signal lane is not available to runtime sessions: " + laneName);
+			continue;
+		}
 		if (stringAt(4) == "NextFrame") VansEventBus::Get().EnqueueNextFrame(std::move(event), lane);
 		else VansEventBus::Get().Enqueue(std::move(event), lane);
 	}
@@ -421,9 +420,9 @@ void VansTimelineSessionService::ReleaseSessionWriters(Session& session)
 	writers.insert(writers.end(), session.cameraWriters.begin(), session.cameraWriters.end());
 	for (VansTimelineWriterHandle writer : writers)
 	{
-		const VansTimelineWriterDesc* desc = m_Writers.Resolve(writer);
-		const bool restore = session.restoreStateOnStop && desc &&
-			desc->completion != VansTimelineCompletionMode::KeepState;
+		const VansTimelineWriterIdentity* identity = m_Writers.Resolve(writer);
+		const bool restore = session.restoreStateOnStop && identity &&
+			identity->completion != VansTimelineCompletionMode::KeepState;
 		const bool releasedNow = m_PreAnimated.ReleaseWriter(writer, restore);
 		if (releasedNow) m_Appliers.ReleaseWriter(writer);
 		m_Writers.Release(writer);
@@ -633,9 +632,9 @@ void VansTimelineSessionService::ReconcileWriters(
 	for (VansTimelineWriterHandle writer : activeWriters)
 	{
 		if (current.find(writer) != current.end()) continue;
-		const VansTimelineWriterDesc* desc = m_Writers.Resolve(writer);
-		const bool releasedNow = m_PreAnimated.ReleaseWriter(writer, desc &&
-			desc->completion != VansTimelineCompletionMode::KeepState);
+		const VansTimelineWriterIdentity* identity = m_Writers.Resolve(writer);
+		const bool releasedNow = m_PreAnimated.ReleaseWriter(writer, identity &&
+			identity->completion != VansTimelineCompletionMode::KeepState);
 		if (releasedNow) m_Appliers.ReleaseWriter(writer);
 		m_Writers.Release(writer);
 	}
@@ -659,9 +658,9 @@ void VansTimelineSessionService::DeactivateWritersBeforeApply(
 	for (VansTimelineWriterHandle writer : activeWriters)
 	{
 		if (retained.find(writer) != retained.end()) continue;
-		const VansTimelineWriterDesc* desc = m_Writers.Resolve(writer);
-		const bool releasedNow = m_PreAnimated.ReleaseWriter(writer, desc &&
-			desc->completion != VansTimelineCompletionMode::KeepState);
+		const VansTimelineWriterIdentity* identity = m_Writers.Resolve(writer);
+		const bool releasedNow = m_PreAnimated.ReleaseWriter(writer, identity &&
+			identity->completion != VansTimelineCompletionMode::KeepState);
 		if (releasedNow) m_Appliers.ReleaseWriter(writer);
 		m_Writers.Release(writer);
 	}

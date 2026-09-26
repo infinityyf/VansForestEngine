@@ -1,6 +1,8 @@
 #include "VansAssetObjectBootstrapper.h"
 #include "Prefab/VansPrefabAsset.h"
+#include "VansComponentTypeCatalog.h"
 #include "../AssetCore/Serialization/VansJsonDocumentCodec.h"
+#include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 
 #include "../AICore/VansAIBehaviorAsset.h"
 #include "../AICore/Serialization/VansAIBehaviorJsonCodec.h"
@@ -21,6 +23,7 @@
 #include "../AssetCore/Storage/VansShaderAuthoringAssetStorage.h"
 #include "../AssetCore/Storage/VansSkinProfileStorage.h"
 #include "../AssetCore/VansAssetObjectRepository.h"
+#include "../AssetCore/VansAssetBytes.h"
 #include "../AssetCore/VansAssetMeta.h"
 #include "../AudioCore/VansAudioBusSnapshotAsset.h"
 #include "../AudioCore/VansAudioDuckingRulesAsset.h"
@@ -38,6 +41,7 @@
 #include "../RenderCore/Storage/VansPostProcessProfileStorage.h"
 #include "../RuntimeUI/Serialization/VansUIDocumentLoader.h"
 #include "../RuntimeUI/VansUIAssetResolver.h"
+#include "../ScriptCore/VansScriptComponentReader.h"
 #include "Serialization/VansVegetationConfigCodec.h"
 #include "Storage/VansVegetationConfigStorage.h"
 #include "../PcgCore/Serialization/VansPlantTypeAssetCodec.h"
@@ -47,10 +51,13 @@
 #include "../PcgCore/Serialization/VansPcgSplineAssetCodec.h"
 #include "../PcgCore/Storage/VansPcgSplineAssetStorage.h"
 #include "../TimelineCore/VansTimelineSerialization.h"
+#include "../TimelineCore/VansTimelineDependencyBuilder.h"
+#include "../Timeline/VansEngineTimelineRegistry.h"
 #include "../TerrainCore/Serialization/VansTerrainAssetCodec.h"
 #include "../TerrainCore/Storage/VansTerrainAssetStorage.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -58,19 +65,78 @@
 #include <unordered_set>
 #include <utility>
 #include <type_traits>
+#include <string_view>
 
 namespace Vans
 {
 namespace
 {
-    void CollectParsedGuidDependencies(const VansSerializedValue& value, VansAssetGuid owner,
-        std::vector<VansAssetGuid>& dependencies);
+    void AppendGuidDependency(
+        std::string_view text,
+        VansAssetGuid owner,
+        std::vector<VansAssetGuid>& dependencies)
+    {
+        VansAssetGuid guid;
+        if (!VansAssetGuid::TryParse(text, guid) || guid == owner ||
+            std::find(dependencies.begin(), dependencies.end(), guid) != dependencies.end())
+            return;
+        dependencies.push_back(guid);
+    }
+
+    void AppendReferenceDependency(
+        const VansSerializedValue* reference,
+        VansAssetGuid owner,
+        std::vector<VansAssetGuid>& dependencies)
+    {
+        if (reference == nullptr) return;
+        if (reference->kind == VansSerializedValue::Kind::String)
+        {
+            AppendGuidDependency(reference->stringValue, owner, dependencies);
+            return;
+        }
+        if (reference->kind != VansSerializedValue::Kind::Object) return;
+        const VansSerializedValue* guid = FindObjectField(*reference, "guid");
+        if (guid != nullptr && guid->kind == VansSerializedValue::Kind::String)
+            AppendGuidDependency(guid->stringValue, owner, dependencies);
+    }
+
+    void CollectCatalogReferenceValue(
+        std::string_view componentType,
+        const VansSerializedValue& value,
+        std::string parentKey,
+        std::string fieldKey,
+        VansAssetGuid owner,
+        std::vector<VansAssetGuid>& dependencies)
+    {
+        if (VansComponentTypeCatalog::FindAssetReferenceRule(
+            componentType, parentKey, fieldKey) != nullptr)
+        {
+            AppendReferenceDependency(&value, owner, dependencies);
+            return;
+        }
+        const auto lower = [](std::string text)
+        {
+            std::transform(text.begin(), text.end(), text.begin(),
+                [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+            return text;
+        };
+        if (value.kind == VansSerializedValue::Kind::Object)
+        {
+            for (const auto& [name, child] : value.objectFields)
+                CollectCatalogReferenceValue(componentType, child,
+                    lower(fieldKey), lower(name), owner, dependencies);
+        }
+        else if (value.kind == VansSerializedValue::Kind::Array)
+        {
+            for (const VansSerializedValue& child : value.arrayItems)
+                CollectCatalogReferenceValue(componentType, child,
+                    lower(fieldKey), {}, owner, dependencies);
+        }
+    }
+
     std::vector<VansAssetGuid> PrefabDependencies(const VansPrefabAsset& asset, VansAssetGuid owner)
     {
         std::vector<VansAssetGuid> dependencies;
-        auto graph = asset.entities;
-        std::string ignored;
-        VisitSceneObjectReferences(graph, [](VansSceneObjectReference& ref, std::string&) { ref.entityGuid.clear(); ref.componentGuid.clear(); return true; }, ignored);
         std::unordered_set<std::string> local;
         for (const auto& entity : asset.entities.arrayItems)
         {
@@ -81,8 +147,168 @@ namespace
                     for (const auto& value : component.objectFields) if (value.first == "id") local.insert(value.second.stringValue);
             }
         }
-        CollectParsedGuidDependencies(graph, owner, dependencies);
-        dependencies.erase(std::remove_if(dependencies.begin(), dependencies.end(), [&](auto guid) { return local.count(guid.ToString()); }), dependencies.end());
+        for (const VansSerializedValue& entity : asset.entities.arrayItems)
+        {
+            const VansSerializedValue* components = FindObjectField(entity, "components");
+            if (components == nullptr || components->kind != VansSerializedValue::Kind::Array)
+                continue;
+            for (const VansSerializedValue& component : components->arrayItems)
+            {
+                const std::string type = ReadSerializedStringField(component, "type");
+                const VansSerializedValue* data = FindObjectField(component, "data");
+                if (data == nullptr) continue;
+                CollectCatalogReferenceValue(type, *data, {}, "data", owner, dependencies);
+
+                if (type == "Physics" && ReadSerializedBoolField(*data, "useMeshCollider", false))
+                {
+                    const std::string colliderType = ReadSerializedStringField(*data, "colliderType");
+                    if (colliderType == "mesh" || colliderType == "convex")
+                        AppendReferenceDependency(FindObjectField(*data, "mesh"), owner, dependencies);
+                }
+                else if (type == "LODGroup")
+                {
+                    const VansSerializedValue* levels = FindObjectField(*data, "levels");
+                    if (levels != nullptr && levels->kind == VansSerializedValue::Kind::Array)
+                        for (const VansSerializedValue& level : levels->arrayItems)
+                            if (const VansSerializedValue* meshes = FindObjectField(level, "meshes");
+                                meshes != nullptr && meshes->kind == VansSerializedValue::Kind::Array)
+                                for (const VansSerializedValue& mesh : meshes->arrayItems)
+                                    AppendReferenceDependency(&mesh, owner, dependencies);
+                }
+                else if (type == "MultiMeshRoot")
+                    AppendReferenceDependency(FindObjectField(*data, "model"), owner, dependencies);
+                else if (type == "Animation")
+                {
+                    AppendReferenceDependency(FindObjectField(*data, "rig"), owner, dependencies);
+                    if (const VansSerializedValue* retarget = FindObjectField(*data, "retarget"))
+                        for (const char* field : { "profile", "source_model", "source_animator" })
+                            AppendReferenceDependency(FindObjectField(*retarget, field), owner, dependencies);
+                }
+                else if (type == "NavigationAgent")
+                    AppendReferenceDependency(FindObjectField(*data, "navigationMesh"), owner, dependencies);
+                else if (type == "AIAgent")
+                    AppendReferenceDependency(FindObjectField(*data, "behavior"), owner, dependencies);
+                else if (type == "Script")
+                {
+                    std::vector<VansScriptSerializedObjectReference> references;
+                    std::string error;
+                    if (VansScriptComponentReader::CollectProjectAssetReferences(
+                            *data, references, error))
+                    {
+                        for (const VansScriptSerializedObjectReference& reference : references)
+                            if (!local.count(reference.guid))
+                                AppendGuidDependency(reference.guid, owner, dependencies);
+                    }
+                }
+            }
+        }
+        return dependencies;
+    }
+
+    std::vector<VansAssetGuid> MaterialDependencies(
+        const VansMaterialAuthoringAsset& asset,
+        VansAssetGuid owner)
+    {
+        std::vector<VansAssetGuid> dependencies;
+        AppendReferenceDependency(&asset.shader, owner, dependencies);
+        const auto collectMap = [&](const VansSerializedValue& map)
+        {
+            if (map.kind != VansSerializedValue::Kind::Object) return;
+            for (const auto& [name, reference] : map.objectFields)
+            {
+                (void)name;
+                AppendReferenceDependency(&reference, owner, dependencies);
+            }
+        };
+        collectMap(asset.shaderPasses);
+        if (asset.textures.kind == VansSerializedValue::Kind::Object)
+            collectMap(asset.textures);
+        else if (asset.textures.kind == VansSerializedValue::Kind::Array)
+            for (const VansSerializedValue& entry : asset.textures.arrayItems)
+                AppendReferenceDependency(FindObjectField(entry, "texture"), owner, dependencies);
+        collectMap(asset.customTextures);
+        AppendReferenceDependency(FindObjectField(asset.parameters, "skinProfile"), owner, dependencies);
+        return dependencies;
+    }
+
+    std::vector<VansAssetGuid> AnimationRigDependencies(
+        const VansGraphics::VansAnimationRigAsset& asset,
+        VansAssetGuid owner)
+    {
+        std::vector<VansAssetGuid> dependencies;
+        AppendGuidDependency(asset.skeletonGuid, owner, dependencies);
+        for (const auto& profile : asset.attachmentProfiles)
+            AppendGuidDependency(profile.modelGuid, owner, dependencies);
+        return dependencies;
+    }
+
+    std::vector<VansAssetGuid> AnimatorDependencies(
+        const VansGraphics::AnimatorAssetData& asset,
+        VansAssetGuid owner)
+    {
+        std::vector<VansAssetGuid> dependencies;
+        AppendGuidDependency(asset.animationRigGuid, owner, dependencies);
+        for (const VansGraphics::AnimatorClipRef& clip : asset.clipRefs)
+            AppendGuidDependency(clip.assetGuid, owner, dependencies);
+        for (const VansGraphics::VansAnimationLayerDefinition& layer : asset.layers)
+            if (layer.kind == VansGraphics::VansAnimationLayerKind::Overlay)
+                AppendGuidDependency(layer.maskGuid, owner, dependencies);
+        return dependencies;
+    }
+
+    std::vector<VansAssetGuid> TimelineDependencies(
+        const VansTimelineAsset& asset,
+        VansAssetGuid owner)
+    {
+        std::vector<VansAssetGuid> dependencies;
+        for (const VansTimelineBinding& binding : asset.bindings)
+            if (binding.kind == VansTimelineBindingKind::Asset)
+                AppendGuidDependency(binding.assetGuid, owner, dependencies);
+        for (const VansTimelineTrack& track : asset.tracks)
+            for (const VansTimelineSection& section : track.sections)
+                AppendGuidDependency(section.assetGuid, owner, dependencies);
+
+        const VansEngineTimelineCatalog catalog = VansGetEngineTimelineCatalog();
+        if (!catalog || catalog.trackExtensions == nullptr) return dependencies;
+        VansTimelineDiagnostics diagnostics;
+        for (const VansTimelineDependency& dependency :
+            VansTimelineDependencyBuilder::CollectDirect(
+                asset, *catalog.trackExtensions, diagnostics))
+            if (dependency.kind == VansTimelineDependencyKind::Asset)
+                AppendGuidDependency(dependency.guid, owner, dependencies);
+        return dependencies;
+    }
+
+    std::vector<VansAssetGuid> UIDependencies(
+        VansAssetType type,
+        const VansSerializedValue& root,
+        VansAssetGuid owner)
+    {
+        std::vector<VansAssetGuid> dependencies;
+        AppendReferenceDependency(FindObjectField(root, "xaml"), owner, dependencies);
+        if (type != VansAssetType::UIScreen) return dependencies;
+        for (const char* field : { "themes", "tokens", "localization" })
+            if (const VansSerializedValue* values = FindObjectField(root, field);
+                values != nullptr && values->kind == VansSerializedValue::Kind::Array)
+                for (const VansSerializedValue& value : values->arrayItems)
+                    AppendReferenceDependency(&value, owner, dependencies);
+        if (const VansSerializedValue* values = FindObjectField(root, "dependencies");
+            values != nullptr && values->kind == VansSerializedValue::Kind::Array)
+            for (const VansSerializedValue& value : values->arrayItems)
+                if (value.kind == VansSerializedValue::Kind::String)
+                    AppendGuidDependency(value.stringValue, owner, dependencies);
+        return dependencies;
+    }
+
+    std::vector<VansAssetGuid> GameplayDependencies(
+        VansAssetType type,
+        const VansSerializedValue& root,
+        VansAssetGuid owner)
+    {
+        std::vector<VansAssetGuid> dependencies;
+        for (const std::string& dependency :
+            VansGameplayAssetSchemaRegistry::BuiltIns().CollectDependencies(type, root))
+            AppendGuidDependency(dependency, owner, dependencies);
         return dependencies;
     }
 	template <typename Asset, typename Loader>
@@ -109,8 +335,16 @@ namespace
         // 首次文件加载与编辑后的内存发布必须得到同一依赖闭包。
         if constexpr (std::is_same_v<Asset,VansPrefabAsset>)
             dependencies = PrefabDependencies(*object, record.guid);
+        else if constexpr (std::is_same_v<Asset,VansMaterialAuthoringAsset>)
+            dependencies = MaterialDependencies(*object, record.guid);
         else if constexpr (std::is_same_v<Asset,VansGraphics::VansParticleAsset>)
             dependencies = object->TextureDependencies();
+        else if constexpr (std::is_same_v<Asset,VansGraphics::VansAnimationRigAsset>)
+            dependencies = AnimationRigDependencies(*object, record.guid);
+        else if constexpr (std::is_same_v<Asset,VansGraphics::AnimatorAssetData>)
+            dependencies = AnimatorDependencies(*object, record.guid);
+        else if constexpr (std::is_same_v<Asset,VansTimelineAsset>)
+            dependencies = TimelineDependencies(*object, record.guid);
         else if constexpr (std::is_same_v<Asset, VansVegetationConfigAsset>)
             dependencies = object->config.Dependencies();
         else if constexpr (std::is_same_v<Asset, VansPlantTypeAsset>)
@@ -129,7 +363,8 @@ namespace
                         dependencies.push_back(guid);
                 }
             }
-            else CollectParsedGuidDependencies(object->sourceDocument,record.guid,dependencies);
+            else dependencies = GameplayDependencies(
+                record.type, object->sourceDocument, record.guid);
         }
 		if (!repository.Publish<Asset>(
 			record.guid,
@@ -141,33 +376,6 @@ namespace
 			return false;
 		published = true;
 		return true;
-	}
-
-	void CollectGuidDependencies(
-		const VansSerializedValue& value,
-		const std::unordered_map<std::string, VansAssetGuid>& indexedGuids,
-		std::vector<VansAssetGuid>& dependencies)
-	{
-		if (value.kind == VansSerializedValue::Kind::String)
-		{
-			const auto found = indexedGuids.find(value.stringValue);
-			if (found == indexedGuids.end()) return;
-			if (std::find(dependencies.begin(), dependencies.end(), found->second) == dependencies.end())
-				dependencies.push_back(found->second);
-			return;
-		}
-		if (value.kind == VansSerializedValue::Kind::Array)
-		{
-			for (const VansSerializedValue& item : value.arrayItems)
-				CollectGuidDependencies(item, indexedGuids, dependencies);
-			return;
-		}
-		if (value.kind == VansSerializedValue::Kind::Object)
-			for (const auto& [key, item] : value.objectFields)
-			{
-				(void)key;
-				CollectGuidDependencies(item, indexedGuids, dependencies);
-			}
 	}
 
 	bool IsUIJsonAsset(VansAssetType type)
@@ -201,32 +409,6 @@ namespace
 			error).IsValid();
 	}
 
-	void CollectParsedGuidDependencies(
-		const VansSerializedValue& value,
-		VansAssetGuid owner,
-		std::vector<VansAssetGuid>& dependencies)
-	{
-		if (value.kind == VansSerializedValue::Kind::String)
-		{
-			VansAssetGuid parsed;
-			if (VansAssetGuid::TryParse(value.stringValue, parsed) && parsed != owner &&
-				std::find(dependencies.begin(), dependencies.end(), parsed) == dependencies.end())
-				dependencies.push_back(parsed);
-			return;
-		}
-		if (value.kind == VansSerializedValue::Kind::Array)
-		{
-			for (const VansSerializedValue& item : value.arrayItems)
-				CollectParsedGuidDependencies(item, owner, dependencies);
-			return;
-		}
-		if (value.kind == VansSerializedValue::Kind::Object)
-			for (const auto& [key, item] : value.objectFields)
-			{
-				(void)key;
-				CollectParsedGuidDependencies(item, owner, dependencies);
-			}
-	}
 }
 
 bool VansAssetObjectBootstrapper::PublishSerialized(
@@ -237,7 +419,6 @@ bool VansAssetObjectBootstrapper::PublishSerialized(
 	std::string& error)
 {
 	std::vector<VansAssetGuid> dependencies;
-	CollectParsedGuidDependencies(sourceRoot, record.guid, dependencies);
 	const nlohmann::json json = EncodeSerializedValueJson<nlohmann::json>(sourceRoot);
 	const nlohmann::ordered_json orderedJson =
 		EncodeSerializedValueJson<nlohmann::ordered_json>(sourceRoot);
@@ -247,6 +428,7 @@ bool VansAssetObjectBootstrapper::PublishSerialized(
 		asset->sourcePath = !record.authoringPath.empty()
 			? record.authoringPath : record.sourcePath;
 		asset->sourceDocument = sourceRoot;
+		dependencies = GameplayDependencies(record.type, sourceRoot, record.guid);
 		return PublishDecoded(record, contentHash, std::move(asset),
 			std::move(dependencies), repository, error);
 	}
@@ -261,8 +443,10 @@ bool VansAssetObjectBootstrapper::PublishSerialized(
 	if (record.type == VansAssetType::Material)
 	{
 		auto asset = std::make_shared<VansMaterialAuthoringAsset>();
-		return ReadMaterialAuthoringAsset(sourceRoot, *asset, error) &&
-			PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
+		if (!ReadMaterialAuthoringAsset(sourceRoot, *asset, error)) return false;
+		dependencies = MaterialDependencies(*asset, record.guid);
+		return PublishDecoded(record, contentHash, std::move(asset),
+			std::move(dependencies), repository, error);
 	}
 	if (record.type == VansAssetType::Shader)
 	{
@@ -279,7 +463,7 @@ bool VansAssetObjectBootstrapper::PublishSerialized(
 	if (record.type == VansAssetType::PostProcessProfile)
 	{
 		auto asset = std::make_shared<VansGraphics::VansPostProcessProfile>();
-		return VansGraphics::VansPostProcessProfileJsonCodec::Decode(orderedJson, record.sourcePath, *asset, error) &&
+		return VansGraphics::VansPostProcessProfileJsonCodec::Decode(sourceRoot, record.sourcePath, *asset, error) &&
 			PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
 	}
 	if (record.type == VansAssetType::VegetationConfig)
@@ -362,8 +546,11 @@ bool VansAssetObjectBootstrapper::PublishSerialized(
 	if (record.type == VansAssetType::AnimationRig)
 	{
 		auto asset = std::make_shared<VansGraphics::VansAnimationRigAsset>();
-		return VansGraphics::VansAnimationRigStorage::DeserializeFromJsonObject(json, *asset, error) &&
-			PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
+		if (!VansGraphics::VansAnimationRigStorage::DeserializeFromJsonObject(json, *asset, error))
+			return false;
+		dependencies = AnimationRigDependencies(*asset, record.guid);
+		return PublishDecoded(record, contentHash, std::move(asset),
+			std::move(dependencies), repository, error);
 	}
 	if (record.type == VansAssetType::BoneMask)
 	{
@@ -374,14 +561,19 @@ bool VansAssetObjectBootstrapper::PublishSerialized(
 	if (record.type == VansAssetType::Timeline)
 	{
 		auto asset = std::make_shared<VansTimelineAsset>();
-		return VansTimelineSerialization::DecodeSerialized(sourceRoot, *asset, error) &&
-			PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
+		if (!VansTimelineSerialization::DecodeSerialized(sourceRoot, *asset, error)) return false;
+		dependencies = TimelineDependencies(*asset, record.guid);
+		return PublishDecoded(record, contentHash, std::move(asset),
+			std::move(dependencies), repository, error);
 	}
 	if (record.type == VansAssetType::AnimatorController)
 	{
 		auto asset = std::make_shared<VansGraphics::AnimatorAssetData>();
-		return VansGraphics::VansAnimatorIO::DeserializeFromJsonObject(json, *asset, error) &&
-			PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
+		if (!VansGraphics::VansAnimatorIO::DeserializeFromJsonObject(json, *asset, error))
+			return false;
+		dependencies = AnimatorDependencies(*asset, record.guid);
+		return PublishDecoded(record, contentHash, std::move(asset),
+			std::move(dependencies), repository, error);
 	}
 	if (record.type == VansAssetType::AudioReverbPreset)
 	{
@@ -410,7 +602,8 @@ bool VansAssetObjectBootstrapper::PublishSerialized(
 	if (record.type == VansAssetType::Particle)
 	{
 		auto asset = std::make_shared<VansGraphics::VansParticleAsset>();
-        if (!VansGraphics::VansParticleAssetJsonCodec::Decode(json,record.sourcePath,*asset,error)) return false;
+        if (!VansGraphics::VansParticleAssetJsonCodec::Decode(
+            sourceRoot, record.sourcePath, *asset, error)) return false;
         dependencies = asset->TextureDependencies();
         return PublishDecoded(record,contentHash,std::move(asset),std::move(dependencies),repository,error);
 	}
@@ -420,6 +613,7 @@ bool VansAssetObjectBootstrapper::PublishSerialized(
 		asset->root = sourceRoot;
 		asset->sourcePath = record.sourcePath;
 		asset->contentHash = contentHash == 0 ? 1 : contentHash;
+		dependencies = UIDependencies(record.type, sourceRoot, record.guid);
 		return PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
 	}
 
@@ -435,9 +629,7 @@ bool VansAssetObjectBootstrapper::PublishMetadataSerialized(
 	std::string& error)
 {
 	VansAssetMeta meta;
-	const nlohmann::ordered_json json =
-		EncodeSerializedValueJson<nlohmann::ordered_json>(metaRoot);
-	if (!VansAssetMetaJsonCodec::Decode(json, record.metaPath, meta, error))
+	if (!VansAssetMetaJsonCodec::Decode(metaRoot, record.metaPath, meta, error))
 		return false;
 	if (meta.guid != record.guid)
 	{
@@ -470,23 +662,21 @@ bool VansAssetObjectBootstrapper::PublishMetadataSerialized(
 VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 	const std::vector<VansAssetRecord>& records,
 	VansAssetObjectRepository& repository,
-	const std::vector<VansAssetRecord>& resourceRecords)
+	const std::vector<VansAssetRecord>& resourceRecords,
+	VansNavigationSettings navigationSettings)
 {
 	VansAssetObjectBootstrapResult result;
-	std::unordered_map<std::string, VansAssetGuid> indexedGuids;
 	std::unordered_map<VansAssetGuid, const VansAssetRecord*> indexedRecords;
 	std::unordered_map<VansAssetGuid, std::uint64_t> currentSourceContentHashes;
 	std::unordered_map<VansAssetGuid, VansAssetGuid> pcgPixelOwners;
 	std::unordered_set<VansAssetGuid> publishingGuids;
 	for (const auto& record : records) publishingGuids.insert(record.guid);
-	indexedGuids.reserve(records.size());
 	indexedRecords.reserve(records.size());
 	currentSourceContentHashes.reserve(records.size());
 	// 解析所需的资源索引与需要重新发布的对象分开，保存一个 Mask 不刷新其他未保存项。
 	for (const VansAssetRecord& record : resourceRecords)
 		if (record.state != VansAssetState::Missing)
 		{
-			indexedGuids.emplace(record.guid.ToString(), record.guid);
 			indexedRecords.emplace(record.guid, &record);
 			if (record.type == VansAssetType::PcgMask && !publishingGuids.count(record.guid))
 				if (const auto mask = repository.ResolveLatest<VansPcgMaskAsset>(record.guid))
@@ -495,7 +685,6 @@ VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 	for (const VansAssetRecord& record : records)
 		if (record.state != VansAssetState::Missing)
 		{
-			indexedGuids.emplace(record.guid.ToString(), record.guid);
 			indexedRecords.insert_or_assign(record.guid, &record);
 		}
 
@@ -625,7 +814,10 @@ VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 		else if (record.type == VansAssetType::NavigationMesh)
 			success = EnsurePublished<VansNavigationMesh>(record, repository,
 				[&](VansNavigationMesh& asset, std::string& loadError)
-				{ return asset.Load(record.sourcePath, loadError); },
+				{
+					return asset.Load(record.sourcePath,
+						navigationSettings, loadError);
+				},
 				{}, published, error);
 		else if (record.type == VansAssetType::RetargetProfile)
 			success = EnsurePublished<VansGraphics::VansRetargetProfileAsset>(record, repository,
@@ -712,7 +904,8 @@ VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 					record.sourcePath, *document, error);
 				if (success)
 				{
-					CollectGuidDependencies(document->root, indexedGuids, dependencies);
+					dependencies = UIDependencies(
+						record.type, document->root, record.guid);
 					success = repository.Publish<VansRuntime::VansUIAssetDocument>(
 						record.guid, record.type, contentHash, std::move(document),
 						std::move(dependencies), error).IsValid();
@@ -720,6 +913,11 @@ VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 				}
 			}
 		}
+		else if (record.type == VansAssetType::IESProfile)
+			success = EnsurePublished<VansAssetBytes>(record, repository,
+				[&](VansAssetBytes& asset, std::string& loadError)
+				{ return VansFileStorage::ReadAllBytes(record.sourcePath, asset.bytes, loadError) && !asset.bytes.empty(); },
+				{}, published, error);
 		else if (record.type == VansAssetType::UIXaml)
 			success = EnsurePublished<VansRuntime::VansUIXamlAsset>(record, repository,
 				[&](VansRuntime::VansUIXamlAsset& asset, std::string& loadError)
@@ -844,6 +1042,7 @@ bool VansAssetObjectBootstrapper::Supports(VansAssetType type)
 	case VansAssetType::UIThemeTokens:
 	case VansAssetType::UILocalization:
 	case VansAssetType::UIXaml:
+	case VansAssetType::IESProfile:
 		return true;
 	default:
 		return false;

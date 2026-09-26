@@ -3,10 +3,10 @@
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 
 #include <algorithm>
-#include <charconv>
 #include <cmath>
 #include <limits>
 #include <type_traits>
+#include <unordered_set>
 
 namespace Vans
 {
@@ -33,16 +33,6 @@ bool ReadHandle(const VansSerializedValue* value, VansEntityHandle& handle)
 	handle = { static_cast<std::uint32_t>(index->intValue),
 		static_cast<std::uint32_t>(generation->intValue) };
 	return true;
-}
-
-bool ReadUnsigned(const VansSerializedValue* value, std::uint64_t& result)
-{
-	if (!value || value->kind != VansSerializedValue::Kind::String || value->stringValue.empty())
-		return false;
-	const char* begin = value->stringValue.data();
-	const char* end = begin + value->stringValue.size();
-	const auto parsed = std::from_chars(begin, end, result);
-	return parsed.ec == std::errc{} && parsed.ptr == end;
 }
 
 template <std::size_t Size>
@@ -75,25 +65,6 @@ bool ReadVector(const VansSerializedValue* value, std::array<double, Size>& resu
 	return true;
 }
 
-const char* ShapeKindName(VansTargetShapeKind kind)
-{
-	switch (kind)
-	{
-	case VansTargetShapeKind::Sphere: return "Sphere";
-	case VansTargetShapeKind::Box: return "Box";
-	case VansTargetShapeKind::Capsule: return "Capsule";
-	}
-	return "Sphere";
-}
-
-bool ReadShapeKind(std::string_view name, VansTargetShapeKind& kind)
-{
-	if (name == "Sphere") kind = VansTargetShapeKind::Sphere;
-	else if (name == "Box") kind = VansTargetShapeKind::Box;
-	else if (name == "Capsule") kind = VansTargetShapeKind::Capsule;
-	else return false;
-	return true;
-}
 }
 
 VansSerializedValue VansEncodeTargetData(const VansTargetData& data)
@@ -113,38 +84,13 @@ VansSerializedValue VansEncodeTargetData(const VansTargetData& data)
 				return VansSerializedValue::Object({
 					{ "kind", VansSerializedValue::String("Location") },
 					{ "value", VectorValue(target.value) } });
-			else if constexpr (std::is_same_v<Target, VansTargetDirection>)
-				return VansSerializedValue::Object({
-					{ "kind", VansSerializedValue::String("Direction") },
-					{ "value", VectorValue(target.value) } });
-			else if constexpr (std::is_same_v<Target, VansTargetTransform>)
-				return VansSerializedValue::Object({
-					{ "kind", VansSerializedValue::String("Transform") },
-					{ "position", VectorValue(target.position) },
-					{ "rotation", VectorValue(target.rotation) },
-					{ "scale", VectorValue(target.scale) } });
-			else if constexpr (std::is_same_v<Target, VansTargetArea>)
-				return VansSerializedValue::Object({
-					{ "kind", VansSerializedValue::String("Area") },
-					{ "center", VectorValue(target.center) },
-					{ "radius", VansSerializedValue::Float(target.radius) } });
-			else if constexpr (std::is_same_v<Target, VansTargetShape>)
-				return VansSerializedValue::Object({
-					{ "kind", VansSerializedValue::String("Shape") },
-					{ "shape", VansSerializedValue::String(ShapeKindName(target.kind)) },
-					{ "position", VectorValue(target.transform.position) },
-					{ "rotation", VectorValue(target.transform.rotation) },
-					{ "scale", VectorValue(target.transform.scale) },
-					{ "extents", VectorValue(target.extents) },
-					{ "radius", VansSerializedValue::Float(target.radius) },
-					{ "halfHeight", VansSerializedValue::Float(target.halfHeight) } });
 			else if constexpr (std::is_same_v<Target, VansTargetRay>)
 				return VansSerializedValue::Object({
 					{ "kind", VansSerializedValue::String("Ray") },
 					{ "origin", VectorValue(target.origin) },
 					{ "direction", VectorValue(target.direction) },
 					{ "length", VansSerializedValue::Float(target.length) } });
-			else if constexpr (std::is_same_v<Target, VansTargetHitResult>)
+			else
 				return VansSerializedValue::Object({
 					{ "kind", VansSerializedValue::String("Hit") },
 					{ "entity", HandleValue(target.entity) },
@@ -155,11 +101,6 @@ VansSerializedValue VansEncodeTargetData(const VansTargetData& data)
 					{ "componentGuid", VansSerializedValue::String(target.componentGuid) },
 					{ "region", VansSerializedValue::String(target.region) },
 					{ "surface", VansSerializedValue::String(std::to_string(target.surface.value)) } });
-			else
-				return VansSerializedValue::Object({
-					{ "kind", VansSerializedValue::String("Deferred") },
-					{ "service", VansSerializedValue::String(std::to_string(target.service.value)) },
-					{ "descriptor", target.descriptor } });
 		}, source));
 	}
 	return VansSerializedValue::Object({
@@ -206,66 +147,13 @@ bool VansDecodeTargetData(const VansSerializedValue& value,
 				{ error = "TargetData Entity is invalid or unauthorized"; return false; }
 			decoded.values.push_back(entity);
 		}
-		else if (kind == "Location" || kind == "Direction")
+		else if (kind == "Location")
 		{
 			std::array<double, 3> vector{};
 			if (!ReadVector(FindObjectField(item, "value"), vector,
 				policy.maximumCoordinateMagnitude))
 				{ error = "TargetData vector is invalid"; return false; }
-			if (kind == "Location") decoded.values.push_back(VansTargetLocation{ vector });
-			else decoded.values.push_back(VansTargetDirection{ vector });
-		}
-		else if (kind == "Transform")
-		{
-			VansTargetTransform transform;
-			if (!ReadVector(FindObjectField(item, "position"), transform.position,
-				policy.maximumCoordinateMagnitude) ||
-				!ReadVector(FindObjectField(item, "rotation"), transform.rotation,
-					policy.maximumCoordinateMagnitude) ||
-				!ReadVector(FindObjectField(item, "scale"), transform.scale,
-					policy.maximumCoordinateMagnitude))
-				{ error = "TargetData Transform is invalid"; return false; }
-			decoded.values.push_back(transform);
-		}
-		else if (kind == "Area")
-		{
-			VansTargetArea area;
-			const VansSerializedValue* radius = FindObjectField(item, "radius");
-			if (!ReadVector(FindObjectField(item, "center"), area.center,
-				policy.maximumCoordinateMagnitude) || !radius ||
-				(radius->kind != VansSerializedValue::Kind::Float &&
-					radius->kind != VansSerializedValue::Kind::Int) ||
-				!std::isfinite(area.radius = ReadSerializedNumber(*radius)) ||
-				area.radius < 0.0 || area.radius > policy.maximumDistance)
-				{ error = "TargetData Area is invalid"; return false; }
-			decoded.values.push_back(area);
-		}
-		else if (kind == "Shape")
-		{
-			VansTargetShape shape;
-			const VansSerializedValue* radius = FindObjectField(item, "radius");
-			const VansSerializedValue* halfHeight = FindObjectField(item, "halfHeight");
-			if (!ReadShapeKind(ReadSerializedStringField(item, "shape"), shape.kind) ||
-				!ReadVector(FindObjectField(item, "position"), shape.transform.position,
-					policy.maximumCoordinateMagnitude) ||
-				!ReadVector(FindObjectField(item, "rotation"), shape.transform.rotation,
-					policy.maximumCoordinateMagnitude) ||
-				!ReadVector(FindObjectField(item, "scale"), shape.transform.scale,
-					policy.maximumCoordinateMagnitude) ||
-				!ReadVector(FindObjectField(item, "extents"), shape.extents,
-					policy.maximumDistance) || !radius || !halfHeight ||
-				(radius->kind != VansSerializedValue::Kind::Float &&
-					radius->kind != VansSerializedValue::Kind::Int) ||
-				(halfHeight->kind != VansSerializedValue::Kind::Float &&
-					halfHeight->kind != VansSerializedValue::Kind::Int) ||
-				!std::isfinite(shape.radius = ReadSerializedNumber(*radius)) ||
-				!std::isfinite(shape.halfHeight = ReadSerializedNumber(*halfHeight)) ||
-				shape.radius < 0.0 || shape.radius > policy.maximumDistance ||
-				shape.halfHeight < 0.0 || shape.halfHeight > policy.maximumDistance ||
-				std::any_of(shape.extents.begin(), shape.extents.end(),
-					[](double extent) { return extent < 0.0; }))
-				{ error = "TargetData Shape is invalid"; return false; }
-			decoded.values.push_back(shape);
+			decoded.values.push_back(VansTargetLocation{ vector });
 		}
 		else if (kind == "Ray")
 		{
@@ -286,6 +174,7 @@ bool VansDecodeTargetData(const VansSerializedValue& value,
 		{
 			VansTargetHitResult hit;
 			const VansSerializedValue* distance = FindObjectField(item, "distance");
+			const VansSerializedValue* surfaceValue = FindObjectField(item, "surface");
 			std::uint64_t surface = 0;
 			if (!ReadHandle(FindObjectField(item, "entity"), hit.entity) ||
 				!allowEntity(hit.entity) ||
@@ -297,7 +186,7 @@ bool VansDecodeTargetData(const VansSerializedValue& value,
 					distance->kind != VansSerializedValue::Kind::Int) ||
 				!std::isfinite(hit.distance = ReadSerializedNumber(*distance)) ||
 				hit.distance < 0.0 || hit.distance > policy.maximumDistance ||
-				!ReadUnsigned(FindObjectField(item, "surface"), surface))
+				!surfaceValue || !ReadSerializedUnsigned(*surfaceValue, surface))
 				{ error = "TargetData Hit is invalid or unauthorized"; return false; }
 			hit.surface = VansGameplayTagId{ surface };
 			if (const auto* body = FindObjectField(item, "hitEntity"))
@@ -309,22 +198,6 @@ bool VansDecodeTargetData(const VansSerializedValue& value,
 			hit.componentGuid = ReadSerializedStringField(item, "componentGuid");
 			hit.region = ReadSerializedStringField(item, "region");
 			decoded.values.push_back(hit);
-		}
-		else if (kind == "Deferred")
-		{
-			std::uint64_t service = 0;
-			const VansSerializedValue* descriptor = FindObjectField(item, "descriptor");
-			if (!ReadUnsigned(FindObjectField(item, "service"), service) || service == 0 ||
-				!descriptor || !SerializedValueFitsBudget(
-					*descriptor, policy.maximumDeferredDescriptorBytes))
-				{ error = "TargetData Deferred query is invalid or exceeds its budget"; return false; }
-			VansDeferredTargetQuery deferred;
-			deferred.service = VansActionServiceId{ service };
-			if (policy.deferredServiceAllowed &&
-				!policy.deferredServiceAllowed(deferred.service))
-				{ error = "TargetData Deferred query service is unauthorized"; return false; }
-			deferred.descriptor = *descriptor;
-			decoded.values.push_back(std::move(deferred));
 		}
 		else { error = "TargetData item kind is unsupported"; return false; }
 	}
@@ -378,11 +251,28 @@ bool VansTargetingHandlerRegistry::Register(
 		error = "Targeting handler is invalid";
 		return false;
 	}
-	if (!m_Handlers.emplace(handler->TypeId(), std::move(handler)).second)
+	const std::string stableName(handler->StableName());
+	if (handler->TypeId() !=
+		VansMakeStableId<VansActionGraphNodeTypeIdTag>(stableName))
+	{
+		error = "Targeting handler stable name does not match its TypeId: " + stableName;
+		return false;
+	}
+	std::unordered_set<std::string> inputNames;
+	for (const VansTargetingInputField& input : handler->InputFields())
+		if (input.name.empty() || input.valueType.empty() || !inputNames.insert(input.name).second)
+		{
+			error = "Targeting handler input schema is invalid: " + stableName;
+			return false;
+		}
+	if (m_Handlers.find(handler->TypeId()) != m_Handlers.end() ||
+		m_ByName.find(stableName) != m_ByName.end())
 	{
 		error = "duplicate Targeting handler";
 		return false;
 	}
+	m_ByName.emplace(stableName, handler->TypeId());
+	m_Handlers.emplace(handler->TypeId(), std::move(handler));
 	return true;
 }
 
@@ -398,6 +288,29 @@ std::shared_ptr<const IVansTargetingStepHandler> VansTargetingHandlerRegistry::R
 {
 	const auto found = m_Handlers.find(type);
 	return found == m_Handlers.end() ? nullptr : found->second;
+}
+
+std::shared_ptr<const IVansTargetingStepHandler> VansTargetingHandlerRegistry::Find(
+	std::string_view stableName) const
+{
+	const auto found = m_ByName.find(std::string(stableName));
+	return found == m_ByName.end() ? nullptr : Resolve(found->second);
+}
+
+std::vector<VansTargetingStepDescriptor> VansTargetingHandlerRegistry::Snapshot() const
+{
+	std::vector<VansTargetingStepDescriptor> result;
+	result.reserve(m_Handlers.size());
+	for (const auto& [type, handler] : m_Handlers)
+		result.push_back({ type, std::string(handler->StableName()),
+			handler->BeginsPipeline(), handler->InputFields() });
+	std::sort(result.begin(), result.end(),
+		[](const VansTargetingStepDescriptor& left,
+			const VansTargetingStepDescriptor& right)
+		{
+			return left.stableName < right.stableName;
+		});
+	return result;
 }
 
 VansTargetingResult VansTargetingPipeline::Execute(
@@ -418,15 +331,16 @@ VansTargetingResult VansTargetingPipeline::Execute(
 	for (const VansTargetingStep& step : policy.steps)
 	{
 		VansTargetingTraceEntry trace;
-		trace.step = step.stableName;
 		trace.inputCount = result.data.values.size();
 		const auto handler = handlers.Resolve(step.handler);
+		trace.step = handler ? std::string(handler->StableName()) :
+			std::to_string(step.handler.value);
 		if (!handler)
 		{
 			trace.message = "handler is missing";
+			result.message = "Targeting handler is missing: " + trace.step;
 			result.trace.push_back(std::move(trace));
 			result.error = VansActionError::Dependency;
-			result.message = "Targeting handler is missing: " + step.stableName;
 			return result;
 		}
 		if (handler->BeginsPipeline())
@@ -472,9 +386,10 @@ namespace
 class AcquireOwnerTarget final : public IVansTargetingStepHandler
 {
 public:
+	static constexpr std::string_view kStableName = "Targeting.Acquire.Owner";
 	VansActionGraphNodeTypeId TypeId() const override
-		{ return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Targeting.Acquire.Owner"); }
-	std::string_view StableName() const override { return "Targeting.Acquire.Owner"; }
+		{ return VansMakeStableId<VansActionGraphNodeTypeIdTag>(kStableName); }
+	std::string_view StableName() const override { return kStableName; }
 	bool BeginsPipeline() const override { return true; }
 	bool Execute(const VansTargetingStep&, const VansActionContext& context,
 		std::vector<VansTargetDataValue>& values, std::string& message) const override
@@ -489,9 +404,10 @@ public:
 class AcquirePrimaryTarget final : public IVansTargetingStepHandler
 {
 public:
+	static constexpr std::string_view kStableName = "Targeting.Acquire.PrimaryTarget";
 	VansActionGraphNodeTypeId TypeId() const override
-		{ return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Targeting.Acquire.PrimaryTarget"); }
-	std::string_view StableName() const override { return "Targeting.Acquire.PrimaryTarget"; }
+		{ return VansMakeStableId<VansActionGraphNodeTypeIdTag>(kStableName); }
+	std::string_view StableName() const override { return kStableName; }
 	bool BeginsPipeline() const override { return true; }
 	bool Execute(const VansTargetingStep&, const VansActionContext& context,
 		std::vector<VansTargetDataValue>& values, std::string& message) const override
@@ -508,9 +424,10 @@ public:
 class FilterValidEntityTarget final : public IVansTargetingStepHandler
 {
 public:
+	static constexpr std::string_view kStableName = "Targeting.Filter.ValidEntity";
 	VansActionGraphNodeTypeId TypeId() const override
-		{ return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Targeting.Filter.ValidEntity"); }
-	std::string_view StableName() const override { return "Targeting.Filter.ValidEntity"; }
+		{ return VansMakeStableId<VansActionGraphNodeTypeIdTag>(kStableName); }
+	std::string_view StableName() const override { return kStableName; }
 	bool Execute(const VansTargetingStep&, const VansActionContext&,
 		std::vector<VansTargetDataValue>& values, std::string& message) const override
 	{
@@ -527,9 +444,14 @@ public:
 class LimitTargetCount final : public IVansTargetingStepHandler
 {
 public:
+	static constexpr std::string_view kStableName = "Targeting.Limit.Count";
 	VansActionGraphNodeTypeId TypeId() const override
-		{ return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Targeting.Limit.Count"); }
-	std::string_view StableName() const override { return "Targeting.Limit.Count"; }
+		{ return VansMakeStableId<VansActionGraphNodeTypeIdTag>(kStableName); }
+	std::string_view StableName() const override { return kStableName; }
+	std::vector<VansTargetingInputField> InputFields() const override
+	{
+		return { { "count", "Core.Value.Int", false, VansSerializedValue::Int(1) } };
+	}
 	bool Execute(const VansTargetingStep& step, const VansActionContext&,
 		std::vector<VansTargetDataValue>& values, std::string& message) const override
 	{
@@ -545,9 +467,10 @@ public:
 class LockEntityTarget final : public IVansTargetingStepHandler
 {
 public:
+	static constexpr std::string_view kStableName = "Targeting.Lock.Entity";
 	VansActionGraphNodeTypeId TypeId() const override
-		{ return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Targeting.Lock.Entity"); }
-	std::string_view StableName() const override { return "Targeting.Lock.Entity"; }
+		{ return VansMakeStableId<VansActionGraphNodeTypeIdTag>(kStableName); }
+	std::string_view StableName() const override { return kStableName; }
 	bool Execute(const VansTargetingStep&, const VansActionContext&,
 		std::vector<VansTargetDataValue>& values, std::string& message) const override
 	{
@@ -571,5 +494,12 @@ bool VansRegisterBuiltInTargetingHandlers(
 		registry.Register(std::make_shared<FilterValidEntityTarget>(), error) &&
 		registry.Register(std::make_shared<LimitTargetCount>(), error) &&
 		registry.Register(std::make_shared<LockEntityTarget>(), error);
+}
+
+bool VansBuildBuiltInTargetingHandlerRegistry(
+	VansTargetingHandlerRegistry& registry,
+	std::string& error)
+{
+	return VansRegisterBuiltInTargetingHandlers(registry, error) && registry.Seal(error);
 }
 }

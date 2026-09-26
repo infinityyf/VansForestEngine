@@ -8,7 +8,7 @@
 #include "VansTimelineParameterBlock.h"
 #include "VansTimelinePreAnimatedState.h"
 #include "VansTimelineWriterRegistry.h"
-#include "../EventCore/VansPayloadSchemaRegistry.h"
+#include "../TimelineCore/VansTimelinePayloadSchemaRegistry.h"
 #include "Events/VansTimelineRuntimeEvents.h"
 
 #include <functional>
@@ -72,10 +72,9 @@ class VansTimelineSessionService
 {
 public:
 	VansTimelineSessionService(
-		VansTimelineClockRegistry& clocks,
+		const VansTimelineClockRegistry& clocks,
 		VansTimelineApplierRegistry& appliers,
-		VansPayloadSchemaRegistry* payloads = nullptr);
-	void BindPayloadSchemas(VansPayloadSchemaRegistry* payloads) { m_Payloads = payloads; }
+		const VansTimelinePayloadSchemaRegistry* payloads = nullptr);
 	VansTimelineSessionResult Create(const VansTimelineSessionDesc& desc);
 	bool Play(VansTimelineSessionHandle handle, bool restart = false);
 	bool Pause(VansTimelineSessionHandle handle);
@@ -91,9 +90,6 @@ public:
 	void Evaluate(VansTimelineSessionHandle handle, VansTimelineEvaluationPhase phase);
 	void AdvanceAndEvaluateAll(VansTimelineSessionKind kind, VansTimelineEvaluationPhase phase, double deltaSeconds);
 	void StopAll(VansTimelineEndReason reason = VansTimelineEndReason::WorldShutdown);
-	std::size_t SessionCount() const { return m_Sessions.ActiveCount(); }
-	std::size_t WriterCount() const { return m_Writers.ActiveCount(); }
-	std::size_t RestoreTokenCount() const { return m_PreAnimated.TokenCount(); }
 	const VansTimelineDiagnostics& Diagnostics() const { return m_Diagnostics; }
 
 private:
@@ -167,9 +163,9 @@ private:
 	bool HasNewSessionError(VansTimelineSessionHandle handle, std::size_t firstDiagnostic) const;
 	void FailSession(Session& session, std::string code, std::string message);
 
-	VansTimelineClockRegistry& m_Clocks;
+	const VansTimelineClockRegistry& m_Clocks;
 	VansTimelineApplierRegistry& m_Appliers;
-	VansPayloadSchemaRegistry* m_Payloads = nullptr;
+	const VansTimelinePayloadSchemaRegistry* m_Payloads = nullptr;
 	std::uint64_t m_NextCorrelation = 1;
 	VansGenerationPool<Session> m_Sessions;
 	VansTimelineWriterRegistry m_Writers;

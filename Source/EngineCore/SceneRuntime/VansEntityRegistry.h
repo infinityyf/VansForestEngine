@@ -44,7 +44,6 @@ public:
 	bool IsAlive(VansEntityHandle entity) const;
 
 	VansEntityHandle FindByGuid(const std::string& guid) const;
-	VansEntityHandle FindByName(const std::string& name) const;
 
 	bool SetName(VansEntityHandle entity, const std::string& name);
 	bool SetParent(VansEntityHandle child, VansEntityHandle parent);
@@ -72,7 +71,6 @@ private:
 	std::vector<Slot> m_Slots;
 	std::vector<std::uint32_t> m_FreeSlots;
 	std::unordered_map<std::string, VansEntityHandle> m_GuidIndex;
-	std::unordered_map<std::string, VansEntityHandle> m_NameIndex;
 	std::size_t m_AliveCount = 0;
 };
 }

@@ -43,6 +43,10 @@ namespace Vans
 		float desiredSpeed = 0.0f;
 		float desiredFacingYaw = 0.0f;
 		bool hasFacing = false;
+		// The supplied yaw is already the heading for this frame (for example,
+		// sampled from an authored animation). Skip planner smoothing/rate limits;
+		// CCT still applies the planned yaw through the normal motion owner path.
+		bool immediateFacing = false;
 		bool jumpRequested = false;
 		float jumpSpeed = 5.5f;
 		float gravity = 16.0f;

@@ -1,6 +1,8 @@
 #include "VansParticleAssetJsonCodec.h"
 #include "VansParticleEmitterJsonCodec.h"
 #include "../Authoring/VansParticleAuthoringSchema.h"
+#include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
+#include "../../AssetCore/VansAssetDocumentJson.h"
 
 #include <nlohmann/json.hpp>
 
@@ -10,14 +12,19 @@
 #include <cmath>
 #include <stdexcept>
 
+namespace
+{
+using ParticleJsonValue = Vans::AssetDocumentJson;
+}
+
 namespace VansGraphics
 {
-Vans::ParticleJson VansParticleAssetJsonCodec::Encode(const VansParticleAsset& asset)
+Vans::VansSerializedValue VansParticleAssetJsonCodec::Encode(const VansParticleAsset& asset)
 {
-    Vans::ParticleJson root;
+    ParticleJsonValue root;
     root["name"] = asset.m_Name;
 
-    Vans::ParticleJson global;
+    ParticleJsonValue global;
     global["duration"] = asset.m_Duration;
     global["loop"] = asset.m_Loop;
     global["prewarm"] = asset.m_Prewarm;
@@ -28,26 +35,29 @@ Vans::ParticleJson VansParticleAssetJsonCodec::Encode(const VansParticleAsset& a
     global["drainFade"] = asset.m_DrainFade;
     root["global"] = std::move(global);
 
-    Vans::ParticleJson emitters = Vans::ParticleJson::array();
+    ParticleJsonValue emitters = ParticleJsonValue::array();
     for (const auto& emitter : asset.m_Emitters)
     {
         if (emitter)
-            emitters.push_back(VansParticleEmitterJsonCodec::EncodeEmitter(*emitter));
+            emitters.push_back(Vans::EncodeSerializedValueJson<ParticleJsonValue>(
+                VansParticleEmitterJsonCodec::EncodeEmitter(*emitter)));
     }
     root["emitters"] = std::move(emitters);
-    return root;
+    return Vans::DecodeSerializedValueJson(root);
 }
 
 bool VansParticleAssetJsonCodec::Decode(
-    const Vans::ParticleJson& root,
+    const Vans::VansSerializedValue& serializedRoot,
     const std::filesystem::path& filePath,
     VansParticleAsset& asset,
     std::string& error)
 {
     try
     {
+        const ParticleJsonValue root =
+            Vans::EncodeSerializedValueJson<ParticleJsonValue>(serializedRoot);
         if (root.contains("version")) throw std::invalid_argument("Particle assets have a single current schema without version fields");
-        VansParticleAuthoringSchema::ValidateFields(root);
+        VansParticleAuthoringSchema::ValidateFields(serializedRoot);
         VansParticleAsset decoded;
         decoded.m_Name = root.value("name", "");
 
@@ -83,7 +93,8 @@ bool VansParticleAssetJsonCodec::Decode(
             for (const auto& emitterJson : root["emitters"])
             {
                 auto emitter = std::make_unique<VansParticleEmitter>();
-                VansParticleEmitterJsonCodec::DecodeEmitter(emitterJson, *emitter);
+                VansParticleEmitterJsonCodec::DecodeEmitter(
+                    Vans::DecodeSerializedValueJson(emitterJson), *emitter);
                 decoded.m_Emitters.push_back(std::move(emitter));
             }
         }

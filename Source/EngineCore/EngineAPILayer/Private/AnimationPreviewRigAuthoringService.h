@@ -1,10 +1,12 @@
 #pragma once
 
+#include "AnimationPreviewWriteToken.h"
 #include "../Public/EngineDTOs.h"
 
 #include <../../GLM/mat4x4.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace VansGraphics
@@ -17,12 +19,9 @@ namespace Vans::EditorAPI
 {
 	struct AnimationPreviewRigContext
 	{
-		AnimationPreviewSessionId sessionId = 0;
-		std::uint64_t sceneContentRevision = 0;
+		AnimationPreviewWriteToken writeToken;
 		std::string entityGuid;
 		std::string animationComponentGuid;
-		VansGraphics::VansAnimationController* controller = nullptr;
-		const VansGraphics::Skeleton* skeleton = nullptr;
 		glm::mat4 ownerWorld{ 1.0f };
 		bool retargetEnabled = false;
 		std::string retargetProfilePath;
@@ -33,30 +32,56 @@ namespace Vans::EditorAPI
 	class AnimationPreviewRigAuthoringService final
 	{
 	public:
-		static bool BeginSession(
-			AnimationPreviewSessionId sessionId,
+		AnimationPreviewRigAuthoringService();
+		~AnimationPreviewRigAuthoringService();
+		AnimationPreviewRigAuthoringService(
+			const AnimationPreviewRigAuthoringService&) = delete;
+		AnimationPreviewRigAuthoringService& operator=(
+			const AnimationPreviewRigAuthoringService&) = delete;
+
+		bool BeginSession(
+			AnimationPreviewWriteToken writeToken,
 			VansGraphics::VansAnimationController& controller,
 			std::string& error);
-		static AnimationPreviewRigSnapshot GetSnapshot(
-			const AnimationPreviewRigContext& context);
-		static bool GetWorkingCanonicalJson(
+		AnimationPreviewRigSnapshot GetSnapshot(
+			const AnimationPreviewRigContext& context,
+			const VansGraphics::VansAnimationController& controller,
+			const VansGraphics::Skeleton& skeleton);
+		bool GetWorkingCanonicalJson(
 			AnimationPreviewSessionId sessionId,
 			std::string& canonicalJson,
 			std::string& error);
-		static AnimationPreviewRigEditResult SetDefinition(const AnimationPreviewRigContext& context,
-			std::uint64_t expectedRevision, const std::string& canonicalJson);
-		static AnimationPreviewRigEditResult SetSocketTransform(
+		AnimationPreviewRigEditResult SetDefinition(
 			const AnimationPreviewRigContext& context,
+			VansGraphics::VansAnimationController& controller,
+			const VansGraphics::Skeleton& skeleton,
+			std::uint64_t expectedRevision,
+			const std::string& canonicalJson);
+		AnimationPreviewRigEditResult SetSocketTransform(
+			const AnimationPreviewRigContext& context,
+			VansGraphics::VansAnimationController& controller,
+			const VansGraphics::Skeleton& skeleton,
 			const AnimationPreviewRigSocketTransformRequest& request);
-		static AnimationPreviewRigEditResult SetAttachmentProfile(
+		AnimationPreviewRigEditResult SetAttachmentProfile(
 			const AnimationPreviewRigContext& context,
+			VansGraphics::VansAnimationController& controller,
+			const VansGraphics::Skeleton& skeleton,
 			const AnimationPreviewRigAttachmentProfileRequest& request);
-		static AnimationPreviewRigEditResult Adopt(
+		bool EndSession(
+			AnimationPreviewSessionId sessionId,
+			std::string& error);
+		bool EndSession(
+			AnimationPreviewSessionId sessionId,
+			VansGraphics::VansAnimationController& controller,
+			std::string& error);
+
+	private:
+		struct Impl;
+		friend class AnimationPreviewAdoptService;
+		AnimationPreviewRigEditResult Adopt(
+			AnimationPreviewWriteToken writeToken,
 			const AnimationPreviewRigAdoptRequest& request,
 			VansGraphics::VansAnimationController& controller);
-		static bool EndSession(
-			AnimationPreviewSessionId sessionId,
-			VansGraphics::VansAnimationController* controller,
-			std::string& error);
+		std::unique_ptr<Impl> m_Impl;
 	};
 }

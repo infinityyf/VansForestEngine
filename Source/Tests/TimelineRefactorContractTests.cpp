@@ -1,26 +1,32 @@
 #include "TimelineRefactorContractTests.h"
 
 #include "../EngineCore/TimelineCore/VansTimelineCompiler.h"
+#include "../EngineCore/TimelineCore/VansTimelinePayloadSchemaRegistry.h"
 #include "../EngineCore/TimelineCore/VansTimelineSerialization.h"
 #include "../EngineCore/TimelineCore/VansTimelineTrackExtensionRegistry.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineApplierRegistry.h"
+#include "../EngineCore/TimelineRuntime/VansTimelineBuiltInRegistry.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineClockRegistry.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineEvaluator.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineModuleApplierState.h"
 #include "../EngineCore/TimelineRuntime/VansTimelinePreAnimatedState.h"
+#include "../EngineCore/TimelineRuntime/VansTimelinePropertyAccessRegistry.h"
+#include "../EngineCore/TimelineRuntime/VansTimelineRuntimeSystem.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineSessionService.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineSampleExtension.h"
-#include "../EngineCore/Timeline/VansTimelineExtensionContributors.h"
+#include "../EngineCore/Timeline/VansEngineTimelineRegistry.h"
 #include "../EngineCore/TimelineRuntime/Events/VansTimelineRuntimeEvents.h"
 #include "../EngineCore/EventCore/VansEventBus.h"
+#include "../EngineCore/SceneRuntime/Timeline/VansPropertyTimelineIntegration.h"
+#include "../EngineCore/SceneRuntime/Timeline/VansTransformTimelineAccess.h"
+#include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
+#include "../EngineCore/SceneRuntime/VansRuntimeWorld.h"
+#include "../EngineCore/SceneRuntime/Transform/VansTransformStore.h"
 #include "../EngineCore/EditorCore/Timeline/VansTimelineTrackDescriptorRegistry.h"
 #include "../EngineCore/EditorCore/Timeline/VansTimelineEditService.h"
-#include "../EngineCore/AnimationCore/VansAnimationClip.h"
-#include "../EngineCore/AnimationCore/VansAnimationController.h"
-#include "../EngineCore/AnimationCore/VansAnimatorIO.h"
-#include "../EngineCore/AnimationCore/VansAnimatorRuntimeCompiler.h"
-#include "../EngineCore/AnimationCore/Storage/VansAnimationRigStorage.h"
 #include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
+#include "../EngineCore/AudioCore/Timeline/VansAudioTimelineIntegration.h"
+#include "../EngineCore/AudioCore/VansAudioManager.h"
 
 #include <cmath>
 #include <algorithm>
@@ -38,6 +44,13 @@ bool ExpectTimeline(bool value, const char* message)
 {
 	if (!value) std::cerr << "[TimelineRefactor] " << message << '\n';
 	return value;
+}
+
+Vans::VansEngineTimelineCatalog TimelineCatalog()
+{
+	const Vans::VansEngineTimelineCatalog catalog = Vans::VansGetEngineTimelineCatalog();
+	if (!catalog) std::cerr << "[TimelineRefactor] " << catalog.error << '\n';
+	return catalog;
 }
 
 Vans::VansTimelineAsset MakeProbeAsset(std::string_view typeName = Vans::TimelineNames::Transform)
@@ -94,7 +107,7 @@ public:
 		value = sample->weight;
 		lastTarget = target.object;
 		++applyCount;
-		return { Vans::VansTimelineApplyStatus::Applied, { handle } };
+		return { Vans::VansTimelineApplyStatus::Applied, { handle, {}, {}, resource } };
 	}
 	bool Restore(Vans::VansTimelineRestoreToken token) override
 	{
@@ -126,6 +139,7 @@ public:
 	int deactivateCount = 0;
 	bool failApply = false;
 	std::string failTrackId;
+	Vans::VansTimelineResourceId resource;
 	Vans::VansGenerationHandle lastTarget;
 
 private:
@@ -251,19 +265,123 @@ public:
 	float value = 0.0f;
 };
 
-bool RegisterContributorProbe(
-	Vans::VansTimelineTrackExtensionRegistry& registry,
-	std::string& error)
+class RegistryProbeApplier final : public Vans::IVansTimelineOutputApplier
 {
-	return registry.Register(Vans::VansMakeTimelinePointExtension(
-		"Test.Contributor", "Contributor", "Test",
-		Vans::VansTimelineEvaluationPhase::PostScript,
-		Vans::VansTimelineBindingRequirement::None, {}), error);
+public:
+	RegistryProbeApplier(Vans::VansTimelineOutputTypeId type, std::uint32_t size,
+		std::uint32_t alignment, std::string name)
+		: m_Type(type), m_Size(size), m_Alignment(alignment), m_Name(std::move(name)) {}
+	Vans::VansTimelineOutputTypeId OutputType() const override { return m_Type; }
+	std::string_view StableName() const override { return m_Name; }
+	std::uint32_t PayloadSize() const override { return m_Size; }
+	std::uint32_t PayloadAlignment() const override { return m_Alignment; }
+	Vans::VansTimelineApplyResult Apply(const Vans::VansTimelineApplyContext&,
+		const Vans::VansResolvedTimelineTarget&,
+		Vans::VansTimelineOutputPayloadView) override
+	{ return { Vans::VansTimelineApplyStatus::Applied }; }
+	bool Restore(Vans::VansTimelineRestoreToken) override { return true; }
+	void ReleaseWriter(Vans::VansTimelineWriterHandle) override {}
+	void ReleaseAll() override {}
+
+private:
+	Vans::VansTimelineOutputTypeId m_Type;
+	std::uint32_t m_Size = 0;
+	std::uint32_t m_Alignment = 0;
+	std::string m_Name;
+};
+
+class ProbeTransformTimelineAccess final : public Vans::IVansTimelineTransformAccess
+{
+public:
+	std::uint32_t ParentTransform(std::uint32_t) const override { return UINT32_MAX; }
+	bool CanWrite(const Vans::VansResolvedTimelineTarget&,
+		std::string_view physicsPolicy, std::string& error) const override
+	{
+		++canWriteCount;
+		lastPhysicsPolicy = physicsPolicy;
+		if (allowWrite) return true;
+		error = "Transform Timeline cannot drive a dynamic rigid body";
+		return false;
+	}
+	void NotifyWritten(std::uint32_t transform) override
+	{
+		++notifyCount;
+		lastTransform = transform;
+	}
+
+	bool allowWrite = false;
+	mutable int canWriteCount = 0;
+	mutable std::string lastPhysicsPolicy;
+	int notifyCount = 0;
+	std::uint32_t lastTransform = UINT32_MAX;
+};
+
+struct EventDispatchMutationProbe
+{
+	int depth = 0;
+};
+
+struct EventDisconnectProbe
+{
+};
 }
+
+bool TestEventDispatchMutationContract()
+{
+	Vans::VansEventBus& bus = Vans::VansEventBus::Get();
+	std::vector<int> trace;
+	Vans::VansEventConnection deferred;
+	auto high = bus.Subscribe<EventDispatchMutationProbe>(
+		[&](const EventDispatchMutationProbe& event)
+		{
+			trace.push_back(event.depth * 10 + 1);
+			if (event.depth != 0)
+				return;
+			deferred = bus.Subscribe<EventDispatchMutationProbe>(
+				[&](const EventDispatchMutationProbe& nested)
+				{
+					trace.push_back(nested.depth * 10 + 4);
+				}, Vans::VansEventLane::GameLogic, 40);
+			bus.PublishNow(EventDispatchMutationProbe{ 1 });
+		}, Vans::VansEventLane::GameLogic, 30);
+	auto middle = bus.Subscribe<EventDispatchMutationProbe>(
+		[&](const EventDispatchMutationProbe& event)
+		{
+			trace.push_back(event.depth * 10 + 2);
+		}, Vans::VansEventLane::GameLogic, 20);
+	auto low = bus.Subscribe<EventDispatchMutationProbe>(
+		[&](const EventDispatchMutationProbe& event)
+		{
+			trace.push_back(event.depth * 10 + 3);
+		}, Vans::VansEventLane::GameLogic, 10);
+
+	bus.PublishNow(EventDispatchMutationProbe{ 0 });
+	bus.PublishNow(EventDispatchMutationProbe{ 2 });
+	const std::vector<int> expected{
+		1, 11, 12, 13, 2, 3,
+		24, 21, 22, 23
+	};
+	if (!ExpectTimeline(trace == expected,
+		"EventBus nested dispatch did not preserve the stable subscription set and priority order"))
+		return false;
+
+	int disconnectedCalls = 0;
+	Vans::VansEventConnection victim = bus.Subscribe<EventDisconnectProbe>(
+		[&](const EventDisconnectProbe&) { ++disconnectedCalls; },
+		Vans::VansEventLane::GameLogic, 10);
+	auto disconnecting = bus.Subscribe<EventDisconnectProbe>(
+		[&](const EventDisconnectProbe&) { victim.Disconnect(); },
+		Vans::VansEventLane::GameLogic, 20);
+	bus.PublishNow(EventDisconnectProbe{});
+	return ExpectTimeline(disconnectedCalls == 0,
+		"EventBus no longer applies callback disconnection to the active dispatch");
 }
 
 bool TestTimelineRegistryContract()
 {
+	const Vans::VansEngineTimelineCatalog engineCatalog = TimelineCatalog();
+	if (!ExpectTimeline(static_cast<bool>(engineCatalog),
+		"engine Timeline capability catalog failed to build")) return false;
 	Vans::VansTimelineTrackExtensionRegistry registry;
 	Vans::VansTimelineTrackExtensionDescriptor descriptor;
 	descriptor.stableName = "Test.Continuous";
@@ -277,7 +395,27 @@ bool TestTimelineRegistryContract()
 	if (!ExpectTimeline(!registry.Register(descriptor, error), "duplicate extension was accepted")) return false;
 	if (!ExpectTimeline(registry.Seal(error), error.c_str())) return false;
 	if (!ExpectTimeline(!registry.Register(std::move(descriptor), error), "sealed registry accepted registration")) return false;
-	const auto& builtIns = Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
+	Vans::VansTimelineAsset previewAsset;
+	previewAsset.durationTicks = 1;
+	previewAsset.playbackRange = { 0, 1 };
+	previewAsset.workRange = previewAsset.playbackRange;
+	Vans::VansTimelineTrack previewTrack;
+	previewTrack.id = "preview-track";
+	previewTrack.type = Vans::VansTimelineTrackTypeRef::FromName("Test.Continuous");
+	previewAsset.tracks.push_back(std::move(previewTrack));
+	Vans::VansTimelineCompileOptions previewOptions;
+	previewOptions.extensions = &registry;
+	previewOptions.validation.preview = true;
+	previewOptions.validation.requireRuntimeCapabilities = true;
+	previewOptions.validation.hasOutputApplier = [](Vans::VansTimelineOutputTypeId)
+	{ return false; };
+	const auto invalidPreview = Vans::VansTimelineCompiler::Compile(previewAsset, previewOptions);
+	const bool previewRejectedMissingApplier = std::any_of(
+		invalidPreview.diagnostics.begin(), invalidPreview.diagnostics.end(), [](const auto& diagnostic)
+		{ return diagnostic.code == "Timeline.ApplierMissing"; });
+	if (!ExpectTimeline(!invalidPreview && previewRejectedMissingApplier,
+		"Timeline preview accepted a track without its required runtime applier")) return false;
+	const auto& builtIns = *engineCatalog.trackExtensions;
 	const std::unordered_set<std::string_view> expected{
 		Vans::TimelineNames::Transform, Vans::TimelineNames::Property,
 		Vans::TimelineNames::Activation, Vans::TimelineNames::Constraint,
@@ -295,19 +433,188 @@ bool TestTimelineRegistryContract()
 	for (std::string_view name : expected)
 		if (!ExpectTimeline(builtIns.Resolve(name) != nullptr,
 			"built-in registry is missing a declared capability")) return false;
+	const auto* activation = builtIns.Resolve(Vans::TimelineNames::Activation);
+	if (!ExpectTimeline(activation && activation->sourceSchema.fields.size() == 4 &&
+		std::none_of(activation->sourceSchema.fields.begin(), activation->sourceSchema.fields.end(),
+			[](const Vans::VansTimelineSourceField& field) { return field.name == "useCommandBuffer"; }),
+		"Activation schema still exposes the non-functional command-buffer switch")) return false;
 	if (!ExpectTimeline(!builtIns.Resolve("Timeline.Spawnable") &&
 		!builtIns.Resolve("Timeline.SceneState"),
 		"removed no-op Timeline capabilities are still registered")) return false;
-	Vans::VansTimelineExtensionContributors contributors;
-	Vans::VansTimelineTrackExtensionRegistry contributedRegistry;
-	if (!ExpectTimeline(contributors.Register("Test.Module", RegisterContributorProbe, error),
-		error.c_str())) return false;
-	if (!ExpectTimeline(!contributors.Register("Test.Module", RegisterContributorProbe, error),
-		"duplicate extension contributor was accepted")) return false;
-	if (!ExpectTimeline(contributors.ApplyAndSeal(contributedRegistry, error) &&
-		contributedRegistry.Resolve("Test.Contributor"), error.c_str())) return false;
-	return ExpectTimeline(!contributors.Register("Test.Late", RegisterContributorProbe, error),
-		"extension contributor accepted a late registration after sealing");
+	if (!ExpectTimeline(
+		engineCatalog.clocks->Resolve(Vans::VansMakeStableId<Vans::VansTimelineClockTag>(
+			Vans::TimelineClockNames::GameTime)) != nullptr &&
+		engineCatalog.clocks->Resolve(Vans::VansMakeStableId<Vans::VansTimelineClockTag>(
+			Vans::TimelineClockNames::Manual)) != nullptr &&
+		engineCatalog.clocks->Resolve(Vans::VansMakeStableId<Vans::VansTimelineClockTag>(
+			"Timeline.Clock.UnscaledTime")) == nullptr &&
+		engineCatalog.clocks->Resolve(Vans::VansMakeStableId<Vans::VansTimelineClockTag>(
+			"Timeline.Clock.FixedTick")) == nullptr,
+		"engine Timeline catalog exposes unimplemented clock modes")) return false;
+	const auto outputType = Vans::VansMakeStableId<Vans::VansTimelineOutputTypeTag>("Test.Output");
+	Vans::VansTimelineApplierRegistry missingApplier;
+	if (!ExpectTimeline(!Vans::VansValidateEngineTimelineRegistries(
+		registry, missingApplier, error) && error.rfind("Timeline.ApplierMissing", 0) == 0,
+		"Timeline registry pair accepted a required output without an applier")) return false;
+
+	Vans::VansTimelineApplierRegistry matchingApplier;
+	if (!matchingApplier.Register(std::make_shared<RegistryProbeApplier>(
+		outputType, static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+		static_cast<std::uint32_t>(alignof(std::uint32_t)), "Test.OutputApplier"), error))
+		return false;
+	if (!ExpectTimeline(Vans::VansValidateEngineTimelineRegistries(
+		registry, matchingApplier, error), error.c_str())) return false;
+
+	Vans::VansTimelineApplierRegistry extraApplier;
+	const auto extraType = Vans::VansMakeStableId<Vans::VansTimelineOutputTypeTag>("Test.ExtraOutput");
+	if (!extraApplier.Register(std::make_shared<RegistryProbeApplier>(
+		outputType, static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+		static_cast<std::uint32_t>(alignof(std::uint32_t)), "Test.OutputApplier"), error) ||
+		!extraApplier.Register(std::make_shared<RegistryProbeApplier>(
+		extraType, static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+		static_cast<std::uint32_t>(alignof(std::uint32_t)), "Test.ExtraApplier"), error))
+		return false;
+	if (!ExpectTimeline(!Vans::VansValidateEngineTimelineRegistries(
+		registry, extraApplier, error) && error.rfind("Timeline.TrackOutputMissing", 0) == 0,
+		"Timeline registry pair did not reject an unmatched registration set")) return false;
+
+	Vans::VansTimelineApplierRegistry emptyAppliers;
+	if (!ExpectTimeline(!emptyAppliers.Seal(false, error) &&
+		error == "Timeline.ApplierRegistryEmpty",
+		"engine applier registry accepted an implicit empty table")) return false;
+	if (!ExpectTimeline(emptyAppliers.Seal(true, error) && emptyAppliers.ManifestHash() != 0,
+		"explicit event-only applier registry could not be sealed")) return false;
+	auto emptyRuntimeAppliers = std::make_shared<Vans::VansTimelineApplierRegistry>();
+	if (!emptyRuntimeAppliers->Seal(true, error)) return false;
+	Vans::VansTimelineRuntimeSystem runtime(*engineCatalog.clocks);
+	if (!ExpectTimeline(!runtime.SetApplierRegistry(emptyRuntimeAppliers, 1, error) &&
+		error == "Timeline.ApplierRegistryEmpty",
+		"engine runtime accepted an explicitly empty applier registry")) return false;
+	Vans::VansTimelinePropertyAccessRegistry emptyProperties;
+	if (!ExpectTimeline(!emptyProperties.Seal(false, error) &&
+		error == "Timeline.PropertyAccessRegistryEmpty",
+		"property access registry accepted an implicit empty table")) return false;
+	Vans::VansTimelinePayloadSchemaRegistry emptyPayloads;
+	if (!ExpectTimeline(!emptyPayloads.Seal(false, error) && error == "Event.PayloadRegistryEmpty" &&
+		emptyPayloads.Seal(true, error) && emptyPayloads.IsSealed(),
+		"payload registry did not preserve its explicit empty-project policy")) return false;
+	const Vans::VansTimelinePropertyAccessRegistry& propertyAccess =
+		*engineCatalog.propertyAccess;
+	if (!ExpectTimeline(propertyAccess.IsSealed() && !propertyAccess.Empty() &&
+		propertyAccess.ManifestHash() != 0 && propertyAccess.Descriptors().size() == 15,
+		"engine property access registry is unavailable")) return false;
+	for (std::string_view name : { "Transform.Position", "Transform.Rotation", "Transform.Scale" })
+	{
+		const auto* property = propertyAccess.Resolve(name);
+		if (!ExpectTimeline(property &&
+			property->writeDomain == Vans::VansTimelinePropertyWriteDomain::Transform,
+			"Transform property accessor is missing its Transform write domain")) return false;
+	}
+	Vans::VansTimelinePropertyAccessRegistry transformDomain;
+	Vans::VansTimelinePropertyAccessRegistry propertyDomain;
+	auto transformDescriptor = *propertyAccess.Resolve("Transform.Position");
+	auto propertyDescriptor = transformDescriptor;
+	propertyDescriptor.writeDomain = Vans::VansTimelinePropertyWriteDomain::Property;
+	if (!transformDomain.Register(std::move(transformDescriptor), error) ||
+		!propertyDomain.Register(std::move(propertyDescriptor), error) ||
+		!transformDomain.Seal(false, error) || !propertyDomain.Seal(false, error) ||
+		!ExpectTimeline(transformDomain.ManifestHash() != propertyDomain.ManifestHash(),
+			"property write-domain changes did not invalidate the registry manifest")) return false;
+	Vans::VansRuntimeWorld audioWorld;
+	VansEngine::VansAudioManager audioManager;
+	Vans::VansTimelineApplierRegistry audioAppliers;
+	if (!Vans::VansRegisterAudioTimelineIntegration(
+		audioWorld, audioManager, audioAppliers, error)) return false;
+	const auto audioType = Vans::VansMakeStableId<Vans::VansTimelineOutputTypeTag>(
+		std::string(Vans::TimelineNames::Audio) + ".Output");
+	Vans::IVansTimelineOutputApplier* audioApplier = audioAppliers.At(audioAppliers.SlotOf(audioType));
+	if (!ExpectTimeline(audioApplier && audioApplier->Restore({}),
+		"stateless Audio Timeline restore reports a false failure")) return false;
+	return true;
+}
+
+bool TestTimelinePropertyTransformContract()
+{
+	Vans::VansTimelineAsset asset = MakeProbeAsset(Vans::TimelineNames::Property);
+	auto& track = asset.tracks.front();
+	track.extensionData = Vans::VansSerializedValue::Object({
+		{ "descriptorId", Vans::VansSerializedValue::String("Transform.Position") },
+		{ "componentType", Vans::VansSerializedValue::String("transform") },
+		{ "valueType", Vans::VansSerializedValue::String("Vec3") } });
+	track.sections.front().channels.front().name = "value";
+
+	Vans::VansTimelineCompileOptions options;
+	options.extensions = TimelineCatalog().trackExtensions;
+	const auto compiled = Vans::VansTimelineCompiler::Compile(asset, options);
+	if (!ExpectTimeline(static_cast<bool>(compiled), compiled.diagnostics.empty()
+		? "Transform property Timeline failed compilation" : compiled.diagnostics.front().message.c_str()))
+		return false;
+
+	Vans::VansRuntimeWorld world;
+	const Vans::VansEntityHandle entity = world.CreateEntity({ "probe-entity", "Property Transform" });
+	const std::uint32_t transformId = Vans::VansTransformStore::Allocate();
+	struct TransformLease
+	{
+		std::uint32_t id;
+		~TransformLease() { Vans::VansTransformStore::Release(id); }
+	} transformLease{ transformId };
+	world.AddComponent(entity, Vans::VansRuntimeComponentType_Transform,
+		Vans::VansRuntimeTransformComponent{ transformId });
+	Vans::VansTransform transform = Vans::VansTransformStore::Read(transformId);
+	transform.m_Position = { 4.0f, 5.0f, 6.0f };
+	Vans::VansTransformStore::Write(transformId, transform);
+
+	std::string error;
+	const Vans::VansTimelinePropertyAccessRegistry& properties =
+		*TimelineCatalog().propertyAccess;
+	auto access = std::make_shared<ProbeTransformTimelineAccess>();
+	Vans::VansTimelineApplierRegistry appliers;
+	if (!Vans::VansRegisterPropertyTimelineIntegration(
+		world, properties, access, appliers, error) || !appliers.Seal(false, error)) return false;
+	const auto outputType = Vans::VansMakeStableId<Vans::VansTimelineOutputTypeTag>(
+		std::string(Vans::TimelineNames::Property) + ".Output");
+	Vans::IVansTimelineOutputApplier* applier = appliers.At(appliers.SlotOf(outputType));
+	const auto& tracks = compiled.timeline->Tracks(Vans::VansTimelineEvaluationPhase::PostScript);
+	if (!applier || tracks.empty() || tracks.front().sections.empty()) return false;
+	const auto& compiledTrack = tracks.front();
+	const auto& compiledSection = compiledTrack.sections.front();
+	Vans::VansTimelineApplyContext context{
+		*compiled.timeline, compiledTrack, &compiledSection, { 0, 1 }, { 0, 1 },
+		Vans::VansTimelineSessionKind::External, { 0, 1 }, {},
+		Vans::VansTimelineBlendMode::Override, Vans::VansTimelineCompletionMode::RestoreState };
+	Vans::VansResolvedTimelineTarget target;
+	target.entity = entity;
+	target.rootOwner = entity;
+	target.valid = true;
+	Vans::VansTimelineSampleOutput sample;
+	sample.localTick = 1;
+	sample.weight = 1.0;
+	sample.active = true;
+	const Vans::VansTimelineOutputPayloadView payload{
+		reinterpret_cast<const std::byte*>(&sample), sizeof(sample), alignof(decltype(sample)) };
+
+	const auto rejected = applier->Apply(context, target, payload);
+	if (!ExpectTimeline(rejected.status == Vans::VansTimelineApplyStatus::Failed &&
+		access->canWriteCount == 1 && access->lastPhysicsPolicy == "RejectDynamicBody" &&
+		access->notifyCount == 0 && Vans::VansTransformStore::Read(transformId).m_Position == glm::vec3(4.0f, 5.0f, 6.0f) &&
+		!rejected.restore.handle.IsValid(),
+		"Transform property bypassed its write gate or mutated state after rejection")) return false;
+
+	access->allowWrite = true;
+	const auto accepted = applier->Apply(context, target, payload);
+	const Vans::VansTimelineResourceId expectedResource = Vans::VansMakeTimelineTransformResource(entity);
+	if (!ExpectTimeline(accepted.status == Vans::VansTimelineApplyStatus::Applied &&
+		accepted.restore.handle.IsValid() && accepted.restore.resource == expectedResource &&
+		Vans::VansTransformStore::Read(transformId).m_Position == glm::vec3(1.0f, 2.0f, 3.0f) &&
+		access->notifyCount == 1 && access->lastTransform == transformId &&
+		expectedResource.type == Vans::VansStableHash64("Scene.Transform"),
+		"Transform property did not use the shared write notification and resource contract")) return false;
+	target.entity = {};
+	if (!ExpectTimeline(applier->Restore(accepted.restore) &&
+		Vans::VansTransformStore::Read(transformId).m_Position == glm::vec3(4.0f, 5.0f, 6.0f) &&
+		access->notifyCount == 2,
+		"Transform property restore did not restore state through the shared write contract")) return false;
+	return true;
 }
 
 bool TestTimelineSerializationContract()
@@ -318,7 +625,10 @@ bool TestTimelineSerializationContract()
 		{ "playbackRange", { { "startTick", 0 }, { "endTick", 1000 } } },
 		{ "workRange", { { "startTick", 0 }, { "endTick", 1000 } } },
 		{ "parameters", Json::array() },
-		{ "bindings", Json::array() }, { "groups", Json::array() }, { "markers", Json::array() },
+		{ "bindings", Json::array({ {
+			{ "id", "component-binding" }, { "kind", "SceneComponent" },
+			{ "componentGuid", "component-guid" }, { "componentType", "transform" }
+		} }) }, { "groups", Json::array() }, { "markers", Json::array() },
 		{ "tracks", Json::array({ {
 			{ "id", "track" }, { "type", "Timeline.FadePostProcess" },
 			{ "condition", { { "parameterId", 0 }, { "expectedValue", nullptr }, { "negate", false } } },
@@ -330,12 +640,19 @@ bool TestTimelineSerializationContract()
 	if (!ExpectTimeline(Vans::VansTimelineSerialization::Decode(current, decoded, error), error.c_str())) return false;
 	const Json encoded = Vans::VansTimelineSerialization::Encode(decoded);
 	if (!ExpectTimeline(encoded["tracks"][0].contains("extensionData") &&
-		!encoded["tracks"][0].contains("config"),
-		"canonical Timeline did not preserve the direct extension-data format")) return false;
+		!encoded["tracks"][0].contains("config") &&
+		encoded["bindings"][0]["componentType"] == "transform" &&
+		!encoded["bindings"][0].contains("componentTypeId"),
+		"canonical Timeline did not preserve extension data or stable component type names")) return false;
 	Vans::VansTimelineAsset roundTrip;
 	if (!ExpectTimeline(Vans::VansTimelineSerialization::Decode(encoded, roundTrip, error), error.c_str())) return false;
 	if (!ExpectTimeline(Vans::VansTimelineSerialization::Encode(roundTrip) == encoded,
 		"canonical Timeline roundtrip is unstable")) return false;
+	Json obsoleteIntegerType = current;
+	obsoleteIntegerType["bindings"][0].erase("componentType");
+	obsoleteIntegerType["bindings"][0]["componentTypeId"] = Vans::VansRuntimeComponentType_Transform;
+	if (!ExpectTimeline(!Vans::VansTimelineSerialization::Decode(obsoleteIntegerType, roundTrip, error),
+		"Timeline accepted obsolete integer componentTypeId disk ABI")) return false;
 	return true;
 }
 
@@ -370,406 +687,24 @@ bool TestTimelineEditorInteractionContract()
 	return ExpectTimeline(!edit.IsInteracting(), "Timeline editor interaction remained active after cancel");
 }
 
-bool TestTimelineDemoHallAssetContract()
-{
-	namespace fs = std::filesystem;
-	using namespace VansGraphics;
-	fs::path workspace = fs::current_path();
-	for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
-		workspace = workspace.parent_path();
-	const fs::path source = workspace / "DemoHallProject" / "Assets" /
-		"Cinematics" / "GlassBreakImpact.vtimeline";
-	if (!ExpectTimeline(fs::is_regular_file(source),
-		"DemoHall Timeline asset was not found for direct validation")) return false;
-	Vans::VansTimelineAsset asset;
-	std::string error;
-	if (!ExpectTimeline(Vans::VansTimelineSerialization::Load(source, asset, error),
-		error.c_str())) return false;
-	const fs::path animatorSource = workspace / "DemoHallProject" / "Assets" /
-		"MotionMatchDataBase" / "UEFN_Mannequin.vanimator";
-	const fs::path clipSource = workspace / "DemoHallProject" / "Assets" /
-		"Animations" / "WindowBreak" / "AlbomBreak_Unreal_Take.vclip";
-	AnimatorAssetData animator;
-	VansAnimationClip windowBreakClip;
-	Skeleton windowBreakSkeleton;
-	if (!ExpectTimeline(VansAnimatorIO::Load(animatorSource.string(), animator),
-		"DemoHall UEFN Animator could not be loaded for runtime Slot validation") ||
-		!ExpectTimeline(VansAnimationClipIO::Load(
-			clipSource.string(), windowBreakClip, windowBreakSkeleton),
-			"DemoHall window-break Clip could not be loaded for runtime Slot validation")) return false;
-	const auto authoredWindowBreakClip = std::find_if(
-		animator.clipRefs.begin(), animator.clipRefs.end(), [](const AnimatorClipRef& reference)
-		{
-			return reference.name == "AlbomBreak" &&
-				reference.assetGuid == "1ba43559-b0e3-4d94-83a1-b7358c1bd5f5" &&
-				reference.pathHint == "Assets/Animations/WindowBreak/AlbomBreak_Unreal_Take.vclip";
-		});
-	if (!ExpectTimeline(authoredWindowBreakClip != animator.clipRefs.end(),
-		"DemoHall Animator did not author AlbomBreak as a startup Clip reference")) return false;
-	std::unordered_map<std::string, std::shared_ptr<const VansAnimationClipAsset>> clipAssets;
-	for (const AnimatorClipRef& reference : animator.clipRefs)
-	{
-		auto loaded = std::make_shared<VansAnimationClipAsset>();
-		const fs::path path = workspace / "DemoHallProject" / reference.pathHint;
-		if (!ExpectTimeline(VansAnimationClipIO::Load(
-			path.string(), loaded->clip, loaded->skeleton),
-			"DemoHall Animator Clip could not be loaded into the test memory repository"))
-			return false;
-		clipAssets.emplace(reference.assetGuid, std::move(loaded));
-	}
-	VansAnimatorRuntimeCompileOptions compileOptions;
-	auto rigObject = std::make_shared<VansAnimationRigAsset>();
-	if (!ExpectTimeline(VansAnimationRigStorage::Load(
-		workspace / "DemoHallProject" / "Assets" / "AnimationRigs" / "UEFN.vanimrig",
-		*rigObject, error), error.c_str())) return false;
-	compileOptions.rigResolver = [&](const std::string& rigGuid,
-		std::string& resolveError) -> std::shared_ptr<const VansAnimationRigAsset>
-	{
-		if (rigGuid != animator.animationRigGuid)
-		{
-			resolveError = "DemoHall Animator requested an unexpected Animation Rig: " + rigGuid;
-			return {};
-		}
-		return rigObject;
-	};
-	compileOptions.queryProfileResolver = [](const std::string& profile,
-		std::uint32_t& mask, std::string& resolveError)
-	{
-		if (profile != "characterGround")
-		{
-			resolveError = "DemoHall Animator requested an unexpected physics query profile: "
-				+ profile;
-			return false;
-		}
-		mask = 0x3u;
-		return true;
-	};
-	Vans::VansIOAudit::Reset();
-	auto animatorController = VansAnimatorRuntimeCompiler::Compile(
-		animator, windowBreakSkeleton,
-		[&](const AnimatorClipRef& reference,
-			std::shared_ptr<const VansAnimationClipAsset>& clip,
-			std::string& resolveError)
-		{
-			const auto found = clipAssets.find(reference.assetGuid);
-			if (found == clipAssets.end())
-			{
-				resolveError = "DemoHall Animator requested an unexpected Clip asset";
-				return false;
-			}
-			clip = found->second;
-			return true;
-		}, {}, compileOptions, error);
-	if (!ExpectTimeline(animatorController != nullptr, error.c_str())) return false;
-	if (!ExpectTimeline(Vans::VansIOAudit::Snapshot().empty(),
-		"DemoHall Animator runtime compilation performed disk I/O")) return false;
-	if (!ExpectTimeline(animatorController->GetClip("AlbomBreak") != nullptr,
-		"DemoHall Animator did not preload AlbomBreak into its runtime controller")) return false;
-	VansSlotPlayRequest slotRequest;
-	slotRequest.clipName = "AlbomBreak";
-	slotRequest.blendIn = 0.25f;
-	slotRequest.blendOut = 0.25f;
-	slotRequest.externallyDriven = true;
-	slotRequest.suppressRootMotion = true;
-	const VansSlotPlaybackHandle slotPlayback = animatorController->PlaySlot(
-		"slot-window-break-full-body", slotRequest);
-	if (!ExpectTimeline(slotPlayback &&
-		animatorController->DriveSlot(slotPlayback, 2.6f, 1.0f),
-		"DemoHall UEFN Animator rejected the externally-driven window-break Slot")) return false;
-	animatorController->Play();
-	animatorController->Update(0.0f, windowBreakSkeleton);
-	bool hasCameraShake = false;
-	bool hasVirtualCameraParameters = false;
-	bool hasVisibleRedFade = false;
-	bool hasReusableCameraTransition = false;
-	bool hasPlayerRelativeShoulder = false;
-	bool hasPlayerForwardLookAt = false;
-	bool hasCharacterAnimationBinding = false;
-	bool hasWindowBreakCharacterAnimation = false;
-	Vans::VansTimelineTick cameraTransitionStart = 0;
-	Vans::VansTimelineTick cameraTransitionEnd = 0;
-	Vans::VansTimelineTick cameraBlendInTicks = 0;
-	Vans::VansTimelineTick cameraBlendOutTicks = 0;
-	Vans::VansTimelineTick cameraShakeStart = 0;
-	Vans::VansTimelineTick cameraShakeEnd = 0;
-	const auto serializedNumber = [](const Vans::VansSerializedValue& value)
-	{
-		if (value.kind == Vans::VansSerializedValue::Kind::Float) return value.floatValue;
-		if (value.kind == Vans::VansSerializedValue::Kind::Int) return static_cast<double>(value.intValue);
-		return 0.0;
-	};
-	const Vans::VansTimelineChannel* shakePosition = nullptr;
-	const Vans::VansTimelineChannel* shakeRotation = nullptr;
-	const Vans::VansTimelineChannel* fadeWeight = nullptr;
-	for (const Vans::VansTimelineBinding& binding : asset.bindings)
-		hasCharacterAnimationBinding |= binding.id == "binding-impact-player-animation" &&
-			binding.targetGuid == "4186c86d-7c0a-4556-8077-d1f80ebc1da5" &&
-			binding.componentGuid == "49be5afc-60b7-4024-8dc4-491c3312e689";
-	for (const Vans::VansTimelineTrack& track : asset.tracks)
-	{
-		if (track.type.stableName == Vans::TimelineNames::AnimationClip)
-			for (const Vans::VansTimelineSection& section : track.sections)
-			{
-				if (!section.extensionData) continue;
-				const auto* slot = Vans::VansTimelineFindSourceField(*section.extensionData, "slot");
-				const auto* layer = Vans::VansTimelineFindSourceField(*section.extensionData, "layer");
-				const auto* controllerClip = Vans::VansTimelineFindSourceField(
-					*section.extensionData, "controllerClip");
-				hasWindowBreakCharacterAnimation |=
-					track.bindingId == "binding-impact-player-animation" &&
-					section.startTick == 0 && section.durationTicks == 180000 &&
-					section.sourceInTick == 0 && section.sourceOutTick == 312000 &&
-					std::abs(section.playRate - (5.2 / 3.0)) < 0.000001 &&
-					section.loopMode == Vans::VansTimelineLoopMode::None &&
-					section.easeInTicks == 15000 && section.easeOutTicks == 15000 &&
-					section.blendIn.shape == "SmoothStep" && section.blendOut.shape == "SmoothStep" &&
-					section.completionMode == Vans::VansTimelineCompletionMode::RestoreState &&
-					section.assetGuid == "1ba43559-b0e3-4d94-83a1-b7358c1bd5f5" &&
-					section.assetPath == "Assets/Animations/WindowBreak/AlbomBreak_Unreal_Take.vclip" &&
-					slot && slot->kind == Vans::VansSerializedValue::Kind::String &&
-					slot->stringValue == "slot-window-break-full-body" &&
-					layer && layer->kind == Vans::VansSerializedValue::Kind::String &&
-					layer->stringValue == "layer-base" &&
-					controllerClip && controllerClip->kind == Vans::VansSerializedValue::Kind::String &&
-					controllerClip->stringValue == "AlbomBreak";
-			}
-		if (track.type.stableName == Vans::TimelineNames::CameraProperty)
-		{
-			bool hasLensChannel = false;
-			bool hasPoseChannel = false;
-			for (const Vans::VansTimelineSection& section : track.sections)
-				for (const Vans::VansTimelineChannel& channel : section.channels)
-				{
-					hasLensChannel |= channel.name == "fieldOfView" ||
-						channel.name == "nearClip" || channel.name == "farClip";
-					hasPoseChannel |= channel.name == "position" || channel.name == "rotation";
-				}
-			hasVirtualCameraParameters =
-				track.bindingId == "binding-impact-virtual-camera" && hasLensChannel && !hasPoseChannel;
-		}
-		if (track.type.stableName == Vans::TimelineNames::CameraShake)
-		{
-			bool hasPositionOffset = false;
-			bool hasRotationOffset = false;
-			for (const Vans::VansTimelineSection& section : track.sections)
-			{
-				cameraShakeStart = section.startTick;
-				cameraShakeEnd = section.startTick + section.durationTicks;
-				for (const Vans::VansTimelineChannel& channel : section.channels)
-				{
-					hasPositionOffset |= channel.name == "positionOffset" && channel.keys.size() >= 2;
-					hasRotationOffset |= channel.name == "rotationOffset" && channel.keys.size() >= 2;
-					if (channel.name == "positionOffset") shakePosition = &channel;
-					if (channel.name == "rotationOffset") shakeRotation = &channel;
-				}
-			}
-			hasCameraShake = track.bindingId.empty() && hasPositionOffset && hasRotationOffset;
-		}
-		if (track.type.stableName == Vans::TimelineNames::CameraCut)
-			for (const Vans::VansTimelineSection& section : track.sections)
-			{
-				if (!section.extensionData) continue;
-				const Vans::VansSerializedValue* blendIn = Vans::VansTimelineFindSourceField(
-					*section.extensionData, "blendDurationTicks");
-				const Vans::VansSerializedValue* blendOut = Vans::VansTimelineFindSourceField(
-					*section.extensionData, "blendOutDurationTicks");
-				const Vans::VansSerializedValue* suppressLook = Vans::VansTimelineFindSourceField(
-					*section.extensionData, "suppressUserLook");
-				cameraBlendInTicks = blendIn && blendIn->kind == Vans::VansSerializedValue::Kind::Int
-					? blendIn->intValue : 0;
-				cameraBlendOutTicks = blendOut && blendOut->kind == Vans::VansSerializedValue::Kind::Int
-					? blendOut->intValue : 0;
-				cameraTransitionStart = section.startTick;
-				cameraTransitionEnd = section.startTick + section.durationTicks;
-				hasReusableCameraTransition = cameraBlendInTicks > 0 && cameraBlendOutTicks > 0 &&
-					suppressLook && suppressLook->kind == Vans::VansSerializedValue::Kind::Bool &&
-					suppressLook->boolValue;
-			}
-		if (track.type.stableName == Vans::TimelineNames::Constraint)
-			for (const Vans::VansTimelineSection& section : track.sections)
-			{
-				if (!section.extensionData) continue;
-				const auto* kind = Vans::VansTimelineFindSourceField(*section.extensionData, "constraintType");
-				const auto* sourceBinding = Vans::VansTimelineFindSourceField(
-					*section.extensionData, "sourceBindingId");
-				const auto* basis = Vans::VansTimelineFindSourceField(*section.extensionData, "offsetBasis");
-				const auto* positionOffset = Vans::VansTimelineFindSourceField(
-					*section.extensionData, "offsetPosition");
-				const auto* lookAtOffset = Vans::VansTimelineFindSourceField(
-					*section.extensionData, "lookAtOffset");
-				const auto* rotationConvention = Vans::VansTimelineFindSourceField(
-					*section.extensionData, "rotationConvention");
-				const bool playerYawRelative = sourceBinding && basis &&
-					sourceBinding->kind == Vans::VansSerializedValue::Kind::String &&
-					sourceBinding->stringValue == "binding-impact-player" &&
-					basis->kind == Vans::VansSerializedValue::Kind::String && basis->stringValue == "YawOnly";
-				if (kind && kind->kind == Vans::VansSerializedValue::Kind::String && playerYawRelative)
-				{
-					hasPlayerRelativeShoulder |= kind->stringValue == "Position" && positionOffset &&
-						positionOffset->kind == Vans::VansSerializedValue::Kind::Array &&
-						positionOffset->arrayItems.size() == 3 &&
-						serializedNumber(positionOffset->arrayItems[1]) > 1.0 &&
-						serializedNumber(positionOffset->arrayItems[2]) < -1.0;
-					hasPlayerForwardLookAt |= kind->stringValue == "LookAt" && lookAtOffset &&
-						lookAtOffset->kind == Vans::VansSerializedValue::Kind::Array &&
-						lookAtOffset->arrayItems.size() == 3 &&
-						serializedNumber(lookAtOffset->arrayItems[2]) > 1.0 &&
-						rotationConvention &&
-						rotationConvention->kind == Vans::VansSerializedValue::Kind::String &&
-						rotationConvention->stringValue == "CameraEuler";
-				}
-			}
-		if (track.type.stableName == Vans::TimelineNames::FadePostProcess)
-		{
-			const Vans::VansSerializedValue* color = Vans::VansTimelineFindSourceField(
-				track.extensionData, "color");
-			hasVisibleRedFade = color && color->kind == Vans::VansSerializedValue::Kind::Array &&
-				color->arrayItems.size() == 4 &&
-				color->arrayItems[0].kind == Vans::VansSerializedValue::Kind::Float &&
-				color->arrayItems[0].floatValue >= 0.2;
-			for (const Vans::VansTimelineSection& section : track.sections)
-				for (const Vans::VansTimelineChannel& channel : section.channels)
-					if (channel.name == "weight") fadeWeight = &channel;
-		}
-	}
-	if (!ExpectTimeline(hasCameraShake,
-		"DemoHall impact Timeline does not contain an authored camera-local shake")) return false;
-	if (!ExpectTimeline(hasVirtualCameraParameters,
-		"DemoHall virtual camera must keep lens parameters without duplicating pose or a Camera component")) return false;
-	if (!ExpectTimeline(hasReusableCameraTransition &&
-		cameraShakeStart >= cameraTransitionStart + cameraBlendInTicks &&
-		cameraShakeEnd <= cameraTransitionEnd - cameraBlendOutTicks,
-		"DemoHall camera shake must run between reusable CameraCut enter and exit blends")) return false;
-	if (!ExpectTimeline(hasPlayerRelativeShoulder && hasPlayerForwardLookAt,
-		"DemoHall virtual camera must use editable player-relative shoulder and forward-look constraints")) return false;
-	if (!ExpectTimeline(hasCharacterAnimationBinding && hasWindowBreakCharacterAnimation,
-		"DemoHall window-break character animation binding, timing, slot, or easing is invalid")) return false;
-	if (!ExpectTimeline(hasVisibleRedFade,
-		"DemoHall impact Timeline red fade is missing or visually negligible")) return false;
-	const auto fadeAt = [&](Vans::VansTimelineTick tick)
-	{
-		const auto value = fadeWeight
-			? Vans::VansTimelineEvaluator::SampleChannel(*fadeWeight, tick) : std::nullopt;
-		const auto* number = value ? std::get_if<float>(&*value) : nullptr;
-		return number ? *number : -1.0f;
-	};
-	const auto shakeAt = [](const Vans::VansTimelineChannel* channel, Vans::VansTimelineTick tick)
-	{
-		const auto value = channel
-			? Vans::VansTimelineEvaluator::SampleChannel(*channel, tick) : std::nullopt;
-		const auto* vector = value ? std::get_if<Vans::VansTimelineVec3>(&*value) : nullptr;
-		if (!vector) return 0.0;
-		return std::sqrt(vector->value[0] * vector->value[0] +
-			vector->value[1] * vector->value[1] + vector->value[2] * vector->value[2]);
-	};
-	if (!ExpectTimeline(fadeAt(0) == 0.0f && fadeAt(4000) >= 0.4f &&
-		fadeAt(15000) > fadeAt(42000) && fadeAt(42000) == 0.0f,
-		"DemoHall red pulse does not rise, decay, and return to zero")) return false;
-	if (!ExpectTimeline(shakeAt(shakePosition, 1500) > 0.02 &&
-		shakeAt(shakeRotation, 1500) > 0.2 && shakeAt(shakePosition, 41999) < 0.0001 &&
-		shakeAt(shakeRotation, 41999) < 0.0001,
-		"DemoHall camera shake does not contain a visible impulse and zero tail")) return false;
-	Vans::VansTimelineCompileOptions options;
-	options.extensions = &Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
-	const auto compiled = Vans::VansTimelineCompiler::Compile(asset, options);
-	if (!compiled)
-	{
-		for (const auto& diagnostic : compiled.diagnostics)
-			std::cerr << "[TimelineRefactor] DemoHall " << diagnostic.code << ": "
-				<< diagnostic.message << '\n';
-		return false;
-	}
-	if (!ExpectTimeline(compiled.timeline->ContentHash() != 0 &&
-		compiled.timeline->Tracks(Vans::VansTimelineEvaluationPhase::PostScript).size() == 6 &&
-		compiled.timeline->Tracks(Vans::VansTimelineEvaluationPhase::Camera).size() == 3,
-		"DemoHall Timeline did not compile its complete two-phase track set")) return false;
-	Vans::VansTimelineBindingResolver bindings;
-	std::vector<Vans::VansTimelineRuntimeBinding> runtimeBindings;
-	std::uint32_t objectIndex = 1;
-	for (const Vans::VansTimelineBinding& binding : asset.bindings)
-		runtimeBindings.push_back({ Vans::VansMakeStableId<Vans::VansTimelineBindingTag>(binding.id),
-			{}, { objectIndex++, 1 }, 1 });
-	bindings.SetRuntimeBindings(runtimeBindings);
-	Vans::VansTimelineParameterBlock parameters;
-	Vans::VansTimelineDiagnostics diagnostics;
-	if (!parameters.Initialize(*compiled.timeline, {}, diagnostics)) return false;
-	Vans::VansTimelineOutputArena arena;
-	std::vector<Vans::VansTimelineEvaluationOutput> postScriptOutputs;
-	std::vector<Vans::VansTimelineEvaluationOutput> cameraOutputs;
-	const std::vector<Vans::VansTimelineTraversalSegment> firstImpactFrame{ {
-		0, 1500, Vans::VansTimelineEvaluationReason::Playback,
-		Vans::VansTimelineSeekPolicy::AllEdges, 1, 0, 1, false, true } };
-	Vans::VansTimelineEvaluator::Evaluate(*compiled.timeline,
-		Vans::VansTimelineEvaluationPhase::PostScript, firstImpactFrame,
-		parameters, bindings, { 0, 1 }, { 0, 1 }, 0, arena, postScriptOutputs, diagnostics);
-	Vans::VansTimelineEvaluator::Evaluate(*compiled.timeline,
-		Vans::VansTimelineEvaluationPhase::Camera, firstImpactFrame,
-		parameters, bindings, { 0, 1 }, { 0, 1 }, 0, arena, cameraOutputs, diagnostics);
-	if (!ExpectTimeline(postScriptOutputs.size() == 6 && cameraOutputs.size() == 2 &&
-		!Vans::VansTimelineValidator::HasErrors(diagnostics),
-		"DemoHall first impact frame did not dispatch every active PostScript and Camera output")) return false;
-
-	const fs::path scenePath = workspace / "DemoHallProject" / "Scenes" / "DemoHall.json";
-	std::ifstream sceneInput(scenePath);
-	nlohmann::json sceneJson;
-	if (!sceneInput || !(sceneInput >> sceneJson)) return false;
-	bool virtualCameraHasOnlyTransform = false;
-	bool virtualCameraHasCorrectBasePose = false;
-	bool characterHasExpectedPreTransform = false;
-	bool timelineComponentReferencesAsset = false;
-	for (const auto& object : sceneJson.value("entities", nlohmann::json::array()))
-	{
-		const std::string name = object.value("name", "");
-		if (name == "GlassBreakImpactVirtualCamera")
-		{
-			const auto components = object.value("components", nlohmann::json::array());
-			virtualCameraHasOnlyTransform = components.size() == 1 &&
-				components.front().value("type", "") == "Transform";
-			if (virtualCameraHasOnlyTransform)
-			{
-				const auto& data = components.front()["data"];
-				const auto position = data.value("position", std::vector<double>{});
-				const auto rotation = data.value("rotation", std::vector<double>{});
-				virtualCameraHasCorrectBasePose = position.size() == 3 && rotation.size() == 4 &&
-					std::abs(position[0] + 3.55) < 0.0001 &&
-					std::abs(position[1] - 1.55) < 0.0001 &&
-					std::abs(position[2] + 0.8) < 0.0001 &&
-					std::abs(rotation[3] - 0.739703823562593) < 0.0001;
-			}
-		}
-		if (name == "AnimatedCharacter")
-			for (const auto& component : object.value("components", nlohmann::json::array()))
-				if (component.value("type", "") == "Transform")
-				{
-					const auto& data = component["data"];
-					const auto rotation = data.value("rotation", std::vector<double>{});
-					const auto scale = data.value("scale", std::vector<double>{});
-					characterHasExpectedPreTransform = rotation.size() == 4 && scale.size() == 3 &&
-						std::abs(rotation[0] + 0.7071067811865475) < 0.0001 &&
-						std::abs(rotation[3] - 0.7071067811865476) < 0.0001 &&
-						std::abs(scale[0] - 0.01) < 0.0001;
-				}
-		if (name == "GlassBreakImpactTimeline")
-			for (const auto& component : object.value("components", nlohmann::json::array()))
-				if (component.value("type", "") == "Timeline")
-					timelineComponentReferencesAsset = component["data"]["timeline"].value("guid", "") ==
-						"8d2df4b5-3c7e-4c69-9f76-9b6e63fac850";
-	}
-	return ExpectTimeline(virtualCameraHasOnlyTransform && virtualCameraHasCorrectBasePose &&
-		characterHasExpectedPreTransform && timelineComponentReferencesAsset,
-		"DemoHall scene camera pose, character pre-transform, or impact Timeline binding is invalid");
-}
-
 bool TestTimelineCompileEvaluateContract()
 {
 	Vans::VansTimelineAsset asset = MakeProbeAsset();
 	Vans::VansTimelineCompileOptions options;
-	options.extensions = &Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
+	options.extensions = TimelineCatalog().trackExtensions;
+	options.runtimeRegistryManifestHash = 0x123456789abcdef0ull;
 	const Vans::VansTimelineCompileResult compiled = Vans::VansTimelineCompiler::Compile(asset, options);
 	if (!ExpectTimeline(static_cast<bool>(compiled), compiled.diagnostics.empty()
 		? "compile failed" : compiled.diagnostics.front().message.c_str())) return false;
 	if (!ExpectTimeline(compiled.timeline->ContentHash() != 0 && compiled.timeline->RegistryManifestHash() != 0,
 		"compiled Timeline does not carry stable manifests")) return false;
+	Vans::VansTimelineCompileOptions changedRegistry = options;
+	changedRegistry.runtimeRegistryManifestHash ^= 0x55aa55aa55aa55aaull;
+	const auto recompiled = Vans::VansTimelineCompiler::Compile(asset, changedRegistry);
+	if (!ExpectTimeline(recompiled &&
+		recompiled.timeline->ContentHash() == compiled.timeline->ContentHash() &&
+		recompiled.timeline->RegistryManifestHash() != compiled.timeline->RegistryManifestHash(),
+		"runtime registry changes did not invalidate the compiled Timeline identity")) return false;
 	Vans::VansTimelineBindingResolver bindings;
 	bindings.SetRuntimeBindings({ { Vans::VansMakeStableId<Vans::VansTimelineBindingTag>("probe-binding"),
 		{}, { 0, 1 }, 1 } });
@@ -871,9 +806,9 @@ bool TestTimelineGenericExtensionContract()
 		"extension dependency or editor metadata was not derived from its registry")) return false;
 	auto sink = std::make_shared<ParameterCurveApplier>();
 	Vans::VansTimelineApplierRegistry syntheticAppliers;
-	if (!syntheticAppliers.Register(sink, error) || !syntheticAppliers.Seal(error)) return false;
+	if (!syntheticAppliers.Register(sink, error) || !syntheticAppliers.Seal(false, error)) return false;
 	Vans::VansTimelineSessionService syntheticSessions(
-		Vans::VansTimelineClockRegistry::BuiltIns(), syntheticAppliers);
+		*TimelineCatalog().clocks, syntheticAppliers);
 	Vans::VansTimelineSessionDesc syntheticDesc;
 	syntheticDesc.timeline = syntheticCompiled.timeline;
 	syntheticDesc.clockType = std::string(Vans::TimelineClockNames::Manual);
@@ -956,7 +891,7 @@ bool TestTimelineGenericExtensionContract()
 	track.sections.push_back(std::move(section));
 	asset.tracks.push_back(std::move(track));
 	Vans::VansTimelineCompileOptions options;
-	options.extensions = &Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
+	options.extensions = TimelineCatalog().trackExtensions;
 	const auto compiled = Vans::VansTimelineCompiler::Compile(asset, options);
 	if (!ExpectTimeline(static_cast<bool>(compiled), compiled.diagnostics.empty()
 		? "dynamic-channel compile failed" : compiled.diagnostics.front().message.c_str())) return false;
@@ -1039,8 +974,8 @@ bool TestTimelinePointAndRangeContract()
 	auto applier = std::make_shared<ProbePointApplier>();
 	applier->type = Vans::VansMakeStableId<Vans::VansTimelineOutputTypeTag>("Test.Point.Output");
 	Vans::VansTimelineApplierRegistry appliers;
-	if (!appliers.Register(applier, error) || !appliers.Seal(error)) return false;
-	Vans::VansTimelineSessionService sessions(Vans::VansTimelineClockRegistry::BuiltIns(), appliers);
+	if (!appliers.Register(applier, error) || !appliers.Seal(false, error)) return false;
+	Vans::VansTimelineSessionService sessions(*TimelineCatalog().clocks, appliers);
 	Vans::VansTimelineSessionDesc desc;
 	desc.timeline = compiled.timeline;
 	desc.clockType = std::string(Vans::TimelineClockNames::Manual);
@@ -1049,8 +984,7 @@ bool TestTimelinePointAndRangeContract()
 		Vans::VansTimelineLoopMode::Loop, 3) || !sessions.Play(created.handle)) return false;
 	sessions.Advance(created.handle, 1.0 / 60000.0);
 	sessions.Evaluate(created.handle, Vans::VansTimelineEvaluationPhase::PostScript);
-	if (!ExpectTimeline(applier->applyCount == 1 && applier->releaseCount == 1 &&
-		sessions.WriterCount() == 0 && sessions.RestoreTokenCount() == 0,
+	if (!ExpectTimeline(applier->applyCount == 1 && applier->releaseCount == 1,
 		"start-tick point output did not fire once and release immediately")) return false;
 	sessions.Advance(created.handle, 10.0 / 60000.0);
 	sessions.Evaluate(created.handle, Vans::VansTimelineEvaluationPhase::PostScript);
@@ -1103,7 +1037,7 @@ bool TestTimelinePointAndRangeContract()
 bool TestTimelineExternalClockContract()
 {
 	Vans::VansTimelineCompileOptions options;
-	options.extensions = &Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
+	options.extensions = TimelineCatalog().trackExtensions;
 	const auto compiled = Vans::VansTimelineCompiler::Compile(MakeProbeAsset(), options);
 	if (!compiled) return false;
 	auto applier = std::make_shared<ProbeSampleApplier>();
@@ -1111,10 +1045,10 @@ bool TestTimelineExternalClockContract()
 		std::string(Vans::TimelineNames::Transform) + ".Output");
 	Vans::VansTimelineApplierRegistry appliers;
 	std::string error;
-	if (!appliers.Register(applier, error) || !appliers.Seal(error)) return false;
+	if (!appliers.Register(applier, error) || !appliers.Seal(false, error)) return false;
 	auto clock = std::make_shared<Vans::VansTimelineOwnedClockSource>();
 	const Vans::VansTimelineClockHandle clockHandle = clock->Create();
-	Vans::VansTimelineSessionService sessions(Vans::VansTimelineClockRegistry::BuiltIns(), appliers);
+	Vans::VansTimelineSessionService sessions(*TimelineCatalog().clocks, appliers);
 	Vans::VansTimelineSessionDesc desc;
 	desc.timeline = compiled.timeline;
 	desc.externalClock = clock;
@@ -1144,7 +1078,7 @@ bool TestTimelineExternalClockContract()
 bool TestTimelineSessionContract()
 {
 	Vans::VansTimelineCompileOptions options;
-	options.extensions = &Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
+	options.extensions = TimelineCatalog().trackExtensions;
 	const auto compiled = Vans::VansTimelineCompiler::Compile(MakeProbeAsset(), options);
 	if (!compiled) return false;
 	auto applier = std::make_shared<ProbeSampleApplier>();
@@ -1152,8 +1086,8 @@ bool TestTimelineSessionContract()
 		std::string(Vans::TimelineNames::Transform) + ".Output");
 	Vans::VansTimelineApplierRegistry appliers;
 	std::string error;
-	if (!appliers.Register(applier, error) || !appliers.Seal(error)) return false;
-	Vans::VansTimelineSessionService sessions(Vans::VansTimelineClockRegistry::BuiltIns(), appliers);
+	if (!appliers.Register(applier, error) || !appliers.Seal(false, error)) return false;
+	Vans::VansTimelineSessionService sessions(*TimelineCatalog().clocks, appliers);
 	Vans::VansTimelineSessionDesc desc;
 	desc.timeline = compiled.timeline;
 	desc.kind = Vans::VansTimelineSessionKind::External;
@@ -1167,22 +1101,21 @@ bool TestTimelineSessionContract()
 	if (!ExpectTimeline(sessions.Play(created.handle), "session play failed")) return false;
 	sessions.Advance(created.handle, 0.005);
 	sessions.Evaluate(created.handle, Vans::VansTimelineEvaluationPhase::PostScript);
-	if (!(applier->applyCount == 1 && sessions.WriterCount() == 1 && sessions.RestoreTokenCount() == 1))
+	if (!(applier->applyCount == 1 && applier->restoreCount == 0 && applier->value == 1.0))
 	{
 		std::cerr << "[TimelineRefactor] applyCount=" << applier->applyCount
-			<< " writers=" << sessions.WriterCount() << " restore=" << sessions.RestoreTokenCount();
+			<< " restoreCount=" << applier->restoreCount << " value=" << applier->value;
 		for (const auto& diagnostic : sessions.Diagnostics())
 			std::cerr << " diagnostic=" << diagnostic.code << ':' << diagnostic.message;
 		std::cerr << '\n';
 		return false;
 	}
 	sessions.Evaluate(created.handle, Vans::VansTimelineEvaluationPhase::Camera);
-	if (!ExpectTimeline(sessions.WriterCount() == 1 && applier->restoreCount == 0,
+	if (!ExpectTimeline(applier->restoreCount == 0 && applier->value == 1.0,
 		"Camera phase released an active PostScript writer")) return false;
 	const Vans::VansTimelineSessionHandle stale = created.handle;
 	if (!ExpectTimeline(sessions.Release(created.handle), "session release failed")) return false;
-	return ExpectTimeline(!sessions.Query(stale) && applier->restoreCount == 1 &&
-		sessions.WriterCount() == 0 && sessions.RestoreTokenCount() == 0,
+	return ExpectTimeline(!sessions.Query(stale) && applier->restoreCount == 1 && applier->value == 0.0,
 		"generation-safe session release or restore failed");
 }
 
@@ -1196,7 +1129,7 @@ bool TestTimelineSessionFailureTransactionContract()
 	failingTrack.sections.front().channels.front().keys.front().id = "failing-probe-key";
 	asset.tracks.push_back(std::move(failingTrack));
 	Vans::VansTimelineCompileOptions options;
-	options.extensions = &Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
+	options.extensions = TimelineCatalog().trackExtensions;
 	const auto compiled = Vans::VansTimelineCompiler::Compile(asset, options);
 	if (!ExpectTimeline(static_cast<bool>(compiled),
 		"failure transaction Timeline failed compilation")) return false;
@@ -1206,8 +1139,8 @@ bool TestTimelineSessionFailureTransactionContract()
 	applier->failTrackId = "failing-probe-track";
 	Vans::VansTimelineApplierRegistry appliers;
 	std::string error;
-	if (!appliers.Register(applier, error) || !appliers.Seal(error)) return false;
-	Vans::VansTimelineSessionService sessions(Vans::VansTimelineClockRegistry::BuiltIns(), appliers);
+	if (!appliers.Register(applier, error) || !appliers.Seal(false, error)) return false;
+	Vans::VansTimelineSessionService sessions(*TimelineCatalog().clocks, appliers);
 	Vans::VansTimelineSessionDesc desc;
 	desc.timeline = compiled.timeline;
 	desc.clockType = std::string(Vans::TimelineClockNames::Manual);
@@ -1221,7 +1154,7 @@ bool TestTimelineSessionFailureTransactionContract()
 	if (!ExpectTimeline(failed && failed->state == Vans::VansTimelinePlayerState::Error,
 		"partial phase failure did not fail its Session")) return false;
 	if (!ExpectTimeline(applier->applyCount == 1 && applier->restoreCount == 1 &&
-		applier->value == 0.0 && sessions.WriterCount() == 0 && sessions.RestoreTokenCount() == 0,
+		applier->value == 0.0,
 		"partial phase failure leaked a writer or pre-animated state")) return false;
 	return sessions.Release(created.handle);
 }
@@ -1248,8 +1181,8 @@ bool TestTimelineStationaryContinuousContract()
 	applier->m_Type = Vans::VansMakeStableId<Vans::VansTimelineOutputTypeTag>(
 		"Test.CameraContinuous.Output");
 	Vans::VansTimelineApplierRegistry appliers;
-	if (!appliers.Register(applier, error) || !appliers.Seal(error)) return false;
-	Vans::VansTimelineSessionService sessions(Vans::VansTimelineClockRegistry::BuiltIns(), appliers);
+	if (!appliers.Register(applier, error) || !appliers.Seal(false, error)) return false;
+	Vans::VansTimelineSessionService sessions(*TimelineCatalog().clocks, appliers);
 	Vans::VansTimelineSessionDesc desc;
 	desc.timeline = compiled.timeline;
 	desc.clockType = std::string(Vans::TimelineClockNames::Manual);
@@ -1269,29 +1202,29 @@ bool TestTimelineStationaryContinuousContract()
 	if (!sessions.Pause(created.handle)) return false;
 	sessions.Advance(created.handle, 1.0);
 	evaluateFrame();
-	if (!ExpectTimeline(applier->applyCount == 3 && sessions.WriterCount() == 1,
+	if (!ExpectTimeline(applier->applyCount == 3 && applier->restoreCount == 0,
 		"continuous Camera output was not resubmitted on zero-delta and paused frames")) return false;
 	if (!sessions.Release(created.handle)) return false;
-	return ExpectTimeline(applier->restoreCount == 1 && sessions.WriterCount() == 0 &&
-		sessions.RestoreTokenCount() == 0,
+	return ExpectTimeline(applier->restoreCount == 1 && applier->value == 0.0,
 		"stationary continuous output did not restore on Session release");
 }
 
 bool TestTimelineEventContract()
 {
-	Vans::VansPayloadSchemaRegistry payloads;
-	Vans::VansPayloadSchema schema;
+	auto payloads = std::make_shared<Vans::VansTimelinePayloadSchemaRegistry>();
+	Vans::VansTimelinePayloadSchema schema;
 	schema.stableName = "Test.TimelinePayload";
 	schema.typeId = Vans::VansMakeStableId<Vans::VansTimelinePayloadTypeTag>(schema.stableName);
-	Vans::VansPayloadFieldSchema field;
+	Vans::VansTimelinePayloadFieldSchema field;
 	field.name = "value";
 	field.id = Vans::VansMakeStableId<Vans::VansTimelineFieldTag>(field.name);
 	field.type = Vans::VansTimelineValueType::Int64;
-	field.defaultValue = std::int64_t{};
 	field.required = true;
 	schema.fields.push_back(field);
 	std::string error;
-	if (!payloads.Register(std::move(schema), error) || !payloads.Seal(error)) return false;
+	if (!payloads->Register(std::move(schema), error) || !payloads->Seal(false, error)) return false;
+	Vans::VansTimelineRuntimeSystem payloadRuntime(*TimelineCatalog().clocks);
+	if (!payloadRuntime.SetPayloadSchemaRegistry(payloads, error)) return false;
 
 	Vans::VansTimelineAsset asset;
 	asset.durationTicks = 100;
@@ -1327,13 +1260,40 @@ bool TestTimelineEventContract()
 	track.sections.push_back(std::move(originSection));
 	asset.tracks.push_back(std::move(track));
 	Vans::VansTimelineCompileOptions options;
-	options.extensions = &Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
-	options.validation.hasPayloadSchema = [&](Vans::VansTimelinePayloadTypeId id) { return payloads.Resolve(id) != nullptr; };
+	options.extensions = TimelineCatalog().trackExtensions;
+	options.validation.hasPayloadSchema = [&](Vans::VansTimelinePayloadTypeId id)
+	{ return payloadRuntime.HasPayloadSchema(id); };
+	options.validation.validatePayload = [&](Vans::VansTimelinePayloadTypeId id,
+		const Vans::VansSerializedValue& payload, std::string& payloadError)
+	{ return payloadRuntime.ValidatePayload(id, payload, payloadError); };
+	Vans::VansEventLane resolvedLane = Vans::VansEventLane::Editor;
+	const std::vector<std::string> expectedSignalLanes = {
+		"GameLogic", "Script", "MainThread", "Diagnostics", "RenderPrep"
+	};
+	if (!ExpectTimeline(Vans::VansTimelineSignalLaneNames() == expectedSignalLanes &&
+		Vans::VansResolveTimelineSignalLane("GameLogic", resolvedLane) &&
+		resolvedLane == Vans::VansEventLane::GameLogic &&
+		!Vans::VansResolveTimelineSignalLane("Editor", resolvedLane),
+		"Timeline signal lane catalog exposes an unavailable runtime lane")) return false;
+	Vans::VansTimelineAsset editorLaneAsset = asset;
+	for (auto& [name, value] : editorLaneAsset.tracks.front().extensionData.objectFields)
+		if (name == "lane") value = Vans::VansSerializedValue::String("Editor");
+	const auto editorLaneCompile = Vans::VansTimelineCompiler::Compile(editorLaneAsset, options);
+	const bool rejectedEditorLane = std::any_of(
+		editorLaneCompile.diagnostics.begin(), editorLaneCompile.diagnostics.end(),
+		[](const Vans::VansTimelineDiagnostic& diagnostic)
+		{
+			return diagnostic.code == "Timeline.SourceEnumValueInvalid" &&
+				diagnostic.propertyPath == "lane";
+		});
+	if (!ExpectTimeline(!editorLaneCompile && rejectedEditorLane,
+		"Timeline compiler accepted the editor-only Signal lane")) return false;
 	const auto compiled = Vans::VansTimelineCompiler::Compile(asset, options);
 	if (!ExpectTimeline(static_cast<bool>(compiled), "event Timeline failed compilation")) return false;
 	Vans::VansTimelineApplierRegistry appliers;
-	if (!appliers.Seal(error)) return false;
-	Vans::VansTimelineSessionService sessions(Vans::VansTimelineClockRegistry::BuiltIns(), appliers, &payloads);
+	if (!appliers.Seal(true, error)) return false;
+	Vans::VansTimelineSessionService sessions(
+		*TimelineCatalog().clocks, appliers, payloads.get());
 	Vans::VansTimelineSessionDesc desc;
 	desc.timeline = compiled.timeline;
 	desc.clockType = std::string(Vans::TimelineClockNames::Manual);
@@ -1398,7 +1358,7 @@ bool TestTimelineSubTimelineContract()
 	track.sections.push_back(std::move(section));
 	root.tracks.push_back(std::move(track));
 	Vans::VansTimelineCompileOptions options;
-	options.extensions = &Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
+	options.extensions = TimelineCatalog().trackExtensions;
 	options.dependencyLoader = [&](const Vans::VansTimelineDependency&, Vans::VansTimelineAsset& loaded,
 		std::string& identity, std::string&) { loaded = child; identity = "child-guid"; return true; };
 	const auto compiled = Vans::VansTimelineCompiler::Compile(root, options);
@@ -1409,8 +1369,8 @@ bool TestTimelineSubTimelineContract()
 		std::string(Vans::TimelineNames::Transform) + ".Output");
 	Vans::VansTimelineApplierRegistry appliers;
 	std::string error;
-	if (!appliers.Register(applier, error) || !appliers.Seal(error)) return false;
-	Vans::VansTimelineSessionService sessions(Vans::VansTimelineClockRegistry::BuiltIns(), appliers);
+	if (!appliers.Register(applier, error) || !appliers.Seal(false, error)) return false;
+	Vans::VansTimelineSessionService sessions(*TimelineCatalog().clocks, appliers);
 	Vans::VansTimelineSessionDesc desc;
 	desc.timeline = compiled.timeline;
 	desc.clockType = std::string(Vans::TimelineClockNames::Manual);
@@ -1424,11 +1384,12 @@ bool TestTimelineSubTimelineContract()
 	if (!created || !sessions.Play(created.handle)) return false;
 	sessions.Advance(created.handle, 10.0 / 60000.0);
 	sessions.Evaluate(created.handle, Vans::VansTimelineEvaluationPhase::PostScript);
-	if (!ExpectTimeline(sessions.SessionCount() == 2 && applier->applyCount == 1 &&
+	if (!ExpectTimeline(applier->applyCount == 1 &&
 		applier->lastTarget == injectedTarget,
 		"SubTimeline did not inherit and apply its runtime binding")) return false;
 	if (!sessions.Release(created.handle)) return false;
-	if (!ExpectTimeline(sessions.SessionCount() == 0,
+	if (!ExpectTimeline(!sessions.Query(created.handle) && applier->restoreCount == 1 &&
+		applier->value == 0.0,
 		"root release did not propagate to child Session")) return false;
 
 	applier->failApply = true;
@@ -1450,7 +1411,7 @@ bool TestTimelinePreAnimatedStackContract()
 	auto applier = std::make_shared<ProbeSampleApplier>();
 	applier->m_Type = Vans::VansMakeStableId<Vans::VansTimelineOutputTypeTag>("Test.StackOutput");
 	std::string error;
-	if (!registry.Register(applier, error) || !registry.Seal(error)) return false;
+	if (!registry.Register(applier, error) || !registry.Seal(false, error)) return false;
 	state.BindAppliers(&registry);
 	const Vans::VansTimelineWriterHandle lower{ 0, 1 };
 	const Vans::VansTimelineWriterHandle upper{ 1, 1 };
@@ -1459,15 +1420,64 @@ bool TestTimelinePreAnimatedStackContract()
 	auto upperToken = applier->Capture(upper, 2.0, resource);
 	lowerToken.applier = 0;
 	upperToken.applier = 0;
-	if (!state.Store(lowerToken) || !state.Store(upperToken)) return false;
+	const Vans::VansTimelinePreAnimatedStoreResult lowerStore = state.Store(lowerToken);
+	const Vans::VansTimelinePreAnimatedStoreResult upperStore = state.Store(upperToken);
+	const Vans::VansTimelinePreAnimatedStoreResult repeatedUpperStore = state.Store(upperToken);
+	if (!ExpectTimeline(lowerStore.accepted && !lowerStore.overlappingWriter.IsValid() &&
+		upperStore.accepted && upperStore.overlappingWriter == lower &&
+		repeatedUpperStore.accepted && !repeatedUpperStore.overlappingWriter.IsValid(),
+		"same-resource writer overlap was not reported exactly once")) return false;
 	if (!ExpectTimeline(!state.ReleaseWriter(lower, true) && applier->value == 2.0 &&
-		applier->restoreCount == 0 && applier->deactivateCount == 1 && state.TokenCount() == 2,
+		applier->restoreCount == 0 && applier->deactivateCount == 1,
 		"lower writer restored through an active upper writer")) return false;
 	if (!ExpectTimeline(state.ReleaseWriter(upper, true) && applier->value == 0.0 &&
-		applier->restoreCount == 2 && applier->deactivateCount == 2 && state.TokenCount() == 0,
+		applier->restoreCount == 2 && applier->deactivateCount == 2,
 		"deferred writer restores did not unwind in reverse order")) return false;
 	state.RestoreAll();
-	return ExpectTimeline(state.TokenCount() == 0, "pre-animated state is not idempotent");
+	if (!ExpectTimeline(applier->value == 0.0 && applier->restoreCount == 2 &&
+		applier->deactivateCount == 2, "pre-animated state is not idempotent")) return false;
+
+	Vans::VansTimelineAsset asset = MakeProbeAsset();
+	Vans::VansTimelineTrack overlappingTrack = asset.tracks.front();
+	overlappingTrack.id = "overlapping-probe-track";
+	overlappingTrack.sections.front().id = "overlapping-probe-section";
+	overlappingTrack.sections.front().channels.front().id = "overlapping-probe-channel";
+	overlappingTrack.sections.front().channels.front().keys.front().id = "overlapping-probe-key";
+	asset.tracks.push_back(std::move(overlappingTrack));
+	Vans::VansTimelineCompileOptions options;
+	options.extensions = TimelineCatalog().trackExtensions;
+	const auto compiled = Vans::VansTimelineCompiler::Compile(asset, options);
+	if (!ExpectTimeline(static_cast<bool>(compiled),
+		"same-resource overlap Timeline failed compilation")) return false;
+	auto overlapApplier = std::make_shared<ProbeSampleApplier>();
+	overlapApplier->m_Type = Vans::VansMakeStableId<Vans::VansTimelineOutputTypeTag>(
+		std::string(Vans::TimelineNames::Transform) + ".Output");
+	overlapApplier->resource = resource;
+	Vans::VansTimelineApplierRegistry overlapAppliers;
+	if (!overlapAppliers.Register(overlapApplier, error) || !overlapAppliers.Seal(false, error)) return false;
+	Vans::VansTimelineSessionService sessions(
+		*TimelineCatalog().clocks, overlapAppliers);
+	Vans::VansTimelineSessionDesc desc;
+	desc.timeline = compiled.timeline;
+	desc.clockType = std::string(Vans::TimelineClockNames::Manual);
+	desc.runtimeBindings = { { Vans::VansMakeStableId<Vans::VansTimelineBindingTag>("probe-binding"),
+		{}, { 0, 1 }, 1 } };
+	const auto created = sessions.Create(desc);
+	if (!created || !sessions.Play(created.handle)) return false;
+	sessions.Advance(created.handle, 1.0 / 60000.0);
+	sessions.Evaluate(created.handle, Vans::VansTimelineEvaluationPhase::PostScript);
+	sessions.Advance(created.handle, 1.0 / 60000.0);
+	sessions.Evaluate(created.handle, Vans::VansTimelineEvaluationPhase::PostScript);
+	const std::size_t overlapDiagnostics = std::count_if(
+		sessions.Diagnostics().begin(), sessions.Diagnostics().end(),
+		[](const Vans::VansTimelineDiagnostic& diagnostic)
+		{ return diagnostic.code == "Timeline.ResourceWriterOverlap"; });
+	if (!ExpectTimeline(overlapDiagnostics == 1 && sessions.Query(created.handle) &&
+		sessions.Query(created.handle)->state == Vans::VansTimelinePlayerState::Playing,
+		"same-resource overlap diagnostic repeated or failed its Session")) return false;
+	if (!sessions.Release(created.handle)) return false;
+	return ExpectTimeline(overlapApplier->restoreCount == 2 && overlapApplier->value == 0.0,
+		"same-resource overlap release leaked a writer or restore token");
 }
 
 bool TestTimelineTimeContract()

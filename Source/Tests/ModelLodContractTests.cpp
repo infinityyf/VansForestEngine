@@ -1,5 +1,7 @@
-#include "../EngineCore/EditorCore/ModelLod/VansModelLodBuilder.h"
+#include "../EngineCore/AuthoringCore/ModelLod/VansModelLodBuilder.h"
+#include "../EngineCore/AuthoringCore/Pcg/VansPlantLodOrchestrator.h"
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
+#include "../EngineCore/AssetCore/VansDerivedArtifactLayout.h"
 #include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
 #include "../EngineCore/PcgCore/Serialization/VansPlantTypeAssetCodec.h"
@@ -55,7 +57,30 @@ bool RunModelLodContractTests()
         check(bool(database.Scan(VansAssetOperationPolicy::ReadOnly())),"Asset scan failed");
         const std::vector<VansModelLodSourcePart> sources{{model,material,0,false}};
         VansModelLodSettings settings;VansModelLodAsset built;
-        check(VansModelLodBuilder::Build(database,sources,settings,built,error),error);
+        VansPlantTypeAsset inspectSource;inspectSource.name="Inspect Tree";inspectSource.category=VansPlantCategory::Tree;
+        VansPlantVariant inspectVariant;inspectVariant.id="inspect-grid";inspectVariant.name="Inspect Grid";
+        inspectVariant.geometry=VansPlantGeometry::Mesh;inspectVariant.weight=1;
+        inspectVariant.parts={{"surface",VansPlantPartKind::Surface,model,0,material}};
+        inspectSource.variants={inspectVariant};
+        VansPlantTypeAsset inspected;
+        std::vector<VansPlantLodVariantSummary> inspectSummaries;
+        VansIOAudit::Reset();
+        check(VansPlantLodOrchestrator::Build(database,inspectSource,VansModelLodBuildMode::Inspect,
+            inspected,inspectSummaries,error),error);
+        check(inspected.variants[0].lod.levels.size()==2&&inspectSummaries.size()==1&&
+            inspectSummaries[0].triangleCounts.size()==2,"Plant LOD inspection lost orchestration results");
+        const auto modelLodLocation=VansDerivedArtifactLayout::ModelLodAuthoringAssetSet(
+            root/"Assets",inspected.variants[0].lod.buildKey);
+        check(modelLodLocation&&modelLodLocation.artifactClass==VansDerivedArtifactClass::AuthoringAssetSet&&
+            modelLodLocation.path.parent_path().filename()=="ModelLOD",
+            "Model LOD artifact layout lost its authoring-asset classification");
+        check(!VansDerivedArtifactLayout::ModelLodAuthoringAssetSet(root/"Assets","../escape"),
+            "Model LOD artifact layout accepted a non-leaf build key");
+        for(const auto& event:VansIOAudit::Snapshot())
+            check(event.operation!=VansIOOperation::StageWrite,"Plant LOD dry-run wrote a derived artifact");
+        check(!fs::exists(root/"Assets/Generated/ModelLOD"),"Plant LOD dry-run created the artifact root");
+        check(VansModelLodBuilder::Build(database,sources,settings,
+            VansModelLodBuildMode::Publish,built,error),error);
         check(built.levels.size()==2 && built.centerRadius[3]>0,"LOD levels/bounds missing");
         Assimp::Importer referenceImporter;
         const auto* reference=referenceImporter.ReadFile(source.string(),aiProcess_Triangulate|aiProcess_FlipUVs|aiProcess_CalcTangentSpace|aiProcess_GenSmoothNormals);
@@ -85,18 +110,33 @@ bool RunModelLodContractTests()
         }
         const auto timestamp=fs::last_write_time(firstPath);
         VansIOAudit::Reset();VansModelLodAsset again;
-        check(VansModelLodBuilder::Build(database,sources,settings,again,error),error);
+        check(VansModelLodBuilder::Build(database,sources,settings,
+            VansModelLodBuildMode::Publish,again,error),error);
         check(again.buildKey==built.buildKey && again.levels[0].parts[0].model==built.levels[0].parts[0].model &&
             fs::last_write_time(firstPath)==timestamp,"Cache did not reuse model identity and bytes");
         for(const auto& event:VansIOAudit::Snapshot())check(event.operation!=VansIOOperation::StageWrite,"Cache hit wrote an asset");
         check(VansFileStorage::WriteAtomicBytes(firstPath,"corrupt",error),error);
-        check(VansModelLodBuilder::Build(database,sources,settings,again,error),error);
+        check(VansModelLodBuilder::Build(database,sources,settings,
+            VansModelLodBuildMode::Publish,again,error),error);
         check(fs::file_size(firstPath)>7 && again.buildKey==built.buildKey,"Corrupt derived asset was not rebuilt");
         check(VansFileStorage::WriteAtomicBytes(source,mesh.str()+"# source revision\n",error),error);
-        check(VansModelLodBuilder::Build(database,sources,settings,again,error),error);
+        check(VansModelLodBuilder::Build(database,sources,settings,
+            VansModelLodBuildMode::Publish,again,error),error);
         check(again.buildKey!=built.buildKey,"Source edit did not invalidate derived models");
+        auto oneLevel=settings;oneLevel.ratios={.4f};
+        VansModelLodAsset oneLevelResult;
+        check(VansModelLodBuilder::Build(database,sources,oneLevel,
+            VansModelLodBuildMode::Inspect,oneLevelResult,error) && oneLevelResult.levels.size()==1,
+            "A valid one-level LOD configuration was not built");
         auto invalid=settings;invalid.ratios={.2f,.5f};
-        check(!VansModelLodBuilder::Build(database,sources,invalid,again,error),"Invalid LOD ordering accepted");
+        check(!VansModelLodBuilder::Build(database,sources,invalid,
+            VansModelLodBuildMode::Publish,again,error),"Invalid LOD ordering accepted");
+        invalid.ratios.clear();
+        check(!VansModelLodBuilder::Build(database,sources,invalid,
+            VansModelLodBuildMode::Publish,again,error),"An empty LOD configuration was accepted");
+        invalid.ratios={.6f,.3f,.1f};
+        check(!VansModelLodBuilder::Build(database,sources,invalid,
+            VansModelLodBuildMode::Publish,again,error),"LOD levels exceeded the runtime capacity");
         VansPlantTypeAsset plant;plant.name="Tree";plant.category=VansPlantCategory::Tree;
         VansPlantVariant variant;variant.id="grid";variant.geometry=VansPlantGeometry::Mesh;variant.weight=1;
         variant.parts={{"surface",VansPlantPartKind::Surface,model,0,material}};variant.lod=built;

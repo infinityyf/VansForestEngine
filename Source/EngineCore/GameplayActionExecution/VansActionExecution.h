@@ -111,14 +111,18 @@ public:
 };
 
 // A Driver may own the primary Action executor or run as a sidecar beside it.
-// Sidecars are module-owned and receive the same lifecycle without introducing
-// a dependency from GAF Core to the module that implements them.
+// Sidecars are module-owned. TickFrame advances time exactly once per frame;
+// OnEvent also runs for events delivered by the same-frame late continuation.
 class IVansActionSidecarDriver
 {
 public:
 	virtual ~IVansActionSidecarDriver() = default;
 	virtual bool Start(VansActionExecutionContext& context, std::string& error) = 0;
-	virtual bool Tick(VansActionExecutionContext& context, std::string& error) = 0;
+	virtual bool TickFrame(VansActionExecutionContext& context, std::string& error) = 0;
+	virtual bool OnEvent(VansActionExecutionContext& context,
+		const VansActionEvent& event, std::string& error) = 0;
+	virtual void OnCancel(VansActionExecutionContext& context,
+		VansActionCancelReason reason) = 0;
 	virtual void Finish(VansActionExecutionContext& context, VansActionEndReason reason) = 0;
 	virtual std::string_view StableName() const = 0;
 };
@@ -148,7 +152,7 @@ class VansActionExecutorRegistry
 public:
 	using Factory = std::function<std::unique_ptr<IVansActionExecutor>(const VansCompiledActionDefinition&)>;
 
-	bool Register(VansActionExecutorId id, std::string stableName, Factory factory, std::string& error);
+	bool Register(std::string stableName, Factory factory, std::string& error);
 	bool Seal(std::string& error);
 	std::unique_ptr<IVansActionExecutor> Create(
 		VansActionExecutorId id,
@@ -174,9 +178,11 @@ namespace ActionExecutorNames
 }
 
 class VansActionGraphNodeRegistry;
-bool VansRegisterBuiltInActionExecutors(
+bool VansRegisterImmediateActionExecutor(
+	VansActionExecutorRegistry& registry, std::string& error);
+bool VansRegisterGraphActionExecutor(
 	VansActionExecutorRegistry& registry,
 	const VansActionGraphNodeRegistry* graphNodes,
-	std::string& error,
-	std::size_t maximumGraphTransitionsPerTick = 1024);
+	std::size_t maximumGraphTransitionsPerTick,
+	std::string& error);
 }

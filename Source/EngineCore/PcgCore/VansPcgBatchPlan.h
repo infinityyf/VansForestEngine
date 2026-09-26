@@ -29,6 +29,12 @@ struct VansPcgBatchUpdate
     std::map<VansPcgBatchKey,std::shared_ptr<const VansPcgBatchSource>> batches;
     bool Contains(const VansPcgBatchKey& key) const;
 };
+enum class VansPcgUpdateScope
+{
+    LocalCoverage,
+    WholeRegion
+};
+VansPcgUpdateScope ResolvePcgUpdateScope(const VansPcgLayer& layer);
 bool BuildPcgBatchUpdate(const VansPcgRegion& region,const VansPcgLayerResult& result,
     const std::optional<VansPcgBounds>& coverage,VansPcgBatchUpdate& update,std::string& error);
 bool EqualPcgBatchSources(const VansPcgBatchSource& a,const VansPcgBatchSource& b);

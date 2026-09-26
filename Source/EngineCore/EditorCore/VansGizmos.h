@@ -5,9 +5,15 @@
 #include "imgui.h"
 #include "ImGuizmo.h"
 #include "../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../EngineAPILayer/Public/ISceneInteractionEditorAPI.h"
 #include "../RenderCore/VansCamera.h"
 
 #include <string>
+
+namespace Vans
+{
+    class VansSceneEditService;
+}
 
 // Requires External/GUI/ImGuizmo to be added to the project's include directories.
 // In VS project properties: C/C++ -> General -> Additional Include Directories
@@ -15,6 +21,7 @@
 
 namespace VansGraphics
 {
+	struct VansEditorDebugViewState;
     // ─────────────────────────────────────────────────────────────────────────
     //  Gizmo mode and space enumerations
     // ─────────────────────────────────────────────────────────────────────────
@@ -48,7 +55,9 @@ namespace VansGraphics
         // windowPos  – top-left of the Scene ImGui window in screen coords.
         // windowSize – size of the Scene ImGui window in screen coords.
         void Draw(Vans::EditorAPI::IEngineEditorAPI& api,
-                  VansCamera* camera, ImVec2 windowPos, ImVec2 windowSize);
+                  Vans::VansSceneEditService* sceneEdits,
+                  VansCamera* camera, ImVec2 windowPos, ImVec2 windowSize,
+				  const VansEditorDebugViewState& debugViewState);
 
         // Handle W / E / R / X / Escape hotkeys.
         // Call once per frame inside the Scene window.
@@ -56,13 +65,15 @@ namespace VansGraphics
 
     private:
         bool m_WasUsing = false;
-        bool m_PendingDocumentSync = false;
-        std::string m_PendingDocumentSyncEntityGuid;
-        Vans::EditorAPI::RuntimeTransformSnapshot m_PendingDocumentSyncTransform;
+        bool m_TransformEditPending = false;
+        std::string m_TransformEditEntityGuid;
+        Vans::EditorAPI::RuntimeTransformSnapshot m_BeforeLocalTransform;
 
         static ImGuizmo::OPERATION OperationFromMode(GizmoMode mode);
-        static void SyncTransformToSceneDocument(const std::string& entityGuid,
-                                                 const Vans::EditorAPI::RuntimeTransformSnapshot& transform);
+        void CancelPendingTransform(Vans::EditorAPI::ISceneInteractionEditorAPI& api);
+        void FinishPendingTransform(Vans::EditorAPI::ISceneInteractionEditorAPI& api,
+                                    Vans::VansSceneEditService& sceneEdits);
+        void ResetPendingTransform();
 
     };
 

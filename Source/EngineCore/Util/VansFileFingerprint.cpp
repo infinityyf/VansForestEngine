@@ -7,7 +7,6 @@ namespace Vans
 {
 namespace
 {
-	constexpr std::uint64_t kFnvOffsetBasis = 14695981039346656037ull;
 	constexpr std::uint64_t kFnvPrime = 1099511628211ull;
 
 	void SetError(std::string* outError, const std::string& message)
@@ -19,14 +18,26 @@ namespace
 
 std::uint64_t ComputeMemoryFnv1a64(const void* data, std::size_t size)
 {
+	return ContinueMemoryFnv1a64(VANS_FNV1A64_OFFSET_BASIS, data, size);
+}
+
+std::uint64_t ContinueMemoryFnv1a64(std::uint64_t hash, const void* data, std::size_t size)
+{
 	const auto* bytes = static_cast<const unsigned char*>(data);
-	std::uint64_t hash = kFnvOffsetBasis;
 	for (std::size_t i = 0; i < size; ++i)
 	{
 		hash ^= static_cast<std::uint64_t>(bytes[i]);
 		hash *= kFnvPrime;
 	}
 	return hash;
+}
+
+std::uint64_t ContinueUint64LittleEndianFnv1a64(std::uint64_t hash, std::uint64_t value)
+{
+	std::array<unsigned char, sizeof(value)> bytes{};
+	for (std::size_t index = 0; index < bytes.size(); ++index)
+		bytes[index] = static_cast<unsigned char>(value >> (index * 8));
+	return ContinueMemoryFnv1a64(hash, bytes.data(), bytes.size());
 }
 
 bool ComputeFileFingerprint(
@@ -56,16 +67,12 @@ bool ComputeFileFingerprint(
 	}
 
 	std::array<char, 64 * 1024> buffer{};
-	std::uint64_t hash = kFnvOffsetBasis;
+	std::uint64_t hash = VANS_FNV1A64_OFFSET_BASIS;
 	while (file)
 	{
 		file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
 		const std::streamsize count = file.gcount();
-		for (std::streamsize i = 0; i < count; ++i)
-		{
-			hash ^= static_cast<std::uint64_t>(static_cast<unsigned char>(buffer[static_cast<std::size_t>(i)]));
-			hash *= kFnvPrime;
-		}
+		hash = ContinueMemoryFnv1a64(hash, buffer.data(), static_cast<std::size_t>(count));
 	}
 
 	if (!file.eof())

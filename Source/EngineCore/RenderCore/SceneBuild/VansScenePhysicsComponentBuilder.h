@@ -3,6 +3,7 @@
 #include "../VansScene.h"
 
 #include <functional>
+#include <memory>
 #include "../../SceneCore/VansScenePhysicsComponentConfig.h"
 
 class VansScriptCharacterControllerComponent;
@@ -13,9 +14,11 @@ namespace VansGraphics
 {
 	struct VansScenePhysicsBuildResult
 	{
+		bool success = false;
 		VansScriptPhysicsComponent* physics = nullptr;
 		VansScriptClothComponent* cloth = nullptr;
 		VansScriptCharacterControllerComponent* characterController = nullptr;
+		std::string error;
 	};
 
 	class VansScenePhysicsComponentBuilder
@@ -28,22 +31,25 @@ namespace VansGraphics
 			bool hasObjectTransform,
 			const std::function<void()>& ensureObjectTransform);
 
-		static VansEngine::VansPhysicsNode* LoadPhysicsNode(
+	private:
+		static std::unique_ptr<VansEngine::VansPhysicsNode> CreatePhysicsNode(
 			VansScene& scene,
 			const Vans::VansScenePhysicsNodeConfig& config,
 			VansRenderNode* associatedRenderNode,
-			uint32_t standaloneTransformID = UINT32_MAX);
+			uint32_t standaloneTransformID,
+			std::string& error);
 
-		static VansEngine::VansClothNode* LoadClothNode(
+		static std::unique_ptr<VansEngine::VansClothNode> CreateClothNode(
 			VansScene& scene,
 			const Vans::VansSceneClothNodeConfig& config,
 			VansRenderNode* associatedRenderNode,
-			std::string* outProfileGuid = nullptr);
+			std::string& profileGuid,
+			std::string& error);
 
-		static VansEngine::VansCharacterControllerNode* LoadCharacterControllerNode(
-			VansScene& scene,
+		static std::unique_ptr<VansEngine::VansCharacterControllerNode> CreateCharacterControllerNode(
 			const Vans::VansSceneCharacterControllerConfig& config,
 			VansRenderNode* associatedRenderNode,
-			uint32_t standaloneTransformID = UINT32_MAX);
+			uint32_t standaloneTransformID,
+			std::string& error);
 	};
 }

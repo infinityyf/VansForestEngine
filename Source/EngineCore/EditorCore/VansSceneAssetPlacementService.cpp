@@ -1,7 +1,6 @@
 #include "VansSceneAssetPlacementService.h"
 
 #include "VansSceneEditService.h"
-#include "VansScenePropertyValueAdapter.h"
 
 #include <utility>
 #include <vector>
@@ -9,7 +8,7 @@
 namespace VansGraphics
 {
 VansSceneAssetPlacementService::Result VansSceneAssetPlacementService::PlaceModelAsset(
-    Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+    Vans::EditorAPI::IRuntimeSceneEditorAPI& editorAPI,
     Vans::VansSceneEditService& editService,
     const std::string& assetGuid,
     const Vans::EditorAPI::Vec3& worldPosition)
@@ -25,9 +24,9 @@ VansSceneAssetPlacementService::Result VansSceneAssetPlacementService::PlaceMode
 
     std::vector<Vans::VansSerializedValue> entities;
     entities.reserve(payload.sceneEntities.size());
-    for (const Vans::EditorAPI::ScenePropertyValue& entityValue : payload.sceneEntities)
+    for (const Vans::VansSerializedValue& entityValue : payload.sceneEntities)
     {
-        Vans::VansSerializedValue entity = Vans::ToSerializedValue(entityValue);
+        Vans::VansSerializedValue entity = entityValue;
         if (entity.kind != Vans::VansSerializedValue::Kind::Object)
             return { false, "Prepared model placement payload contains invalid scene entity", {} };
         entities.push_back(std::move(entity));
@@ -38,7 +37,7 @@ VansSceneAssetPlacementService::Result VansSceneAssetPlacementService::PlaceMode
     Vans::SceneEditLifecycleHooks hooks;
     if (expectsRuntimeAppend)
     {
-        std::vector<Vans::EditorAPI::ScenePropertyValue> runtimeSceneEntities =
+        std::vector<Vans::VansSerializedValue> runtimeSceneEntities =
             payload.sceneEntities;
         auto createRuntimeEntities =
             [&editorAPI, runtimeSceneEntities]()

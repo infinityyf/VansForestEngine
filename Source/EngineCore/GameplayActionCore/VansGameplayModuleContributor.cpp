@@ -56,10 +56,25 @@ VansGAFModuleDescriptor VansMakeGAFModuleDescriptor(
 	return descriptor;
 }
 
+bool VansGAFRuntimeRegistry::EnsureOpen(std::string& error) const
+{
+	if (!m_Sealed) return true;
+	error = "GAF runtime registry is sealed";
+	return false;
+}
+
+bool VansGAFRuntimeRegistry::Seal(std::string& error)
+{
+	error.clear();
+	m_Sealed = true;
+	return true;
+}
+
 bool VansGAFRuntimeRegistry::RegisterService(
 	std::shared_ptr<IVansActionService> service,
 	std::string& error)
 {
+	if (!EnsureOpen(error)) return false;
 	return m_Services.Register(std::move(service), error);
 }
 
@@ -67,6 +82,7 @@ bool VansGAFRuntimeRegistry::InstantiateService(
 	const ServiceFactory& factory,
 	std::string& error)
 {
+	if (!EnsureOpen(error)) return false;
 	if (!factory)
 	{
 		error = "Gameplay module contains an invalid Action capability factory";
@@ -85,6 +101,7 @@ bool VansGAFRuntimeRegistry::RegisterGraphNodes(
 	const GraphNodeRegistrar& registrar,
 	std::string& error)
 {
+	if (!EnsureOpen(error)) return false;
 	if (!registrar)
 	{
 		error = "Gameplay module contains an invalid Graph node contributor";
@@ -93,10 +110,24 @@ bool VansGAFRuntimeRegistry::RegisterGraphNodes(
 	return registrar(m_GraphNodes, error);
 }
 
+bool VansGAFRuntimeRegistry::RegisterExecutors(
+	const ExecutorRegistrar& registrar,
+	std::string& error)
+{
+	if (!EnsureOpen(error)) return false;
+	if (!registrar)
+	{
+		error = "Gameplay module contains an invalid Action Executor contributor";
+		return false;
+	}
+	return registrar(m_Executors, error);
+}
+
 bool VansGAFRuntimeRegistry::RegisterExecutorOwnedDriver(
 	std::string typeId,
 	std::string& error)
 {
+	if (!EnsureOpen(error)) return false;
 	return m_Drivers.RegisterExecutorOwned(std::move(typeId), error);
 }
 
@@ -105,6 +136,7 @@ bool VansGAFRuntimeRegistry::RegisterSidecarDriver(
 	VansActionDriverRegistry::Factory factory,
 	std::string& error)
 {
+	if (!EnsureOpen(error)) return false;
 	return m_Drivers.RegisterSidecar(std::move(typeId), std::move(factory), error);
 }
 
@@ -112,6 +144,7 @@ bool VansGAFRuntimeRegistry::RegisterTargetingHandlers(
 	const TargetingHandlerRegistrar& registrar,
 	std::string& error)
 {
+	if (!EnsureOpen(error)) return false;
 	if (!registrar)
 	{
 		error = "Gameplay module contains an invalid Targeting contributor";
@@ -124,6 +157,7 @@ bool VansGAFRuntimeRegistry::ProvideExternalCosts(
 	std::shared_ptr<IVansActionExternalCostProvider> provider,
 	std::string& error)
 {
+	if (!EnsureOpen(error)) return false;
 	if (!provider)
 	{
 		error = "Gameplay module external cost provider is invalid";
@@ -143,6 +177,7 @@ bool VansGAFRuntimeRegistry::RegisterHostInitializer(
 	HostInitializer initializer,
 	std::string& error)
 {
+	if (!EnsureOpen(error)) return false;
 	if (typeId.empty() || !initializer)
 	{
 		error = "Gameplay module Host initializer is invalid";
@@ -161,6 +196,7 @@ bool VansGAFRuntimeRegistry::RegisterActionSetInitializer(
 	VansActionSetInitializerHandler initializer,
 	std::string& error)
 {
+	if (!EnsureOpen(error)) return false;
 	if (typeId.empty() || !initializer)
 	{
 		error = "Gameplay module ActionSet initializer is invalid";

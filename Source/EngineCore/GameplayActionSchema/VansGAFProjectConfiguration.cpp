@@ -1,6 +1,7 @@
 #include "VansGAFProjectConfiguration.h"
 
 #include "../GameplayActionCore/VansGAFExtensionRegistry.h"
+#include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../AssetCore/Storage/VansFileStorage.h"
@@ -10,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 
 namespace Vans
 {
@@ -39,15 +41,32 @@ bool ReadRequired(const std::filesystem::path& path, Json& root, std::string& er
 	return true;
 }
 
+bool IsTemplateAssetType(VansAssetType type)
+{
+	switch (type)
+	{
+	case VansAssetType::ActionDefinition:
+	case VansAssetType::ActionSet:
+	case VansAssetType::GameplayEffect:
+	case VansAssetType::GameplayCue:
+	case VansAssetType::AttributeSet:
+	case VansAssetType::TargetingPolicy:
+	case VansAssetType::GameplayTagTree:
+	case VansAssetType::PayloadSchema:
+	case VansAssetType::ActionGraph:
+	case VansAssetType::CameraRigProfile:
+	case VansAssetType::CameraShakeProfile:
+	case VansAssetType::GAFEditorLayout:
+		return true;
+	default:
+		return false;
+	}
+}
+
 bool IsTemplateFile(const std::filesystem::path& path)
 {
-	const std::string extension = path.extension().string();
-	return extension == ".json" || extension == ".vaction" || extension == ".vactionset" ||
-		extension == ".veffect" || extension == ".vcue" || extension == ".vattributeset" ||
-		extension == ".vtargeting" || extension == ".vtagtree" ||
-		extension == ".vpayloadschema" || extension == ".vactiongraph" ||
-		extension == ".vcamerarig" || extension == ".vcamerashake" ||
-		extension == ".gafeditorlayout";
+	return path.extension() == ".json" ||
+		IsTemplateAssetType(VansAssetDatabase::Classify(path));
 }
 
 void ReadStringSet(const Json& root, const char* name, std::unordered_set<std::string>& output)
@@ -85,11 +104,20 @@ Json BuildSettingsJson(const VansGAFProjectConfiguration& configuration)
 			{ "stripEditorMetadata", settings.stripEditorMetadata },
 			{ "treatWarningsAsErrors", settings.treatCookWarningsAsErrors }
 		} },
+		{ "diagnostics", Json{
+			{ "enabled", settings.diagnostics.enabled },
+			{ "maximumActionTraceEntries", settings.diagnostics.maximumActionTraceEntries },
+			{ "maximumRecentEventsPerAction", settings.diagnostics.maximumRecentEventsPerAction },
+			{ "maximumCompletedActionSnapshots", settings.diagnostics.maximumCompletedActionSnapshots }
+		} },
 		{ "performance", Json{
 			{ "maximumActiveActionsPerHost", settings.performance.maximumActiveActionsPerHost },
 			{ "maximumTasksPerAction", settings.performance.maximumTasksPerAction },
 			{ "maximumGraphTransitionsPerTick", settings.performance.maximumGraphTransitionsPerTick },
 			{ "maximumEffectsPerHost", settings.performance.maximumEffectsPerHost },
+			{ "maximumCueHistoryPerHost", settings.performance.maximumCueHistoryPerHost },
+			{ "minimumEffectPeriodSeconds", settings.performance.minimumEffectPeriodSeconds },
+			{ "maximumEffectPulsesPerTick", settings.performance.maximumEffectPulsesPerTick },
 			{ "maximumPayloadBytes", settings.performance.maximumPayloadBytes }
 		} },
 		{ "templateDirectory", settings.templateDirectory }
@@ -119,6 +147,7 @@ Json BuildSchemaJson(const VansGAFProjectConfiguration& configuration)
 			};
 			if (!field.defaultValue.IsNull())
 				encoded["default"] = EncodeSerializedValueJson<Json>(field.defaultValue);
+			if (!field.enumValues.empty()) encoded["enumValues"] = field.enumValues;
 			fields.push_back(std::move(encoded));
 		}
 		types.push_back(Json{
@@ -287,19 +316,55 @@ bool DecodeConfigurationJsonDocuments(
 	}
 	configuration.settings.templateDirectory =
 		settings.value("templateDirectory", std::string("EngineAssets/GAF/Templates"));
+	if (!settings.contains("diagnostics") || !settings["diagnostics"].is_object())
+	{
+		error = "GAFSettings requires a diagnostics object";
+		return false;
+	}
+	const Json& diagnostics = settings["diagnostics"];
+	if (!diagnostics.contains("enabled") ||
+		!diagnostics.contains("maximumActionTraceEntries") ||
+		!diagnostics.contains("maximumRecentEventsPerAction") ||
+		!diagnostics.contains("maximumCompletedActionSnapshots"))
+	{
+		error = "GAF diagnostics requires enabled and all retention limits";
+		return false;
+	}
+	configuration.settings.diagnostics.enabled =
+		diagnostics["enabled"].get<bool>();
+	configuration.settings.diagnostics.maximumActionTraceEntries =
+		diagnostics["maximumActionTraceEntries"].get<std::size_t>();
+	configuration.settings.diagnostics.maximumRecentEventsPerAction =
+		diagnostics["maximumRecentEventsPerAction"].get<std::size_t>();
+	configuration.settings.diagnostics.maximumCompletedActionSnapshots =
+		diagnostics["maximumCompletedActionSnapshots"].get<std::size_t>();
 	if (settings.contains("performance") && settings["performance"].is_object())
 	{
 		const Json& performance = settings["performance"];
 		configuration.settings.performance.maximumActiveActionsPerHost =
-			performance.value("maximumActiveActionsPerHost", 64u);
+			performance.value("maximumActiveActionsPerHost",
+				VansGAFPerformanceBudget::DefaultMaximumActiveActionsPerHost);
 		configuration.settings.performance.maximumTasksPerAction =
-			performance.value("maximumTasksPerAction", 64u);
+			performance.value("maximumTasksPerAction",
+				VansGAFPerformanceBudget::DefaultMaximumTasksPerAction);
 		configuration.settings.performance.maximumGraphTransitionsPerTick =
-			performance.value("maximumGraphTransitionsPerTick", 1024u);
+			performance.value("maximumGraphTransitionsPerTick",
+				VansGAFPerformanceBudget::DefaultMaximumGraphTransitionsPerTick);
 		configuration.settings.performance.maximumEffectsPerHost =
-			performance.value("maximumEffectsPerHost", 256u);
+			performance.value("maximumEffectsPerHost",
+				VansGAFPerformanceBudget::DefaultMaximumEffectsPerHost);
+		configuration.settings.performance.maximumCueHistoryPerHost =
+			performance.value("maximumCueHistoryPerHost",
+				VansGAFPerformanceBudget::DefaultMaximumCueHistoryPerHost);
+		configuration.settings.performance.minimumEffectPeriodSeconds =
+			performance.value("minimumEffectPeriodSeconds",
+				VansGAFPerformanceBudget::DefaultMinimumEffectPeriodSeconds);
+		configuration.settings.performance.maximumEffectPulsesPerTick =
+			performance.value("maximumEffectPulsesPerTick",
+				VansGAFPerformanceBudget::DefaultMaximumEffectPulsesPerTick);
 		configuration.settings.performance.maximumPayloadBytes =
-			performance.value("maximumPayloadBytes", 4096u);
+			performance.value("maximumPayloadBytes",
+				VansGAFPerformanceBudget::DefaultMaximumPayloadBytes);
 	}
 	ReadStringSet(schemas, "modules", configuration.allowlist.modules);
 	if (schemas.contains("types") && schemas["types"].is_array())
@@ -321,6 +386,9 @@ bool DecodeConfigurationJsonDocuments(
 					field.required = encodedField.value("required", false);
 					if (encodedField.contains("default"))
 						field.defaultValue = DecodeSerializedValueJson(encodedField["default"]);
+					if (encodedField.contains("enumValues") && encodedField["enumValues"].is_array())
+						for (const Json& value : encodedField["enumValues"])
+							if (value.is_string()) field.enumValues.push_back(value.get<std::string>());
 					type.fields.push_back(std::move(field));
 				}
 			configuration.configuredTypes.push_back(std::move(type));
@@ -565,9 +633,20 @@ bool VansGAFProjectConfiguration::Validate(std::string& error) const
 	const VansGAFPerformanceBudget& budget = settings.performance;
 	if (budget.maximumActiveActionsPerHost == 0 || budget.maximumTasksPerAction == 0 ||
 		budget.maximumGraphTransitionsPerTick == 0 || budget.maximumEffectsPerHost == 0 ||
-		budget.maximumPayloadBytes == 0)
+		budget.maximumCueHistoryPerHost == 0 ||
+		!std::isfinite(budget.minimumEffectPeriodSeconds) ||
+		budget.minimumEffectPeriodSeconds <= 0.0 ||
+		budget.maximumEffectPulsesPerTick == 0 || budget.maximumPayloadBytes == 0)
 	{
 		error = "GAF performance budgets must be positive";
+		return false;
+	}
+	const VansGAFDiagnosticsSettings& diagnostics = settings.diagnostics;
+	if (diagnostics.maximumActionTraceEntries == 0 ||
+		diagnostics.maximumRecentEventsPerAction == 0 ||
+		diagnostics.maximumCompletedActionSnapshots == 0)
+	{
+		error = "GAF diagnostics retention limits must be positive";
 		return false;
 	}
 	for (const auto& entry : validation.severityOverrides)
@@ -593,12 +672,22 @@ bool VansGAFProjectConfiguration::Validate(std::string& error) const
 		}
 		std::unordered_set<std::string> fieldNames;
 		for (const VansGAFConfiguredInputField& field : type.fields)
+		{
+			std::unordered_set<std::string> enumValues(
+				field.enumValues.begin(), field.enumValues.end());
+			const bool validEnum = field.enumValues.empty() ||
+				(field.valueType == "Core.Value.String" &&
+					enumValues.size() == field.enumValues.size() &&
+					(field.defaultValue.IsNull() ||
+						(field.defaultValue.kind == VansSerializedValue::Kind::String &&
+							enumValues.count(field.defaultValue.stringValue) == 1)));
 			if (field.name.empty() || field.valueType.empty() ||
-				!fieldNames.insert(field.name).second)
+				!fieldNames.insert(field.name).second || !validEnum)
 			{
 				error = "GAF configured input field is invalid: " + type.typeId;
 				return false;
 			}
+		}
 	}
 	if (templates.empty())
 	{
@@ -659,7 +748,7 @@ bool VansGAFProjectConfiguration::RegisterConfiguredSchemas(
 		schema.typeId = type.typeId;
 		for (const VansGAFConfiguredInputField& field : type.fields)
 			schema.fields.push_back({ field.name, field.valueType,
-				field.required, field.defaultValue });
+				field.required, field.defaultValue, field.enumValues });
 		if (!registry.Register(std::move(schema), error)) return false;
 	}
 	return true;

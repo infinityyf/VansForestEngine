@@ -4,15 +4,31 @@
 #include "../VansEditorCameraController.h"
 #include <string>
 #include <vector>
+
+namespace Vans
+{
+	class VansSceneEditService;
+}
+namespace Vans::EditorAPI { class IPcgEditorAPI; }
+
 namespace VansGraphics
 {
 	class VansCamera;
+	struct VansEditorDebugViewState;
 
 	class VansSceneWindow : public VansBaseWindowComponent
 	{
 	public:
+		explicit VansSceneWindow(VansEditorDebugViewState& debugViewState)
+			: m_DebugViewState(debugViewState)
+		{
+		}
 
         bool IsGameCursorViewportInteractive() const { return m_GameCursorViewportInteractive; }
+		void SetSceneEditService(Vans::VansSceneEditService* sceneEdits)
+		{
+			m_SceneEdits = sceneEdits;
+		}
 
 		void RegistCamera(VansCamera* camera)
 		{
@@ -20,9 +36,11 @@ namespace VansGraphics
 		}
 
 	private:
+		VansEditorDebugViewState& m_DebugViewState;
 
         bool m_GameCursorViewportInteractive = false;
 		VansGraphics::VansCamera* m_Camera = nullptr;
+		Vans::VansSceneEditService* m_SceneEdits = nullptr;
 		VansEditorCameraController m_CameraController;
 		bool m_ObjectPickPressed = false;
 		ImVec2 m_ObjectPickStart;
@@ -36,8 +54,8 @@ namespace VansGraphics
 		int m_SplineHandle=0;
 		Vans::EditorAPI::PcgSplineEditRequest m_SplineGizmoEdit;
 		std::string m_SplineGizmoPoint;
-		void FinishSplineGizmo(Vans::EditorAPI::IEngineEditorAPI&,bool cancel);
-		void DrawSplineTools(Vans::EditorAPI::IEngineEditorAPI&,const Vans::EditorAPI::PcgSplineSnapshot&,
+		void FinishSplineGizmo(Vans::EditorAPI::IPcgEditorAPI&,bool cancel);
+		void DrawSplineTools(Vans::EditorAPI::IPcgEditorAPI&,const Vans::EditorAPI::PcgSplineSnapshot&,
 			glm::vec2 origin,glm::vec2 size,bool mouseInside);
 
 		VansGizmos m_Gizmos;

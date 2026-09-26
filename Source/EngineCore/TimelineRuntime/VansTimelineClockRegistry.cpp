@@ -35,23 +35,6 @@ std::shared_ptr<IVansTimelineClockSource> VansTimelineClockRegistry::Resolve(
 	return found == m_ByType.end() ? nullptr : m_Entries[found->second].source;
 }
 
-VansTimelineClockRegistry& VansTimelineClockRegistry::BuiltIns()
-{
-	static VansTimelineClockRegistry registry;
-	static bool initialized = false;
-	if (!initialized)
-	{
-		initialized = true;
-		std::string error;
-		for (std::string_view name : { TimelineClockNames::GameTime, TimelineClockNames::UnscaledTime,
-			TimelineClockNames::Manual, TimelineClockNames::FixedTick })
-			registry.Register(VansMakeStableId<VansTimelineClockTag>(name), std::string(name),
-				std::make_shared<VansTimelineOwnedClockSource>(), error);
-		registry.Seal(error);
-	}
-	return registry;
-}
-
 VansTimelineClockHandle VansTimelineOwnedClockSource::Create(VansTimelineTick initialTick)
 {
 	VansTimelineClockSample sample;

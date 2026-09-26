@@ -1,5 +1,6 @@
 #include "VansTerrainWindow.h"
 #include "../VansEditorWindow.h"
+#include "../../EngineAPILayer/Public/ITerrainEditorAPI.h"
 
 #include "imgui.h"
 
@@ -44,13 +45,14 @@ const char* BrushPatternName(Vans::EditorAPI::TerrainBrushPattern pattern)
 
 void VansTerrainWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-    if (!VansEditorWindow::m_TerrainWindowOpen)
+	Vans::EditorAPI::ITerrainEditorAPI& terrainAPI = editorAPI;
+    if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::Terrain))
         return;
 
     const Vans::EditorAPI::TerrainEditorSnapshot terrain =
-		editorAPI.GetTerrainEditorSnapshot();
+		terrainAPI.GetTerrainEditorSnapshot();
     const Vans::EditorAPI::TerrainSettingsSnapshot currentSettings =
-		editorAPI.GetTerrainSettings();
+		terrainAPI.GetTerrainSettings();
 
     ImGui::Begin("Terrain");
     if (!terrain.available || !currentSettings.available)
@@ -92,7 +94,7 @@ void VansTerrainWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 
 	const auto configureBrush = [&]()
 	{
-		const auto result = editorAPI.ConfigureTerrainBrush(brush);
+		const auto result = terrainAPI.ConfigureTerrainBrush(brush);
 		m_StatusMessage = result.success ? std::string{} : result.message;
 		return result.success;
 	};
@@ -141,7 +143,7 @@ void VansTerrainWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	};
 	const auto applySettings = [&]()
 	{
-		const auto result = editorAPI.ApplyTerrainSettings(m_SettingsDraft);
+		const auto result = terrainAPI.ApplyTerrainSettings(m_SettingsDraft);
 		m_StatusMessage = result.success ? std::string{} : result.message;
 	};
 	const auto operation = [&](const Vans::EditorAPI::TerrainEditorOperationResult& result)
@@ -158,17 +160,17 @@ void VansTerrainWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 		terrain.dirty ? "Modified" : "Saved");
 
 	ImGui::BeginDisabled(!terrain.editable || !terrain.canUndo);
-	if (ImGui::Button("Undo")) operation(editorAPI.UndoTerrainEdit());
+	if (ImGui::Button("Undo")) operation(terrainAPI.UndoTerrainEdit());
 	ImGui::EndDisabled();
 	ImGui::SameLine();
 	ImGui::BeginDisabled(!terrain.editable || !terrain.canRedo);
-	if (ImGui::Button("Redo")) operation(editorAPI.RedoTerrainEdit());
+	if (ImGui::Button("Redo")) operation(terrainAPI.RedoTerrainEdit());
 	ImGui::EndDisabled();
 	ImGui::SameLine();
 	ImGui::BeginDisabled(!terrain.editable || !terrain.dirty);
-	if (ImGui::Button("Revert")) operation(editorAPI.RevertTerrainEdits());
+	if (ImGui::Button("Revert")) operation(terrainAPI.RevertTerrainEdits());
 	ImGui::SameLine();
-	if (ImGui::Button("Save")) operation(editorAPI.SaveTerrainAsset());
+	if (ImGui::Button("Save")) operation(terrainAPI.SaveTerrainAsset());
 	ImGui::EndDisabled();
 	if (!terrain.editable)
 		ImGui::TextDisabled("Terrain authoring is available in Edit mode.");

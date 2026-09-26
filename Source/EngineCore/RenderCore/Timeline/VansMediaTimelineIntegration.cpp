@@ -17,8 +17,8 @@ namespace
 VansVideoTexture* ResolveVideo(Vans::VansRuntimeWorld& world, VansVideoManager& manager,
 	const Vans::VansResolvedTimelineTarget& target, const std::string& assetGuid)
 {
-	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeVideoComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Video));
+	auto* storage = world.FindStorage<Vans::VansRuntimeVideoComponent>(
+		Vans::VansRuntimeComponentType_Video);
 	if (storage && world.IsAlive(target.entity))
 		for (Vans::VansComponentHandle component : world.CollectComponentsOwnedBy(target.entity))
 			if (component.typeId == Vans::VansRuntimeComponentType_Video)
@@ -107,7 +107,7 @@ private:
 };
 }
 
-bool VansRegisterMediaTimelineExtension(Vans::VansTimelineTrackExtensionRegistry& registry, std::string& error)
+bool VansRegisterMediaTimelineExtensions(Vans::VansTimelineTrackExtensionRegistry& registry, std::string& error)
 {
 	using F = Vans::VansTimelineValueType;
 	auto descriptor = Vans::VansMakeTimelineSampleExtension(

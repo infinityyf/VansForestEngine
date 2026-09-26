@@ -1,6 +1,5 @@
 #include "VansRootMotionReconciler.h"
-
-#include <../../GLM/gtc/quaternion.hpp>
+#include "VansRootMotionYaw.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,10 +17,6 @@ namespace
 			: value;
 	}
 
-	float RootYawDegrees(const glm::quat& rotation)
-	{
-		return glm::degrees(glm::eulerAngles(rotation).z);
-	}
 }
 
 namespace VansGraphics
@@ -71,7 +66,8 @@ namespace VansGraphics
 			return result;
 
 		result.targetVelocityAnimation = inOutTranslation / dt;
-		result.targetYawRateDegreesPerSecond = RootYawDegrees(inOutRotation) / dt;
+		result.targetYawRateDegreesPerSecond =
+			ExtractRootMotionYawDegrees(inOutRotation) / dt;
 		if (m_Pending)
 		{
 			m_LinearVelocityOffset = ClampLength(
@@ -102,12 +98,7 @@ namespace VansGraphics
 		inOutTranslation = result.appliedVelocityAnimation * dt;
 		const float correctionDegrees =
 			m_AngularVelocityOffsetDegreesPerSecond * dt;
-		if (std::abs(correctionDegrees) > kEpsilon)
-		{
-			const glm::quat correction = glm::angleAxis(
-				glm::radians(correctionDegrees), glm::vec3(0.0f, 0.0f, 1.0f));
-			inOutRotation = glm::normalize(correction * inOutRotation);
-		}
+		ApplyRootMotionYawCorrection(correctionDegrees, inOutRotation);
 
 		const float linearHalfLife = std::max(m_Settings.linearVelocityHalfLife, kEpsilon);
 		const float angularHalfLife = std::max(m_Settings.angularVelocityHalfLife, kEpsilon);

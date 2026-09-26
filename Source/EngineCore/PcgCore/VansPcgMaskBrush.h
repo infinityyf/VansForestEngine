@@ -11,11 +11,11 @@ enum class VansPcgBrushOperation { Add, Subtract, Set, Smooth, Erase };
 struct VansPcgBrushSettings
 {
 	VansPcgBrushOperation operation = VansPcgBrushOperation::Add;
-	float radius = 1.0f;
-	float strength = 0.0f;
-	float hardness = 0.0f;
-	float targetValue = 0.0f;
-	float spacingFraction = 0.15f;
+	float radius = 3.0f;
+	float strength = 0.25f;
+	float hardness = 0.5f;
+	float targetValue = 1.0f;
+	float spacingFraction = 0.2f;
 	bool IsValid() const;
 };
 

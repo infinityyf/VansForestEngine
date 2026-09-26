@@ -88,5 +88,6 @@ struct VansPcgSplineAsset
     std::vector<VansAssetGuid> Dependencies() const;
 };
 
+float MinimumPcgRiverTransitionWidth(float fieldTexelSize);
 std::vector<std::string> ValidatePcgSplineAsset(const VansPcgSplineAsset& asset, bool requireReady);
 }

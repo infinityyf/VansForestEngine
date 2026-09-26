@@ -109,7 +109,6 @@ namespace Vans
 
 		m_Snapshot.source = source;
 		++m_Snapshot.revision;
-		ReplaceFacadeStateFromActive(m_Snapshot.active);
 	}
 
 	void VansEditorSelectionService::Clear(const std::string& source)
@@ -132,7 +131,6 @@ namespace Vans
 		handle.domain = EditorObjectDomain::Unknown;
 		handle.displayName = "Scene Settings";
 		Apply(EditorSelectionOperation::Replace, { handle }, handle, source);
-		m_SceneSelected = true;
 	}
 
 	void VansEditorSelectionService::SelectAsset(std::filesystem::path assetPath, const std::string& source)
@@ -144,25 +142,32 @@ namespace Vans
 		Apply(EditorSelectionOperation::Replace, { handle }, handle, source);
 	}
 
-	void VansEditorSelectionService::ReplaceFacadeStateFromActive(const EditorObjectHandle& active)
+	const std::string& VansEditorSelectionService::EntityGuid() const
 	{
-		m_ActiveEntityGuid.clear();
-		m_ActiveAssetPath.clear();
-		m_SceneSelected = false;
-
-		switch (active.domain)
+		static const std::string empty;
+		switch (m_Snapshot.active.domain)
 		{
 		case EditorObjectDomain::SceneEntity:
-			m_ActiveEntityGuid = active.entityGuid.empty() ? active.guid : active.entityGuid;
-			break;
+			return m_Snapshot.active.entityGuid.empty()
+				? m_Snapshot.active.guid
+				: m_Snapshot.active.entityGuid;
 		case EditorObjectDomain::SceneSubObject:
-			m_ActiveEntityGuid = active.entityGuid;
-			break;
-		case EditorObjectDomain::ProjectAsset:
-			m_ActiveAssetPath = active.path;
-			break;
+			return m_Snapshot.active.entityGuid;
 		default:
-			break;
+			return empty;
 		}
+	}
+
+	std::filesystem::path VansEditorSelectionService::AssetPath() const
+	{
+		return m_Snapshot.active.domain == EditorObjectDomain::ProjectAsset
+			? std::filesystem::path(m_Snapshot.active.path)
+			: std::filesystem::path{};
+	}
+
+	bool VansEditorSelectionService::IsSceneSelected() const
+	{
+		return m_Snapshot.active.domain == EditorObjectDomain::Unknown
+			&& m_Snapshot.active.displayName == "Scene Settings";
 	}
 }

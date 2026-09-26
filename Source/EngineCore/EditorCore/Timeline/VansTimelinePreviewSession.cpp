@@ -1,7 +1,7 @@
 #include "VansTimelinePreviewSession.h"
 
 #include "../../AssetCore/VansAssetGuid.h"
-#include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../../EngineAPILayer/Public/ITimelineEditorAPI.h"
 #include "../../TimelineCore/VansTimelineSerialization.h"
 
 #include <nlohmann/json.hpp>
@@ -36,7 +36,7 @@ std::string VansTimelinePreviewSession::MakeSessionId()
 }
 
 bool VansTimelinePreviewSession::Attach(
-	EditorAPI::IEngineEditorAPI& editorAPI,
+	EditorAPI::ITimelineEditorAPI& editorAPI,
 	const VansTimelineAsset& asset,
 	std::string sourceAssetPath,
 	std::string ownerEntityGuid,

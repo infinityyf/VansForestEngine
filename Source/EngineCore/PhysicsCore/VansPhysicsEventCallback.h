@@ -7,10 +7,10 @@
 #include <PxPhysicsAPI.h>
 #include "VansPhysicsEvents.h"
 
-using namespace physx;
-
 namespace VansEngine
 {
+	using namespace physx;
+
 	class VansPhysicsNode; // forward declaration
 
 	class VansPhysicsEventCallback : public PxSimulationEventCallback

@@ -3,6 +3,8 @@
 // NvCloth's PxShared headers serve as fallback only.
 #include "VansPhysics.h"            // brings in PxPhysicsAPI + our allocator/error types
 #include "VansClothSystem.h"
+#include "../RuntimeCore/VansFramePhase.h"
+#include "../RuntimeCore/VansThreadContract.h"
 #include "../Util/VansLog.h"
 
 // ── NvCloth callbacks ── //
@@ -102,6 +104,7 @@ namespace VansEngine
 
     void VansClothSystem::Shutdown()
     {
+        const bool hadResources = m_Solver || m_Factory;
         if (m_Solver)
         {
             delete m_Solver;
@@ -112,11 +115,14 @@ namespace VansEngine
             NvClothDestroyFactory(m_Factory);
             m_Factory = nullptr;
         }
-        VANS_LOG("[NvCloth] Shutdown complete.");
+        if (hadResources)
+            VANS_LOG("[NvCloth] Shutdown complete.");
     }
 
     void VansClothSystem::SimulateStep(float dt)
     {
+		VANS_ASSERT_MAIN_THREAD();
+		VANS_ASSERT_FRAME_PHASE(VansFramePhase::RenderPrep);
         if (!m_Solver || m_Solver->getNumCloths() == 0)
             return;
 

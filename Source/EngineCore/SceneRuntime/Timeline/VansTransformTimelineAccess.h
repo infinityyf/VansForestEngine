@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../TimelineRuntime/VansTimelineEvaluation.h"
+#include "../../TimelineRuntime/VansTimelineApplierRegistry.h"
 
 #include <cstdint>
 #include <memory>
@@ -9,6 +9,15 @@
 namespace Vans
 {
 class VansRuntimeWorld;
+
+inline VansTimelineResourceId VansMakeTimelineTransformResource(VansEntityHandle entity)
+{
+	return {
+		VansStableHash64("Scene.Transform"),
+		(static_cast<std::uint64_t>(entity.generation) << 32) | (entity.index + 1ull)
+	};
+}
+
 class IVansTimelineTransformAccess
 {
 public:

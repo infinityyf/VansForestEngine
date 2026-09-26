@@ -95,7 +95,7 @@ void VansParticleRenderSystem::Prepare(VansVKDevice& device, VansScene& scene,
                     quadIndexOffset = AppendBytes(m_Staging,quadIndices,sizeof(quadIndices)); hasQuad = true;
                 }
                 std::vector<VansParticleInstanceData> instances;
-                if (config.m_SortMode == VansParticleSortMode::ByDistance)
+                if (range.renderSortMode == VansParticleRenderSortMode::ByDistance)
                 {
                     std::vector<std::uint32_t> order(range.surfaceCount);
                     std::iota(order.begin(),order.end(),range.surfaceFirst);
@@ -126,12 +126,16 @@ void VansParticleRenderSystem::Prepare(VansVKDevice& device, VansScene& scene,
                 for (const auto& point : strip.points)
                 { points.push_back({point.position,point.width,point.color,point.u}); bounds.Add(point.position,point.width); }
                 VansPolylineMesh mesh;
-                VansPolylineMeshBuilder::Append(points,view.position,view.right,view.up,mesh);
-                if (mesh.indices.empty()) continue;
+                const VansPolylineBuildResult build =
+                    VansPolylineMeshBuilder::Append(points,view.position,view.right,view.up,mesh);
+                m_Diagnostics.rejectedRibbonPoints += static_cast<std::uint32_t>(build.rejectedPointCount);
+                m_Diagnostics.splitRibbonRuns += static_cast<std::uint32_t>(build.splitRunCount);
+                if (!build.viewValid) { ++m_Diagnostics.droppedDraws; continue; }
+                if (build.indicesAdded == 0) continue;
                 item.ribbon = true; item.center = bounds.Center(); item.instanceCount = 1;
-                item.indexCount = static_cast<std::uint32_t>(mesh.indices.size());
-                item.vertexOffset = AppendBytes(m_Staging,mesh.vertices.data(),mesh.vertices.size()*sizeof(VansPolylineVertex));
-                item.indexOffset = AppendBytes(m_Staging,mesh.indices.data(),mesh.indices.size()*sizeof(std::uint32_t));
+                item.indexCount = static_cast<std::uint32_t>(build.indicesAdded);
+                item.vertexOffset = AppendBytes(m_Staging,mesh.vertices.data(),build.verticesAdded*sizeof(VansPolylineVertex));
+                item.indexOffset = AppendBytes(m_Staging,mesh.indices.data(),build.indicesAdded*sizeof(std::uint32_t));
                 m_DrawItems.push_back(item);
             }
         }

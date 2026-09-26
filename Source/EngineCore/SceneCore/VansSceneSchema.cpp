@@ -1,4 +1,5 @@
 #include "VansSceneEnvironmentAuthoring.h"
+#include "VansComponentTypeCatalog.h"
 #include "VansSceneRenderSettingsConfig.h"
 #include "VansSceneSchema.h"
 
@@ -34,6 +35,212 @@ bool IsNonNegativeInteger(const Json& value)
     if (!value.is_number_integer())
         return false;
     return value.get<std::int64_t>() >= 0;
+}
+
+void ValidateOptionalAssetReferenceMap(
+    const Json& data,
+    const char* fieldName,
+    const std::string& dataPointer,
+    SceneDiagnostics& diagnostics)
+{
+    if (!data.contains(fieldName))
+        return;
+    const Json& references = data[fieldName];
+    const std::string fieldPointer = dataPointer + "/" + fieldName;
+    if (!references.is_object())
+    {
+        Error(diagnostics, fieldPointer, std::string(fieldName) + " must be an object");
+        return;
+    }
+    for (auto reference = references.begin(); reference != references.end(); ++reference)
+    {
+        const Json& value = reference.value();
+        const std::string referencePointer = fieldPointer + "/" + reference.key();
+        if (value.is_string())
+        {
+            if (value.get_ref<const std::string&>().empty())
+                continue;
+            VansAssetGuid guid;
+            if (!ReadGuid(value, guid))
+                Error(diagnostics, referencePointer, "Material override must contain a valid asset guid");
+            continue;
+        }
+        if (value.is_object())
+        {
+            if (value.empty())
+                continue;
+            if (value.contains("guid") && value["guid"].is_string() &&
+                value["guid"].get_ref<const std::string&>().empty())
+                continue;
+            VansAssetGuid guid;
+            if (!value.contains("guid") || !ReadGuid(value["guid"], guid))
+                Error(diagnostics, referencePointer + "/guid", "Material override must contain a valid asset guid");
+            continue;
+        }
+        Error(diagnostics, referencePointer, "Material override must be an empty binding or an asset guid reference");
+    }
+}
+
+void ValidateEntityComponentSemantics(
+    const Json& entity,
+    std::size_t entityIndex,
+    SceneDiagnostics& diagnostics)
+{
+    const std::string entityPointer = "/entities/" + std::to_string(entityIndex);
+    const Json& components = entity["components"];
+    bool hasModelRenderer = false;
+    bool hasMultiMeshRoot = false;
+    for (std::size_t componentIndex = 0; componentIndex < components.size(); ++componentIndex)
+    {
+        const Json& component = components[componentIndex];
+        if (!component.is_object())
+            continue;
+        const std::string componentPointer =
+            entityPointer + "/components/" + std::to_string(componentIndex);
+        const std::string type = component.value("type", "");
+        if (type.empty())
+            continue;
+        if (!VansComponentTypeCatalog::IsSceneAuthoringType(type))
+        {
+            Error(diagnostics, componentPointer + "/type",
+                "Unsupported runtime component '" + type + "' on entity '" +
+                entity.value("name", "") + "'");
+            continue;
+        }
+
+        const Json* data = component.contains("data") && component["data"].is_object()
+            ? &component["data"] : nullptr;
+        if (type == "ModelRenderer")
+        {
+            hasModelRenderer = true;
+            VansAssetGuid model;
+            if (!data || !data->contains("model") || !(*data)["model"].is_object() ||
+                !(*data)["model"].contains("guid") || !ReadGuid((*data)["model"]["guid"], model))
+            {
+                Error(diagnostics, componentPointer + "/data/model/guid",
+                    "ModelRenderer requires a valid model asset guid");
+            }
+            if (data)
+            {
+                ValidateOptionalAssetReferenceMap(
+                    *data, "materialOverrides", componentPointer + "/data", diagnostics);
+                ValidateOptionalAssetReferenceMap(
+                    *data, "submeshMaterialOverrides", componentPointer + "/data", diagnostics);
+            }
+            continue;
+        }
+        if (type == "MultiMeshRoot")
+        {
+            hasMultiMeshRoot = true;
+            VansAssetGuid model;
+            if (!data || !data->contains("model") || !(*data)["model"].is_object() ||
+                !(*data)["model"].contains("guid") || !ReadGuid((*data)["model"]["guid"], model))
+            {
+                Error(diagnostics, componentPointer + "/data/model/guid",
+                    "MultiMeshRoot requires a valid model asset guid");
+            }
+            if (!data || !data->contains("submeshCount") ||
+                !IsNonNegativeInteger((*data)["submeshCount"]) ||
+                (*data)["submeshCount"].get<std::uint64_t>() == 0 ||
+                (*data)["submeshCount"].get<std::uint64_t>() > UINT32_MAX)
+            {
+                Error(diagnostics, componentPointer + "/data/submeshCount",
+                    "MultiMeshRoot submeshCount must be a positive unsigned integer");
+            }
+            continue;
+        }
+        if (type != "LODGroup")
+            continue;
+        if (!data)
+        {
+            Error(diagnostics, componentPointer + "/data",
+                "LODGroup component data must be an object");
+            continue;
+        }
+        const std::string mode = data->value("mode", "autoScreenError");
+        if (mode != "autoScreenError" && mode != "screenRelativeHeight")
+        {
+            Error(diagnostics, componentPointer + "/data/mode",
+                "LODGroup mode must be autoScreenError or screenRelativeHeight");
+        }
+        if (!data->contains("levels"))
+            continue;
+        const Json& levels = (*data)["levels"];
+        if (!levels.is_array())
+        {
+            Error(diagnostics, componentPointer + "/data/levels",
+                "LODGroup levels must be an array");
+            continue;
+        }
+        for (std::size_t levelIndex = 0; levelIndex < levels.size(); ++levelIndex)
+        {
+            const Json& level = levels[levelIndex];
+            const std::string levelPointer = componentPointer + "/data/levels/" +
+                std::to_string(levelIndex);
+            if (!level.is_object())
+            {
+                Error(diagnostics, levelPointer,
+                    "LODGroup level " + std::to_string(levelIndex + 1) + " must be an object");
+                continue;
+            }
+            if (level.contains("meshes"))
+            {
+                const Json& meshes = level["meshes"];
+                if (!meshes.is_array())
+                {
+                    Error(diagnostics, levelPointer + "/meshes",
+                        "LODGroup level " + std::to_string(levelIndex + 1) + " meshes must be an array");
+                }
+                else
+                {
+                    for (std::size_t meshIndex = 0; meshIndex < meshes.size(); ++meshIndex)
+                    {
+                        if (!meshes[meshIndex].is_string())
+                        {
+                            Error(diagnostics, levelPointer + "/meshes/" + std::to_string(meshIndex),
+                                "LODGroup level " + std::to_string(levelIndex + 1) + " mesh " +
+                                std::to_string(meshIndex) + " must be a GUID string");
+                            continue;
+                        }
+                        const std::string guidText = meshes[meshIndex].get<std::string>();
+                        VansAssetGuid guid;
+                        if (!guidText.empty() && !VansAssetGuid::TryParse(guidText, guid))
+                        {
+                            Error(diagnostics, levelPointer + "/meshes/" + std::to_string(meshIndex),
+                                "LODGroup level " + std::to_string(levelIndex + 1) + " mesh " +
+                                std::to_string(meshIndex) + " has an invalid GUID");
+                        }
+                    }
+                }
+            }
+            if (level.contains("errors"))
+            {
+                const Json& errors = level["errors"];
+                if (!errors.is_array())
+                {
+                    Error(diagnostics, levelPointer + "/errors",
+                        "LODGroup level " + std::to_string(levelIndex + 1) + " errors must be an array");
+                }
+                else
+                {
+                    for (std::size_t errorIndex = 0; errorIndex < errors.size(); ++errorIndex)
+                    {
+                        if (!errors[errorIndex].is_number())
+                        {
+                            Error(diagnostics, levelPointer + "/errors/" + std::to_string(errorIndex),
+                                "LODGroup level " + std::to_string(levelIndex + 1) +
+                                " errors must contain numbers");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (hasModelRenderer && hasMultiMeshRoot)
+    {
+        Error(diagnostics, entityPointer + "/components",
+            "MultiMeshRoot and ModelRenderer cannot be declared on the same entity");
+    }
 }
 
 Json GuidJson(const VansAssetGuid& guid)
@@ -141,6 +348,8 @@ SceneDiagnostics VansSceneSchema::ValidateEntityGraph(const Json& entities)
             continue;
         }
 
+        ValidateEntityComponentSemantics(entity, entityIndex, diagnostics);
+
         std::unordered_set<std::string> singletonTypes;
         for (std::size_t componentIndex = 0; componentIndex < entity["components"].size(); ++componentIndex)
         {
@@ -169,11 +378,7 @@ SceneDiagnostics VansSceneSchema::ValidateEntityGraph(const Json& entities)
                 Error(diagnostics, componentPointer + "/data", "Component data must be an object");
             if (type == "ModelRenderer" && component.contains("data") && component["data"].is_object())
             {
-                VansAssetGuid model;
                 const auto& data = component["data"];
-                if (!data.contains("model") || !data["model"].is_object() || !data["model"].contains("guid") ||
-                    !ReadGuid(data["model"]["guid"], model))
-                    Error(diagnostics, componentPointer + "/data/model/guid", "ModelRenderer requires a valid model asset guid");
                 if (data.contains("submesh"))
                 {
                     const Json& submesh = data["submesh"];
@@ -193,16 +398,6 @@ SceneDiagnostics VansSceneSchema::ValidateEntityGraph(const Json& entities)
                         }
                     }
                 }
-            }
-            if (type == "MultiMeshRoot" && component.contains("data") && component["data"].is_object())
-            {
-                VansAssetGuid model;
-                const auto& data = component["data"];
-                if (!data.contains("model") || !data["model"].is_object() || !data["model"].contains("guid") ||
-                    !ReadGuid(data["model"]["guid"], model))
-                    Error(diagnostics, componentPointer + "/data/model/guid", "MultiMeshRoot requires a valid model asset guid");
-                if (data.contains("submeshCount") && !IsNonNegativeInteger(data["submeshCount"]))
-                    Error(diagnostics, componentPointer + "/data/submeshCount", "MultiMeshRoot submeshCount must be an unsigned integer");
             }
             if ((type == "Transform" || type == "ModelRenderer" || type == "Physics" || type == "MultiMeshRoot") && !singletonTypes.insert(type).second)
                 Error(diagnostics, componentPointer + "/type", type + " is a singleton component");
@@ -240,6 +435,34 @@ SceneDiagnostics VansSceneSchema::ValidateEntityGraph(const Json& entities)
             }
             cursor = parent->second;
         }
+    }
+    return diagnostics;
+}
+
+SceneDiagnostics VansSceneSchema::ValidateEntityComponents(const VansSerializedValue& entities)
+{
+    const Json encoded = EncodeSerializedValueJson<Json>(entities);
+    SceneDiagnostics diagnostics;
+    if (!encoded.is_array())
+    {
+        Error(diagnostics, "/entities", "Entities must be an array");
+        return diagnostics;
+    }
+    for (std::size_t entityIndex = 0; entityIndex < encoded.size(); ++entityIndex)
+    {
+        const Json& entity = encoded[entityIndex];
+        const std::string pointer = "/entities/" + std::to_string(entityIndex);
+        if (!entity.is_object())
+        {
+            Error(diagnostics, pointer, "Entity must be an object");
+            continue;
+        }
+        if (!entity.contains("components") || !entity["components"].is_array())
+        {
+            Error(diagnostics, pointer + "/components", "Entity requires a components array");
+            continue;
+        }
+        ValidateEntityComponentSemantics(entity, entityIndex, diagnostics);
     }
     return diagnostics;
 }

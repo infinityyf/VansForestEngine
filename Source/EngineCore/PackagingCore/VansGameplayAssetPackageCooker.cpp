@@ -1,5 +1,6 @@
 #include "VansGameplayAssetPackageCooker.h"
 
+#include "../AssetCore/VansDerivedArtifactLayout.h"
 #include "../GameplayActionSchema/VansGameplayAssetCompiler.h"
 #include "../GameplayActionSchema/VansGameplayAssetStorage.h"
 
@@ -28,16 +29,15 @@ std::optional<VansAssetRecord> FindAsset(
 }
 
 std::filesystem::path ArtifactPathFor(
-	const std::filesystem::path& projectRoot,
+	const std::filesystem::path& artifactRoot,
 	const VansAssetRecord& record)
 {
-	return projectRoot / "Library/Artifacts/GAF" / record.guid.ToString() /
-		(record.sourcePath.filename().string() + ".gafcooked");
+	return VansDerivedArtifactLayout::ProjectGameplayCookedAsset(
+		artifactRoot, record.guid, record.sourcePath.filename()).path;
 }
 }
 
 VansGameplayPackageCookResult VansGameplayAssetPackageCooker::CookClosure(
-	const std::filesystem::path& projectRoot,
 	VansAssetDatabase& projectDatabase,
 	VansAssetDatabase* builtInDatabase,
 	const std::vector<std::string>& seedAssetGuids,
@@ -90,7 +90,8 @@ VansGameplayPackageCookResult VansGameplayAssetPackageCooker::CookClosure(
 			result.errors.push_back(record->sourcePath.string() + ": " + compiled.error);
 			continue;
 		}
-		const std::filesystem::path artifactPath = ArtifactPathFor(projectRoot, *record);
+		const std::filesystem::path artifactPath = ArtifactPathFor(
+			projectDatabase.ArtifactRoot(), *record);
 		std::error_code directoryError;
 		std::filesystem::create_directories(artifactPath.parent_path(), directoryError);
 		if (directoryError || !VansGameplayAssetStorage::SaveCookedAtomic(

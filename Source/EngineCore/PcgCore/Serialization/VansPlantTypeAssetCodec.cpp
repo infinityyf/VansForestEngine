@@ -1,5 +1,5 @@
 #include "VansPlantTypeAssetCodec.h"
-#include "VansPcgValueCodec.h"
+#include "VansPcgConfigurationFieldCodec.h"
 
 namespace Vans
 {
@@ -7,18 +7,6 @@ namespace
 {
 using Value = VansSerializedValue;
 using Fields = std::vector<std::pair<std::string, Value>>;
-const std::pair<const char*, float VansPlantGrassSettings::*> GrassFields[] = {
-	{ "bladeHeight", &VansPlantGrassSettings::bladeHeight }, { "leanDeviation", &VansPlantGrassSettings::leanDeviation },
-	{ "restTipBendDegrees", &VansPlantGrassSettings::restTipBendDegrees }, { "restRootBendDegrees", &VansPlantGrassSettings::restRootBendDegrees },
-	{ "scatterRadiusMin", &VansPlantGrassSettings::scatterRadiusMin }, { "scatterRadiusMax", &VansPlantGrassSettings::scatterRadiusMax },
-	{ "windStrength", &VansPlantGrassSettings::windStrength }, { "windFrequency", &VansPlantGrassSettings::windFrequency },
-	{ "windSpeed", &VansPlantGrassSettings::windSpeed }, { "windBendMultiplier", &VansPlantGrassSettings::windBendMultiplier },
-	{ "stiffness", &VansPlantGrassSettings::stiffness }, { "damping", &VansPlantGrassSettings::damping },
-	{ "softness", &VansPlantGrassSettings::softness }, { "simulationFullDistance", &VansPlantGrassSettings::simulationFullDistance },
-	{ "simulationFadeDistance", &VansPlantGrassSettings::simulationFadeDistance },
-	{ "subBladeLodMidDistance", &VansPlantGrassSettings::subBladeLodMidDistance },
-	{ "subBladeLodFarDistance", &VansPlantGrassSettings::subBladeLodFarDistance }
-};
 }
 
 bool VansPlantTypeAssetCodec::Decode(const Value& root, VansPlantTypeAsset& asset, std::string& error)
@@ -29,24 +17,13 @@ bool VansPlantTypeAssetCodec::Decode(const Value& root, VansPlantTypeAsset& asse
 	reader.String("name", decoded.name);
 	reader.EnumField("category", decoded.category, { { "grass", VansPlantCategory::Grass }, { "tree", VansPlantCategory::Tree } });
 	auto render = reader.Object("render");
-	render.Bool("cullingEnabled", decoded.render.cullingEnabled);
-	render.Bool("hizEnabled", decoded.render.hizEnabled);
-	render.Float("cullDistance", decoded.render.cullDistance);
-	render.Float("hizBias", decoded.render.hizBias);
-	render.Bool("castShadows", decoded.render.castShadows);
-    if (decoded.category == VansPlantCategory::Tree) {
-        render.Vector("lodDistances",decoded.render.lodDistances);
-        render.Float("lodHysteresis",decoded.render.lodHysteresis);
-    }
+	ReadPcgConfigurationFields(render, decoded.render, VansPlantRenderConfigurationFields,
+		decoded.category == VansPlantCategory::Tree);
 	render.Finish();
 	if (decoded.category == VansPlantCategory::Grass)
 	{
 		auto grass = reader.Object("grass");
-		grass.IntegerField("boneCount", decoded.grass.boneCount);
-		grass.IntegerField("subBladeCount", decoded.grass.subBladeCount);
-		grass.IntegerField("scatterSeed", decoded.grass.scatterSeed);
-		grass.Vector("windDirection", decoded.grass.windDirection);
-		for (const auto& field : GrassFields) grass.Float(field.first, decoded.grass.*field.second);
+		ReadPcgConfigurationFields(grass, decoded.grass, VansPlantGrassConfigurationFields, false);
 		grass.Finish();
 	}
 	const auto* variants = reader.Array("variants");
@@ -83,7 +60,8 @@ bool VansPlantTypeAssetCodec::Decode(const Value& root, VansPlantTypeAsset& asse
 
         if (decoded.category == VansPlantCategory::Tree) {
             auto lod=item.Object("lod");
-            lod.Vector("ratios",variant.lodSettings.ratios);
+            lod.FloatVector("ratios",variant.lodSettings.ratios,
+                MinimumModelLodLevelCount,MaximumModelLodLevelCount);
             lod.Float("maximumError",variant.lodSettings.maximumError);
             lod.String("buildKey",variant.lod.buildKey);
             lod.Vector("centerRadius",variant.lod.centerRadius);
@@ -150,34 +128,24 @@ bool VansPlantTypeAssetCodec::Encode(const VansPlantTypeAsset& asset, Value& roo
                 levels.push_back(Value::Object({{"parts",Value::Array(std::move(entries))}}));
             }
             variants.back().objectFields.emplace_back("lod",Value::Object({
-                {"ratios",PcgValue::Vector(variant.lodSettings.ratios)},{"maximumError",Value::Float(variant.lodSettings.maximumError)},
+                {"ratios",PcgValue::FloatVector(variant.lodSettings.ratios)},{"maximumError",Value::Float(variant.lodSettings.maximumError)},
                 {"buildKey",Value::String(variant.lod.buildKey)},{"centerRadius",PcgValue::Vector(variant.lod.centerRadius)},
                 {"levels",Value::Array(std::move(levels))}}));
         }
 
 	}
+	Fields render;
+	WritePcgConfigurationFields(render, asset.render, VansPlantRenderConfigurationFields,
+		asset.category == VansPlantCategory::Tree);
 	Fields fields{
 		{ "name", Value::String(asset.name) }, { "category", Value::String(asset.category == VansPlantCategory::Grass ? "grass" : "tree") },
 		{ "variants", Value::Array(std::move(variants)) },
-		{ "render", Value::Object({
-			{ "cullingEnabled", Value::Bool(asset.render.cullingEnabled) }, { "hizEnabled", Value::Bool(asset.render.hizEnabled) },
-			{ "cullDistance", Value::Float(asset.render.cullDistance) }, { "hizBias", Value::Float(asset.render.hizBias) },
-			{ "castShadows", Value::Bool(asset.render.castShadows) }
-		}) }
+		{ "render", Value::Object(std::move(render)) }
 	};
-    if (asset.category == VansPlantCategory::Tree) {
-        auto& render=fields.back().second.objectFields;
-        render.emplace_back("lodDistances",PcgValue::Vector(asset.render.lodDistances));
-        render.emplace_back("lodHysteresis",Value::Float(asset.render.lodHysteresis));
-    }
 	if (asset.category == VansPlantCategory::Grass)
 	{
-		Fields grass{
-			{ "boneCount", Value::Int(asset.grass.boneCount) }, { "subBladeCount", Value::Int(asset.grass.subBladeCount) },
-			{ "scatterSeed", Value::Int(asset.grass.scatterSeed) },
-			{ "windDirection", PcgValue::Vector(asset.grass.windDirection) }
-		};
-		for (const auto& field : GrassFields) grass.emplace_back(field.first, Value::Float(asset.grass.*field.second));
+		Fields grass;
+		WritePcgConfigurationFields(grass, asset.grass, VansPlantGrassConfigurationFields, false);
 		fields.emplace_back("grass", Value::Object(std::move(grass)));
 	}
 	root = Value::Object(std::move(fields));

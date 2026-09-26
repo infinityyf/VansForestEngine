@@ -29,7 +29,6 @@ struct VansProjectConfig
 	std::string defaultScene;   // e.g. "Scenes/MainScene.json"
 	std::string assetsRoot = "Assets";
 	std::string importedArtifactRoot = "Library/Artifacts";
-	std::string metaExtension = ".meta";
 	std::unordered_map<std::string, std::string> runtimeAssetBindings;
 
 	// Logical directory names (relative to project root)
@@ -40,6 +39,7 @@ struct VansProjectConfig
 
 	std::string renderSettings;
 	std::string physicsSettings;
+	std::string navigationSettings;
 	std::string audioSettings;
 	std::string collisionLayerSettings;
 

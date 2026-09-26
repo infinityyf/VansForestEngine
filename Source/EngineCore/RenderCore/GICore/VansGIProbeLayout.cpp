@@ -123,6 +123,7 @@ namespace VansGraphics
             const std::vector<GIResolvedRegion>& descriptions;
             GIProbePlacementSettings settings;
             const VansSceneGeometrySnapshot& geometry;
+            const IVansLayoutConstraints* constraints;
             VansTriangleGeometryQuery transmission;
             std::vector<GIProbeLayoutRegion> regions;
             std::vector<uint32_t> roots;
@@ -137,7 +138,8 @@ namespace VansGraphics
             uint32_t maxDepth = 0;
 
             Builder(const std::vector<GIResolvedRegion>& source, GIProbePlacementSettings config,
-                const VansSceneGeometrySnapshot& snapshot) : descriptions(source), settings(config), geometry(snapshot)
+                const VansSceneGeometrySnapshot& snapshot, const IVansLayoutConstraints* layoutConstraints)
+                : descriptions(source), settings(config), geometry(snapshot), constraints(layoutConstraints)
             {
                 NormalizeGIProbePlacementSettings(settings);
                 rootSpacing = settings.minProbeSpacing;
@@ -145,7 +147,9 @@ namespace VansGraphics
                 { rootSpacing *= 2.0; ++maxDepth; }
                 if (rootSpacing * 2.0 <= settings.maxProbeSpacing)
                     throw std::runtime_error("GI spacing range exceeds bounded layout depth");
-                transmission.Build(geometry.transmissionReceivers);
+                std::string buildError;
+                if (!transmission.Build(geometry.transmissionReceivers, buildError))
+                    throw std::runtime_error(buildError);
             }
             int64_t Units(const Cell& cell) const { return int64_t(1) << (maxDepth - cell.depth); }
             double Spacing(const Cell& cell) const { return double(settings.minProbeSpacing) * double(Units(cell)); }
@@ -173,18 +177,22 @@ namespace VansGraphics
                     else if (nearest.backface && !nearest.twoSided)
                     {
                         value.valid = false;
+                        VansGeometryQueryOptions frontFacing;
+                        frontFacing.backfaces = VansGeometryBackfacePolicy::RejectOneSided;
                         for (int z = -1; z <= 1 && !value.valid; ++z)
                         for (int y = -1; y <= 1 && !value.valid; ++y)
                         for (int x = -1; x <= 1 && !value.valid; ++x)
                         {
                             if (!x && !y && !z) continue;
                             VansGeometryHit hit;
-                            if (geometry.opaque.Raycast(position, {x,y,z}, reach, hit) && (!hit.backface || hit.twoSided))
+                            if (geometry.opaque.Raycast(
+                                position, {x,y,z}, reach, hit, 0.0001f, frontFacing))
                                 value.valid = true;
                         }
                     }
                 }
-                if(value.valid&&descriptions[region].worldOnly&&geometry.additionalPositionValid)value.valid=geometry.additionalPositionValid(position,clearance);
+                if (value.valid && descriptions[region].worldOnly && constraints)
+                    value.valid = constraints->IsPositionValid(position, clearance);
                 if (!value.valid) ++stats.rejectedPositions;
                 return value;
             }
@@ -205,7 +213,11 @@ namespace VansGraphics
                     if (!cell.supported) cell.supported = glm::all(glm::lessThanEqual(receiver.minimum, expandedHi))
                         && glm::all(glm::greaterThanEqual(receiver.maximum, expandedLo));
                 VansGeometrySurfaceMeasure fieldMeasure;
-                if(description.worldOnly&&geometry.additionalSurface){fieldMeasure=geometry.additionalSurface(expandedLo,expandedHi);cell.supported=cell.supported||fieldMeasure.area>0;}
+                if (description.worldOnly && constraints)
+                {
+                    fieldMeasure = constraints->MeasureSurface(expandedLo, expandedHi);
+                    cell.supported = cell.supported || fieldMeasure.area > 0;
+                }
                 if (!cell.supported) return cell;
                 auto measure = geometry.opaque.MeasureSurface(lo, hi);
                 const auto transparentMeasure = transmission.MeasureSurface(lo, hi);
@@ -462,13 +474,14 @@ namespace VansGraphics
     }
 
     bool VansGIProbeLayout::Build(const std::vector<GIResolvedRegion>& descriptions,
-        const GIProbePlacementSettings& settings, const VansSceneGeometrySnapshot& geometry, std::string& error)
+        const GIProbePlacementSettings& settings, const VansSceneGeometrySnapshot& geometry,
+        const IVansLayoutConstraints* constraints, std::string& error)
     {
         error.clear();
         try
         {
             if (!settings.enabled) throw std::runtime_error("Automatic GI layout generation is disabled");
-            Builder builder(descriptions, settings, geometry);
+            Builder builder(descriptions, settings, geometry, constraints);
             builder.BuildRoots(); builder.Refine();
             VansGIProbeLayout result;
             result.m_Regions = builder.regions; result.m_Roots = builder.roots;

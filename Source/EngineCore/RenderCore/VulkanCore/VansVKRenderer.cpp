@@ -13,7 +13,7 @@
 #include "../VansCamera.h"
 #include "../VansShaderManager.h"
 #include "../WaterCore/VansWaterSystem.h"
-#include "../../Configration/VansConfigration.h"
+#include "../VansRenderBootstrapSettings.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansJobSystem.h"
 #include "../../Util/VansProfiler.h"
@@ -497,7 +497,7 @@ namespace VansGraphics
 		renderPassManager->SetupVansScreenSpaceEffectsPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
 		// 水面 GBuffer Pass：必须在 SetupVansDeferredRenderPass 之后调用，依赖已创建的深度图像。
 		renderPassManager->SetupVansWaterGBufferPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
-		// 注：水面 descriptor sets 在场景加载时由 VansSceneEnvironmentNodeBuilder::AddWaterNode 调用 SetupDescriptors 完成。
+		// 注：水面 descriptor sets 在场景加载时由 VansSceneEnvironmentNodeBuilder::BuildWaterNode 调用 SetupDescriptors 完成。
 		renderPassManager->SetupVansUIRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, m_VansVKSurface,
 			{
 				m_VansVKSurface.m_VansVKSwapChainImageExtent.width,
@@ -719,6 +719,47 @@ namespace VansGraphics
 		}
 		m_CurrentFrameContext.pendingDeferredDeleteCount =
 			static_cast<uint64_t>(deleteQueue.Size());
+	}
+
+	bool VansVKDevice::DrainDeferredDeletesAfterDeviceIdle()
+	{
+		if (!WaitForDevice())
+			return false;
+
+		// Releasing one retired owner can enqueue another retirement. Drain to a
+		// fixed point while the device is idle, including inactive ring slots.
+		constexpr uint32_t kMaxDrainPasses = 64;
+		uint64_t flushedCount = 0;
+		for (uint32_t pass = 0; pass < kMaxDrainPasses; ++pass)
+		{
+			bool hadPendingDeletes = false;
+			auto flushQueue = [&hadPendingDeletes, &flushedCount](VansDeferredDeleteQueue& queue)
+			{
+				const uint64_t count = static_cast<uint64_t>(queue.Size());
+				if (count == 0)
+					return;
+				hadPendingDeletes = true;
+				flushedCount += count;
+				queue.Flush();
+			};
+
+			flushQueue(m_CurrentFrameContext.deferredDeletes);
+			for (VansFrameContextRingSlot& slot : m_FrameContextRingSlots)
+				flushQueue(slot.deferredDeletes);
+
+			if (!hadPendingDeletes)
+			{
+				m_CurrentFrameContext.lastDeferredDeleteFlushCount = flushedCount;
+				m_CurrentFrameContext.pendingDeferredDeleteCount = 0;
+				return true;
+			}
+		}
+
+		m_CurrentFrameContext.pendingDeferredDeleteCount =
+			static_cast<uint64_t>(m_CurrentFrameContext.deferredDeletes.Size());
+		VANS_LOG_ERROR("[VansVKDevice] Deferred delete drain did not converge after "
+			<< kMaxDrainPasses << " passes");
+		return false;
 	}
 
 	bool VansVKDevice::IsFrameContextRingActive() const
@@ -1236,7 +1277,7 @@ namespace VansGraphics
 
 			{
 				VANS_GPU_SCOPE(cmd, "Shadow Pass");
-				int cascadeCount = VansConfigration::GetInstance()->GetCascadeCount();
+				const int cascadeCount = static_cast<int>(kVansRenderBootstrapSettings.cascadeCount);
 				for (int cascade = 0; cascade < cascadeCount; ++cascade)
 				{
 					m_globalRenderStateData.cascadeIndex = cascade;
@@ -1729,7 +1770,7 @@ namespace VansGraphics
 				{
 					Vans::VansGpuProfiler::Get().BeginQueue(shadowCmd, Vans::VansGpuQueueLane::Graphics);
 					VANS_GPU_SCOPE_LANE(shadowCmd, "Cascade Shadow", Vans::VansGpuQueueLane::Graphics);
-					const int cascadeCount = VansConfigration::GetInstance()->GetCascadeCount();
+					const int cascadeCount = static_cast<int>(kVansRenderBootstrapSettings.cascadeCount);
 					for (int cascade = 0; cascade < cascadeCount; ++cascade)
 					{
 						m_globalRenderStateData.cascadeIndex = cascade;
@@ -3072,6 +3113,9 @@ namespace VansGraphics
 		DestroyTransmissionGlassDescriptors();
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 		renderPassManager->DestroyRenderPass();
+		// Upscaler contexts own backend GPU resources and must be released on the
+		// render thread after GPU quiescence, before bootstrap destroys Vulkan.
+		CleanupUpscalerResources();
 		m_DrawInstanceArena.Destroy(m_VansVKLogicDevice);
 		m_MainCameraVisibilityState.ReleaseGpuResources(m_VansVKLogicDevice);
 		DestroyLightFrameResources();

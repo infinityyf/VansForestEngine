@@ -1,6 +1,10 @@
+#include "../EngineCore/SceneRuntime/Transform/VansTransformStore.h"
 #include "../EngineCore/GameplayActionAdapters/Projectile/VansProjectilePhysics.h"
+#include "../EngineCore/PhysicsCore/VansPhysics.h"
+#include "../EngineCore/PhysicsCore/VansPhysicsNativeAccess.h"
 #include "../EngineCore/ParticleCore/VansParticleRuntime.h"
 #include "../EngineCore/ParticleCore/Serialization/VansParticleAssetJsonCodec.h"
+#include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeWorld.h"
 #include "../EngineCore/GameplayActionCore/VansGameplayRuntime.h"
 #include <nlohmann/json.hpp>
@@ -25,41 +29,46 @@ bool TestProjectileSmokeContract()
     const auto particleJson = read(project / "Assets/Particles/VolumetricSmokeTest.particle");
     auto assetOwner = std::make_shared<VansParticleAsset>();
     auto& asset = *assetOwner;
-    if (!VansParticleAssetJsonCodec::Decode(particleJson, {}, asset, error)) return check(false, error.c_str());
+    if (!VansParticleAssetJsonCodec::Decode(
+        Vans::DecodeSerializedValueJson(particleJson), {}, asset, error))
+        return check(false, error.c_str());
     if (!check(asset.m_StartDelay == 2.0f && !asset.m_Prewarm && asset.m_EmissionFrame == VansGraphics::VansParticleEmissionFrame::World && asset.m_Loop,
         "Smoke must delay two seconds, start empty, remain upright and emit continuously")) return false;
-    const auto roundTrip = VansParticleAssetJsonCodec::Encode(asset);
+    const auto roundTrip = Vans::EncodeSerializedValueJson<nlohmann::ordered_json>(
+        VansParticleAssetJsonCodec::Encode(asset));
     if (!check(roundTrip["global"]["startDelay"] == 2.0f && roundTrip["global"]["emissionFrame"] == "World",
         "Particle authoring codec lost delayed playback or alignment")) return false;
     auto invalid = roundTrip;
     invalid["global"]["startDelay"] = -1;
     VansParticleAsset rejected;
-    if (!check(!VansParticleAssetJsonCodec::Decode(invalid, {}, rejected, error), "Negative delay accepted")) return false;
+    if (!check(!VansParticleAssetJsonCodec::Decode(
+        Vans::DecodeSerializedValueJson(invalid), {}, rejected, error),
+        "Negative delay accepted")) return false;
     VansParticleRuntime particles;
     particles.SetAsset(assetOwner);
-    particles.m_EmitterPositionLocal = {0,100,0};
+    particles.SetEmitterPositionLocal({0,100,0});
     const auto owner = glm::translate(glm::mat4(1), glm::vec3(4,2,6))
         * glm::rotate(glm::mat4(1), glm::radians(90.0f), glm::vec3(0,0,1))
         * glm::scale(glm::mat4(1), glm::vec3(0.01f));
     particles.SetOwnerWorldTransform(owner);
-    if (!check(glm::length(glm::vec3(particles.m_LocalToWorld[3])-glm::vec3(3,2,6)) < 0.0001f
-        && particles.m_LocalToWorld[1] == glm::vec4(0,1,0,0), "Emitter ignored mesh origin offset or inherited tiny tilted axes")) return false;
+    if (!check(glm::length(glm::vec3(particles.OwnerWorldTransform()[3])-glm::vec3(3,2,6)) < 0.0001f
+        && particles.OwnerWorldTransform()[1] == glm::vec4(0,1,0,0), "Emitter ignored mesh origin offset or inherited tiny tilted axes")) return false;
     particles.Play();
     particles.DeferFirstUpdate();
     particles.Update(3.0f);
     particles.Update(1.0f);
     particles.Pause(); particles.Update(5.0f); particles.Play();
     particles.Update(0.99f);
-    if (!check(particles.m_AliveInstanceCount == 0 && particles.GetPlayTime() == 0,
+    if (!check(particles.AliveInstanceCount() == 0 && particles.GetPlayTime() == 0,
         "Smoke emitted before two seconds or pause/resume restarted the clock")) return false;
     particles.Update(0.21f); particles.SwapBuffers();
-    if (!check(particles.m_AliveInstanceCount >= 5 && !particles.GetVolumetricRenderBuffer().empty(),
+    if (!check(particles.AliveInstanceCount() >= 5 && !particles.GetVolumetricRenderBuffer().empty(),
         "Smoke did not inject particles after crossing the delay")) return false;
-    const auto firstCount = particles.m_AliveInstanceCount.load();
+    const auto firstCount = particles.AliveInstanceCount();
     for (int i=0;i<120;++i) particles.Update(1.0f/120);
-    if (!check(particles.m_AliveInstanceCount > firstCount+20, "Smoke emission was a one-shot burst")) return false;
+    if (!check(particles.AliveInstanceCount() > firstCount+20, "Smoke emission was a one-shot burst")) return false;
     for (int i=0;i<3600;++i) particles.Update(1.0f/60);
-    const auto& pool = particles.GetEmitter(0)->m_ParticlePool;
+    const auto& pool = particles.GetEmitter(0)->ParticlePool();
     if (!check(pool.m_AliveCount > 180 && pool.m_AliveCount < 320, "Long-running smoke stopped emitting or stopped recycling particles")) return false;
     bool fresh = false;
     for (uint32_t i=0; i<pool.m_AliveCount; ++i)
@@ -71,7 +80,7 @@ bool TestProjectileSmokeContract()
     if (!check(fresh, "Smoke did not create fresh particles after 60 seconds")) return false;
     std::cout << "[ProjectileSmoke] continuousAfter60Seconds=1 particleLifetime=7-10 recycling=1\n";
     particles.Restart(); particles.Update(1.9f);
-    if (!check(particles.m_AliveInstanceCount == 0, "Restart bypassed emission delay")) return false;
+    if (!check(particles.AliveInstanceCount() == 0, "Restart bypassed emission delay")) return false;
     particles.Stop();
     std::cout << "[ProjectileSmoke] delay=2 noPrewarm=1 continuous=1 worldEmissionFrame=1 offset=1 pauseResume=1\n";
 
@@ -124,23 +133,25 @@ bool TestProjectileSmokeContract()
 
     auto& physics = VansPhysicsSystem::GetInstance();
     if (!physics.Initialize()) return check(false, "PhysX initialization failed");
-    const auto groundTransform = VansTransformStore::AllocateTransform();
-    const auto bodyTransform = VansTransformStore::AllocateTransform();
+    const auto groundTransform = Vans::VansTransformStore::Allocate();
+    const auto bodyTransform = Vans::VansTransformStore::Allocate();
     struct Cleanup
     {
         VansPhysicsSystem& system; uint32_t a,b;
-        ~Cleanup() { VansTransformStore::FreeTransform(a); VansTransformStore::FreeTransform(b); system.Shutdown(); }
+        ~Cleanup() { Vans::VansTransformStore::Release(a); Vans::VansTransformStore::Release(b); system.Shutdown(); }
     } cleanup{physics,groundTransform,bodyTransform};
-    auto& floorPose = VansTransformStore::GetTransform(groundTransform);
+    Vans::VansTransform floorPose = Vans::VansTransformStore::Read(groundTransform);
     floorPose.m_Position = {0,-0.1f,0}; floorPose.m_Scale = glm::vec3(1);
+    Vans::VansTransformStore::Write(groundTransform, floorPose);
     PhysicsNodeProperties floorProps;
     floorProps.enabled=true; floorProps.boxExtents={5,0.1f,5};
     floorProps.material.restitution=0; floorProps.material.staticFriction=0.8f; floorProps.material.dynamicFriction=0.8f;
     VansPhysicsNode floor; floor.SetName("SmokeBounceContractFloor"); floor.Initialize(floorProps,groundTransform);
     const auto drop = [&](bool oldMaterial)
     {
-        auto& pose = VansTransformStore::GetTransform(bodyTransform);
+        Vans::VansTransform pose = Vans::VansTransformStore::Read(bodyTransform);
         pose.m_Position={0,1.2f,0}; pose.m_Rotation={0,0,0}; pose.m_Scale=glm::vec3(1);
+        Vans::VansTransformStore::Write(bodyTransform, pose);
         Vans::VansProjectileSpawnRequest request;
         request.restitution=oldMaterial ? 0.25f : inputs["restitution"]["value"].get<float>();
         request.friction=oldMaterial ? 0.6f : inputs["friction"]["value"].get<float>();
@@ -149,22 +160,23 @@ bool TestProjectileSmokeContract()
         const auto properties = Vans::VansBuildProjectilePhysicsProperties(request,{-0.025f,-0.0725f,-0.025f},{0.025f,0.0725f,0.025f},glm::vec3(1));
         VansPhysicsNode body; body.SetName(oldMaterial ? "OldSmokeMaterial" : "ConfiguredSmokeMaterial");
         body.Initialize(properties,bodyTransform);
-        auto* actor = body.GetActor() ? body.GetActor()->is<physx::PxRigidDynamic>() : nullptr;
+        const auto* actorIdentity = static_cast<const physx::PxRigidActor*>(body.GetActorIdentity());
+        const auto* actor = actorIdentity ? actorIdentity->is<physx::PxRigidDynamic>() : nullptr;
         if (!actor) return -1.0f;
-        Vans::VansLaunchProjectileBody(*actor,request);
         bool touched=false;
         float height=0;
         for (int i=0;i<360;++i)
         {
-            physics.GetScene()->simulate(1.0f/120);
-            physics.GetScene()->fetchResults(true);
+            auto* scene = VansPhysicsNativeAccess::Scene(physics);
+            scene->simulate(1.0f/120);
+            scene->fetchResults(true);
             float y=actor->getGlobalPose().p.y;
             if (y<0.1f) touched=true;
             if (touched) height=std::max(height,y-0.0725f);
         }
         // Entity teardown can deactivate/remove the actor before Node shutdown.
         // Releasing the remaining body/material must not remove it a second time.
-        physics.GetScene()->removeActor(*actor);
+        body.SetEnabled(false);
         body.Shutdown();
         return height;
     };

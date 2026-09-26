@@ -5,10 +5,12 @@
 #include "../AnimationCore/VansAnimationClip.h"
 #include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/VansBuiltInAssetCatalog.h"
+#include "../AssetCore/VansDerivedArtifactLayout.h"
 #include "../AssetCore/Importers/Shader/VansShaderArtifactCache.h"
 #include "../GameplayActionSchema/VansGAFProjectConfiguration.h"
 #include "../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../ProjectSystem/VansProjectConfig.h"
+#include "../ProjectSystem/Storage/VansProjectSettingsStorage.h"
 #include "../RenderCore/VansShaderManager.h"
 #include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../RenderCore/VulkanCore/VansPipelineDescriptor.h"
@@ -700,8 +702,10 @@ namespace
 		std::vector<fs::path> artifactPaths;
 		std::vector<CacheCopy> cacheCopies;
 		std::vector<MissingCookedResource> missingResources;
+		fs::path projectArtifactRoot;
 		fs::path planRelativePath = Vans::VansPackagedResourcePlanIO::DefaultRelativePath();
-		fs::path reportRelativePath = "Library/Package/ResourcePlanReport.json";
+		fs::path reportRelativePath =
+			Vans::VansDerivedArtifactLayout::PackagedResourcePlanReport().path;
 	};
 
 	fs::path RegisterSourceFormatCache(
@@ -710,10 +714,10 @@ namespace
 		bool directory,
 		CookedPackagePlanBuild& cookedPlan)
 	{
-		const fs::path relativeRoot = fs::path("Library") / "Artifacts" / "Resources" / guid;
-		const fs::path relativePath = directory
-			? relativeRoot
-			: relativeRoot / sourcePath.filename();
+		Vans::VansAssetGuid assetGuid;
+		if (!Vans::VansAssetGuid::TryParse(guid, assetGuid)) return {};
+		const fs::path relativePath = Vans::VansDerivedArtifactLayout::PackagedSourceCache(
+			assetGuid, sourcePath.filename(), directory).path;
 		cookedPlan.cacheCopies.push_back({ sourcePath, relativePath, directory });
 		return relativePath;
 	}
@@ -723,8 +727,10 @@ namespace
 		const fs::path& metaPath,
 		CookedPackagePlanBuild& cookedPlan)
 	{
+		Vans::VansAssetGuid assetGuid;
+		if (!Vans::VansAssetGuid::TryParse(guid, assetGuid)) return {};
 		const fs::path relativePath =
-			fs::path("Library") / "Artifacts" / "Metadata" / (guid + ".meta");
+			Vans::VansDerivedArtifactLayout::PackagedMetadata(assetGuid).path;
 		cookedPlan.cacheCopies.push_back({ metaPath, relativePath, false });
 		return relativePath;
 	}
@@ -878,13 +884,23 @@ namespace
 			error = "Cannot load project config for cooked resource plan";
 			return false;
 		}
+		Vans::VansNavigationSettings navigationSettings;
+		if (!Vans::VansProjectSettingsStorage::LoadNavigationSettings(
+			(projectRoot / projectConfig.navigationSettings).string(),
+			navigationSettings, error))
+		{
+			error = "Cannot load navigation settings for package planning: " + error;
+			return false;
+		}
 
 		Vans::VansAssetDatabase database(
 			projectRoot / projectConfig.assetsRoot,
 			projectRoot / projectConfig.importedArtifactRoot);
+		cookedPlan.projectArtifactRoot = database.ArtifactRoot();
 		Vans::VansAssetDatabase builtInDatabase(
 			engineRoot / "EngineAssets",
-			projectRoot / projectConfig.importedArtifactRoot / "Engine");
+			Vans::VansDerivedArtifactLayout::ProjectBuiltInArtifactRoot(
+				database.ArtifactRoot()).path);
 		const Vans::VansAssetScanResult scanResult = database.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
 		for (const std::string& scanError : scanResult.errors)
 			VANS_LOG_ERROR("[PackageResourcePlan] " << scanError);
@@ -911,7 +927,8 @@ namespace
 		memoryRecords.insert(
 			memoryRecords.end(), builtInMemoryRecords.begin(), builtInMemoryRecords.end());
 		const Vans::VansAssetObjectBootstrapResult memoryBootstrap =
-			Vans::VansAssetObjectBootstrapper::Publish(memoryRecords, objectRepository);
+			Vans::VansAssetObjectBootstrapper::Publish(memoryRecords, objectRepository, {},
+				navigationSettings);
 		if (!memoryBootstrap)
 		{
 			for (const std::string& bootstrapError : memoryBootstrap.errors)
@@ -1014,7 +1031,7 @@ namespace
 		}
 		const Vans::VansGameplayPackageCookResult gameplayCook =
 			Vans::VansGameplayAssetPackageCooker::CookClosure(
-				projectRoot, database, &builtInDatabase, gafSeeds, &gafConfiguration);
+				database, &builtInDatabase, gafSeeds, &gafConfiguration);
 		if (!gameplayCook)
 		{
 			for (const std::string& cookError : gameplayCook.errors)
@@ -1575,6 +1592,16 @@ namespace Vans
 		}
 	}
 
+	bool ParseGamePackagePlatform(std::string_view value, VansGamePackagePlatform& platform)
+	{
+		if (value == "Windows" || value == "windows" || value == "Win64" || value == "win64")
+		{
+			platform = VansGamePackagePlatform::Windows;
+			return true;
+		}
+		return false;
+	}
+
 	VansGamePackageResult VansGamePackageBuilder::Build(const VansGamePackageRequest& request)
 	{
 		VansGamePackageResult result;
@@ -1742,11 +1769,25 @@ namespace Vans
 			}
 			++copiedFiles;
 		}
-		const fs::path packagedShaderArtifacts = contentRoot / "Library" / "Artifacts" / "Shaders";
+		if (cookedPlan.projectArtifactRoot.empty())
+		{
+			Vans::VansProjectConfig projectConfig;
+			if (!projectConfig.LoadFromFile((projectRoot / "ForestProject.json").string()))
+			{
+				result.message = "Cannot load project config for shader artifact layout";
+				return result;
+			}
+			cookedPlan.projectArtifactRoot =
+				(projectRoot / projectConfig.importedArtifactRoot).lexically_normal();
+		}
+		const fs::path packagedShaderArtifacts = contentRoot /
+			Vans::VansDerivedArtifactLayout::PackagedShaderArtifacts().path;
+		const Vans::VansDerivedArtifactLocation projectShaderCache =
+			Vans::VansDerivedArtifactLayout::ProjectShaderCache(cookedPlan.projectArtifactRoot);
 		if (!CookRuntimeShaders(
 			engineRoot,
 			projectRoot,
-			projectRoot / "Library" / "Artifacts" / "Shaders",
+			projectShaderCache.path,
 			cookedPlan.packagePlan.resourcePlan,
 			packagedShaderArtifacts,
 			copiedFiles,

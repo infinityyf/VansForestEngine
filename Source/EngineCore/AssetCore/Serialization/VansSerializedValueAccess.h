@@ -2,6 +2,7 @@
 
 #include "VansSerializedValue.h"
 
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -518,6 +519,18 @@ inline std::int64_t ReadSerializedIntField(
 {
     const VansSerializedValue* field = FindObjectField(object, name);
     return field ? ReadSerializedInt(*field, fallback) : fallback;
+}
+
+inline bool ReadSerializedUnsigned(
+	const VansSerializedValue& value,
+	std::uint64_t& result)
+{
+	if (value.kind != VansSerializedValue::Kind::String || value.stringValue.empty())
+		return false;
+	const char* begin = value.stringValue.data();
+	const char* end = begin + value.stringValue.size();
+	const auto parsed = std::from_chars(begin, end, result);
+	return parsed.ec == std::errc{} && parsed.ptr == end;
 }
 
 inline double ReadSerializedNumber(

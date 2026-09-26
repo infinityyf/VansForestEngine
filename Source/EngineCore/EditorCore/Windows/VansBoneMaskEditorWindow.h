@@ -9,6 +9,7 @@
 #include <unordered_set>
 
 namespace Vans { struct VansOpenAssetDocument; }
+namespace Vans::EditorAPI { class IAnimationEditorAPI; class IAssetEditorAPI; }
 
 namespace VansGraphics
 {
@@ -23,19 +24,19 @@ namespace VansGraphics
 	private:
 		bool DecodeDocument();
 		bool CommitDocument();
-		bool Save();
+		bool Save(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 		bool Undo();
 		bool Redo();
 		void RefreshSkeleton();
 		void Recompile();
-		void DrawToolbar();
+		void DrawToolbar(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 		void DrawSkeletonTree();
 		void DrawSkeletonPreview();
 		void DrawRulesPanel();
 		void DrawDiagnostics();
 		void DrawBoneTreeNode(int boneIndex);
 		void SelectBone(int boneIndex);
-		void AddRule(Vans::EditorAPI::BoneMaskRuleMode mode);
+		void AddRule(Vans::EditorAPI::VansBoneMaskRuleModeDTO mode);
 		void ApplyTemplate(const char* templateName);
 		void MarkEdited();
 
@@ -46,9 +47,10 @@ namespace VansGraphics
 		std::string m_Path;
 		std::string m_LastError;
 		std::shared_ptr<Vans::VansOpenAssetDocument> m_Document;
-		Vans::EditorAPI::IEngineEditorAPI* m_ActiveAPI = nullptr;
+		Vans::EditorAPI::IAnimationEditorAPI* m_AnimationAPI = nullptr;
+		Vans::EditorAPI::IAssetEditorAPI* m_AssetAPI = nullptr;
 		std::uint64_t m_DocumentStateId = 0;
-		Vans::EditorAPI::BoneMaskDocumentDTO m_Asset;
+		Vans::EditorAPI::VansBoneMaskDocumentDTO m_Asset;
 		Vans::EditorAPI::BoneMaskCompileResult m_Compiled;
 		Vans::EditorAPI::AssetSkeletonSnapshot m_Skeleton;
 		std::unordered_set<int> m_SelectedBones;

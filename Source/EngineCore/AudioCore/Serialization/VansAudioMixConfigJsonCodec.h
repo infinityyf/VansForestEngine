@@ -5,15 +5,15 @@
 
 namespace VansEngine
 {
-struct AudioMixConfig;
+struct VansAudioMixConfig;
 
 class VansAudioMixConfigJsonCodec
 {
 public:
 	static bool Decode(
 		const nlohmann::json& root,
-		AudioMixConfig& config,
+		VansAudioMixConfig& config,
 		std::string& error);
-	static nlohmann::json Encode(const AudioMixConfig& config);
+	static nlohmann::json Encode(const VansAudioMixConfig& config);
 };
 }

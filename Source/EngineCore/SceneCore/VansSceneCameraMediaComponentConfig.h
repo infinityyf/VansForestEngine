@@ -18,7 +18,7 @@ struct VansSceneCameraComponentConfig
 
 struct VansSceneAudioComponentConfig
 {
-	std::string sourceName;
+	std::string assetGuid;
 	bool occlusionEnabled = false;
 	float occlusionGain = 0.45f;
 	float occlusionHighFrequencyGain = 0.35f;
@@ -54,7 +54,7 @@ struct VansSceneAudioReverbZoneConfig
 
 struct VansSceneVideoComponentConfig
 {
-	std::string sourceName;
+	std::string assetGuid;
 };
 
 struct VansSceneCameraMediaComponentConfig

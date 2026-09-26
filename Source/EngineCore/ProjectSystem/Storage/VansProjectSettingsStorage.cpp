@@ -47,4 +47,25 @@ bool VansProjectSettingsStorage::SavePhysicsSettings(
 	const nlohmann::json root = VansProjectSettingsJsonCodec::EncodePhysicsSettings(settings);
 	return VansJsonFileStorage::WriteAtomic(filePath, root, error);
 }
+
+bool VansProjectSettingsStorage::LoadNavigationSettings(
+	const std::string& filePath,
+	VansNavigationSettings& settings,
+	std::string& error)
+{
+	nlohmann::json root;
+	if (!VansJsonFileStorage::Read(filePath, root, error))
+		return false;
+	return VansProjectSettingsJsonCodec::DecodeNavigationSettings(root, settings, error);
+}
+
+bool VansProjectSettingsStorage::SaveNavigationSettings(
+	const std::string& filePath,
+	const VansNavigationSettings& settings,
+	std::string& error)
+{
+	const nlohmann::json root =
+		VansProjectSettingsJsonCodec::EncodeNavigationSettings(settings);
+	return VansJsonFileStorage::WriteAtomic(filePath, root, error);
+}
 }

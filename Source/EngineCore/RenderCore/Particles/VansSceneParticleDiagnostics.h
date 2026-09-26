@@ -18,7 +18,9 @@ struct VansParticleEffectDiagnostics
 struct VansSceneParticleDiagnostics
 {
     std::uint64_t activeInstances = 0, pointCapacity = 0, rejectedInstances = 0;
-    double simulationMilliseconds = 0, waitMilliseconds = 0;
+    std::uint32_t resimulationSteps = 0, pendingResimulations = 0;
+    double simulationMilliseconds = 0, resimulationMilliseconds = 0;
+    double mainThreadOverlapMilliseconds = 0, waitMilliseconds = 0;
     VansParticleRenderDiagnostics rendering;
     std::vector<VansParticleEffectDiagnostics> effects;
 };

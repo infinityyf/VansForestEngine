@@ -3,9 +3,11 @@
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../EventCore/VansEventBus.h"
 #include "../EventCore/VansEventLane.h"
+#include "../Util/VansLog.h"
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 
 namespace Vans
 {
@@ -58,6 +60,7 @@ struct VansRuntimeEffect
 {
 	VansEffectId effect;
 	bool removeOnEnd = false;
+	std::unordered_map<VansActionFieldId, double> setByCaller;
 };
 
 enum class VansRuntimeTransitionTrigger : std::uint8_t
@@ -196,13 +199,14 @@ bool ResolveGrantConfiguration(
 			for (const std::string& tagName :
 				RuntimeStringArray(FindObjectField(extension.inputs, "tags")))
 			{
-				const VansGameplayTagDefinition* tag = tags ? tags->Find(tagName) : nullptr;
+				const std::optional<VansGameplayTagId> tag =
+					tags ? tags->FindId(tagName) : std::nullopt;
 				if (!tag)
 				{
 					error = "Action grant dynamic Tag is unresolved: " + tagName;
 					return false;
 				}
-				result.dynamicTags.push_back(tag->id);
+				result.dynamicTags.push_back(*tag);
 			}
 		}
 		else if (extension.type == "Gameplay.Charges")
@@ -358,9 +362,17 @@ bool BuildActionRuntimeProjection(
 		{
 			const std::string reference = RuntimeReference(
 				FindObjectField(operation.inputs, "asset"));
-			if (!reference.empty()) projection->effects.push_back({
-				RuntimeStableId<VansEffectIdTag>(reference),
-				ReadSerializedBoolField(operation.inputs, "removeOnEnd", false) });
+			if (!reference.empty())
+			{
+				VansRuntimeEffect effect;
+				effect.effect = RuntimeStableId<VansEffectIdTag>(reference);
+				effect.removeOnEnd = ReadSerializedBoolField(
+					operation.inputs, "removeOnEnd", false);
+				if (!VansDecodeEffectSetByCaller(
+					FindObjectField(operation.inputs, "setByCaller"),
+					effect.setByCaller, error)) return false;
+				projection->effects.push_back(std::move(effect));
+			}
 		}
 	}
 	for (const VansCompiledActionRecord& operation : definition.program.execute.operations)
@@ -548,9 +560,10 @@ VansActionHost::VansActionHost(
 	, m_Dependencies(dependencies)
 	, m_Tags(dependencies.tagDictionary)
 	, m_Attributes(dependencies.attributeRegistry)
-	, m_Cues(dependencies.cueRegistry)
-	, m_Effects(&m_Attributes, &m_Tags, &m_Cues,
-		dependencies.limits.maximumActiveEffects, &m_TargetData)
+	, m_Cues(dependencies.cueRegistry,
+		dependencies.performance.maximumCueHistoryPerHost)
+	, m_Effects(&m_Attributes, &m_Tags, &m_Cues, &m_TargetData,
+		dependencies.performance)
 {
 }
 
@@ -571,8 +584,9 @@ void VansActionHost::SetEnabled(bool enabled)
 	});
 	for (VansActionHandle handle : active)
 	{
-		std::string ignored;
-		Cancel(handle, VansActionCancelReason::System, ignored);
+		std::string cancelError;
+		if (!Cancel(handle, VansActionCancelReason::System, cancelError))
+			VANS_LOG_ERROR("[GAF] Disabling Action Host failed to cancel Action: " << cancelError);
 	}
 }
 
@@ -585,17 +599,17 @@ bool VansActionHost::Initialize(std::string& error)
 		!m_Dependencies.tagDictionary->IsSealed() || !m_Dependencies.attributeRegistry ||
 		!m_Dependencies.attributeRegistry->IsSealed() || !m_Dependencies.services ||
 		!m_Dependencies.services->IsSealed() ||
-		m_Dependencies.limits.maximumActiveActions == 0 ||
-		m_Dependencies.limits.maximumTasksPerAction == 0 ||
-		m_Dependencies.limits.maximumActiveEffects == 0 ||
-		m_Dependencies.limits.maximumPayloadBytes == 0)
+		!m_Dependencies.cueRegistry || !m_Dependencies.cueRegistry->IsSealed() ||
+		m_Dependencies.performance.maximumActiveActionsPerHost == 0 ||
+		m_Dependencies.performance.maximumTasksPerAction == 0 ||
+		m_Dependencies.performance.maximumEffectsPerHost == 0 ||
+		m_Dependencies.performance.maximumCueHistoryPerHost == 0 ||
+		!std::isfinite(m_Dependencies.performance.minimumEffectPeriodSeconds) ||
+		m_Dependencies.performance.minimumEffectPeriodSeconds <= 0.0 ||
+		m_Dependencies.performance.maximumEffectPulsesPerTick == 0 ||
+		m_Dependencies.performance.maximumPayloadBytes == 0)
 	{
 		error = "Action Host dependencies are incomplete or not sealed";
-		return false;
-	}
-	if (m_Dependencies.cueRegistry && !m_Dependencies.cueRegistry->IsSealed())
-	{
-		error = "Action Host Cue registry is not sealed";
 		return false;
 	}
 	if (m_Dependencies.targetingPolicies &&
@@ -638,7 +652,9 @@ void VansActionHost::Shutdown()
 	m_Cues.Clear();
 	m_TargetData.Clear();
 	std::vector<std::string> hostResourceErrors;
-	m_HostResources.ReleaseAll(hostResourceErrors);
+	if (!m_HostResources.ReleaseAll(hostResourceErrors))
+		for (const std::string& resourceError : hostResourceErrors)
+			VANS_LOG_ERROR("[GAF] Action Host resource cleanup failed: " << resourceError);
 	m_HostResources = {};
 	m_Tags.Clear();
 	m_Concurrency.clear();
@@ -710,9 +726,10 @@ bool VansActionHost::Revoke(
 	{
 		for (VansActionHandle action : running)
 		{
-			std::string ignored;
-			if (!Cancel(action, VansActionCancelReason::GrantRevoked, ignored))
+			std::string cancelError;
+			if (!Cancel(action, VansActionCancelReason::GrantRevoked, cancelError))
 			{
+				VANS_LOG_ERROR("[GAF] Grant revoke cancellation failed: " << cancelError);
 				ActionInstance* instance = m_Instances.Resolve(action.value);
 				if (instance) End(action, *instance, VansActionEndReason::Cancelled,
 					VansActionError::Cancelled, "Action grant revoked");
@@ -763,8 +780,9 @@ VansActionSetHandle VansActionHost::ApplyActionSet(
 		{
 			for (VansActionSpecHandle created : stored->specs)
 			{
-				std::string ignored;
-				Revoke(created, VansActionRevokePolicy::KeepRunning, ignored);
+				std::string revokeError;
+				if (!Revoke(created, VansActionRevokePolicy::KeepRunning, revokeError))
+					VANS_LOG_ERROR("[GAF] ActionSet grant rollback failed: " << revokeError);
 			}
 			m_ActionSets.Release(handle.value);
 			return {};
@@ -779,15 +797,17 @@ VansActionSetHandle VansActionHost::ApplyActionSet(
 		if (!handlers || found == handlers->end())
 		{
 			error = "ActionSet initializer implementation is not registered: " + initializer.type;
-			std::string ignored;
-			RevokeActionSet(handle, ignored);
+			std::string cleanupError;
+			if (!RevokeActionSet(handle, cleanupError))
+				VANS_LOG_ERROR("[GAF] ActionSet missing-initializer cleanup failed: " << cleanupError);
 			return {};
 		}
 		VansActionSetInitializerCleanup cleanup;
 		if (!found->second(*this, stored->source, initializer.inputs, cleanup, error))
 		{
-			std::string ignored;
-			RevokeActionSet(handle, ignored);
+			std::string cleanupError;
+			if (!RevokeActionSet(handle, cleanupError))
+				VANS_LOG_ERROR("[GAF] ActionSet initializer rollback failed: " << cleanupError);
 			return {};
 		}
 		if (cleanup) stored->initializerCleanup.push_back(std::move(cleanup));
@@ -831,23 +851,6 @@ bool VansActionHost::RevokeActionSet(VansActionSetHandle handle, std::string& er
 	return succeeded;
 }
 
-std::size_t VansActionHost::RevokeSource(
-	std::uint64_t source,
-	VansActionRevokePolicy policy)
-{
-	std::vector<VansActionSpecHandle> specs;
-	m_Specs.ForEach([&](VansGenerationHandle handle, const GrantedSpec& spec)
-	{
-		if (spec.source == source) specs.push_back({ handle });
-	});
-	for (VansActionSpecHandle spec : specs)
-	{
-		std::string ignored;
-		Revoke(spec, policy, ignored);
-	}
-	return specs.size();
-}
-
 VansActionResult VansActionHost::Activate(const VansActionActivationRequest& request)
 {
 	VansActionResult result;
@@ -866,7 +869,8 @@ VansActionResult VansActionHost::Activate(const VansActionActivationRequest& req
 		result.message = "Action Spec handle is stale";
 		return result;
 	}
-	if (m_Instances.ActiveCount() >= m_Dependencies.limits.maximumActiveActions)
+	if (m_Instances.ActiveCount() >=
+		m_Dependencies.performance.maximumActiveActionsPerHost)
 	{
 		result.error = VansActionError::Budget;
 		result.message = "Action Host active Action budget exceeded";
@@ -1160,7 +1164,7 @@ VansActionResult VansActionHost::StartActivation(
 		instance->source = SourceForHandle(handle);
 		Transition(*instance, VansActionInstanceState::Created, "instance allocated");
 	}
-	instance->tasks.SetMaximumTasks(m_Dependencies.limits.maximumTasksPerAction);
+	instance->tasks.SetMaximumTasks(m_Dependencies.performance.maximumTasksPerAction);
 	RemoveFromConcurrencyQueue(handle, instance->definition->concurrencyGroup);
 	std::vector<VansActionHandle> cancelActions;
 	m_Instances.ForEach([&](VansGenerationHandle handle, const ActionInstance& active)
@@ -1172,8 +1176,9 @@ VansActionResult VansActionHost::StartActivation(
 	});
 	for (VansActionHandle action : cancelActions)
 	{
-		std::string ignored;
-		Cancel(action, VansActionCancelReason::Interrupted, ignored);
+		std::string cancelError;
+		if (!Cancel(action, VansActionCancelReason::Interrupted, cancelError))
+			VANS_LOG_ERROR("[GAF] Concurrency cancellation failed: " << cancelError);
 	}
 
 	Transition(*instance, VansActionInstanceState::Resolving, "definition resolved");
@@ -1210,8 +1215,8 @@ VansActionResult VansActionHost::StartActivation(
 		VansTargetingResult targeting = VansTargetingPipeline::Execute(
 			*policy, instance->context, *m_Dependencies.targetingHandlers, std::move(initial));
 		for (const VansTargetingTraceEntry& trace : targeting.trace)
-			instance->trace.push_back({ instance->elapsedSeconds, instance->state,
-				"Targeting " + trace.step + ": " + (trace.succeeded ? "ok" : trace.message) });
+			RecordTrace(*instance, instance->state,
+				"Targeting " + trace.step + ": " + (trace.succeeded ? "ok" : trace.message));
 		if (!targeting)
 		{
 			error = targeting.message;
@@ -1284,8 +1289,13 @@ VansActionResult VansActionHost::StartActivation(
 		if (const VansSerializedValue* payload =
 			instance->context.Serialized(VansActionContextSlots::Payload))
 			parameters.payload = *payload;
-		const VansGameplayCueKey key{ instance->context.correlationId, cue, m_NextCueSequence++ };
-		if (!m_Cues.Execute(key, m_Cues.DefaultScope(cue), parameters, error))
+		if (const VansTargetData* targetData = m_TargetData.Resolve(
+			instance->context.TargetData(VansActionContextSlots::TargetData)))
+			VansApplyGameplayCueTargetData(parameters, *targetData);
+		const VansGameplayCueKey key{ instance->context.correlationId, cue,
+			SourceForHandle(handle), m_NextCueSequence++ };
+		if (m_Cues.Execute(key, std::nullopt, parameters, error) ==
+			VansGameplayCueExecuteStatus::Failed)
 		{
 			End(handle, *instance, VansActionEndReason::Failed,
 				VansActionError::Execution, error);
@@ -1342,6 +1352,8 @@ bool VansActionHost::Cancel(
 		error = "Action Executor rejected cancellation";
 		return false;
 	}
+	for (const std::unique_ptr<IVansActionSidecarDriver>& driver : instance->drivers)
+		driver->OnCancel(execution, reason);
 	const bool interrupted = reason == VansActionCancelReason::Interrupted ||
 		reason == VansActionCancelReason::Concurrency;
 	End(handle, *instance,
@@ -1369,7 +1381,7 @@ bool VansActionHost::Interrupt(VansActionHandle handle, std::string& error)
 void VansActionHost::PublishGameplayEvent(VansActionEvent event)
 {
     if (!m_Initialized || m_ShuttingDown || !event.type) return;
-    VansEventBus::Get().Enqueue(VansActionMessageEvent{
+    VansEventBus::Get().Enqueue(VansActionEventNotification{
         m_Owner, {}, {}, 0, m_NextHostEventSequence++, std::move(event)}, VansEventLane::GameLogic);
 }
 
@@ -1387,14 +1399,10 @@ bool VansActionHost::EnqueueEvent(
 		return false;
 	}
 	const auto sequence = instance->nextEventSequence++;
-	instance->recentEvents.push_back({ sequence, event.type, event.stableName });
-	VansEventBus::Get().Enqueue(VansActionMessageEvent{
+	RecordEvent(*instance, { sequence, event.type, event.stableName });
+	VansEventBus::Get().Enqueue(VansActionEventNotification{
 		m_Owner, handle, instance->definition->id, instance->context.correlationId, sequence, event },
 		VansEventLane::GameLogic);
-	constexpr std::size_t MaximumDebugEvents = 64;
-	if (instance->recentEvents.size() > MaximumDebugEvents)
-		instance->recentEvents.erase(instance->recentEvents.begin(),
-			instance->recentEvents.begin() + (instance->recentEvents.size() - MaximumDebugEvents));
 	bool consumed = false;
 	for (const VansRuntimeTransitionRule& rule : instance->runtime->transitionRules)
 	{
@@ -1494,7 +1502,12 @@ bool VansActionHost::CapturePersistentState(
 		if (left.action != right.action) return left.action < right.action;
 		return left.source < right.source;
 	});
-	state.attributes = m_Attributes.Capture();
+	state.attributes = m_Attributes.CaptureBases();
+	if (!m_Effects.CapturePersistentState(state.effectService, error))
+	{
+		state = {};
+		return false;
+	}
 	for (const auto& [action, cooldowns] : m_Cooldowns)
 		for (const CooldownState& cooldown : cooldowns)
 			if (cooldown.remainingSeconds > 0.0)
@@ -1538,21 +1551,35 @@ bool VansActionHost::RestorePersistentState(
 			return false;
 		}
 	}
-	for (const VansAttributeSnapshot& attribute : state.attributes)
-		if (!m_Dependencies.attributeRegistry->Resolve(attribute.attribute) ||
-			!std::isfinite(attribute.baseValue) || !std::isfinite(attribute.currentValue))
+	std::unordered_set<VansAttributeId> restoredAttributes;
+	for (const VansAttributeBaseState& attribute : state.attributes)
+	{
+		const VansAttributeDefinition* definition =
+			m_Dependencies.attributeRegistry->Resolve(attribute.attribute);
+		if (!definition || !definition->IsValueInRange(attribute.value) ||
+			!restoredAttributes.insert(attribute.attribute).second)
 		{
-			error = "Persistent Attribute snapshot is invalid or unresolved";
+			error = "Persistent Attribute base state is invalid or unresolved";
 			return false;
 		}
+	}
 	for (const VansPersistentActionCooldownState& cooldown : state.cooldowns)
 		if (!m_Dependencies.definitions->Resolve(cooldown.action) ||
-			!m_Dependencies.tagDictionary->Resolve(cooldown.tag) ||
+			!m_Dependencies.tagDictionary->Contains(cooldown.tag) ||
 			!std::isfinite(cooldown.remainingSeconds) || cooldown.remainingSeconds <= 0.0)
 		{
 			error = "Persistent cooldown is invalid or unresolved";
 			return false;
 		}
+	if ((!state.effectService.activeEffects.empty() && !m_Dependencies.effectRegistry) ||
+		(m_Dependencies.effectRegistry &&
+			!m_Effects.ValidatePersistentState(
+				state.effectService, *m_Dependencies.effectRegistry, error)) ||
+		(!m_Dependencies.effectRegistry && m_Effects.ActiveCount() != 0))
+	{
+		if (error.empty()) error = "Persistent Effect state is unavailable or unresolved";
+		return false;
+	}
 
 	std::vector<VansGenerationHandle> persistentSpecs;
 	m_Specs.ForEach([&](VansGenerationHandle handle, const GrantedSpec& spec)
@@ -1564,7 +1591,15 @@ bool VansActionHost::RestorePersistentState(
 	for (const auto& [action, cooldowns] : m_Cooldowns)
 		for (const CooldownState& cooldown : cooldowns) m_Tags.RemoveSource(cooldown.tagSource);
 	m_Cooldowns.clear();
-	m_Attributes.Restore(state.attributes);
+	if (!m_Attributes.RestoreBases(state.attributes))
+	{
+		error = "Persistent Attribute base state could not be restored";
+		return false;
+	}
+	if (m_Dependencies.effectRegistry &&
+		!m_Effects.RestorePersistentState(
+			state.effectService, *m_Dependencies.effectRegistry, error))
+		return false;
 	for (const VansPersistentActionGrantState& saved : state.grants)
 	{
 		VansActionGrantDesc grant;
@@ -1599,7 +1634,10 @@ void VansActionHost::Tick(double deltaSeconds)
 	ProcessTransitions();
 	RecycleEnded();
 	TickCooldowns(deltaSeconds);
-	m_Effects.Tick(deltaSeconds);
+	const VansEffectTickResult effectTick = m_Effects.Tick(deltaSeconds);
+	if (!effectTick)
+		VANS_LOG_ERROR("[GAF] Effect Tick failed for Host " <<
+			m_Owner.index << ':' << m_Owner.generation << ": " << effectTick.message);
 	std::vector<VansActionHandle> handles;
 	m_Instances.ForEach([&](VansGenerationHandle handle, const ActionInstance& instance)
 	{
@@ -1611,44 +1649,7 @@ void VansActionHost::Tick(double deltaSeconds)
 	{
 		ActionInstance* instance = m_Instances.Resolve(handle.value);
 		if (!instance) continue;
-		instance->elapsedSeconds += deltaSeconds;
-		instance->tasks.Tick(deltaSeconds);
-		VansActionExecutionContext execution = BuildExecutionContext(handle, *instance, deltaSeconds);
-		bool driversReady = true;
-		for (const std::unique_ptr<IVansActionSidecarDriver>& driver : instance->drivers)
-		{
-			std::string driverError;
-			if (driver->Tick(execution, driverError)) continue;
-			if (driverError.empty()) driverError = "Action sidecar Driver failed";
-			End(handle, *instance, VansActionEndReason::Failed,
-				VansActionError::Execution, std::move(driverError));
-			driversReady = false;
-			break;
-		}
-		if (!driversReady) continue;
-		std::vector<VansActionEvent> inbox = std::move(instance->inbox);
-		instance->inbox.clear();
-		for (const VansActionEvent& event : inbox)
-		{
-			if (instance->state == VansActionInstanceState::Ending ||
-				instance->state == VansActionInstanceState::Ended) break;
-			instance->executor->OnEvent(execution, event);
-		}
-		if (instance->state == VansActionInstanceState::Ending ||
-			instance->state == VansActionInstanceState::Ended) continue;
-		const VansActionExecutorResult ticked = instance->executor->Tick(execution);
-		if (ticked.status == VansActionExecutorStatus::Succeeded)
-			End(handle, *instance, VansActionEndReason::Completed, VansActionError::None, ticked.message);
-		else if (ticked.status == VansActionExecutorStatus::Failed)
-			End(handle, *instance, VansActionEndReason::Failed,
-				ticked.error == VansActionError::None ? VansActionError::Execution : ticked.error,
-				ticked.message);
-		else if (ticked.status == VansActionExecutorStatus::Waiting &&
-			instance->state != VansActionInstanceState::Waiting)
-			Transition(*instance, VansActionInstanceState::Waiting, "Executor is waiting");
-		else if (ticked.status == VansActionExecutorStatus::Running &&
-			instance->state != VansActionInstanceState::Running)
-			Transition(*instance, VansActionInstanceState::Running, "Executor resumed");
+		DriveInstance(handle, *instance, deltaSeconds, DrivePhase::Frame);
 	}
 	ProcessTransitions();
 	ProcessConcurrencyQueues(deltaSeconds);
@@ -1674,28 +1675,71 @@ bool VansActionHost::RunLateContinuation()
 		ActionInstance* instance = m_Instances.Resolve(handle.value);
 		if (!instance) continue;
 		ran = true;
-		VansActionExecutionContext execution = BuildExecutionContext(handle, *instance, 0.0);
-		std::vector<VansActionEvent> inbox = std::move(instance->inbox);
-		instance->inbox.clear();
-		for (const VansActionEvent& event : inbox) instance->executor->OnEvent(execution, event);
-		if (instance->state == VansActionInstanceState::Ending ||
-			instance->state == VansActionInstanceState::Ended) continue;
-		const VansActionExecutorResult result = instance->executor->Tick(execution);
-		if (result.status == VansActionExecutorStatus::Succeeded)
-			End(handle, *instance, VansActionEndReason::Completed, VansActionError::None, result.message);
-		else if (result.status == VansActionExecutorStatus::Failed)
-			End(handle, *instance, VansActionEndReason::Failed,
-				result.error == VansActionError::None ? VansActionError::Execution : result.error,
-				result.message);
-		else if (result.status == VansActionExecutorStatus::Waiting)
-			Transition(*instance, VansActionInstanceState::Waiting, "late continuation is waiting");
-		else
-			Transition(*instance, VansActionInstanceState::Running, "late continuation resumed");
+		DriveInstance(handle, *instance, 0.0, DrivePhase::LateContinuation);
 	}
 	ProcessTransitions();
 	ProcessConcurrencyQueues(0.0);
 	ReleaseDeferredSpecs();
 	return ran;
+}
+
+void VansActionHost::DriveInstance(
+	VansActionHandle handle,
+	ActionInstance& instance,
+	double deltaSeconds,
+	DrivePhase phase)
+{
+	const bool frame = phase == DrivePhase::Frame;
+	if (frame)
+	{
+		instance.elapsedSeconds += deltaSeconds;
+		instance.tasks.Tick(deltaSeconds);
+	}
+	VansActionExecutionContext execution = BuildExecutionContext(handle, instance, deltaSeconds);
+	if (frame)
+		for (const std::unique_ptr<IVansActionSidecarDriver>& driver : instance.drivers)
+		{
+			std::string driverError;
+			if (driver->TickFrame(execution, driverError)) continue;
+			if (driverError.empty()) driverError = "Action sidecar Driver failed";
+			End(handle, instance, VansActionEndReason::Failed,
+				VansActionError::Execution, std::move(driverError));
+			return;
+		}
+	std::vector<VansActionEvent> inbox = std::move(instance.inbox);
+	instance.inbox.clear();
+	for (const VansActionEvent& event : inbox)
+	{
+		if (frame && (instance.state == VansActionInstanceState::Ending ||
+			instance.state == VansActionInstanceState::Ended)) break;
+		for (const std::unique_ptr<IVansActionSidecarDriver>& driver : instance.drivers)
+		{
+			std::string driverError;
+			if (driver->OnEvent(execution, event, driverError)) continue;
+			if (driverError.empty()) driverError = "Action sidecar Driver failed to handle event";
+			End(handle, instance, VansActionEndReason::Failed,
+				VansActionError::Execution, std::move(driverError));
+			return;
+		}
+		instance.executor->OnEvent(execution, event);
+	}
+	if (instance.state == VansActionInstanceState::Ending ||
+		instance.state == VansActionInstanceState::Ended) return;
+	const VansActionExecutorResult result = instance.executor->Tick(execution);
+	if (result.status == VansActionExecutorStatus::Succeeded)
+		End(handle, instance, VansActionEndReason::Completed, VansActionError::None, result.message);
+	else if (result.status == VansActionExecutorStatus::Failed)
+		End(handle, instance, VansActionEndReason::Failed,
+			result.error == VansActionError::None ? VansActionError::Execution : result.error,
+			result.message);
+	else if (result.status == VansActionExecutorStatus::Waiting &&
+		(!frame || instance.state != VansActionInstanceState::Waiting))
+		Transition(instance, VansActionInstanceState::Waiting,
+			frame ? "Executor is waiting" : "late continuation is waiting");
+	else if (result.status == VansActionExecutorStatus::Running &&
+		(!frame || instance.state != VansActionInstanceState::Running))
+		Transition(instance, VansActionInstanceState::Running,
+			frame ? "Executor resumed" : "late continuation resumed");
 }
 
 VansActionSpecHandle VansActionHost::FindSpecForAction(VansActionId action) const
@@ -1745,8 +1789,9 @@ VansActionResult VansActionHost::ExecuteTransition(const PendingTransition& tran
 		std::string cancelError;
 		if (!Cancel(transition.source, VansActionCancelReason::Interrupted, cancelError))
 		{
-			std::string ignored;
-			Cancel(result.action, VansActionCancelReason::System, ignored);
+			std::string rollbackError;
+			if (!Cancel(result.action, VansActionCancelReason::System, rollbackError))
+				VANS_LOG_ERROR("[GAF] Transition activation rollback failed: " << rollbackError);
 			result.error = VansActionError::Execution;
 			result.action = {};
 			result.message = "Action transition could not end its source: " + cancelError;
@@ -1754,8 +1799,7 @@ VansActionResult VansActionHost::ExecuteTransition(const PendingTransition& tran
 		}
 	}
 	if (source)
-		source->trace.push_back({ source->elapsedSeconds, source->state,
-			"Transition executed: " + transition.name });
+		RecordTrace(*source, source->state, "Transition executed: " + transition.name);
 	return result;
 }
 
@@ -1899,7 +1943,8 @@ void VansActionHost::ProcessConcurrencyQueues(double deltaSeconds)
 		}
 
 		std::size_t transitionGuard = 0;
-		while (++transitionGuard <= m_Dependencies.limits.maximumActiveActions)
+		while (++transitionGuard <=
+			m_Dependencies.performance.maximumActiveActionsPerHost)
 		{
 			const auto currentQueue = m_ConcurrencyQueues.find(group);
 			if (currentQueue == m_ConcurrencyQueues.end() || currentQueue->second.empty()) break;
@@ -2124,7 +2169,7 @@ bool VansActionHost::ValidateActivation(
 	const VansSerializedValue* activationPayload =
 		request.context.Serialized(VansActionContextSlots::Payload);
 	if (activationPayload && !SerializedValueFitsBudget(
-		*activationPayload, m_Dependencies.limits.maximumPayloadBytes))
+		*activationPayload, m_Dependencies.performance.maximumPayloadBytes))
 	{
 		result.error = VansActionError::Budget;
 		result.message = "Action Context payload exceeds the Host byte or nesting budget";
@@ -2319,7 +2364,7 @@ bool VansActionHost::CommitActivation(
 	}
 	for (VansGameplayTagId tag : instance.runtime->runningTags)
 	{
-		if (!m_Dependencies.tagDictionary->Resolve(tag))
+		if (!m_Dependencies.tagDictionary->Contains(tag))
 		{
 			error = "running Tag is missing";
 			return false;
@@ -2351,21 +2396,36 @@ bool VansActionHost::CommitActivation(
 				return false;
 			}
 			if (cooldown.tag &&
-				!m_Dependencies.tagDictionary->Resolve(cooldown.tag))
+				!m_Dependencies.tagDictionary->Contains(cooldown.tag))
 			{
 				error = "cooldown Tag is missing";
 				return false;
 			}
 		}
 	}
+	std::vector<VansEffectSpec> commitEffects;
+	commitEffects.reserve(instance.runtime->effects.size());
 	for (const VansRuntimeEffect& reference : instance.runtime->effects)
 	{
-		if (!m_Dependencies.effectRegistry ||
-			!m_Dependencies.effectRegistry->Resolve(reference.effect))
+		if (!m_Dependencies.effectRegistry)
 		{
 			error = "commit Effect is missing";
 			return false;
 		}
+		VansEffectSpec effectSpec;
+		effectSpec.definition = m_Dependencies.effectRegistry->Resolve(reference.effect);
+		effectSpec.context = instance.context;
+		effectSpec.targetData = instance.context.TargetData(VansActionContextSlots::TargetData);
+		effectSpec.source = source;
+		effectSpec.setByCaller = reference.setByCaller;
+		commitEffects.push_back(std::move(effectSpec));
+	}
+	const VansEffectValidationResult effectValidation =
+		m_Effects.ValidateApplications(commitEffects);
+	if (!effectValidation)
+	{
+		error = effectValidation.message;
+		return false;
 	}
 
 	for (const VansRuntimeCost& cost : instance.runtime->costs)
@@ -2373,7 +2433,8 @@ bool VansActionHost::CommitActivation(
 		const double amount = cost.amount * spec.level;
 		if (cost.attributeCost)
 		{
-			if (!m_Attributes.AddBase(cost.attribute, -amount))
+			if (!m_Attributes.ApplyBase(cost.attribute,
+				VansAttributeBaseOperation::Add, -amount))
 			{
 				error = "failed to commit Attribute cost";
 				return false;
@@ -2392,16 +2453,13 @@ bool VansActionHost::CommitActivation(
 
 	if (!instance.runtime->runningTags.empty())
 	{
-		m_Tags.BeginBatch();
 		for (VansGameplayTagId tag : instance.runtime->runningTags)
 		{
 			if (m_Tags.Add(tag, source)) continue;
-			m_Tags.EndBatch();
 			m_Tags.RemoveSource(source);
 			error = "failed to add running Tag";
 			return false;
 		}
-		m_Tags.EndBatch();
 		VansActionResourceEntry resource;
 		resource.type = "GameplayTags";
 		resource.debugName = "Action running Tags";
@@ -2438,56 +2496,70 @@ bool VansActionHost::CommitActivation(
 		const VansActionId actionId = instance.definition->id;
 		std::vector<CooldownState> states;
 		states.reserve(instance.runtime->cooldowns.size());
-		m_Tags.BeginBatch();
 		for (std::size_t index = 0; index < instance.runtime->cooldowns.size(); ++index)
 		{
 			const VansRuntimeCooldown& cooldown = instance.runtime->cooldowns[index];
 			const std::uint64_t cooldownSource = SourceForCooldown(actionId, index);
 			if (cooldown.tag && !m_Tags.Add(cooldown.tag, cooldownSource))
 			{
-				m_Tags.EndBatch();
 				for (const CooldownState& applied : states) m_Tags.RemoveSource(applied.tagSource);
 				error = "failed to add cooldown Tag";
 				return false;
 			}
 			states.push_back({ cooldown.durationSeconds, cooldown.tag, cooldownSource });
 		}
-		m_Tags.EndBatch();
 		m_Cooldowns[actionId] = std::move(states);
 	}
+	const auto rollbackCooldown = [this, &instance]
+	{
+		if (instance.runtime->cooldowns.empty()) return;
+		const auto found = m_Cooldowns.find(instance.definition->id);
+		if (found == m_Cooldowns.end()) return;
+		for (const CooldownState& state : found->second) m_Tags.RemoveSource(state.tagSource);
+		m_Cooldowns.erase(found);
+	};
 
 	auto removeOnEnd = std::make_shared<std::vector<VansActiveEffectHandle>>();
-	for (const VansRuntimeEffect& reference : instance.runtime->effects)
+	bool removeOnEndRegistered = false;
+	for (std::size_t index = 0; index < instance.runtime->effects.size(); ++index)
 	{
-		VansEffectSpec effectSpec;
-		effectSpec.definition = m_Dependencies.effectRegistry->Resolve(reference.effect);
-		effectSpec.context = instance.context;
-		effectSpec.targetData = instance.context.TargetData(VansActionContextSlots::TargetData);
-		effectSpec.source = source;
-		const VansEffectApplicationResult applied = m_Effects.Apply(effectSpec);
+		const VansRuntimeEffect& reference = instance.runtime->effects[index];
+		const VansEffectApplicationResult applied = m_Effects.Apply(commitEffects[index]);
 		if (!applied)
 		{
+			rollbackCooldown();
 			error = applied.message;
 			return false;
 		}
-		if (reference.removeOnEnd && applied.active) removeOnEnd->push_back(applied.active);
-	}
-	if (!removeOnEnd->empty())
-	{
+		if (!reference.removeOnEnd || !applied.active) continue;
+		removeOnEnd->push_back(applied.active);
+		if (removeOnEndRegistered) continue;
 		VansActionResourceEntry resource;
 		resource.type = "GameplayEffects";
 		resource.debugName = "Action remove-on-end Effects";
 		resource.release = [this, removeOnEnd]
 		{
+			bool succeeded = true;
 			for (auto it = removeOnEnd->rbegin(); it != removeOnEnd->rend(); ++it)
 			{
-				std::string ignored;
-				m_Effects.Remove(*it, ignored);
+				std::string removeError;
+				if (m_Effects.Remove(*it, removeError)) continue;
+				succeeded = false;
+				VANS_LOG_ERROR("[GAF] Action-owned Effect cleanup failed: " << removeError);
 			}
 			removeOnEnd->clear();
-			return true;
+			return succeeded;
 		};
-		if (!instance.resources.Register(std::move(resource), error)) return false;
+		if (!instance.resources.Register(std::move(resource), error))
+		{
+			std::string removeError;
+			if (!m_Effects.Remove(applied.active, removeError))
+				VANS_LOG_ERROR("[GAF] Unpublished Effect cleanup failed: " << removeError);
+			removeOnEnd->clear();
+			rollbackCooldown();
+			return false;
+		}
+		removeOnEndRegistered = true;
 	}
 	return true;
 }
@@ -2519,20 +2591,32 @@ void VansActionHost::End(
 	if (!instance.resources.ReleaseAll(releaseErrors))
 	{
 		for (const std::string& releaseError : releaseErrors)
-			instance.trace.push_back({ instance.elapsedSeconds, VansActionInstanceState::Ending, releaseError });
+		{
+			RecordTrace(instance, VansActionInstanceState::Ending, releaseError);
+			VANS_LOG_ERROR("[GAF] Action resource cleanup failed: " << releaseError);
+		}
 	}
 	Transition(instance, VansActionInstanceState::Ended, "Action ended");
 	QueueTerminalTransitions(handle, instance, reason, error);
 	VansEventBus::Get().Enqueue(VansActionEndedEvent{
 		m_Owner, handle, instance.definition->id, reason, error, instance.context.correlationId },
 		VansEventLane::GameLogic);
-	m_History.push_back(*Query(handle));
-	while (m_History.size() > 256) m_History.pop_front();
 	if (const VansTargetDataHandle contextTargetData =
 		instance.context.TargetData(VansActionContextSlots::TargetData))
 	{
-		m_TargetData.Release(contextTargetData);
+		if (!m_TargetData.Release(contextTargetData))
+		{
+			const std::string targetError = "Action TargetData cleanup failed: stale handle";
+			RecordTrace(instance, VansActionInstanceState::Ended, targetError);
+			VANS_LOG_ERROR("[GAF] " << targetError);
+		}
 		instance.context.Remove(VansActionContextSlots::TargetData);
+	}
+	if (m_Dependencies.diagnostics.enabled)
+	{
+		m_History.push_back(*Query(handle));
+		while (m_History.size() > m_Dependencies.diagnostics.maximumCompletedActionSnapshots)
+			m_History.pop_front();
 	}
 	m_DeferredRecycle.push_back(handle);
 }
@@ -2543,7 +2627,32 @@ void VansActionHost::Transition(
 	std::string message)
 {
 	instance.state = state;
+	RecordTrace(instance, state, std::move(message));
+}
+
+void VansActionHost::RecordTrace(
+	ActionInstance& instance,
+	VansActionInstanceState state,
+	std::string message)
+{
+	if (!m_Dependencies.diagnostics.enabled) return;
 	instance.trace.push_back({ instance.elapsedSeconds, state, std::move(message) });
+	const std::size_t maximum = m_Dependencies.diagnostics.maximumActionTraceEntries;
+	if (instance.trace.size() > maximum)
+		instance.trace.erase(instance.trace.begin(),
+			instance.trace.begin() + (instance.trace.size() - maximum));
+}
+
+void VansActionHost::RecordEvent(
+	ActionInstance& instance,
+	VansActionDebugEventSnapshot event)
+{
+	if (!m_Dependencies.diagnostics.enabled) return;
+	instance.recentEvents.push_back(std::move(event));
+	const std::size_t maximum = m_Dependencies.diagnostics.maximumRecentEventsPerAction;
+	if (instance.recentEvents.size() > maximum)
+		instance.recentEvents.erase(instance.recentEvents.begin(),
+			instance.recentEvents.begin() + (instance.recentEvents.size() - maximum));
 }
 
 bool VansActionHost::HasRunningActionForSpec(VansActionSpecHandle spec) const

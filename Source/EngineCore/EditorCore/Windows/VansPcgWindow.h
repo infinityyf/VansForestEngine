@@ -1,6 +1,8 @@
 #pragma once
 #include "VansBaseWindowComponent.h"
 
+namespace Vans::EditorAPI { class IAssetEditorAPI; class IPcgEditorAPI; }
+
 namespace VansGraphics
 {
     class VansPcgWindow : public VansBaseWindowComponent
@@ -28,13 +30,15 @@ namespace VansGraphics
         bool m_CanvasDragging=false;
         float m_CanvasZoom=1;
         std::array<float,2> m_CanvasPan{};
-        void ShowMaskCanvas(Vans::EditorAPI::IEngineEditorAPI&,const Vans::EditorAPI::PcgBrushSnapshot&);
+		void ShowMaskCanvas(Vans::EditorAPI::IPcgEditorAPI&,const Vans::EditorAPI::PcgBrushSnapshot&);
         Vans::EditorAPI::PcgBrushTarget m_InstanceTarget;
         Vans::EditorAPI::PcgInstanceSnapshot m_Instances;
         Vans::EditorAPI::PcgInstanceItem m_InstanceDraft;
-        void ShowInstances(Vans::EditorAPI::IEngineEditorAPI&,const Vans::EditorAPI::PcgBrushSnapshot&);
-        void ShowLayerActions(Vans::EditorAPI::IEngineEditorAPI&,const Vans::EditorAPI::PcgEditorSnapshot&,int category);
-        void ShowConfiguration(Vans::EditorAPI::IEngineEditorAPI&,const Vans::EditorAPI::PcgLayerSnapshot&);
+		void ShowInstances(Vans::EditorAPI::IPcgEditorAPI&,const Vans::EditorAPI::PcgBrushSnapshot&);
+		void ShowLayerActions(Vans::EditorAPI::IPcgEditorAPI&,Vans::EditorAPI::IAssetEditorAPI&,
+			const Vans::EditorAPI::PcgEditorSnapshot&,int category);
+		void ShowConfiguration(Vans::EditorAPI::IPcgEditorAPI&,Vans::EditorAPI::IAssetEditorAPI&,
+			const Vans::EditorAPI::PcgLayerSnapshot&);
         void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
     };
 }

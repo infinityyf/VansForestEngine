@@ -134,18 +134,20 @@ const std::unordered_map<std::string, std::string>& VansShaderManager::GetMateri
     return it == m_MaterialPasses.end() ? s_EmptyPassMap : it->second;
 }
 
-bool VansShaderManager::LoadAll(const std::string& pathPrefix, VkDevice& device)
+bool VansShaderManager::LoadAll(const std::string& pathPrefix,
+	const std::filesystem::path& defaultArtifactRoot, VkDevice& device)
 {
     bool allLoaded = true;
     for (auto& pair : m_Shaders)
     {
-        if (!LoadShaderRecord(pair.second, pathPrefix, device))
+        if (!LoadShaderRecord(pair.second, pathPrefix, defaultArtifactRoot, device))
             allLoaded = false;
     }
     return allLoaded;
 }
 
-bool VansShaderManager::LoadShaderRecord(VansShaderRecord& record, const std::string& pathPrefix, VkDevice& device)
+bool VansShaderManager::LoadShaderRecord(VansShaderRecord& record, const std::string& pathPrefix,
+	const std::filesystem::path& defaultArtifactRoot, VkDevice& device)
 {
     // Already loaded — skip re-initialisation (may be called from both
     // engine init and scene load paths).
@@ -174,6 +176,8 @@ bool VansShaderManager::LoadShaderRecord(VansShaderRecord& record, const std::st
 	// Editor hot reload now address the same artifact namespace.
 	shader->SetName(record.entry.name);
 	shader->SetPipelineProgramDesc(record.pipelineDesc);
+	shader->SetArtifactRoot(record.entry.artifactRoot.empty()
+		? defaultArtifactRoot : record.entry.artifactRoot);
 
     bool loaded = false;
     if (record.entry.kind == VansManagedShaderKind::RayTracing)
@@ -353,14 +357,17 @@ bool VansShaderManager::ExportCookedShaderArtifacts(
 		Vans::VansShaderCompileRequest request;
 		request.programId = record.entry.name;
 		request.sourceFolder = record.shader->GetShaderFolder();
+		request.artifactRoot = record.shader->GetArtifactRoot();
 		programs.push_back({
 			record.entry.name,
-			Vans::VansShaderArtifactCache::ResolveArtifactRoot(request)
+			request.artifactRoot
 		});
 	}
     // Cook lazy programs without creating runtime Vulkan modules while the feature is disabled.
     auto* gi=FindComputeShader("GIPointLight");
-    if(gi&&!VansGIWorld::CookShaders(std::filesystem::path(gi->GetShaderFolder()).parent_path().string(),programs,error))return false;
+    if(gi&&!VansGIWorld::CookShaders(
+		std::filesystem::path(gi->GetShaderFolder()).parent_path().string(),
+		gi->GetArtifactRoot(),programs,error))return false;
 	return Vans::VansShaderArtifactCache::Get().ExportCookedArtifacts(
 		programs, destinationRoot, error);
 }

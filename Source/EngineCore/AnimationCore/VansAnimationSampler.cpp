@@ -89,10 +89,9 @@ namespace VansGraphics
 				return requestedBoneIndex;
 			if (!clip.rootMotion.boneName.empty())
 			{
-				auto found = skeleton.boneNameToIndex.find(clip.rootMotion.boneName);
-				if (found != skeleton.boneNameToIndex.end()
-				    && found->second >= 0 && found->second < static_cast<int>(skeleton.bones.size()))
-					return found->second;
+				const int boneIndex = skeleton.FindBoneIndex(clip.rootMotion.boneName);
+				if (boneIndex >= 0 && boneIndex < static_cast<int>(skeleton.bones.size()))
+					return boneIndex;
 				return -1;
 			}
 			for (size_t index = 0; index < skeleton.bones.size(); ++index)

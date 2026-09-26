@@ -779,11 +779,15 @@ namespace VansGraphics
 
 		void Flush()
 		{
-			for (auto& destroy : m_Deletes)
+			// A destroy callback may release an owner whose destructor schedules more
+			// GPU work for retirement. Detach the current batch first so a re-entrant
+			// Enqueue never invalidates the iterators used by this flush.
+			std::vector<std::function<void()>> deletes;
+			deletes.swap(m_Deletes);
+			for (auto& destroy : deletes)
 			{
 				destroy();
 			}
-			m_Deletes.clear();
 		}
 
 		bool Empty() const { return m_Deletes.empty(); }

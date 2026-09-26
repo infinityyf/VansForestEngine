@@ -2,6 +2,8 @@
 
 #include <GLM/glm.hpp>
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace VansGraphics
@@ -26,6 +28,21 @@ namespace VansGraphics
         bool twoSided = false;
     };
 
+    enum class VansGeometryBackfacePolicy : uint8_t
+    {
+        // Return the nearest triangle from either side and expose backface/twoSided on the hit.
+        Report,
+        // A nearest one-sided backface rejects the query. Deeper triangles stay occluded.
+        RejectOneSided
+    };
+
+    struct VansGeometryQueryOptions
+    {
+        VansGeometryBackfacePolicy backfaces = VansGeometryBackfacePolicy::Report;
+        // Scene instances may derive sidedness from their material instead of mesh data.
+        std::optional<bool> twoSidedOverride;
+    };
+
     struct VansGeometrySurfaceMeasure
     {
         double area = 0.0;
@@ -35,14 +52,14 @@ namespace VansGraphics
     class VansTriangleGeometryQuery
     {
     public:
-        // 构建后只读；丢弃退化三角形，非有限坐标作为输入错误报告。
-        void Build(std::vector<VansGeometryTriangle> triangles);
+        // 成功后原子替换只读查询；丢弃退化三角形，输入错误不破坏旧查询。
+        bool Build(std::vector<VansGeometryTriangle> triangles, std::string& error);
         bool Empty() const { return m_Triangles.empty(); }
         const std::vector<VansGeometryTriangle>& GetTriangles() const { return m_Triangles; }
-        uint32_t GetDiscardedTriangleCount() const { return m_DiscardedTriangles; }
         bool NearestSurface(const glm::vec3& position, float maxDistance, VansGeometryHit& hit) const;
         bool Raycast(const glm::vec3& origin, const glm::vec3& direction, float maxDistance,
-            VansGeometryHit& hit, float minDistance = 0.0001f) const;
+            VansGeometryHit& hit, float minDistance = 0.0001f,
+            const VansGeometryQueryOptions& options = {}) const;
         bool IntersectsBox(const glm::vec3& minimum, const glm::vec3& maximum) const;
         VansGeometrySurfaceMeasure MeasureSurface(const glm::vec3& minimum, const glm::vec3& maximum) const;
         static bool ClipSurfaceToBox(const VansGeometryTriangle& triangle, const glm::vec3& minimum,
@@ -62,6 +79,5 @@ namespace VansGraphics
         std::vector<VansGeometryTriangle> m_Triangles;
         std::vector<uint32_t> m_Order;
         std::vector<Node> m_Nodes;
-        uint32_t m_DiscardedTriangles = 0;
     };
 }

@@ -3,75 +3,14 @@
 #include "VansEntityRegistry.h"
 #include "VansRuntimeComponentTypes.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
 namespace Vans
 {
-enum class VansEntityCommandType
-{
-	CreateEntity,
-	DestroyEntity,
-	AddTransformComponent,
-	AddRenderComponent,
-	AddPhysicsComponent,
-	AddClothComponent,
-	AddCharacterControllerComponent,
-	AddVehicleComponent,
-	AddAnimationComponent,
-	AddRagdollComponent,
-	AddAudioComponent,
-	AddAudioReverbZoneComponent,
-	AddUIComponent,
-	AddScriptComponent,
-	AddVideoComponent,
-	AddParticleComponent,
-	AddCameraComponent,
-	AddLightComponent,
-	AddTimelineComponent,
-	AddActionHostComponent,
-	AddNavigationAgentComponent,
-	AddAIAgentComponent,
-	SetEntityActive,
-	SetEntityName,
-	SetComponentEnabled,
-	RemoveComponent,
-	SetParent
-};
-
-struct VansEntityCommand
-{
-	VansEntityCommandType type = VansEntityCommandType::CreateEntity;
-	VansEntityCreateDesc createDesc;
-	VansEntityHandle entity;
-	VansComponentHandle component;
-	VansEntityHandle parent;
-	VansRuntimeTransformComponent transformComponent;
-	VansRuntimeRenderComponent renderComponent;
-	VansRuntimePhysicsComponent physicsComponent;
-	VansRuntimeClothComponent clothComponent;
-	VansRuntimeCharacterControllerComponent characterControllerComponent;
-	VansRuntimeVehicleComponent vehicleComponent;
-	VansRuntimeAnimationComponent animationComponent;
-	VansRuntimeRagdollComponent ragdollComponent;
-	VansRuntimeAudioComponent audioComponent;
-	VansRuntimeAudioReverbZoneComponent audioReverbZoneComponent;
-	VansRuntimeUIComponent uiComponent;
-	VansRuntimeScriptComponent scriptComponent;
-	VansRuntimeVideoComponent videoComponent;
-	VansRuntimeParticleComponent particleComponent;
-	VansRuntimeCameraComponent cameraComponent;
-	VansRuntimeLightComponent lightComponent;
-	VansRuntimeTimelineComponent timelineComponent;
-	VansRuntimeActionHostComponent actionHostComponent;
-	VansRuntimeNavigationAgentComponent navigationAgentComponent;
-	VansRuntimeAIAgentComponent aiAgentComponent;
-	std::uint16_t componentTypeId = VansInvalidComponentTypeId;
-	std::string componentStableGuid;
-	std::string stringValue;
-	bool boolValue = false;
-	VansDestroyChildrenPolicy destroyChildrenPolicy = VansDestroyChildrenPolicy::DestroyChildren;
-};
+class VansRuntimeWorld;
+using VansEntityCommand = std::function<void(VansRuntimeWorld&)>;
 
 class VansEntityCommandBuffer
 {
@@ -134,7 +73,7 @@ public:
 		std::string stableGuid,
 		VansEngine::VansAudioNode* audioNode,
 		VansEngine::VansAudioSourceBinding* sourceBinding,
-		std::string sourceName,
+		std::string assetGuid,
 		VansEngine::AudioConeSettings coneSettings,
 		bool dopplerEnabled,
 		bool hasLastAudioPosition,
@@ -146,7 +85,7 @@ public:
 		bool enabled);
 	void AddAudioReverbZoneComponent(
 		VansEntityHandle entity,
-		std::uint16_t typeId,
+		VansRuntimeAudioEnvironmentKind kind,
 		std::string stableGuid,
 		VansRuntimeAudioReverbZoneComponent reverbZone,
 		bool enabled);
@@ -163,6 +102,7 @@ public:
 	void AddVideoComponent(
 		VansEntityHandle entity,
 		std::string stableGuid,
+		std::string assetGuid,
 		VansGraphics::VansVideoTexture* videoTexture,
 		VansGraphics::VansVideoManager* videoManager,
 		int bindlessFirstSlot,
@@ -170,6 +110,7 @@ public:
 	void AddParticleComponent(
 		VansEntityHandle entity,
 		std::string stableGuid,
+		std::string assetGuid,
 		VansGenerationHandle instance,
 		bool playOnAwake,
 		bool hasWorldPositionOverride,
@@ -184,7 +125,6 @@ public:
 		bool enabled);
 	void AddLightComponent(
 		VansEntityHandle entity,
-		std::uint16_t typeId,
 		std::string stableGuid,
 		VansGraphics::VansLightManager* lightManager,
 		int lightIndex,
@@ -216,12 +156,18 @@ public:
 	void RemoveComponent(VansComponentHandle component);
 	void SetParent(VansEntityHandle entity, VansEntityHandle parent);
 
-	std::size_t PendingCount() const { return m_Commands.size(); }
-	bool Empty() const { return m_Commands.empty(); }
 	void Clear() { m_Commands.clear(); }
 	std::vector<VansEntityCommand> TakeCommands();
 
 private:
+	template <typename T>
+	void AddComponentCommand(
+		VansEntityHandle entity,
+		std::uint16_t typeId,
+		std::string stableGuid,
+		T component,
+		bool enabled);
+
 	std::vector<VansEntityCommand> m_Commands;
 };
 }

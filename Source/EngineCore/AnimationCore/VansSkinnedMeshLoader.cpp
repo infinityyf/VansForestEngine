@@ -1,4 +1,5 @@
 ﻿#include "VansSkinnedMeshLoader.h"
+#include "VansPoseMath.h"
 #include "../AssetCore/Importers/VansAssimpSkeletonTopology.h"
 #include "../AssetCore/VansAssetGuid.h"
 #include "../Util/VansLog.h"
@@ -263,8 +264,8 @@ static AnimationSpaceConversion ResolveAnimationSpaceConversion(
 		const aiNodeAnim* channel = anim->mChannels[channelIndex];
 		if (!channel || channel->mNumPositionKeys == 0)
 			continue;
-		const auto boneIt = skeleton.boneNameToIndex.find(channel->mNodeName.C_Str());
-		if (boneIt == skeleton.boneNameToIndex.end())
+		const int boneIndex = skeleton.FindBoneIndex(channel->mNodeName.C_Str());
+		if (boneIndex < 0)
 			continue;
 		const aiNode* sourceNode = scene
 			? FindAiNodeByName(scene->mRootNode, channel->mNodeName.C_Str())
@@ -273,7 +274,7 @@ static AnimationSpaceConversion ResolveAnimationSpaceConversion(
 			? glm::vec3(ConvertMat4(sourceNode->mTransformation)[3])
 			: ConvertVec3(channel->mPositionKeys[0].mValue);
 		const glm::vec3 target = glm::vec3(
-			skeleton.bones[static_cast<std::size_t>(boneIt->second)].localTransform[3]);
+			skeleton.bones[static_cast<std::size_t>(boneIndex)].localTransform[3]);
 		if (glm::dot(source, source) <= 1.0e-8f || glm::dot(target, target) <= 1.0e-8f)
 			continue;
 		pairs.push_back({ source, target });
@@ -521,7 +522,7 @@ static void ExtractNodeTransformChannelsFromAssimp(
 			continue;
 
 		const std::string nodeName = channel->mNodeName.C_Str();
-		if (skeleton.boneNameToIndex.find(nodeName) != skeleton.boneNameToIndex.end())
+		if (skeleton.FindBoneIndex(nodeName) >= 0)
 			continue;
 
 		const auto infoIt = firstNameToInfo.find(nodeName);
@@ -1047,28 +1048,17 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
 
 	if (importSettings.diagnostics)
 	{
-		std::vector<glm::mat4> bindGlobals(outSkeleton.bones.size(), glm::mat4(1.0f));
+		std::vector<glm::mat4> bindLocals(outSkeleton.bones.size(), glm::mat4(1.0f));
 		for (size_t i = 0; i < outSkeleton.bones.size(); ++i)
-			bindGlobals[i] = outSkeleton.bones[i].localTransform;
-
-		const auto accumulateBone = [&](int index)
+			bindLocals[i] = outSkeleton.bones[i].localTransform;
+		std::vector<glm::mat4> bindGlobals;
+		std::string topologyError;
+		if (!VansPoseMath::BuildModelTransforms(
+			bindLocals, outSkeleton, bindGlobals, &topologyError))
 		{
-			if (index < 0 || index >= static_cast<int>(outSkeleton.bones.size()))
-				return;
-			const int parentIndex = outSkeleton.bones[index].parentIndex;
-			if (parentIndex >= 0 && parentIndex < static_cast<int>(outSkeleton.bones.size()))
-				bindGlobals[index] = bindGlobals[parentIndex] * bindGlobals[index];
-		};
-
-		if (!outSkeleton.topologicalOrder.empty())
-		{
-			for (int index : outSkeleton.topologicalOrder)
-				accumulateBone(index);
-		}
-		else
-		{
-			for (int index = 0; index < static_cast<int>(outSkeleton.bones.size()); ++index)
-				accumulateBone(index);
+			VANS_LOG_WARN("[VansSkinnedMeshLoader] Bind hierarchy diagnostics skipped: "
+				<< topologyError);
+			bindGlobals.assign(outSkeleton.bones.size(), glm::mat4(1.0f));
 		}
 
 		float worstBindResidual = 0.0f;
@@ -1129,9 +1119,9 @@ static int FindNearestBoneAncestor(const aiNode* node,
 		std::string nodeName = current->mName.C_Str();
 		if (!nodeName.empty())
 		{
-			auto it = skeleton.boneNameToIndex.find(nodeName);
-			if (it != skeleton.boneNameToIndex.end())
-				return it->second;   // found a bone
+			const int boneIndex = skeleton.FindBoneIndex(nodeName);
+			if (boneIndex >= 0)
+				return boneIndex;
 		}
 		current = current->mParent;
 	}
@@ -1170,16 +1160,16 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 
 			std::string boneName = bone->mName.C_Str();
 
-			auto it = skeleton.boneNameToIndex.find(boneName);
-			if (it == skeleton.boneNameToIndex.end())
+			const int resolvedBone = skeleton.FindBoneIndex(boneName);
+			if (resolvedBone < 0)
 				continue;
 
-			int boneID = it->second;
+			int boneID = resolvedBone;
 			if (importSettings.legacyFixups.remapWeaponAttachmentsToHands && boneName.rfind("grenade", 0) == 0)
 			{
-				const auto weaponIt = skeleton.boneNameToIndex.find("weapon_r");
-				if (weaponIt != skeleton.boneNameToIndex.end())
-					boneID = weaponIt->second;
+				const int weaponBone = skeleton.FindBoneIndex("weapon_r");
+				if (weaponBone >= 0)
+					boneID = weaponBone;
 			}
 			// FBX files commonly emit bone entries for the full skeleton in every
 			// sub-mesh, even when a bone has zero influence on that mesh's vertices.
@@ -1353,11 +1343,9 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 		const aiNodeAnim* channel = anim->mChannels[c];
 		std::string boneName = channel->mNodeName.C_Str();
 
-		auto it = skeleton.boneNameToIndex.find(boneName);
-		if (it == skeleton.boneNameToIndex.end())
+		const int boneIdx = skeleton.FindBoneIndex(boneName);
+		if (boneIdx < 0)
 			continue;  // this channel animates a non-bone node
-
-		int boneIdx = it->second;
 
 		// We need to merge position, rotation, scale keyframes into unified BoneKeyframe entries.
 		// Collect all unique timestamps first.

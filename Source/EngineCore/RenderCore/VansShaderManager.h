@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <string>
@@ -55,6 +56,7 @@ namespace VansGraphics
         VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         VkPrimitiveTopology primitiveTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         uint32_t patchControlPoints = 1;
+		std::filesystem::path artifactRoot;
     };
 
     struct VansShaderRecord
@@ -91,7 +93,8 @@ namespace VansGraphics
         void RegisterMaterialPasses(VansMaterialType type, std::unordered_map<std::string, std::string> passMap);
         const std::unordered_map<std::string, std::string>& GetMaterialPassMap(VansMaterialType type) const;
 
-		bool LoadAll(const std::string& pathPrefix, VkDevice& device);
+		bool LoadAll(const std::string& pathPrefix,
+			const std::filesystem::path& defaultArtifactRoot, VkDevice& device);
 		bool ApplyCompiledShaderCandidate(
 			const std::string& shaderName,
 			const std::map<VkShaderStageFlagBits, std::vector<std::uint32_t>>& stageSpirv,
@@ -109,7 +112,8 @@ namespace VansGraphics
     private:
         VansShaderManager() = default;
 
-        bool LoadShaderRecord(VansShaderRecord& record, const std::string& pathPrefix, VkDevice& device);
+        bool LoadShaderRecord(VansShaderRecord& record, const std::string& pathPrefix,
+			const std::filesystem::path& defaultArtifactRoot, VkDevice& device);
         VansPipelineProgramDesc BuildPipelineDesc(const VansShaderEntry& entry, const std::string& fullPath) const;
         void ApplyGraphicsState(VansGraphicsShader& shader, const VansPipelineProgramDesc& desc) const;
 

@@ -7,7 +7,8 @@
 #include "VansShader.h"
 #include "../VansScene.h"
 #include "../VansCamera.h"
-#include "../../Configration/VansConfigration.h"
+#include "../../ProjectSystem/VansProjectManager.h"
+#include "../VansRenderBootstrapSettings.h"
 #include "../../Util/VansLog.h"
 #include "../LTC/LTCData.h"
 #include "../VegetationCore/GrassEnergyLUT.h"
@@ -512,8 +513,8 @@ namespace VansGraphics
 
 	void VansVKDevice::PrepareSkyRenderData()
 	{
-		auto vansConfigration = VansConfigration::GetInstance();
-		std::string projectRoot = vansConfigration->GetProjectRootPath();
+		const std::string& projectRoot =
+			Vans::VansProjectManager::Get().GetPathResolver().GetEngineRoot();
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->m_SkyLighting.Initialize(*this, m_VansVKCommandBuffer,
             projectRoot + "EngineAssets/Textures/SkyBox");
@@ -752,8 +753,8 @@ namespace VansGraphics
 		manager->m_SSGITemporalFrame = 0;
 		PrepareGIReceiverVisibility(probeCacheWidth, probeCacheHeight);
 
-		auto vansConfigration = VansConfigration::GetInstance();
-		std::string projectRoot = vansConfigration->GetProjectRootPath();
+		const std::string& projectRoot =
+			Vans::VansProjectManager::Get().GetPathResolver().GetEngineRoot();
 		manager->m_SSGIShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSGI");
 		manager->m_SSGIProbeCacheShader =
 			VansGraphics::VansShaderManager::Get().FindComputeShader("SSGIProbeCache");
@@ -805,8 +806,8 @@ namespace VansGraphics
 			VK_FORMAT_R32_SFLOAT, false, true, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_HZB_OCCLUSION_RESULT, occlusionHZBResult);
 
-		auto vansConfigration = VansConfigration::GetInstance();
-		std::string projectRoot = vansConfigration->GetProjectRootPath();
+		const std::string& projectRoot =
+			Vans::VansProjectManager::Get().GetPathResolver().GetEngineRoot();
 
 		manager->m_HZBShader = VansGraphics::VansShaderManager::Get().FindComputeShader("HIZ");
 		manager->m_OcclusionHZBShader = VansGraphics::VansShaderManager::Get().FindComputeShader("OcclusionHIZ");
@@ -844,7 +845,7 @@ namespace VansGraphics
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT, sssResult);
 
-		const uint32_t cascadeSize = uint32_t(VansConfigration::GetInstance()->GetCascadeShadowMapSize());
+		const uint32_t cascadeSize = kVansRenderBootstrapSettings.cascadeShadowMapSize;
 		const uint32_t minMaxBaseSize = (std::max)(cascadeSize / 4u, 1u);
 		manager->m_CascadeShadowMinMaxMipCount =
 			1u + uint32_t(std::floor(std::log2(float(minMaxBaseSize))));
@@ -978,8 +979,8 @@ namespace VansGraphics
 			VANS_LOG_ERROR("[VansVKDevice] Failed to create SSR ray-list resources.");
 		}
 
-		auto vansConfigration = VansConfigration::GetInstance();
-		std::string projectRoot = vansConfigration->GetProjectRootPath();
+		const std::string& projectRoot =
+			Vans::VansProjectManager::Get().GetPathResolver().GetEngineRoot();
 		manager->m_SSRClassifyShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSRClassify");
 		manager->m_SSRPrepareIndirectShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSRPrepareIndirect");
 		manager->m_SSRTraceShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSRTrace");
@@ -1016,8 +1017,8 @@ namespace VansGraphics
 			0
 		};
 
-		auto vansConfigration = VansConfigration::GetInstance();
-		std::string projectRoot = vansConfigration->GetProjectRootPath();
+		const std::string& projectRoot =
+			Vans::VansProjectManager::Get().GetPathResolver().GetEngineRoot();
 		manager->m_BilateralFilterShader = VansGraphics::VansShaderManager::Get().FindComputeShader("BilateralFilter");
 		manager->m_BilateralFilterShader->SetPushConstant(sizeof(manager->m_BilateralFilterPushConstant));
 		manager->m_BilateralFilterShader->SetPushConstantData(&(manager->m_BilateralFilterPushConstant));
@@ -1105,8 +1106,8 @@ namespace VansGraphics
 	void VansVKDevice::PreparePostProcessRenderData()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		auto* config = VansConfigration::GetInstance();
-		const std::string projectRoot = config->GetProjectRootPath();
+		const std::string& projectRoot =
+			Vans::VansProjectManager::Get().GetPathResolver().GetEngineRoot();
 
 		VansTexture* exposureLum = new VansTexture();
 		exposureLum->InitTextureWithoutData(

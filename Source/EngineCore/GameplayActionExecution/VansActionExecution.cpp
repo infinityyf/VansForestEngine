@@ -196,7 +196,6 @@ VansSerializedValue* VansActionVariableStore::GetMutable(VansActionFieldId field
 }
 
 bool VansActionExecutorRegistry::Register(
-	VansActionExecutorId id,
 	std::string stableName,
 	Factory factory,
 	std::string& error)
@@ -206,11 +205,13 @@ bool VansActionExecutorRegistry::Register(
 		error = "Action Executor registry is sealed";
 		return false;
 	}
-	if (!id || stableName.empty() || !factory)
+	if (stableName.empty() || !factory)
 	{
 		error = "Action Executor descriptor is invalid";
 		return false;
 	}
+	const VansActionExecutorId id =
+		VansMakeStableId<VansActionExecutorIdTag>(stableName);
 	if (!m_Factories.emplace(id, Entry{ std::move(stableName), std::move(factory) }).second)
 	{
 		error = "duplicate Action Executor";
@@ -265,28 +266,33 @@ bool VansActionExecutorRegistry::Contains(VansActionExecutorId id) const
 	return m_Factories.find(id) != m_Factories.end();
 }
 
-bool VansRegisterBuiltInActionExecutors(
+bool VansRegisterImmediateActionExecutor(
+	VansActionExecutorRegistry& registry,
+	std::string& error)
+{
+	return registry.Register(std::string(ActionExecutorNames::Immediate),
+		[](const VansCompiledActionDefinition&)
+		{ return std::make_unique<VansImmediateActionExecutor>(); }, error);
+}
+
+bool VansRegisterGraphActionExecutor(
 	VansActionExecutorRegistry& registry,
 	const VansActionGraphNodeRegistry* graphNodes,
-	std::string& error,
-	std::size_t maximumGraphTransitionsPerTick)
+	std::size_t maximumGraphTransitionsPerTick,
+	std::string& error)
 {
-	if (!graphNodes || !graphNodes->IsSealed() || maximumGraphTransitionsPerTick == 0)
+	if (!graphNodes || maximumGraphTransitionsPerTick == 0)
 	{
-		error = "Built-in Action Executors require a sealed Graph node registry";
+		error = "Graph Action Executor registration is invalid";
 		return false;
 	}
-	const auto immediateId = VansMakeStableId<VansActionExecutorIdTag>(ActionExecutorNames::Immediate);
-	const auto graphId = VansMakeStableId<VansActionExecutorIdTag>(ActionExecutorNames::Graph);
-	return registry.Register(immediateId, std::string(ActionExecutorNames::Immediate),
-		[](const VansCompiledActionDefinition&) { return std::make_unique<VansImmediateActionExecutor>(); }, error) &&
-		registry.Register(graphId, std::string(ActionExecutorNames::Graph),
-			[graphNodes, maximumGraphTransitionsPerTick](
-				const VansCompiledActionDefinition& definition) -> std::unique_ptr<IVansActionExecutor>
-			{
-				if (!definition.executionGraph) return nullptr;
-				return std::make_unique<VansGraphActionExecutor>(definition.executionGraph,
-					graphNodes, maximumGraphTransitionsPerTick);
-			}, error);
+	return registry.Register(std::string(ActionExecutorNames::Graph),
+		[graphNodes, maximumGraphTransitionsPerTick](
+			const VansCompiledActionDefinition& definition) -> std::unique_ptr<IVansActionExecutor>
+		{
+			if (!definition.executionGraph || !graphNodes->IsSealed()) return nullptr;
+			return std::make_unique<VansGraphActionExecutor>(definition.executionGraph,
+				graphNodes, maximumGraphTransitionsPerTick);
+		}, error);
 }
 }

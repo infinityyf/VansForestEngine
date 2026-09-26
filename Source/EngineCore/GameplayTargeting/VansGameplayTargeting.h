@@ -16,32 +16,6 @@
 namespace Vans
 {
 struct VansTargetLocation { std::array<double, 3> value{}; };
-struct VansTargetDirection { std::array<double, 3> value{}; };
-struct VansTargetTransform
-{
-	std::array<double, 3> position{};
-	std::array<double, 4> rotation{ 0.0, 0.0, 0.0, 1.0 };
-	std::array<double, 3> scale{ 1.0, 1.0, 1.0 };
-};
-struct VansTargetArea
-{
-	std::array<double, 3> center{};
-	double radius = 0.0;
-};
-enum class VansTargetShapeKind : std::uint8_t
-{
-	Sphere,
-	Box,
-	Capsule
-};
-struct VansTargetShape
-{
-	VansTargetShapeKind kind = VansTargetShapeKind::Sphere;
-	VansTargetTransform transform;
-	std::array<double, 3> extents{};
-	double radius = 0.0;
-	double halfHeight = 0.0;
-};
 struct VansTargetRay
 {
 	std::array<double, 3> origin{};
@@ -59,22 +33,11 @@ struct VansTargetHitResult
 	std::string componentGuid;
 	std::string region;
 };
-struct VansDeferredTargetQuery
-{
-	VansActionServiceId service;
-	VansSerializedValue descriptor = VansSerializedValue::Object({});
-};
-
 using VansTargetDataValue = std::variant<
 	VansEntityHandle,
 	VansTargetLocation,
-	VansTargetDirection,
-	VansTargetTransform,
-	VansTargetArea,
-	VansTargetShape,
 	VansTargetRay,
-	VansTargetHitResult,
-	VansDeferredTargetQuery>;
+	VansTargetHitResult>;
 
 struct VansTargetData
 {
@@ -84,11 +47,9 @@ struct VansTargetData
 struct VansTargetDataValidationPolicy
 {
 	std::size_t maximumTargets = 64;
-	std::size_t maximumDeferredDescriptorBytes = 4096;
 	double maximumCoordinateMagnitude = 10000000.0;
 	double maximumDistance = 1000000.0;
 	std::function<bool(VansEntityHandle)> entityAllowed;
-	std::function<bool(VansActionServiceId)> deferredServiceAllowed;
 };
 
 VansSerializedValue VansEncodeTargetData(const VansTargetData& data);
@@ -113,7 +74,6 @@ private:
 struct VansTargetingStep
 {
 	VansActionGraphNodeTypeId handler;
-	std::string stableName;
 	VansSerializedValue inputs = VansSerializedValue::Object({});
 };
 
@@ -156,6 +116,14 @@ struct VansTargetingResult
 	explicit operator bool() const { return error == VansActionError::None; }
 };
 
+struct VansTargetingInputField
+{
+	std::string name;
+	std::string valueType;
+	bool required = false;
+	VansSerializedValue defaultValue;
+};
+
 class IVansTargetingStepHandler
 {
 public:
@@ -163,11 +131,20 @@ public:
 	virtual VansActionGraphNodeTypeId TypeId() const = 0;
 	virtual std::string_view StableName() const = 0;
 	virtual bool BeginsPipeline() const { return false; }
+	virtual std::vector<VansTargetingInputField> InputFields() const { return {}; }
 	virtual bool Execute(
 		const VansTargetingStep& step,
 		const VansActionContext& context,
 		std::vector<VansTargetDataValue>& values,
 		std::string& message) const = 0;
+};
+
+struct VansTargetingStepDescriptor
+{
+	VansActionGraphNodeTypeId type;
+	std::string stableName;
+	bool beginsPipeline = false;
+	std::vector<VansTargetingInputField> inputFields;
 };
 
 class VansTargetingHandlerRegistry
@@ -176,11 +153,14 @@ public:
 	bool Register(std::shared_ptr<const IVansTargetingStepHandler> handler, std::string& error);
 	bool Seal(std::string& error);
 	std::shared_ptr<const IVansTargetingStepHandler> Resolve(VansActionGraphNodeTypeId type) const;
+	std::shared_ptr<const IVansTargetingStepHandler> Find(std::string_view stableName) const;
+	std::vector<VansTargetingStepDescriptor> Snapshot() const;
 	bool IsSealed() const { return m_Sealed; }
 
 private:
 	bool m_Sealed = false;
 	std::unordered_map<VansActionGraphNodeTypeId, std::shared_ptr<const IVansTargetingStepHandler>> m_Handlers;
+	std::unordered_map<std::string, VansActionGraphNodeTypeId> m_ByName;
 };
 
 class VansTargetingPipeline
@@ -194,6 +174,9 @@ public:
 };
 
 bool VansRegisterBuiltInTargetingHandlers(
+	VansTargetingHandlerRegistry& registry,
+	std::string& error);
+bool VansBuildBuiltInTargetingHandlerRegistry(
 	VansTargetingHandlerRegistry& registry,
 	std::string& error);
 }

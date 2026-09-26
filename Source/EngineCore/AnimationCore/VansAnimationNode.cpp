@@ -1,9 +1,10 @@
 #include "VansAnimationNode.h"
 #include "MotionMatching/VansMotionMatching.h"
+#include "VansPoseMath.h"
 #include "../RenderCore/VansRenderNode.h"
 #include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../RuntimeCore/VansCharacterMotion.h"
-#include "../ScriptCore/VansTransform.h"
+#include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "../Util/VansLog.h"
 
 #include <../../GLM/glm.hpp>
@@ -37,12 +38,6 @@ namespace
 		rotation = glm::normalize(rotation);
 		outRotationDegrees = glm::degrees(glm::eulerAngles(rotation));
 		return true;
-	}
-
-	int FindPoseAuditBone(const Skeleton& skeleton, const char* name)
-	{
-		auto it = skeleton.boneNameToIndex.find(name);
-		return it != skeleton.boneNameToIndex.end() ? it->second : -1;
 	}
 
 	glm::vec3 ExtractPoseAuditTranslation(const glm::mat4& transform)
@@ -115,7 +110,7 @@ namespace
 		const std::vector<glm::mat4>& modelTransforms,
 		const glm::mat4* ownerWorld = nullptr)
 	{
-		const int index = FindPoseAuditBone(skeleton, label);
+		const int index = skeleton.FindBoneIndex(label);
 		if (index < 0 || index >= static_cast<int>(modelTransforms.size()))
 		{
 			VANS_LOG("[RetargetAudit] bone '" << label << "' missing");
@@ -155,12 +150,12 @@ namespace
 			return;
 		}
 
-		const int pelvis = FindPoseAuditBone(targetSkeleton, "pelvis");
-		const int head = FindPoseAuditBone(targetSkeleton, "head");
-		const int footL = FindPoseAuditBone(targetSkeleton, "foot_l");
-		const int footR = FindPoseAuditBone(targetSkeleton, "foot_r");
-		const int handL = FindPoseAuditBone(targetSkeleton, "hand_l");
-		const int handR = FindPoseAuditBone(targetSkeleton, "hand_r");
+		const int pelvis = targetSkeleton.FindBoneIndex("pelvis");
+		const int head = targetSkeleton.FindBoneIndex("head");
+		const int footL = targetSkeleton.FindBoneIndex("foot_l");
+		const int footR = targetSkeleton.FindBoneIndex("foot_r");
+		const int handL = targetSkeleton.FindBoneIndex("hand_l");
+		const int handR = targetSkeleton.FindBoneIndex("hand_r");
 
 		VANS_LOG("[RetargetAudit] " << nodeName
 			<< ": target pose audit begin, bones=" << targetSkeleton.bones.size()
@@ -225,9 +220,7 @@ VansAnimationNode::VansAnimationNode(const std::string& name)
 }
 
 VansAnimationNode::~VansAnimationNode()
-{
-	DestroyGPUResources();
-}
+= default;
 
 bool VansAnimationNode::ConfigureRetargetSource(
 	const Skeleton& sourceSkeleton,
@@ -338,15 +331,18 @@ void VansAnimationNode::SetRenderNodes(const std::vector<VansRenderNode*>& nodes
 void VansAnimationNode::SetSkeleton(const Skeleton& skeleton)
 {
 	m_Skeleton = skeleton;
-	std::vector<glm::mat4> bindModelTransforms;
-	bindModelTransforms.reserve(m_Skeleton.bones.size());
+	std::vector<glm::mat4> bindLocalTransforms;
+	bindLocalTransforms.reserve(m_Skeleton.bones.size());
 	for (const auto& bone : m_Skeleton.bones)
-		bindModelTransforms.push_back(bone.localTransform);
-	for (int index : m_Skeleton.topologicalOrder)
+		bindLocalTransforms.push_back(bone.localTransform);
+	std::vector<glm::mat4> bindModelTransforms;
+	std::string topologyError;
+	if (!VansPoseMath::BuildModelTransforms(
+		bindLocalTransforms, m_Skeleton, bindModelTransforms, &topologyError))
 	{
-		const int parent = m_Skeleton.bones[index].parentIndex;
-		if (parent >= 0 && parent < static_cast<int>(bindModelTransforms.size()))
-			bindModelTransforms[index] = bindModelTransforms[parent] * bindModelTransforms[index];
+		VANS_LOG_WARN("[VansAnimationNode] " << m_Name
+			<< ": skeleton topology rejected: " << topologyError);
+		bindModelTransforms.assign(m_Skeleton.bones.size(), glm::mat4(1.0f));
 	}
 	for (std::size_t i = 0; i < MAX_BONES; ++i)
 		m_BoneMatricesSSBO.boneMatrices[i] = i < bindModelTransforms.size()
@@ -360,28 +356,35 @@ void VansAnimationNode::SetSkeleton(const Skeleton& skeleton)
 //  Controller 绑定
 // ════════════════════════════════════════════════════════════════
 
-bool VansAnimationNode::SetController(VansAnimationController* controller)
+bool VansAnimationNode::SetController(
+	std::unique_ptr<VansAnimationController> controller)
 {
-	if (controller)
-	{
-		std::string error;
-		if (!controller->BindAnimationRigSkeleton(m_Skeleton, error))
-		{
-			VANS_LOG_WARN("[VansAnimationNode] " << m_Name
-				<< ": controller Rig bind rejected: " << error);
-			return false;
-		}
-	}
-	m_Controller = controller;
+	std::unique_ptr<VansAnimationController> previous;
+	return ExchangeController(std::move(controller), previous);
+}
 
-	if (m_Controller)
-	{
-		// 将 Node 侧的骨骼覆盖映射关联到 Controller，以便在 Update 管线中应用
-		m_Controller->SetBoneOverrides(&m_BoneOverrides);
+bool VansAnimationNode::ExchangeController(
+	std::unique_ptr<VansAnimationController> controller,
+	std::unique_ptr<VansAnimationController>& previousController)
+{
+	if (!controller)
+		return false;
 
-		VANS_LOG("[VansAnimationNode] " << m_Name << ": controller '" 
-		         << m_Controller->GetName() << "' bound");
+	std::string error;
+	if (!controller->BindAnimationRigSkeleton(m_Skeleton, error))
+	{
+		VANS_LOG_WARN("[VansAnimationNode] " << m_Name
+			<< ": controller Rig bind rejected: " << error);
+		return false;
 	}
+
+	// Node owns author overrides; the active Controller applies them once when
+	// it publishes the final local pose.
+	controller->SetBoneOverrides(&m_BoneOverrides);
+	previousController = std::move(m_Controller);
+	m_Controller = std::move(controller);
+	VANS_LOG("[VansAnimationNode] " << m_Name << ": controller '"
+		<< m_Controller->GetName() << "' bound");
 	RebuildNodeTransformBindings();
 	return true;
 }
@@ -455,7 +458,7 @@ bool VansAnimationNode::RestartLayer(const std::string& layerId)
 const std::string& VansAnimationNode::GetActiveGraphSetId() const
 {
 	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController
-		? m_SourceController.get() : m_Controller;
+		? m_SourceController.get() : m_Controller.get();
 	static const std::string empty;
 	return controller ? controller->GetActiveGraphSetId() : empty;
 }
@@ -463,7 +466,7 @@ const std::string& VansAnimationNode::GetActiveGraphSetId() const
 const std::string& VansAnimationNode::GetIncomingGraphSetId() const
 {
 	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController
-		? m_SourceController.get() : m_Controller;
+		? m_SourceController.get() : m_Controller.get();
 	static const std::string empty;
 	return controller ? controller->GetIncomingGraphSetId() : empty;
 }
@@ -471,14 +474,14 @@ const std::string& VansAnimationNode::GetIncomingGraphSetId() const
 bool VansAnimationNode::IsGraphSetTransitioning() const
 {
 	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController
-		? m_SourceController.get() : m_Controller;
+		? m_SourceController.get() : m_Controller.get();
 	return controller && controller->IsGraphSetTransitioning();
 }
 
 float VansAnimationNode::GetGraphSetTransitionProgress() const
 {
 	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController
-		? m_SourceController.get() : m_Controller;
+		? m_SourceController.get() : m_Controller.get();
 	return controller ? controller->GetGraphSetTransitionProgress() : 0.0f;
 }
 
@@ -531,6 +534,24 @@ std::string VansAnimationNode::GetCurrentStateName() const
 	return "";
 }
 
+std::string VansAnimationNode::GetActiveStatePath() const
+{
+	if (m_RetargetEnabled && m_SourceController)
+		return m_SourceController->GetActiveStatePath();
+	if (m_Controller)
+		return m_Controller->GetActiveStatePath();
+	return "";
+}
+
+std::string VansAnimationNode::GetPrimaryClipName() const
+{
+	if (m_RetargetEnabled && m_SourceController)
+		return m_SourceController->GetPrimaryClipName();
+	if (m_Controller)
+		return m_Controller->GetPrimaryClipName();
+	return {};
+}
+
 float VansAnimationNode::GetSpeed() const
 {
 	if (m_RetargetEnabled && m_SourceController)
@@ -567,16 +588,72 @@ void VansAnimationNode::SetTransformID(uint32_t transformID)
 	m_HasTransformID = true;
 }
 
+Vans::VansRagdollKey VansAnimationNode::GetRagdollKey() const
+{
+	return m_HasTransformID
+		? Vans::VansRagdollKey{ m_TransformID }
+		: Vans::VansRagdollKey{};
+}
+
+bool VansAnimationNode::BuildRagdollSkeletonBinding(
+	Vans::VansRagdollSkeletonBinding& binding) const
+{
+	binding = {};
+	if (m_Skeleton.bones.empty())
+		return false;
+
+	binding.boneNames.reserve(m_Skeleton.bones.size());
+	binding.parentIndices.reserve(m_Skeleton.bones.size());
+	for (const BoneInfo& bone : m_Skeleton.bones)
+	{
+		binding.boneNames.push_back(bone.name);
+		binding.parentIndices.push_back(bone.parentIndex);
+	}
+	binding.topologicalOrder = m_Skeleton.topologicalOrder;
+	return true;
+}
+
+bool VansAnimationNode::GetRagdollPoseView(Vans::VansRagdollPoseView& pose) const
+{
+	pose = {};
+	if (!m_Controller || !m_HasTransformID ||
+		!Vans::VansTransformStore::IsAllocated(m_TransformID))
+		return false;
+
+	const std::vector<glm::mat4>& modelTransforms =
+		m_Controller->GetCachedGlobalTransforms();
+	if (modelTransforms.size() != m_Skeleton.bones.size() || modelTransforms.empty())
+		return false;
+
+	pose.rootWorld =
+		Vans::VansTransformStore::Read(m_TransformID).GetModelMatrix();
+	pose.modelTransforms = modelTransforms.data();
+	pose.modelTransformCount = modelTransforms.size();
+	return true;
+}
+
+bool VansAnimationNode::ApplyRagdollPose(const Vans::VansRagdollPose& pose)
+{
+	if (!m_Controller || pose.modelTransforms.size() != m_Skeleton.bones.size())
+		return false;
+
+	return m_Controller->SubmitExternalModelPose(
+		pose.modelTransforms,
+		m_Skeleton,
+		0.0f,
+		VansExternalPoseEvaluationMode::DirectFinalPose);
+}
+
 void VansAnimationNode::SetRootBone(const std::string& boneName)
 {
-	auto it = m_Skeleton.boneNameToIndex.find(boneName);
-	if (it != m_Skeleton.boneNameToIndex.end())
+	const int boneIndex = m_Skeleton.FindBoneIndex(boneName);
+	if (boneIndex >= 0)
 	{
 		if (m_Controller)
-			m_Controller->SetRootBoneIndex(it->second);
+			m_Controller->SetRootBoneIndex(boneIndex);
 
 		VANS_LOG("[VansAnimationNode] " << m_Name << ": root bone set to \"" << boneName
-		         << "\" (index " << it->second << ")");
+		         << "\" (index " << boneIndex << ")");
 	}
 	else
 	{
@@ -631,8 +708,8 @@ bool VansAnimationNode::TryGetCurrentBoneLocalTransform(const std::string& boneN
 {
 	if (TryGetBoneLocalTransform(boneName, transform)) return true;
 	int boneIndex = -1;
-	if (const auto found = m_Skeleton.boneNameToIndex.find(boneName); found != m_Skeleton.boneNameToIndex.end())
-		boneIndex = found->second;
+	if (const int resolvedBone = m_Skeleton.FindBoneIndex(boneName); resolvedBone >= 0)
+		boneIndex = resolvedBone;
 	else
 	{
 		try
@@ -712,9 +789,6 @@ void VansAnimationNode::RebuildNodeTransformBindings()
 
 		renderNode->m_HasSkeletonBone = false;
 		renderNode->m_AnimationEnabled = false;
-		renderNode->m_AnimOwner = nullptr;
-		renderNode->m_AnimBoneIDBuffer = nullptr;
-		renderNode->m_AnimBoneWeightBuffer = nullptr;
 		renderNode->m_VertexDeformationState = VansVertexDeformationState{};
 		renderNode->MarkAnimationDescriptorDirty();
 	}
@@ -732,13 +806,13 @@ void VansAnimationNode::ApplySampledNodeTransforms()
 		return;
 
 	const VansAnimationController* animationSource =
-		m_RetargetEnabled && m_SourceController ? m_SourceController.get() : m_Controller;
+		m_RetargetEnabled && m_SourceController ? m_SourceController.get() : m_Controller.get();
 	const auto& sampledTransforms = animationSource->GetSampledNodeTransforms();
 	if (sampledTransforms.empty())
 		return;
 
 	const glm::mat4 ownerWorld = m_HasTransformID
-		? VansTransformStore::GetTransform(m_TransformID).GetModelMatrix()
+		? Vans::VansTransformStore::Read(m_TransformID).GetModelMatrix()
 		: glm::mat4(1.0f);
 
 	for (const NodeTransformBinding& binding : m_NodeTransformBindings)
@@ -766,11 +840,12 @@ void VansAnimationNode::ApplySampledNodeTransforms()
 		                          scale))
 			continue;
 
-		VansTransform& transform = VansTransformStore::GetTransform(binding.transformID);
+		Vans::VansTransform transform = Vans::VansTransformStore::Read(binding.transformID);
 		transform.m_Position = position;
 		transform.m_Rotation = rotationDegrees;
 		transform.m_Scale = scale;
-		VansTransformStore::TransformIDToTransformDirty[binding.transformID] = true;
+		Vans::VansTransformStore::Write(binding.transformID, transform);
+		Vans::VansTransformStore::MarkDirty(binding.transformID);
 	}
 }
 
@@ -788,7 +863,7 @@ void VansAnimationNode::PrepareAnimationFrame(
 		else if (m_Controller && m_HasTransformID)
 		{
 			m_Controller->SetOwnerWorldTransform(
-				VansTransformStore::GetTransform(m_TransformID).GetModelMatrix());
+				Vans::VansTransformStore::Read(m_TransformID).GetModelMatrix());
 		}
 		m_CharacterMotionFramePrepared = false;
 		if (!retargetSourceFramePrepared)
@@ -801,7 +876,7 @@ void VansAnimationNode::PrepareAnimationFrame(
 	{
 		if (m_HasTransformID)
 		{
-			const glm::mat4 ownerWorld = VansTransformStore::GetTransform(m_TransformID).GetModelMatrix();
+			const glm::mat4 ownerWorld = Vans::VansTransformStore::Read(m_TransformID).GetModelMatrix();
 			m_Controller->SetOwnerWorldTransform(ownerWorld);
 			m_SourceController->SetOwnerWorldTransform(ownerWorld);
 		}
@@ -860,7 +935,7 @@ void VansAnimationNode::PrepareAnimationFrame(
 				glm::mat4 ownerWorldForAudit(1.0f);
 				if (m_HasTransformID)
 				{
-					ownerWorldForAudit = VansTransformStore::GetTransform(m_TransformID).GetModelMatrix();
+					ownerWorldForAudit = Vans::VansTransformStore::Read(m_TransformID).GetModelMatrix();
 					auditOwnerWorld = &ownerWorldForAudit;
 				}
 
@@ -913,7 +988,7 @@ void VansAnimationNode::PrepareAnimationFrame(
 
 	// 1. 让 Controller 完成核心更新（状态机 + 关键帧插值 + 混合 + root motion + 矩阵输出）
 	if (m_HasTransformID)
-		m_Controller->SetOwnerWorldTransform(VansTransformStore::GetTransform(m_TransformID).GetModelMatrix());
+		m_Controller->SetOwnerWorldTransform(Vans::VansTransformStore::Read(m_TransformID).GetModelMatrix());
 
 	m_Controller->PrepareFrame(deltaTime, m_Skeleton);
 
@@ -948,7 +1023,7 @@ void VansAnimationNode::GatherAnimationWorldQueries()
 	if (m_HasTransformID)
 	{
 		m_Controller->SetOwnerWorldTransform(
-			VansTransformStore::GetTransform(m_TransformID).GetModelMatrix());
+			Vans::VansTransformStore::Read(m_TransformID).GetModelMatrix());
 		m_Controller->SetOwnerStableId(static_cast<std::uint64_t>(m_TransformID) + 1u);
 	}
 	m_Controller->GatherPreparedWorldQueries(m_Skeleton);
@@ -990,7 +1065,7 @@ void VansAnimationNode::PrepareCharacterMotionFrame(
 	if (m_HasTransformID)
 	{
 		const glm::mat4 ownerWorld =
-			VansTransformStore::GetTransform(m_TransformID).GetModelMatrix();
+			Vans::VansTransformStore::Read(m_TransformID).GetModelMatrix();
 		m_Controller->SetOwnerWorldTransform(ownerWorld);
 		characterMotionController->SetOwnerWorldTransform(ownerWorld);
 	}
@@ -1027,198 +1102,6 @@ const VansAnimationFrameVector<VansAnimationEventSample>& VansAnimationNode::Get
 }
 
 // ════════════════════════════════════════════════════════════════
-// GPU resource management
-// ════════════════════════════════════════════════════════════════
-
-bool VansAnimationNode::InitGPUResources(VkDevice device, uint32_t framesInFlight)
-{
-	m_Device         = device;
-	m_FramesInFlight = framesInFlight;
-
-	VkDeviceSize bufferSize = sizeof(BoneMatricesSSBO);
-	m_BoneBuffers.resize(framesInFlight);
-	m_PreviousBoneBuffers.resize(framesInFlight);
-
-	for (uint32_t i = 0; i < framesInFlight; i++)
-	{
-		bool ok = m_BoneBuffers[i].CreatVulkanBuffer(
-			device,
-			bufferSize,
-			VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-		if (!ok)
-		{
-			VANS_LOG_ERROR("[VansAnimationNode] " << m_Name << ": failed to create bone buffer " << i);
-			return false;
-		}
-
-		ok = m_PreviousBoneBuffers[i].CreatVulkanBuffer(
-			device,
-			bufferSize,
-			VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		if (!ok)
-		{
-			VANS_LOG_ERROR("[VansAnimationNode] " << m_Name << ": failed to create previous bone buffer " << i);
-			return false;
-		}
-		// A visible skinned attachment may keep its Animation component disabled.
-		// Give both buffers a valid bind pose before any animation frame is evaluated.
-		m_BoneBuffers[i].SetBufferData(&m_BoneMatricesSSBO, 0, bufferSize);
-		m_PreviousBoneBuffers[i].SetBufferData(&m_BoneMatricesSSBO, 0, bufferSize);
-	}
-	m_HasUploadedBoneMatrices = false;
-
-	VANS_LOG("[VansAnimationNode] " << m_Name << ": GPU resources initialized ("
-	         << framesInFlight << " frames, " << bufferSize << " bytes each)");
-	return true;
-}
-
-void VansAnimationNode::DestroyGPUResources()
-{
-	if (m_Device == VK_NULL_HANDLE)
-		return;
-
-	for (auto& buffer : m_BoneBuffers)
-		buffer.DestroyVulkanBuffer(m_Device);
-	for (auto& buffer : m_PreviousBoneBuffers)
-		buffer.DestroyVulkanBuffer(m_Device);
-
-	for (auto& buffer : m_PerSubmeshBoneIDBuffers)
-		buffer.DestroyVulkanBuffer(m_Device);
-
-	for (auto& buffer : m_PerSubmeshBoneWeightBuffers)
-		buffer.DestroyVulkanBuffer(m_Device);
-
-	m_BoneBuffers.clear();
-	m_PreviousBoneBuffers.clear();
-	m_HasUploadedBoneMatrices = false;
-	m_PerSubmeshBoneIDBuffers.clear();
-	m_PerSubmeshBoneWeightBuffers.clear();
-	m_Device = VK_NULL_HANDLE;
-}
-
-void VansAnimationNode::UploadPerSubmeshBoneBuffers(const std::vector<std::vector<VertexBoneData>>& perSubmeshBoneData)
-{
-	if (perSubmeshBoneData.empty() || m_Device == VK_NULL_HANDLE)
-		return;
-
-	uint32_t submeshCount = static_cast<uint32_t>(perSubmeshBoneData.size());
-	m_PerSubmeshBoneIDBuffers.resize(submeshCount);
-	m_PerSubmeshBoneWeightBuffers.resize(submeshCount);
-
-	for (uint32_t s = 0; s < submeshCount; s++)
-	{
-		const auto& boneData = perSubmeshBoneData[s];
-		if (boneData.empty())
-		{
-			m_PerSubmeshBoneIDBuffers[s].CreatVulkanBuffer(
-				m_Device, 64, VK_FORMAT_R32_SFLOAT,
-				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-			m_PerSubmeshBoneWeightBuffers[s].CreatVulkanBuffer(
-				m_Device, 64, VK_FORMAT_R32_SFLOAT,
-				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-			continue;
-		}
-
-		uint32_t vertexCount = static_cast<uint32_t>(boneData.size());
-
-		std::vector<VertexBoneID> boneIDs(vertexCount);
-		std::vector<VertexBoneWeight> boneWeights(vertexCount);
-		for (uint32_t v = 0; v < vertexCount; v++)
-		{
-			for (uint32_t i = 0; i < MAX_BONE_INFLUENCE; i++)
-			{
-				boneIDs[v].boneIDs[i]     = boneData[v].boneIDs[i];
-				boneWeights[v].weights[i]  = boneData[v].weights[i];
-			}
-		}
-
-		VkDeviceSize idBufferSize = sizeof(VertexBoneID) * vertexCount;
-		bool ok = m_PerSubmeshBoneIDBuffers[s].CreatVulkanBuffer(
-			m_Device, idBufferSize, VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		if (!ok)
-		{
-			VANS_LOG_ERROR("[VansAnimationNode] " << m_Name << ": failed to create bone ID buffer for submesh " << s);
-			continue;
-		}
-		m_PerSubmeshBoneIDBuffers[s].SetBufferData(
-			boneIDs.data(), 0, static_cast<int>(idBufferSize));
-
-		VkDeviceSize weightBufferSize = sizeof(VertexBoneWeight) * vertexCount;
-		ok = m_PerSubmeshBoneWeightBuffers[s].CreatVulkanBuffer(
-			m_Device, weightBufferSize, VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		if (!ok)
-		{
-			VANS_LOG_ERROR("[VansAnimationNode] " << m_Name << ": failed to create bone weight buffer for submesh " << s);
-			continue;
-		}
-		m_PerSubmeshBoneWeightBuffers[s].SetBufferData(
-			boneWeights.data(), 0, static_cast<int>(weightBufferSize));
-
-		VANS_LOG("[VansAnimationNode] " << m_Name << ": submesh " << s
-			<< " bone buffers uploaded (" << vertexCount << " vertices)");
-	}
-
-	VANS_LOG("[VansAnimationNode] " << m_Name << ": uploaded per-submesh bone buffers for "
-		<< submeshCount << " submesh(es)");
-}
-
-void VansAnimationNode::UploadBoneMatrices(uint32_t frameIndex)
-{
-	UploadBoneMatrices(frameIndex, GetBoneSSBO());
-}
-
-void VansAnimationNode::UploadBoneMatrices(
-	uint32_t frameIndex,
-	const BoneMatricesSSBO& ssbo)
-{
-	if (frameIndex >= m_BoneBuffers.size() || frameIndex >= m_PreviousBoneBuffers.size())
-		return;
-
-	const BoneMatricesSSBO& previous = m_HasUploadedBoneMatrices
-		? m_PreviousBoneMatricesSSBO
-		: ssbo;
-	m_PreviousBoneBuffers[frameIndex].SetBufferData(
-		&previous,
-		0,
-		sizeof(BoneMatricesSSBO));
-	m_BoneBuffers[frameIndex].SetBufferData(
-		&ssbo,
-		0,
-		sizeof(BoneMatricesSSBO));
-	m_PreviousBoneMatricesSSBO = ssbo;
-	m_HasUploadedBoneMatrices = true;
-}
-
-// ════════════════════════════════════════════════════════════════
-// Apply bone overrides.
-// ════════════════════════════════════════════════════════════════
-
-void VansAnimationNode::ApplyBoneOverrides(std::vector<glm::mat4>& localTransforms)
-{
-	for (const auto& [boneName, overrideTransform] : m_BoneOverrides)
-	{
-		auto it = m_Skeleton.boneNameToIndex.find(boneName);
-		if (it != m_Skeleton.boneNameToIndex.end())
-		{
-			int idx = it->second;
-			if (idx >= 0 && idx < static_cast<int>(localTransforms.size()))
-				localTransforms[idx] = overrideTransform;
-		}
-	}
-}
-
-// ════════════════════════════════════════════════════════════════
 // Apply root motion to the owning scene transform.
 // ════════════════════════════════════════════════════════════════
 
@@ -1231,7 +1114,7 @@ void VansAnimationNode::ApplyRootMotionToTransform(const glm::vec3& deltaPos, co
 	if (glm::length(deltaPos) < 0.00001f && glm::abs(glm::dot(deltaRot, glm::quat(1, 0, 0, 0)) - 1.0f) < 0.00001f)
 		return;
 
-	VansTransform& transform = VansTransformStore::GetTransform(m_TransformID);
+	Vans::VansTransform transform = Vans::VansTransformStore::Read(m_TransformID);
 
 	const Vans::VansRootMotionOwnerDelta ownerDelta =
 		Vans::ResolveAnimationRootMotionOwnerDelta(
@@ -1239,7 +1122,8 @@ void VansAnimationNode::ApplyRootMotionToTransform(const glm::vec3& deltaPos, co
 	transform.m_Position += ownerDelta.translationWorld;
 	transform.m_Rotation.y += ownerDelta.yawDegrees;
 
-	VansTransformStore::TransformIDToTransformDirty[m_TransformID] = true;
+	Vans::VansTransformStore::Write(m_TransformID, transform);
+	Vans::VansTransformStore::MarkDirty(m_TransformID);
 }
 
 // ════════════════════════════════════════════════════════════════

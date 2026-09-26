@@ -1,7 +1,9 @@
 #include "VansPhysicsNode.h"
-#include "VansCollisionLayerManager.h"
+#include "VansPhysics.h"
+#include "VansPhysicsNativeAccess.h"
+#include "VansCollisionFilter.h"
 #include "../RenderCore/VulkanCore/VansMesh.h"
-#include "../ScriptCore/VansTransform.h"
+#include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "../Util/VansLog.h"
 #include <algorithm>
 #include <cmath>
@@ -9,6 +11,8 @@
 
 namespace VansEngine
 {
+	using namespace physx;
+
     bool VansPhysicsNode::ResetMotion(const glm::vec3& position, const glm::vec3& rotationDegrees,
         const glm::vec3& linearVelocity, const glm::vec3& angularVelocity)
     {
@@ -30,8 +34,9 @@ namespace VansEngine
         }
         body->setLinearVelocity(linear,false); body->setAngularVelocity(angular,false);
         if (body->getScene()) body->wakeUp();
-        auto& transform = VansGraphics::VansTransformStore::GetTransform(m_TransformID);
+        Vans::VansTransform transform = Vans::VansTransformStore::Read(m_TransformID);
         transform.m_Position = position; transform.m_Rotation = rotationDegrees;
+        Vans::VansTransformStore::Write(m_TransformID, transform);
         return true;
     }
 
@@ -67,79 +72,6 @@ namespace VansEngine
     // Helper: Convert PxQuat to glm
     inline glm::quat ToGlmQuat(const PxQuat& q) { return glm::quat(q.w, q.x, q.y, q.z); }
 
-    size_t GetRawPositionStrideFloats(VansGraphics::VansMesh* mesh)
-    {
-        if (!mesh || mesh->GetMeshVertexCount() <= 0)
-            return 0;
-
-        const size_t vertexCount = static_cast<size_t>(mesh->GetMeshVertexCount());
-        const size_t rawFloatCount = mesh->GetMeshRawPositionData().size();
-        if (rawFloatCount >= vertexCount * 8)
-            return 8;
-        if (rawFloatCount >= vertexCount * 4)
-            return 4;
-        if (rawFloatCount >= vertexCount * 3)
-            return 3;
-        return 0;
-    }
-
-    bool AppendMeshCollisionData(
-        VansGraphics::VansMesh* mesh,
-        std::vector<PxVec3>& outVertices,
-        std::vector<PxU32>& outIndices,
-        const std::string& ownerName)
-    {
-        if (!mesh)
-            return false;
-
-        const size_t vertexCount = static_cast<size_t>(mesh->GetMeshVertexCount());
-        const size_t stride = GetRawPositionStrideFloats(mesh);
-        const auto& rawPositions = mesh->GetMeshRawPositionData();
-        const auto& rawIndices = mesh->GetMeshTriangleIndex();
-
-        if (vertexCount == 0 || stride == 0 || rawIndices.size() < 3)
-        {
-            VANS_LOG_WARN("[PhysX] Mesh collider source '" << mesh->m_AssetName
-                << "' for node '" << ownerName << "' has no usable CPU collision data"
-                << " (vertices=" << vertexCount
-                << ", rawFloats=" << rawPositions.size()
-                << ", indices=" << rawIndices.size() << ")");
-            return false;
-        }
-
-        const size_t originalVertexCount = outVertices.size();
-        const size_t originalIndexCount = outIndices.size();
-        const PxU32 vertexOffset = static_cast<PxU32>(outVertices.size());
-        outVertices.reserve(outVertices.size() + vertexCount);
-        for (size_t i = 0; i < vertexCount; ++i)
-        {
-            const size_t base = i * stride;
-            outVertices.emplace_back(
-                rawPositions[base + 0],
-                rawPositions[base + 1],
-                rawPositions[base + 2]);
-        }
-
-        const size_t triangleCount = rawIndices.size() / 3;
-        outIndices.reserve(outIndices.size() + triangleCount * 3);
-        for (size_t i = 0; i < triangleCount * 3; ++i)
-        {
-            const int index = rawIndices[i];
-            if (index < 0 || static_cast<size_t>(index) >= vertexCount)
-            {
-                outVertices.resize(originalVertexCount);
-                outIndices.resize(originalIndexCount);
-                VANS_LOG_WARN("[PhysX] Mesh collider source '" << mesh->m_AssetName
-                    << "' for node '" << ownerName << "' has out-of-range index "
-                    << index << " (vertexCount=" << vertexCount << ")");
-                return false;
-            }
-            outIndices.push_back(vertexOffset + static_cast<PxU32>(index));
-        }
-
-        return true;
-    }
-
     bool BuildTriangleCollisionData(
         VansGraphics::VansMesh* mesh,
         std::vector<PxVec3>& outVertices,
@@ -148,16 +80,23 @@ namespace VansEngine
     {
         if (!mesh)
             return false;
-
-        if (mesh->m_IsMultiMesh)
-        {
-            bool appendedAny = false;
-            for (auto* subMesh : mesh->m_SubMeshes)
-                appendedAny = AppendMeshCollisionData(subMesh, outVertices, outIndices, ownerName) || appendedAny;
-            return appendedAny && outVertices.size() >= 3 && outIndices.size() >= 3;
-        }
-
-        return AppendMeshCollisionData(mesh, outVertices, outIndices, ownerName);
+		Vans::VansTriangleMeshData data;
+		std::string error;
+		if (!mesh->CopyTriangleMeshData(data, error))
+		{
+			VANS_LOG_WARN("[PhysX] Mesh collider source '" << mesh->m_AssetName
+				<< "' for node '" << ownerName << "' is invalid: " << error);
+			return false;
+		}
+		outVertices.reserve(data.VertexCount());
+		for (std::size_t vertex = 0; vertex < data.VertexCount(); ++vertex)
+		{
+			const std::size_t base = vertex * 3u;
+			outVertices.emplace_back(data.positions[base],
+				data.positions[base + 1u], data.positions[base + 2u]);
+		}
+		outIndices.assign(data.indices.begin(), data.indices.end());
+		return true;
     }
 
     VansPhysicsNode::VansPhysicsNode()
@@ -178,6 +117,17 @@ namespace VansEngine
 
     void VansPhysicsNode::Initialize(const PhysicsNodeProperties& properties, uint32_t transformID, VansGraphics::VansMesh* mesh)
     {
+        auto& physics = VansPhysicsSystem::GetInstance();
+        std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+        InitializeLocked(properties, transformID, mesh);
+    }
+
+    void VansPhysicsNode::InitializeLocked(
+        const PhysicsNodeProperties& properties,
+        uint32_t transformID,
+        VansGraphics::VansMesh* mesh)
+    {
+        ShutdownLocked();
         m_Properties = properties;
         m_TransformID = transformID;
         m_Mesh = mesh;
@@ -193,11 +143,24 @@ namespace VansEngine
 		if (!m_Enabled)
 		{
 			VANS_LOG_ERROR("[PhysX] Physics node initialization failed: actor or collision shape is missing");
-			Shutdown();
+			ShutdownLocked();
 		}
     }
 
     void VansPhysicsNode::Shutdown()
+    {
+        if (!m_Actor && !m_Material && !m_TriangleMesh && !m_ConvexMesh)
+        {
+            m_Shape = nullptr;
+            m_Enabled = false;
+            return;
+        }
+        auto& physics = VansPhysicsSystem::GetInstance();
+        std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+        ShutdownLocked();
+    }
+
+    void VansPhysicsNode::ShutdownLocked()
     {
         if (m_Actor)
         {
@@ -235,8 +198,8 @@ namespace VansEngine
     void VansPhysicsNode::CreatePhysicsActor()
     {
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
-        PxPhysics* physics = physicsSystem.GetPhysics();
-        PxScene* scene = physicsSystem.GetScene();
+        PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
+        PxScene* scene = VansPhysicsNativeAccess::Scene(physicsSystem);
 
         if (!physics || !scene)
         {
@@ -245,7 +208,7 @@ namespace VansEngine
         }
 
         // Get transform from global storage
-        const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+        const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(m_TransformID);
         PxVec3 position = ToPxVec3(transformData.m_Position);
         PxQuat rotation = ToPxQuat(glm::quat(glm::radians(transformData.m_Rotation)));
         PxTransform transform(position, rotation);
@@ -287,10 +250,26 @@ namespace VansEngine
 
         // 惯量必须根据已挂载的形状计算；空 actor 上计算会丢失配置质量和惯量。
         if (m_Shape && m_Properties.bodyType == PhysicsBodyType::Dynamic && !needsKinematicUpgrade)
-            PxRigidBodyExt::setMassAndUpdateInertia(*m_Actor->is<PxRigidDynamic>(), m_Properties.mass);
+        {
+            PxRigidDynamic* dynamicActor = m_Actor->is<PxRigidDynamic>();
+            PxRigidBodyExt::setMassAndUpdateInertia(*dynamicActor, m_Properties.mass);
+            dynamicActor->setRigidBodyFlag(
+                PxRigidBodyFlag::eENABLE_SPECULATIVE_CCD,
+                m_Properties.enableSpeculativeCcd);
+            dynamicActor->setLinearVelocity(ToPxVec3(m_Properties.initialLinearVelocity));
+            dynamicActor->setAngularVelocity(ToPxVec3(m_Properties.initialAngularVelocity));
+        }
 
         // 设置碰撞 Layer 的 FilterData
-        ApplyFilterData();
+        if (!ApplyFilterData())
+        {
+            VANS_LOG_ERROR("[PhysX] Unknown collision layer '" << m_Properties.layerName
+                << "' for physics node '" << m_Name << "'");
+            m_Actor->release();
+            m_Actor = nullptr;
+            m_Shape = nullptr;
+            return;
+        }
 
         // 将 VansPhysicsNode* 存入 userData，供碰撞回调使用
         m_Actor->userData = this;
@@ -336,31 +315,23 @@ namespace VansEngine
                 m_Properties.shapeOffset.z)));
             m_Actor->attachShape(*shape);
             m_Shape = shape;
-            const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+            const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(m_TransformID);
             m_AppliedShapeScale = transformData.m_Scale;
             shape->release(); // Actor holds a reference
         }
     }
 
-    void VansPhysicsNode::ApplyFilterData()
+    bool VansPhysicsNode::ApplyFilterData()
     {
-        if (!m_Shape) return;
-
-        auto& layerMgr = VansCollisionLayerManager::Get();
-        int layerIdx = layerMgr.GetLayerIndex(m_Properties.layerName);
+        if (!m_Shape) return false;
 
         PxFilterData filterData;
-        filterData.word0 = static_cast<PxU32>(layerIdx);
-        filterData.word1 = layerMgr.GetCollisionMask(layerIdx);
-        filterData.word2 = m_Properties.isTrigger ? 1u : 0u;
-        filterData.word3 = 0;
-
-        VANS_LOG("[PhysX] ApplyFilterData: node='" << m_Name
-                 << "' layer='" << m_Properties.layerName
-                 << "' layerIdx=" << layerIdx
-                 << " mask=0x" << std::hex << filterData.word1 << std::dec
-                 << " isTrigger=" << m_Properties.isTrigger
-                 << " userData=" << m_Actor->userData);
+        if (!VansCollisionFilter::Build(
+            m_Properties.layerName,
+            m_Properties.isTrigger ? VansCollisionFilter::Trigger : VansCollisionFilter::None,
+            0u,
+            filterData))
+            return false;
 
         m_Shape->setSimulationFilterData(filterData);
         m_Shape->setQueryFilterData(filterData);
@@ -370,17 +341,17 @@ namespace VansEngine
         {
             m_Shape->setFlag(PxShapeFlag::eSIMULATION_SHAPE, false);
             m_Shape->setFlag(PxShapeFlag::eTRIGGER_SHAPE, true);
-            VANS_LOG("[PhysX] ApplyFilterData: set eTRIGGER_SHAPE for '" << m_Name << "'");
         }
+        return true;
     }
 
     PxShape* VansPhysicsNode::CreateBoxShape()
     {
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
-        PxPhysics* physics = physicsSystem.GetPhysics();
+        PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
 
         // Apply scale from transform
-        const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+        const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(m_TransformID);
         glm::vec3 scaledExtents = m_Properties.boxExtents * transformData.m_Scale;
         
         PxBoxGeometry boxGeom(scaledExtents.x, scaledExtents.y, scaledExtents.z);
@@ -390,10 +361,10 @@ namespace VansEngine
     PxShape* VansPhysicsNode::CreateSphereShape()
     {
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
-        PxPhysics* physics = physicsSystem.GetPhysics();
+        PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
 
         // Use uniform scale (average of x,y,z)
-        const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+        const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(m_TransformID);
         float avgScale = (transformData.m_Scale.x + transformData.m_Scale.y + transformData.m_Scale.z) / 3.0f;
         float scaledRadius = m_Properties.sphereRadius * avgScale;
 
@@ -404,10 +375,10 @@ namespace VansEngine
     PxShape* VansPhysicsNode::CreateCapsuleShape()
     {
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
-        PxPhysics* physics = physicsSystem.GetPhysics();
+        PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
 
         // Apply scale
-        const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+        const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(m_TransformID);
         float avgRadiusScale = (transformData.m_Scale.x + transformData.m_Scale.z) / 2.0f;
         float scaledRadius = m_Properties.capsuleRadius * avgRadiusScale;
         float scaledHalfHeight = m_Properties.capsuleHalfHeight * transformData.m_Scale.y;
@@ -434,7 +405,7 @@ namespace VansEngine
         }
 
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
-        PxPhysics* physics = physicsSystem.GetPhysics();
+        PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
 
         std::vector<PxVec3> vertices;
         std::vector<PxU32> indices;
@@ -454,13 +425,8 @@ namespace VansEngine
         meshDesc.triangles.stride = 3 * sizeof(PxU32);
         meshDesc.triangles.data = indices.data();
 
-        VANS_LOG("[PhysX] Cooking mesh collider for node '" << m_Name
-            << "' vertices=" << vertices.size()
-            << " triangles=" << meshDesc.triangles.count
-            << " sourceMultiMesh=" << (m_Mesh->m_IsMultiMesh ? 1 : 0));
-
         // Cook the triangle mesh
-        m_TriangleMesh = physicsSystem.CookTriangleMesh(meshDesc);
+        m_TriangleMesh = VansPhysicsNativeAccess::CookTriangleMesh(physicsSystem, meshDesc);
         
         if (!m_TriangleMesh)
         {
@@ -469,7 +435,7 @@ namespace VansEngine
         }
 
         // Apply scale from transform
-        const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+        const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(m_TransformID);
         PxMeshScale meshScale(ToPxVec3(transformData.m_Scale));
         
         PxTriangleMeshGeometry triGeom(m_TriangleMesh, meshScale);
@@ -485,7 +451,7 @@ namespace VansEngine
         }
 
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
-        PxPhysics* physics = physicsSystem.GetPhysics();
+        PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
 
         std::vector<PxVec3> vertices;
         std::vector<PxU32> indices;
@@ -503,12 +469,8 @@ namespace VansEngine
         convexDesc.flags = PxConvexFlag::eCOMPUTE_CONVEX;
         convexDesc.vertexLimit = 255;
 
-        VANS_LOG("[PhysX] Cooking convex mesh collider for node '" << m_Name
-            << "' vertices=" << vertices.size()
-            << " sourceMultiMesh=" << (m_Mesh->m_IsMultiMesh ? 1 : 0));
-        
         // Cook the convex mesh
-        m_ConvexMesh = physicsSystem.CookConvexMesh(convexDesc);
+        m_ConvexMesh = VansPhysicsNativeAccess::CookConvexMesh(physicsSystem, convexDesc);
         
         if (!m_ConvexMesh)
         {
@@ -517,7 +479,7 @@ namespace VansEngine
         }
 
         // Apply scale from transform
-        const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+        const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(m_TransformID);
         PxMeshScale meshScale(ToPxVec3(transformData.m_Scale));
         
         PxConvexMeshGeometry convexGeom(m_ConvexMesh, meshScale);
@@ -526,10 +488,10 @@ namespace VansEngine
 
     void VansPhysicsNode::UpdateShapeGeometryFromTransformScale()
     {
-        if (!m_Shape || m_TransformID >= VansGraphics::VansTransformStore::GlobalTransforms.size())
+        if (!m_Shape || !Vans::VansTransformStore::IsAllocated(m_TransformID))
             return;
 
-        const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+        const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(m_TransformID);
         const glm::vec3 scale = transformData.m_Scale;
         const glm::vec3 delta = glm::abs(scale - m_AppliedShapeScale);
         if (delta.x <= 1e-5f && delta.y <= 1e-5f && delta.z <= 1e-5f)
@@ -588,7 +550,7 @@ namespace VansEngine
     PxMaterial* VansPhysicsNode::CreatePhysicsMaterial()
     {
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
-        PxPhysics* physics = physicsSystem.GetPhysics();
+        PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
 
         auto* material = physics->createMaterial(
             m_Properties.material.staticFriction,
@@ -613,7 +575,7 @@ namespace VansEngine
         return material;
     }
 
-    bool VansPhysicsNode::UpdateTransformFromPhysics()
+    bool VansPhysicsNode::SyncTransformFromActorLocked()
     {
         if (!m_Actor || !m_Enabled)
             return false;
@@ -625,7 +587,7 @@ namespace VansEngine
         PxTransform pxTransform = m_Actor->getGlobalPose();
         
         // Update global transform storage
-        VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+        Vans::VansTransform transformData = Vans::VansTransformStore::Read(m_TransformID);
         
         glm::vec3 newPos = ToGlmVec3(pxTransform.p);
         glm::quat newRotQuat = ToGlmQuat(pxTransform.q);
@@ -639,19 +601,27 @@ namespace VansEngine
         {
             transformData.m_Position = newPos;
             transformData.m_Rotation = newRotEuler;
+            Vans::VansTransformStore::Write(m_TransformID, transformData);
         }
 
         return changed;
     }
 
-    void VansPhysicsNode::UpdatePhysicsFromTransform()
+    void VansPhysicsNode::SyncActorFromTransform()
+    {
+        auto& physics = VansPhysicsSystem::GetInstance();
+        std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+        SyncActorFromTransformLocked();
+    }
+
+    void VansPhysicsNode::SyncActorFromTransformLocked()
     {
         if (!m_Actor || !m_Enabled)
             return;
 
         // Kinematic 和 Trigger 都需要从 Transform 同步到 PhysX
         // Get transform from global storage
-        const VansGraphics::VansTransform& transformData = VansGraphics::VansTransformStore::GlobalTransforms[m_TransformID];
+        const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(m_TransformID);
         UpdateShapeGeometryFromTransformScale();
         PxVec3 position = ToPxVec3(transformData.m_Position);
         PxQuat rotation = ToPxQuat(glm::quat(glm::radians(transformData.m_Rotation)));
@@ -685,13 +655,13 @@ namespace VansEngine
             if (!m_Actor || !m_Shape)
             {
                 VANS_LOG_ERROR("[PhysX] Deferred physics activation failed: " << m_Name);
-                Shutdown();
+                ShutdownLocked();
             }
         }
         else
         {
             // 将已有 actor 重新加入 PhysX Scene
-            PxScene* scene = physSys.GetScene();
+            PxScene* scene = VansPhysicsNativeAccess::Scene(physSys);
             if (scene)
                 scene->addActor(*m_Actor);
         }
@@ -702,7 +672,7 @@ namespace VansEngine
         if (!m_Actor) return;
         auto& physSys = VansEngine::VansPhysicsSystem::GetInstance();
         std::lock_guard<std::mutex> lock(physSys.GetSimulationMutex());
-        PxScene* scene = physSys.GetScene();
+        PxScene* scene = VansPhysicsNativeAccess::Scene(physSys);
         if (scene)
             scene->removeActor(*m_Actor);
     }
@@ -712,56 +682,9 @@ namespace VansEngine
         Shutdown();
     }
 
-    void VansPhysicsNode::AddForce(const glm::vec3& force, PxForceMode::Enum mode)
-    {
-        if (!m_Actor || m_Properties.bodyType != PhysicsBodyType::Dynamic)
-            return;
-
-        PxRigidDynamic* dynamicActor = m_Actor->is<PxRigidDynamic>();
-        if (dynamicActor)
-        {
-            dynamicActor->addForce(ToPxVec3(force), mode);
-        }
-    }
-
-    void VansPhysicsNode::AddTorque(const glm::vec3& torque, PxForceMode::Enum mode)
-    {
-        if (!m_Actor || m_Properties.bodyType != PhysicsBodyType::Dynamic)
-            return;
-
-        PxRigidDynamic* dynamicActor = m_Actor->is<PxRigidDynamic>();
-        if (dynamicActor)
-        {
-            dynamicActor->addTorque(ToPxVec3(torque), mode);
-        }
-    }
-
-    void VansPhysicsNode::SetLinearVelocity(const glm::vec3& velocity)
-    {
-        if (!m_Actor || m_Properties.bodyType != PhysicsBodyType::Dynamic)
-            return;
-
-        PxRigidDynamic* dynamicActor = m_Actor->is<PxRigidDynamic>();
-        if (dynamicActor)
-        {
-            dynamicActor->setLinearVelocity(ToPxVec3(velocity));
-        }
-    }
-
-    void VansPhysicsNode::SetAngularVelocity(const glm::vec3& velocity)
-    {
-        if (!m_Actor || m_Properties.bodyType != PhysicsBodyType::Dynamic)
-            return;
-
-        PxRigidDynamic* dynamicActor = m_Actor->is<PxRigidDynamic>();
-        if (dynamicActor)
-        {
-            dynamicActor->setAngularVelocity(ToPxVec3(velocity));
-        }
-    }
-
     glm::vec3 VansPhysicsNode::GetLinearVelocity() const
     {
+        std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
         if (!m_Actor || m_Properties.bodyType != PhysicsBodyType::Dynamic)
             return glm::vec3(0.0f);
 
@@ -776,6 +699,7 @@ namespace VansEngine
 
     glm::vec3 VansPhysicsNode::GetAngularVelocity() const
     {
+        std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
         if (!m_Actor || m_Properties.bodyType != PhysicsBodyType::Dynamic)
             return glm::vec3(0.0f);
 
@@ -788,26 +712,15 @@ namespace VansEngine
         return glm::vec3(0.0f);
     }
 
-    void VansPhysicsNode::SetCollisionEnabled(bool enabled)
+    bool VansPhysicsNode::HasActor() const
     {
-        if (!m_Shape)
-            return;
-
-        if (enabled)
-        {
-            m_Shape->setFlag(PxShapeFlag::eSIMULATION_SHAPE, true);
-        }
-        else
-        {
-            m_Shape->setFlag(PxShapeFlag::eSIMULATION_SHAPE, false);
-        }
+        std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+        return m_Actor != nullptr;
     }
 
-    bool VansPhysicsNode::IsCollisionEnabled() const
+    bool VansPhysicsNode::IsInScene() const
     {
-        if (!m_Shape)
-            return false;
-
-        return m_Shape->getFlags() & PxShapeFlag::eSIMULATION_SHAPE;
+        std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+        return m_Actor && m_Actor->getScene();
     }
 }

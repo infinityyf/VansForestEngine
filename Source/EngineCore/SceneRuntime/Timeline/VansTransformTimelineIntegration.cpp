@@ -1,11 +1,10 @@
 #include "VansTransformTimelineIntegration.h"
 #include "VansActivationTimelineIntegration.h"
-#include "VansPropertyTimelineIntegration.h"
 #include "VansTransformTimelineAccess.h"
 
 #include "../VansRuntimeComponentTypes.h"
 #include "../VansRuntimeWorld.h"
-#include "../../ScriptCore/VansTransform.h"
+#include "../Transform/VansTransformStore.h"
 #include "../../TimelineRuntime/VansTimelineEvaluator.h"
 #include "../../TimelineRuntime/VansTimelineModuleApplierState.h"
 #include "../../TimelineRuntime/VansTimelineSampleExtension.h"
@@ -26,8 +25,8 @@ namespace
 std::uint32_t ResolveTransformId(VansRuntimeWorld& world, VansEntityHandle entity)
 {
 	if (!world.IsAlive(entity)) return UINT32_MAX;
-	auto* storage = static_cast<VansComponentStorage<VansRuntimeTransformComponent>*>(
-		world.FindStorage(VansRuntimeComponentType_Transform));
+	auto* storage = world.FindStorage<VansRuntimeTransformComponent>(
+		VansRuntimeComponentType_Transform);
 	if (!storage) return UINT32_MAX;
 	for (VansComponentHandle component : world.CollectComponentsOwnedBy(entity))
 		if (component.typeId == VansRuntimeComponentType_Transform)
@@ -93,7 +92,7 @@ struct TransformRestoreState
 {
 	VansTimelineWriterHandle writer;
 	VansEntityHandle entity;
-	VansGraphics::VansTransform previous;
+	Vans::VansTransform previous;
 };
 
 class TransformTimelineApplier final : public IVansTimelineOutputApplier
@@ -118,9 +117,9 @@ public:
 		if (!sample || !context.section) return { VansTimelineApplyStatus::Failed, {}, "Transform output is invalid" };
 		if (!sample->active) return { VansTimelineApplyStatus::Ignored };
 		const std::uint32_t transformId = ResolveTransformId(m_World, target.entity);
-		if (transformId >= VansGraphics::VansTransformStore::GlobalTransforms.size())
+		if (!Vans::VansTransformStore::IsAllocated(transformId))
 			return { VansTimelineApplyStatus::Failed, {}, "Transform binding has no live Transform component" };
-		VansGraphics::VansTransform& transform = VansGraphics::VansTransformStore::GetTransform(transformId);
+		Vans::VansTransform transform = Vans::VansTransformStore::Read(transformId);
 		const VansTimelineCompiledDataReader reader(context.timeline.CompiledBytes(), context.timeline.CompiledValues());
 		const std::string space = String(reader, context.section->extensionData, 0);
 		const auto* channelBits = reader.ValueAt(context.section->extensionData, 1);
@@ -158,14 +157,14 @@ public:
 		std::uint32_t origin = UINT32_MAX;
 		if (space == "Local") origin = m_Access->ParentTransform(transformId);
 		else if (space == "OwnerRelative") origin = ResolveTransformId(m_World, target.rootOwner);
-		if (origin < VansGraphics::VansTransformStore::GlobalTransforms.size() && origin != transformId)
+		if (Vans::VansTransformStore::IsAllocated(origin) && origin != transformId)
 		{
 			const glm::mat4 local = glm::translate(glm::mat4(1), sampledPosition) *
 				glm::mat4_cast(sampledRotation) * glm::scale(glm::mat4(1), sampledScale);
-			DecomposeTransform(VansGraphics::VansTransformStore::GetTransform(origin).GetModelMatrix() * local,
+			DecomposeTransform(Vans::VansTransformStore::Read(origin).GetModelMatrix() * local,
 				sampledPosition, sampledRotation, sampledScale);
 		}
-		const VansGraphics::VansTransform base = transform;
+		const Vans::VansTransform base = transform;
 		const glm::quat baseRotation = glm::quat(glm::radians(base.m_Rotation));
 		if (context.blendMode == VansTimelineBlendMode::Additive || context.blendMode == VansTimelineBlendMode::Relative)
 		{ sampledPosition += base.m_Position; sampledRotation = glm::normalize(baseRotation * sampledRotation); sampledScale *= base.m_Scale; }
@@ -188,11 +187,10 @@ public:
 			if (mask & 0x100u) transform.m_Scale.y = result.y;
 			if (mask & 0x200u) transform.m_Scale.z = result.z;
 		}
-		VansGraphics::VansTransformStore::TransformIDToTransformDirty[transformId] = true;
+		Vans::VansTransformStore::Write(transformId, transform);
+		Vans::VansTransformStore::MarkDirty(transformId);
 		m_Access->NotifyWritten(transformId);
-		const VansTimelineResourceId resource{
-			VansStableHash64("Scene.Transform"),
-			(static_cast<std::uint64_t>(target.entity.generation) << 32) | (target.entity.index + 1ull) };
+		const VansTimelineResourceId resource = VansMakeTimelineTransformResource(target.entity);
 		return { VansTimelineApplyStatus::Applied, { restore, {}, {}, resource } };
 	}
 
@@ -201,10 +199,10 @@ public:
 		TransformRestoreState* state = m_State.Resolve(token.handle);
 		if (!state) return false;
 		const std::uint32_t transformId = ResolveTransformId(m_World, state->entity);
-		if (transformId < VansGraphics::VansTransformStore::GlobalTransforms.size())
+		if (Vans::VansTransformStore::IsAllocated(transformId))
 		{
-			VansGraphics::VansTransformStore::GetTransform(transformId) = state->previous;
-			VansGraphics::VansTransformStore::TransformIDToTransformDirty[transformId] = true;
+			Vans::VansTransformStore::Write(transformId, state->previous);
+			Vans::VansTransformStore::MarkDirty(transformId);
 			if (m_Access) m_Access->NotifyWritten(transformId);
 		}
 		return m_State.Release(token.handle);
@@ -222,8 +220,8 @@ struct ConstraintRestoreState
 {
 	VansTimelineWriterHandle writer;
 	VansEntityHandle entity;
-	VansGraphics::VansTransform previous;
-	VansGraphics::VansTransform offset;
+	Vans::VansTransform previous;
+	Vans::VansTransform offset;
 };
 
 class ConstraintTimelineApplier final : public IVansTimelineOutputApplier
@@ -258,15 +256,15 @@ public:
 			return { VansTimelineApplyStatus::Failed, {}, "Constraint source or target binding is unresolved" };
 		const std::uint32_t targetId = ResolveTransformId(m_World, constrained->entity);
 		const std::uint32_t sourceId = source ? ResolveTransformId(m_World, source->entity) : UINT32_MAX;
-		if (targetId >= VansGraphics::VansTransformStore::GlobalTransforms.size() ||
-			sourceId >= VansGraphics::VansTransformStore::GlobalTransforms.size())
+		if (!Vans::VansTransformStore::IsAllocated(targetId) ||
+			!Vans::VansTransformStore::IsAllocated(sourceId))
 			return { VansTimelineApplyStatus::Failed, {}, "LookAt bindings have no live Transform" };
 		std::string accessError;
 		if (!m_Access || !m_Access->CanWrite(*constrained, "RejectDynamicBody", accessError))
 			return { VansTimelineApplyStatus::Failed, {}, accessError.empty()
 				? "Constraint Timeline access service is unavailable" : accessError };
-		VansGraphics::VansTransform& transform = VansGraphics::VansTransformStore::GetTransform(targetId);
-		const VansGraphics::VansTransform& sourceTransform = VansGraphics::VansTransformStore::GetTransform(sourceId);
+		Vans::VansTransform transform = Vans::VansTransformStore::Read(targetId);
+		const Vans::VansTransform& sourceTransform = Vans::VansTransformStore::Read(sourceId);
 		auto [restore, state] = m_State.Acquire(context.writer, [&]
 		{
 			ConstraintRestoreState result; result.writer = context.writer;
@@ -276,7 +274,7 @@ public:
 			if (maintain)
 			{
 				glm::vec3 position, scale; glm::quat rotation;
-				VansGraphics::VansTransform sourceCopy = sourceTransform;
+				Vans::VansTransform sourceCopy = sourceTransform;
 				DecomposeTransform(glm::inverse(sourceCopy.GetModelMatrix()) * transform.GetModelMatrix(),
 					position, rotation, scale);
 				result.offset.m_Position = position;
@@ -367,11 +365,10 @@ public:
 			}
 		}
 		if (kind == "Parent" || kind == "Scale") blendAxes(transform.m_Scale, desiredScale);
-		VansGraphics::VansTransformStore::TransformIDToTransformDirty[targetId] = true;
+		Vans::VansTransformStore::Write(targetId, transform);
+		Vans::VansTransformStore::MarkDirty(targetId);
 		m_Access->NotifyWritten(targetId);
-		const VansTimelineResourceId resource{
-			VansStableHash64("Scene.Transform"),
-			(static_cast<std::uint64_t>(constrained->entity.generation) << 32) | (constrained->entity.index + 1ull) };
+		const VansTimelineResourceId resource = VansMakeTimelineTransformResource(constrained->entity);
 		return { VansTimelineApplyStatus::Applied, { restore, {}, {}, resource } };
 	}
 	bool Restore(VansTimelineRestoreToken token) override
@@ -379,10 +376,10 @@ public:
 		ConstraintRestoreState* state = m_State.Resolve(token.handle);
 		if (!state) return false;
 		const std::uint32_t id = ResolveTransformId(m_World, state->entity);
-		if (id < VansGraphics::VansTransformStore::GlobalTransforms.size())
+		if (Vans::VansTransformStore::IsAllocated(id))
 		{
-			VansGraphics::VansTransformStore::GetTransform(id) = state->previous;
-			VansGraphics::VansTransformStore::TransformIDToTransformDirty[id] = true;
+			Vans::VansTransformStore::Write(id, state->previous);
+			Vans::VansTransformStore::MarkDirty(id);
 			if (m_Access) m_Access->NotifyWritten(id);
 		}
 		return m_State.Release(token.handle);
@@ -449,7 +446,6 @@ bool VansRegisterSceneTimelineExtensions(
 			VansMakeTimelineSourceField("rotationConvention", F::Enum, std::string("ObjectAxes"), false,
 				{ "ObjectAxes", "CameraEuler" }) },
 			{ VansMakeTimelineChannelSchema("weight", F::Float) }, false, false }, nullptr), error)) return false;
-	if (!VansRegisterActivationTimelineExtension(registry, error)) return false;
-	return VansRegisterPropertyTimelineExtension(registry, error);
+	return VansRegisterActivationTimelineExtension(registry, error);
 }
 }

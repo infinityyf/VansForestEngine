@@ -1,7 +1,7 @@
 #include "VansLight.h"
 #include "../../../EngineCore/RenderCore/VulkanCore/VansVKDescriptorManager.h"
 #include "../../../EngineCore/RenderCore/VulkanCore/VansDescriptorSetLayouts.h"
-#include "../../../EngineCore/Configration/VansConfigration.h"
+#include "../VansRenderBootstrapSettings.h"
 #include "../../../EngineCore/VansTimer.h"
 #include "../VansCamera.h"
 #include <iostream>
@@ -315,23 +315,48 @@ void VansGraphics::VansLightManager::AddRectLight(
 {
 	VansRectLight gpuLight = light;
 	gpuLight.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
+	gpuLight.m_TextureSlot = -1.0f;
 	m_RectLights.push_back(gpuLight);
     m_Cookies[3].emplace_back();
     m_CookieTransforms[3].emplace_back(0.0f);
 	m_RectShadowRegistrations.push_back({ m_NextStableLightId++, shadowSettings });
 }
 
+bool VansGraphics::VansLightManager::RemoveDirectionalLight(uint32_t index)
+{
+	if (index >= m_DirectionalLights.size() ||
+		index >= m_Cookies[0].size() ||
+		index >= m_CookieTransforms[0].size())
+	{
+		return false;
+	}
+
+	if (index + 1u != m_DirectionalLights.size())
+	{
+		m_DirectionalLights[index] = m_DirectionalLights.back();
+		m_Cookies[0][index] = std::move(m_Cookies[0].back());
+		m_CookieTransforms[0][index] = m_CookieTransforms[0].back();
+	}
+	m_DirectionalLights.pop_back();
+	m_Cookies[0].pop_back();
+	m_CookieTransforms[0].pop_back();
+	return true;
+}
+
 bool VansGraphics::VansLightManager::RemovePointLight(uint32_t index)
 {
-	if (index >= m_PointLights.size() || index >= m_PointShadowRegistrations.size())
+	if (index >= m_PointLights.size() ||
+		index >= m_PointShadowRegistrations.size() ||
+		index >= m_Cookies[1].size() ||
+		index >= m_CookieTransforms[1].size())
 		return false;
 	if (index + 1u != m_PointLights.size())
 	{
 		m_PointLights[index] = m_PointLights.back();
 		m_PointShadowRegistrations[index] = m_PointShadowRegistrations.back();
+		m_Cookies[1][index] = std::move(m_Cookies[1].back());
+		m_CookieTransforms[1][index] = m_CookieTransforms[1].back();
 	}
-    m_Cookies[1][index] = std::move(m_Cookies[1].back());
-    m_CookieTransforms[1][index] = m_CookieTransforms[1].back();
     m_Cookies[1].pop_back();
     m_CookieTransforms[1].pop_back();
 	m_PointLights.pop_back();
@@ -341,15 +366,18 @@ bool VansGraphics::VansLightManager::RemovePointLight(uint32_t index)
 
 bool VansGraphics::VansLightManager::RemoveSpotLight(uint32_t index)
 {
-	if (index >= m_SpotLights.size() || index >= m_SpotShadowRegistrations.size())
+	if (index >= m_SpotLights.size() ||
+		index >= m_SpotShadowRegistrations.size() ||
+		index >= m_Cookies[2].size() ||
+		index >= m_CookieTransforms[2].size())
 		return false;
 	if (index + 1u != m_SpotLights.size())
 	{
 		m_SpotLights[index] = m_SpotLights.back();
 		m_SpotShadowRegistrations[index] = m_SpotShadowRegistrations.back();
+		m_Cookies[2][index] = std::move(m_Cookies[2].back());
+		m_CookieTransforms[2][index] = m_CookieTransforms[2].back();
 	}
-    m_Cookies[2][index] = std::move(m_Cookies[2].back());
-    m_CookieTransforms[2][index] = m_CookieTransforms[2].back();
     m_Cookies[2].pop_back();
     m_CookieTransforms[2].pop_back();
 	m_SpotLights.pop_back();
@@ -359,19 +387,73 @@ bool VansGraphics::VansLightManager::RemoveSpotLight(uint32_t index)
 
 bool VansGraphics::VansLightManager::RemoveRectLight(uint32_t index)
 {
-	if (index >= m_RectLights.size() || index >= m_RectShadowRegistrations.size())
+	if (index >= m_RectLights.size() ||
+		index >= m_RectShadowRegistrations.size() ||
+		index >= m_Cookies[3].size() ||
+		index >= m_CookieTransforms[3].size())
 		return false;
+
+	const int removedTextureSlot = static_cast<int>(m_RectLights[index].m_TextureSlot);
+	if (removedTextureSlot >= 0 &&
+		removedTextureSlot < static_cast<int>(m_RectLightTextureSlots.size()))
+	{
+		m_RectLightTextureSlots[removedTextureSlot] = false;
+	}
+
 	if (index + 1u != m_RectLights.size())
 	{
 		m_RectLights[index] = m_RectLights.back();
 		m_RectShadowRegistrations[index] = m_RectShadowRegistrations.back();
+		m_Cookies[3][index] = std::move(m_Cookies[3].back());
+		m_CookieTransforms[3][index] = m_CookieTransforms[3].back();
 	}
-    m_Cookies[3][index] = std::move(m_Cookies[3].back());
-    m_CookieTransforms[3][index] = m_CookieTransforms[3].back();
     m_Cookies[3].pop_back();
     m_CookieTransforms[3].pop_back();
 	m_RectLights.pop_back();
 	m_RectShadowRegistrations.pop_back();
+	return true;
+}
+
+int VansGraphics::VansLightManager::AcquireRectLightTextureSlot(uint32_t lightIndex)
+{
+	if (lightIndex >= m_RectLights.size())
+		return -1;
+
+	VansRectLight& light = m_RectLights[lightIndex];
+	const int assignedSlot = static_cast<int>(light.m_TextureSlot);
+	if (assignedSlot >= 0 && assignedSlot < static_cast<int>(m_RectLightTextureSlots.size()))
+	{
+		m_RectLightTextureSlots[assignedSlot] = true;
+		return assignedSlot;
+	}
+
+	light.m_TextureSlot = -1.0f;
+	for (uint32_t textureSlot = 0;
+		textureSlot < static_cast<uint32_t>(m_RectLightTextureSlots.size());
+		++textureSlot)
+	{
+		if (m_RectLightTextureSlots[textureSlot])
+			continue;
+		m_RectLightTextureSlots[textureSlot] = true;
+		light.m_TextureSlot = static_cast<float>(textureSlot);
+		return static_cast<int>(textureSlot);
+	}
+	return -1;
+}
+
+bool VansGraphics::VansLightManager::ReleaseRectLightTextureSlot(uint32_t lightIndex)
+{
+	if (lightIndex >= m_RectLights.size())
+		return false;
+
+	VansRectLight& light = m_RectLights[lightIndex];
+	const int textureSlot = static_cast<int>(light.m_TextureSlot);
+	light.m_TextureSlot = -1.0f;
+	if (textureSlot < 0)
+		return true;
+	if (textureSlot >= static_cast<int>(m_RectLightTextureSlots.size()))
+		return false;
+	m_RectLightTextureSlots[textureSlot] = false;
 	return true;
 }
 
@@ -428,10 +510,9 @@ VansGraphics::VansLightManager::ComputeCelestialLightingState(
 
 void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCascadeCameraData& cameraData)
 {
-	auto vansConfig = VansConfigration::GetInstance();
-	int cascadeCount = vansConfig->GetCascadeCount();
-	const float* cascadeSplits = vansConfig->GetCascadeSplits();
-	int cascadeMapSize = vansConfig->GetCascadeShadowMapSize();
+	const int cascadeCount = static_cast<int>(kVansRenderBootstrapSettings.cascadeCount);
+	const float* cascadeSplits = kVansRenderBootstrapSettings.cascadeSplits.data();
+	const int cascadeMapSize = static_cast<int>(kVansRenderBootstrapSettings.cascadeShadowMapSize);
 
 	int directionLightCount = static_cast<int>(m_DirectionalLights.size());
 	if (directionLightCount <= 0)
@@ -644,7 +725,6 @@ bool VansGraphics::VansLightManager::BuildRenderLightBufferPayload(
 VansGraphics::VansRenderLightFrameData
 VansGraphics::VansLightManager::BuildRenderLightFrameData()
 {
-	const auto vansConfigration = VansConfigration::GetInstance();
 	const std::vector<VansDirectionalLight> preparedDirectionalLights =
 		BuildPreparedDirectionalLights();
 	VansRenderLightFrameData frameData;
@@ -669,7 +749,7 @@ VansGraphics::VansLightManager::BuildRenderLightFrameData()
 	for (VansRectLight& light : frameData.rectLights)
 		light.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
 	frameData.punctualShadowMapWidth =
-		static_cast<uint32_t>(vansConfigration->GetPunctualShadowMapWidth());
+		kVansRenderBootstrapSettings.punctualShadowAtlasWidth;
 	frameData.frameSequence = m_LightFrameSequence += 1.0f;
 	BuildCookieFrame(frameData);
 	frameData.prepared = true;
@@ -684,6 +764,7 @@ void VansGraphics::VansLightManager::ClearLights()
 	m_PointLights.clear();
 	m_SpotLights.clear();
 	m_RectLights.clear();
+	m_RectLightTextureSlots = {};
 	m_PointShadowRegistrations.clear();
 	m_SpotShadowRegistrations.clear();
 	m_RectShadowRegistrations.clear();

@@ -3,6 +3,7 @@
 #include "VansLightFrameTypes.h"
 #include "VansLightCookie.h"
 #include "../VansRenderSceneSnapshot.h"
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -18,6 +19,7 @@ namespace VansGraphics
 		std::vector<VansPointLight> m_PointLights;
 		std::vector<VansSpotLight> m_SpotLights;
 		std::vector<VansRectLight> m_RectLights;
+		std::array<bool, VANS_MAX_RECT_LIGHTS> m_RectLightTextureSlots{};
 		std::vector<VansPunctualShadowRegistration> m_PointShadowRegistrations;
 		std::vector<VansPunctualShadowRegistration> m_SpotShadowRegistrations;
 		std::vector<VansPunctualShadowRegistration> m_RectShadowRegistrations;
@@ -50,11 +52,17 @@ namespace VansGraphics
 
 		void AddRectLight(const VansRectLight& light, const VansPunctualShadowSettings& shadowSettings = {});
 
+		bool RemoveDirectionalLight(uint32_t index);
+
 		bool RemovePointLight(uint32_t index);
 
 		bool RemoveSpotLight(uint32_t index);
 
 		bool RemoveRectLight(uint32_t index);
+
+		int AcquireRectLightTextureSlot(uint32_t lightIndex);
+
+		bool ReleaseRectLightTextureSlot(uint32_t lightIndex);
 
 		void UpdateLightShadowMatrixData(const VansCascadeCameraData& cameraData);
 

@@ -47,7 +47,8 @@ namespace VansGraphics
 		const VansBoneTransform* localPose,
 		std::size_t poseSize)
 	{
-		if (poseSize == 0 || poseSize != skeleton.bones.size() || !localPose)
+		if (poseSize == 0 || poseSize != skeleton.bones.size() || !localPose
+			|| !skeleton.ValidateTopology())
 			return false;
 		for (std::size_t index = 0; index < poseSize; ++index)
 		{
@@ -215,16 +216,8 @@ namespace VansGraphics
 	{
 		if (!m_Skeleton)
 			return;
-		if (!m_Skeleton->topologicalOrder.empty())
-		{
-			for (int boneIndex : m_Skeleton->topologicalOrder)
-				EnsureComponent(boneIndex);
-		}
-		else
-		{
-			for (int boneIndex = 0; boneIndex < static_cast<int>(m_LocalPose.size()); ++boneIndex)
-				EnsureComponent(boneIndex);
-		}
+		for (int boneIndex : m_Skeleton->topologicalOrder)
+			EnsureComponent(boneIndex);
 	}
 
 	bool VansPoseWorkspace::IsFiniteTransform(const VansBoneTransform& transform)

@@ -38,6 +38,10 @@ struct PcgSplineItem
     float shoulder=3,blendWidth=1,surfaceOffset=.025f,textureRepeat=4;
     float projectedDepth=2;
     float flowSign=1,fadeInDistance=5,fadeOutDistance=5;
+	// 连续段坐标与端部包络由导入/拆分流程维护，Editor 只读展示。
+	float coordinateOffset=0,coordinateSign=1;
+	bool continuation=false;
+	float envelopeOffset=0,envelopeLength=0;
     bool normalFlowEnabled=true;
     std::vector<PcgSplinePoint> points;
 };
@@ -51,8 +55,10 @@ struct PcgSplineSnapshot
 {
     bool available=false,editable=false,dirty=false,canUndo=false,canRedo=false,building=false,toolEnabled=false;
     std::uint64_t documentState=0;
+	std::uint64_t undoSequence=0,redoSequence=0;
     std::string assetGuid,terrainGuid,selectedSpline,selectedPoint,message;
     float fieldTexelSize=.5f,sampleSpacing=.5f,curveTolerance=.025f,heightConflictThreshold=1;
+    float minimumRiverTransitionWidth=2.f;
     std::vector<PcgSplineItem> splines;
     std::vector<PcgSplineGuide> guides;
     std::vector<std::string> warnings;

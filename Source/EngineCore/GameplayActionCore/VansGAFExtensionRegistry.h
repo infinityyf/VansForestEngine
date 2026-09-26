@@ -66,6 +66,7 @@ struct VansGAFInputFieldDescriptor
 	std::string valueType;
 	bool required = false;
 	VansSerializedValue defaultValue;
+	std::vector<std::string> enumValues;
 };
 
 struct VansGAFInputSchemaDescriptor

@@ -37,7 +37,6 @@ public:
 	}
 
 	void Clear() { m_Parameters.clear(); }
-	std::size_t Size() const { return m_Parameters.size(); }
 
 private:
 	struct EntityHash

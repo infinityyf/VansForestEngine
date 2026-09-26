@@ -488,8 +488,10 @@ namespace VansGraphics
 			return false;
 		if (reason == VansPipelineCacheFlushReason::Shutdown)
 			MergeAndDestroyChildCachesLocked();
-		else
-			MergeChildCachesIntoMainLocked(false);
+		// Child caches can still be owned by render-thread integrations during
+		// periodic/manual persistence. Merging them repeatedly is both externally
+		// unsynchronized and replays the same cache into the main cache. Their
+		// contribution is merged exactly once at the coordinated shutdown boundary.
 		if (!m_Dirty)
 			return true;
 		if (!m_WriteEnabled)

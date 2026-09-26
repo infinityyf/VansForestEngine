@@ -16,7 +16,7 @@ struct VansTimelineBinding
 	VansTimelineBindingKind kind = VansTimelineBindingKind::SceneEntity;
 	std::string targetGuid;
 	std::string componentGuid;
-	std::uint16_t componentTypeId = 0;
+	std::string componentType;
 	std::string assetGuid;
 	std::string assetPath;
 	std::string scenePathHint;

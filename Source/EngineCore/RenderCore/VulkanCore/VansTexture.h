@@ -11,6 +11,14 @@ namespace VansGraphics
 {
 	class VansVKDevice;
 	struct VansTextureMipChainUpload;
+	struct VansRgba8Image
+	{
+		std::vector<std::uint8_t> pixels;
+		int width = 0;
+		int height = 0;
+
+		bool IsValid() const;
+	};
 
 	enum TextureType
 	{
@@ -42,6 +50,7 @@ namespace VansGraphics
 			TexturePrecision precision = LOW_PRES_8;
 			int importChannel = 4;
 			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+			bool retainRgba8Pixels = false;
 		};
 
 		~VansTexture();
@@ -135,6 +144,8 @@ namespace VansGraphics
 		int GetHeight() { return m_TextureHeight; }
 
 		int GetSlice() { return m_TextureSlice; }
+
+		const VansRgba8Image& GetRetainedRgba8Image() const { return m_RetainedRgba8Image; }
 
 	private:
 		VansVKImage m_Image;
@@ -247,5 +258,6 @@ namespace VansGraphics
 		int m_TextureWidth;
 		int m_TextureHeight;
 		int m_TextureSlice;
+		VansRgba8Image m_RetainedRgba8Image;
 	};
 }

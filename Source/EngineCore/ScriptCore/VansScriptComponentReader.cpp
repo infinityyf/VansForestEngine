@@ -100,3 +100,52 @@ bool VansScriptComponentReader::TryReadScriptComponent(
 	outDescriptor = std::move(descriptor);
 	return true;
 }
+
+bool VansScriptComponentReader::CollectProjectAssetReferences(
+	const Vans::VansSerializedValue& scriptData,
+	std::vector<VansScriptSerializedObjectReference>& references,
+	std::string& error)
+{
+	references.clear();
+	error.clear();
+	if (scriptData.kind != Vans::VansSerializedValue::Kind::Object)
+	{
+		error = "Script data must be an object";
+		return false;
+	}
+	const Vans::VansSerializedValue* fields =
+		Vans::FindObjectField(scriptData, "fields");
+	if (!fields)
+		return true;
+	if (fields->kind != Vans::VansSerializedValue::Kind::Object)
+	{
+		error = "Script data.fields must be an object";
+		return false;
+	}
+	for (const auto& [fieldName, fieldValue] : fields->objectFields)
+	{
+		if (fieldValue.kind != Vans::VansSerializedValue::Kind::Object)
+			continue;
+		const std::string domain =
+			Vans::ReadSerializedStringField(fieldValue, "domain");
+		if (domain.empty())
+			continue;
+		VansScriptSerializedObjectReference reference;
+		if (!Vans::TryReadSerializedObjectReference(fieldValue, reference))
+		{
+			error = "Script field '" + fieldName + "' has an invalid object reference";
+			return false;
+		}
+		if (reference.domain != "ProjectAsset")
+			continue;
+		if (reference.assetType.empty())
+		{
+			error = "Script ProjectAsset field '" + fieldName +
+				"' must declare assetType";
+			return false;
+		}
+		if (!reference.guid.empty())
+			references.push_back(std::move(reference));
+	}
+	return true;
+}

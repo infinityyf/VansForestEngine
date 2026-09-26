@@ -31,12 +31,13 @@ bool MeasureReflectionProbePlacement(const char* geometryPath, const char* scene
         const auto read = [&](auto& items) { input.read(reinterpret_cast<char*>(items.data()), items.size() * sizeof(items[0])); };
         read(triangles); read(geometry.transmissionReceivers); read(geometry.dynamicReceivers);
         if (!input) throw std::runtime_error("Truncated geometry fixture");
-        geometry.opaque.Build(std::move(triangles));
+        std::string error;
+        if (!geometry.opaque.Build(std::move(triangles), error)) throw std::runtime_error(error);
         std::ifstream sceneFile(scenePath); nlohmann::json scene; sceneFile >> scene;
         VansReflectionProbeSystem system;
         system.LoadFromSceneConfig(Vans::VansSceneReflectionProbeConfigReader::Read(Vans::DecodeSerializedValueJson(scene.at("settings"))), scenePath);
         const auto settings = system.GetPlacementSettings();
-        VansReflectionProbePlacementResult result; std::string error;
+        VansReflectionProbePlacementResult result;
         const auto begin = std::chrono::steady_clock::now();
         if (!VansReflectionProbePlacement::Generate(geometry, settings, system.GetPlacementOverrides(), result, error)) throw std::runtime_error(error);
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
@@ -98,6 +99,11 @@ namespace
     void Check(bool condition, const char* message)
     {
         if (!condition) throw std::runtime_error(message);
+    }
+    void BuildQuery(VansTriangleGeometryQuery& query, std::vector<VansGeometryTriangle> triangles)
+    {
+        std::string error;
+        Check(query.Build(std::move(triangles), error), error.c_str());
     }
     void Quad(std::vector<VansGeometryTriangle>& triangles, glm::vec3 origin, glm::vec3 u, glm::vec3 v,
         glm::vec3 normal, bool twoSided = false)
@@ -343,7 +349,7 @@ bool TestReflectionProbePlacementContract()
 
         std::vector<VansGeometryTriangle> triangles;
         Quad(triangles, {-4, -12, -4}, {8, 0, 0}, {0, 0, 8}, {0, 1, 0});
-        geometry.opaque.Build(triangles);
+        BuildQuery(geometry.opaque, triangles);
         result = Generate(geometry, settings);
         Check(!result.probes.empty() && result.coveredSurfaceFraction > 0.99f, "open floor not covered");
         for (const auto& probe : result.probes)
@@ -356,7 +362,7 @@ bool TestReflectionProbePlacementContract()
         triangles.clear();
         Box(triangles, {-8, -14, -4}, {-0.05f, -10, 4}, true);
         Box(triangles, {0.05f, -14, -4}, {8, -10, 4}, true);
-        geometry.opaque.Build(triangles);
+        BuildQuery(geometry.opaque, triangles);
         result = Generate(geometry, settings);
         Check(result.coveredSurfaceFraction > 0.99f, "closed rooms have uncovered receiving surfaces");
         bool left = false, right = false;
@@ -381,14 +387,14 @@ bool TestReflectionProbePlacementContract()
         Check(result.probes.empty() && result.coveredSurfaceFraction > 0.99f, "manual coverage created redundant automatic captures");
 
         triangles.clear(); Box(triangles, {-2, -2, -2}, {2, 2, 2}, false);
-        geometry.opaque.Build(triangles); result = Generate(geometry, settings);
+        BuildQuery(geometry.opaque, triangles); result = Generate(geometry, settings);
         Check(result.coveredSurfaceFraction > 0.99f, "solid exterior not covered");
         for (const auto& probe : result.probes)
             Check(glm::any(glm::greaterThan(glm::abs(probe.capturePosition), glm::vec3(2))), "capture inside solid cube");
         VerifyUseful(geometry, result, settings);
 
         triangles.clear(); Quad(triangles, {0, -2, -2}, {0, 4, 0}, {0, 0, 4}, {1, 0, 0}, true);
-        geometry.opaque.Build(triangles); result = Generate(geometry, settings);
+        BuildQuery(geometry.opaque, triangles); result = Generate(geometry, settings);
         left = false; right = false;
         for (const auto& probe : result.probes) { left |= probe.capturePosition.x < 0; right |= probe.capturePosition.x > 0; }
         Check(left && right && result.coveredSurfaceFraction > 0.99f, "two-sided thin wall lost one side");
@@ -401,7 +407,7 @@ bool TestReflectionProbePlacementContract()
         Quad(triangles, {15,0,-15}, {0,5,0}, {0,0,30}, {-1,0,0});
         Quad(triangles, {-15,0,-15}, {30,0,0}, {0,5,0}, {0,0,1});
         Quad(triangles, {-15,0,15}, {30,0,0}, {0,5,0}, {0,0,-1});
-        geometry.opaque.Build(triangles);
+        BuildQuery(geometry.opaque, triangles);
         auto courtyard = settings; courtyard.cellSize = 2; courtyard.outdoorSpacing = 32;
         result = Generate(geometry, courtyard);
         Check(result.coveredSurfaceFraction > 0.99f && result.probes.size() <= 6, "open courtyard lost sparse visible coverage");
@@ -414,7 +420,7 @@ bool TestReflectionProbePlacementContract()
         VerifyUseful(geometry, result, courtyard);
 
         triangles.clear(); Quad(triangles, {0,-2,-2}, {0,4,0}, {0,0,4}, {1,0,0}, true);
-        geometry.opaque.Build({}); geometry.transmissionReceivers = triangles;
+        BuildQuery(geometry.opaque, {}); geometry.transmissionReceivers = triangles;
         result = Generate(geometry, settings);
         Check(!result.probes.empty() && result.coveredSurfaceFraction > 0.99f, "transparent-only receiver not served");
         geometry.transmissionReceivers.clear(); geometry.dynamicReceivers.push_back({{-1, -1, -1}, {1, 1, 1}});

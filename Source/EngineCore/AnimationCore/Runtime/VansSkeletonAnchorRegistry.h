@@ -1,4 +1,5 @@
 #pragma once
+#include "../../SceneRuntime/Transform/VansTransform.h"
 
 #include "../../SceneRuntime/Transform/VansTransformGraph.h"
 

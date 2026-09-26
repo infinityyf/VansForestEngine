@@ -90,7 +90,6 @@ enum class VansTimelineEvaluationMode { WithSubTimelines, Isolated };
 enum class VansTimelineLoopMode { None, Loop, PingPong };
 enum class VansTimelineExtrapolation { None, Hold, Linear, Loop, PingPong };
 enum class VansTimelinePlayOn { Manual, Awake, Enable, Signal };
-enum class VansTimelineUpdateMode { GameTime, UnscaledTime, Manual, FixedTick, External };
 enum class VansTimelineBindingRootMode { OwnerRelative, World };
 enum class VansTimelinePlayerState { Unloaded, Stopped, Playing, Paused, Completed, Error };
 enum class VansTimelineEvaluationReason { Playback, Scrub, Jump, Step, LoopWrap, PreRoll, PostRoll, Restore, ClockCorrection };
@@ -184,7 +183,7 @@ struct VansTimelineBindingOverride
 	VansTimelineBindingId bindingId;
 	std::string targetEntityGuid;
 	std::string targetComponentGuid;
-	std::uint16_t targetComponentTypeId = 0;
+	std::string targetComponentType;
 	bool useOwner = false;
 };
 
@@ -205,13 +204,11 @@ struct VansTimelineRuntimeBinding
 struct VansTimelineInstanceConfig
 {
 	VansTimelinePlayOn playOn = VansTimelinePlayOn::Manual;
-	VansTimelineUpdateMode updateMode = VansTimelineUpdateMode::GameTime;
 	VansTimelineBindingRootMode bindingRootMode = VansTimelineBindingRootMode::OwnerRelative;
 	VansTimelineLoopMode loopMode = VansTimelineLoopMode::None;
 	std::int32_t loopCount = 1;
 	double playbackSpeed = 1.0;
 	bool restoreStateOnStop = true;
-	std::string clockType = "Timeline.Clock.GameTime";
 	std::vector<VansTimelineBindingOverride> bindingOverrides;
 	std::vector<VansTimelineParameterOverride> parameterOverrides;
 };

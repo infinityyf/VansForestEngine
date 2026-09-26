@@ -1,6 +1,5 @@
-﻿#include "VansCamera.h"
-#include "VansCameraControlArbiter.h"
-#include "../ScriptCore/VansTransform.h"
+#include "VansCamera.h"
+#include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
@@ -10,115 +9,113 @@ namespace
 {
     constexpr float kEditorCameraMoveSpeed = 12.0f;
     constexpr float kEditorCameraMaxMoveDeltaTime = 1.0f / 30.0f;
-    constexpr float kDefaultCameraNearClip = 0.1f;
-    constexpr float kCameraNearClipMinimum = 0.1f;
-    constexpr float kCameraFarClipMinimumSeparation = 0.001f;
 }
 
 VansGraphics::VansCamera::VansCamera(VansGraphicsDevice* device)
     : m_RenderDevice(device)
 {
-    // Default camera parameters (overridden by ApplyCameraSettings if camera node exists in scene JSON)
+    // 编辑器初始视图；运行场景的 Camera component 会在发布时覆盖姿势与镜头。
     m_Position    = glm::vec3(0.0f, 1.0f, 5.0f);
     m_Rotation    = glm::vec3(0.0f, -90.0f, 0.0f);
     m_Fov         = 45.0f;
-    m_NearClip    = kDefaultCameraNearClip;
+    m_NearClip    = 0.1f;
     m_FarClip     = 10000.0f;
     m_AspectRatio = m_RenderDevice->GetAspectRatio();
 
     m_IsRightMouseDown = false;
 }
 
-void VansGraphics::VansCamera::ApplyCameraSettings(
-    const Vans::VansSceneCameraSettingsConfig& cameraSettings)
+Vans::VansCameraViewSnapshot VansGraphics::VansCamera::CaptureView() const
 {
-    if (cameraSettings.position)
-    {
-        const auto& pos = *cameraSettings.position;
-        m_Position = glm::vec3(pos[0], pos[1], pos[2]);
-    }
-
-    if (cameraSettings.rotation)
-    {
-        const auto& rot = *cameraSettings.rotation;
-        m_Rotation = glm::vec3(rot[0], rot[1], rot[2]);
-    }
-
-    if (cameraSettings.fov) m_Fov = *cameraSettings.fov;
-    if (cameraSettings.nearClip) SetNearClip(*cameraSettings.nearClip);
-    if (cameraSettings.farClip) SetFarClip(*cameraSettings.farClip);
-
-    VANS_LOG("[VansCamera] Camera settings applied: pos=("
-        << m_Position.x << ", " << m_Position.y << ", " << m_Position.z
-        << ") rot=(" << m_Rotation.x << ", " << m_Rotation.y << ", " << m_Rotation.z
-        << ") fov=" << m_Fov);
+	Vans::VansCameraViewSnapshot view;
+	view.pose.position = m_Position;
+	view.pose.rotationDegrees = m_Rotation;
+	view.lens.fieldOfView = m_Fov;
+	view.lens.nearClip = m_NearClip;
+	view.lens.farClip = m_FarClip;
+	return view;
 }
 
-VansGraphics::VansCameraControlPose VansGraphics::VansCamera::CaptureControlPose() const
+void VansGraphics::VansCamera::ApplyView(const Vans::VansCameraViewSnapshot& view)
 {
-	VansCameraControlPose pose;
-	pose.position = m_Position;
-	pose.rotationDegrees = m_Rotation;
-	pose.fieldOfView = m_Fov;
-	pose.nearClip = m_NearClip;
-	pose.farClip = m_FarClip;
-	return pose;
-}
-
-void VansGraphics::VansCamera::ApplyControlPose(const VansCameraControlPose& pose)
-{
-	m_Position = pose.position;
-	m_Rotation = pose.rotationDegrees;
-	m_Fov = pose.fieldOfView;
-	SetNearClip(pose.nearClip);
-	SetFarClip(pose.farClip);
+	Vans::VansCameraViewSnapshot applied = view;
+	std::string diagnostic;
+	if (!Vans::VansClampCameraView(applied, m_LensLimits, diagnostic))
+	{
+		VANS_LOG_ERROR("[Camera] Rejected view: " << diagnostic);
+		return;
+	}
+	if (!diagnostic.empty())
+		VANS_LOG_WARN("[Camera] ApplyView: " << diagnostic);
+	m_Position = applied.pose.position;
+	m_Rotation = applied.pose.rotationDegrees;
+	m_Fov = applied.lens.fieldOfView;
+	m_NearClip = applied.lens.nearClip;
+	m_FarClip = applied.lens.farClip;
 	if (m_TransformID != UINT32_MAX)
 	{
-		VansTransform& transform = VansTransformStore::GetTransform(m_TransformID);
-		transform.m_Position = pose.position;
-		transform.m_Rotation = pose.rotationDegrees;
-		VansTransformStore::TransformIDToTransformDirty[m_TransformID] = true;
+		Vans::VansTransform transform = Vans::VansTransformStore::Read(m_TransformID);
+		transform.m_Position = applied.pose.position;
+		transform.m_Rotation = applied.pose.rotationDegrees;
+		Vans::VansTransformStore::Write(m_TransformID, transform);
+		Vans::VansTransformStore::MarkDirty(m_TransformID);
 	}
 }
 
-void VansGraphics::VansCamera::ApplyControlPoseChannels(
-	const VansCameraControlPose& pose,
-	std::uint32_t channels)
+bool VansGraphics::VansCamera::SetLensLimits(
+	Vans::VansCameraLensLimits limits,
+	std::string& error)
 {
-	if (channels & 0x01u) m_Position = pose.position;
-	if (channels & 0x02u) m_Rotation = pose.rotationDegrees;
-	if (channels & 0x04u) m_Fov = pose.fieldOfView;
-	if (channels & 0x08u) SetNearClip(pose.nearClip);
-	if (channels & 0x10u) SetFarClip(pose.farClip);
-	if (m_TransformID != UINT32_MAX && (channels & 0x03u))
+	if (!Vans::VansValidateCameraLensLimits(limits, error)) return false;
+	m_LensLimits = limits;
+	if (!ApplyLens(CaptureView().lens, "SetLensLimits"))
 	{
-		VansTransform& transform = VansTransformStore::GetTransform(m_TransformID);
-		if (channels & 0x01u) transform.m_Position = pose.position;
-		if (channels & 0x02u) transform.m_Rotation = pose.rotationDegrees;
-		VansTransformStore::TransformIDToTransformDirty[m_TransformID] = true;
+		error = "Current camera lens could not be normalized to the configured limits";
+		return false;
 	}
+	error.clear();
+	return true;
 }
 
-void VansGraphics::VansCamera::ResetToDefaults()
+bool VansGraphics::VansCamera::ApplyLens(
+	Vans::VansCameraLens lens,
+	const char* source)
 {
-    m_Position    = glm::vec3(0.0f, 1.0f, 5.0f);
-    m_Rotation    = glm::vec3(0.0f, -90.0f, 0.0f);
-    m_Fov         = 45.0f;
-    m_NearClip    = kDefaultCameraNearClip;
-    m_FarClip     = 10000.0f;
+	Vans::VansCameraViewSnapshot view = CaptureView();
+	view.lens = lens;
+	std::string diagnostic;
+	if (!Vans::VansClampCameraView(view, m_LensLimits, diagnostic))
+	{
+		VANS_LOG_ERROR("[Camera] " << source << " rejected: " << diagnostic);
+		return false;
+	}
+	if (!diagnostic.empty())
+		VANS_LOG_WARN("[Camera] " << source << ": " << diagnostic);
+	m_Fov = view.lens.fieldOfView;
+	m_NearClip = view.lens.nearClip;
+	m_FarClip = view.lens.farClip;
+	return true;
+}
 
-    VANS_LOG("[VansCamera] No camera node in scene JSON, using default parameters");
+void VansGraphics::VansCamera::SetFov(float value)
+{
+	Vans::VansCameraLens lens = CaptureView().lens;
+	lens.fieldOfView = value;
+	ApplyLens(lens, "SetFov");
 }
 
 void VansGraphics::VansCamera::SetNearClip(float val)
 {
-    m_NearClip = std::max(val, kCameraNearClipMinimum);
-    m_FarClip = std::max(m_FarClip, m_NearClip + kCameraFarClipMinimumSeparation);
+	Vans::VansCameraLens lens = CaptureView().lens;
+	lens.nearClip = val;
+	ApplyLens(lens, "SetNearClip");
 }
 
 void VansGraphics::VansCamera::SetFarClip(float val)
 {
-    m_FarClip = std::max(val, m_NearClip + kCameraFarClipMinimumSeparation);
+	Vans::VansCameraLens lens = CaptureView().lens;
+	lens.farClip = val;
+	ApplyLens(lens, "SetFarClip");
 }
 void VansGraphics::VansCamera::SetRightMouseDown(bool down) 
 { 
@@ -138,8 +135,8 @@ void VansGraphics::VansCamera::SyncFromTransform()
     if (m_TransformID == UINT32_MAX)
         return;
 
-    const VansGraphics::VansTransform& t =
-        VansGraphics::VansTransformStore::GetTransform(m_TransformID);
+    const Vans::VansTransform& t =
+        Vans::VansTransformStore::Read(m_TransformID);
 
     // position 完全同步
     m_Position   = t.m_Position;
@@ -161,11 +158,12 @@ void VansGraphics::VansCamera::HandleMouseMovement(float deltaX, float deltaY)
     if (m_TransformID != UINT32_MAX)
     {
         // 目标路径：修改 Transform，帧开始前 SyncFromTransform 将新值拉回相机
-        VansGraphics::VansTransform& t =
-            VansGraphics::VansTransformStore::GetTransform(m_TransformID);
+        Vans::VansTransform t =
+            Vans::VansTransformStore::Read(m_TransformID);
         t.m_Rotation.x = newPitch;
         t.m_Rotation.y = newYaw;
-        VansGraphics::VansTransformStore::TransformIDToTransformDirty[m_TransformID] = true;
+		Vans::VansTransformStore::Write(m_TransformID, t);
+        Vans::VansTransformStore::MarkDirty(m_TransformID);
     }
     else
     {
@@ -224,10 +222,11 @@ void VansGraphics::VansCamera::HandleKeyboardMovement(float forwardAxis, float r
     if (m_TransformID != UINT32_MAX)
     {
         // 目标路径：修改 Transform position
-        VansGraphics::VansTransform& t =
-            VansGraphics::VansTransformStore::GetTransform(m_TransformID);
+        Vans::VansTransform t =
+            Vans::VansTransformStore::Read(m_TransformID);
         t.m_Position += delta;
-        VansGraphics::VansTransformStore::TransformIDToTransformDirty[m_TransformID] = true;
+		Vans::VansTransformStore::Write(m_TransformID, t);
+        Vans::VansTransformStore::MarkDirty(m_TransformID);
     }
     else
     {

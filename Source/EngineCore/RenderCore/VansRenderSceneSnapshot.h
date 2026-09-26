@@ -140,7 +140,8 @@ namespace VansGraphics
 
 	struct VansRenderClothFrameData final
 	{
-		std::uint32_t clothNodeIndex = 0;
+		std::uint32_t clothRuntimeIndex = 0;
+		std::uint64_t vertexVersion = 0;
 		std::vector<std::uint16_t> simulatedVertices;
 	};
 

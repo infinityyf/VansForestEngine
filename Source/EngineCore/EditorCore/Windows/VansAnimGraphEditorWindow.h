@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+
+namespace Vans::EditorAPI { class IAnimationEditorAPI; class IAssetEditorAPI; }
 namespace ax { namespace NodeEditor { struct EditorContext; } }
 namespace Vans { struct VansOpenAssetDocument; }
 namespace Vans::EditorAPI { class IEngineEditorAPI; }
@@ -70,7 +72,8 @@ namespace VansGraphics
 		std::unique_ptr<Vans::EditorAPI::AnimatorDocumentDTO> m_AssetData;
 		std::shared_ptr<Vans::VansOpenAssetDocument> m_Document;
 		std::uint64_t m_DocumentStateId = 0;
-		Vans::EditorAPI::IEngineEditorAPI* m_ActiveAPI = nullptr;
+		Vans::EditorAPI::IAnimationEditorAPI* m_AnimationAPI = nullptr;
+		Vans::EditorAPI::IAssetEditorAPI* m_AssetAPI = nullptr;
 		Vans::EditorAPI::AnimationGraphDTO*  m_TargetGraph = nullptr;
 		std::string m_ActiveGraphId;
 		std::unique_ptr<AnimGraphEditState> m_EditState;
@@ -82,7 +85,7 @@ namespace VansGraphics
 		int m_SelectedTransitionIndex = -1;
 		int m_SelectedConditionIndex = -1;
 		std::vector<NavigationFrame> m_NavigationStack;
-		void DrawMenuBar();
+		void DrawMenuBar(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 		void DrawLeftPanel();
 		void DrawLayersPanel();
 		void DrawSlotsPanel();
@@ -110,7 +113,7 @@ namespace VansGraphics
 		bool ReloadWorkingCopyFromDocument();
 		bool Undo();
 		bool Redo();
-		bool Save();
+		bool Save(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 		void CloseImmediately();
 	};
 }  // namespace VansGraphics

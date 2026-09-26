@@ -14,7 +14,7 @@
 
 #include "VansLuaUIBridge.h"
 #include "VansLuaGameplayActionBridge.h"
-#include "VansTransform.h"
+#include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "../AICore/VansAIEvents.h"
 #include "../AnimationCore/VansAnimationController.h"
 #include "../AnimationCore/VansAnimationNode.h"
@@ -23,13 +23,13 @@
 #include "../AudioCore/VansAudioManager.h"
 #include "../AudioCore/VansAudioNode.h"
 #include "../AssetCore/VansAssetGuid.h"
-#include "../Configration/VansConfigration.h"
 #include "../EventCore/VansEventBus.h"
 #include "../ParticleCore/Serialization/VansParticleAssetJsonCodec.h"
 #include "../ParticleCore/VansParticleManager.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../PhysicsCore/VansClothNode.h"
 #include "../PhysicsCore/VansPhysics.h"
+#include "../PhysicsCore/VansPhysicsQuery.h"
 #include "../PhysicsCore/VansRagdollSystem.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
@@ -46,7 +46,6 @@
 #include "../RuntimeCore/VansThreadContract.h"
 #include "../RuntimeUI/Public/VansUIScreen.h"
 #include "../RuntimeUI/Public/VansUISystem.h"
-#include "../SceneCore/VansSceneRuntimeComponentKey.h"
 #include "../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../SceneRuntime/VansRuntimeWorld.h"
 #include "../Util/VansInputManager.h"
@@ -115,6 +114,11 @@ VansEngine::VansAudioManager* AudioManager()
 	return scene ? scene->GetAudioManager() : nullptr;
 }
 
+VansEngine::VansAudioVoice* AudioVoice(VansScriptAudioComponent* audio)
+{
+	return audio ? audio->m_Source.GetVoice() : nullptr;
+}
+
 std::filesystem::path ResolveScriptPath(const std::string& scriptPath)
 {
 	std::filesystem::path path(scriptPath);
@@ -129,8 +133,7 @@ std::filesystem::path ResolveScriptPath(const std::string& scriptPath)
 	if (context && !context->GetActiveProjectRoot().empty())
 		return std::filesystem::path(context->GetActiveProjectRoot()) / path;
 
-	auto* config = VansConfigration::GetInstance();
-	return std::filesystem::path(config->GetProjectRootPath()) / path;
+	return std::filesystem::path(projectManager.GetPathResolver().GetEngineRoot()) / path;
 }
 
 int PushError(lua_State* L, const char* message)
@@ -304,8 +307,8 @@ Vans::VansComponentHandle ResolveRuntimeTransformComponentHandle(
 	const Vans::VansEntityHandle entity = ResolveRuntimeEntityHandle(object);
 	if (!entity.IsValid())
 		return Vans::VansComponentHandle{};
-	const auto* storage = static_cast<const Vans::VansComponentStorage<Vans::VansRuntimeTransformComponent>*>(
-		runtimeWorld->FindStorage(Vans::VansRuntimeComponentType_Transform));
+	const auto* storage = runtimeWorld->FindStorage<Vans::VansRuntimeTransformComponent>(
+		Vans::VansRuntimeComponentType_Transform);
 	if (!storage)
 		return Vans::VansComponentHandle{};
 	const auto& headers = storage->Headers();
@@ -541,7 +544,7 @@ int LuaTransformGetPosition(lua_State* L)
 		lua_pushnil(L);
 		return 1;
 	}
-	auto& transform = VansGraphics::VansTransformStore::GetTransform(handle->transformID);
+	const auto& transform = Vans::VansTransformStore::Read(handle->transformID);
 	PushVec3(L, transform.m_Position);
 	return 1;
 }
@@ -551,8 +554,9 @@ int LuaTransformSetPosition(lua_State* L)
 	auto* handle = CheckTransform(L, 1);
 	if (!handle || handle->transformID == UINT32_MAX)
 		return 0;
-	auto& transform = VansGraphics::VansTransformStore::GetTransform(handle->transformID);
+	Vans::VansTransform transform = Vans::VansTransformStore::Read(handle->transformID);
 	transform.m_Position = ReadVec3(L, 2);
+	Vans::VansTransformStore::Write(handle->transformID, transform);
 	return 0;
 }
 
@@ -564,7 +568,7 @@ int LuaTransformGetRotation(lua_State* L)
 		lua_pushnil(L);
 		return 1;
 	}
-	auto& transform = VansGraphics::VansTransformStore::GetTransform(handle->transformID);
+	const auto& transform = Vans::VansTransformStore::Read(handle->transformID);
 	PushVec3(L, transform.m_Rotation);
 	return 1;
 }
@@ -574,8 +578,9 @@ int LuaTransformSetRotation(lua_State* L)
 	auto* handle = CheckTransform(L, 1);
 	if (!handle || handle->transformID == UINT32_MAX)
 		return 0;
-	auto& transform = VansGraphics::VansTransformStore::GetTransform(handle->transformID);
+	Vans::VansTransform transform = Vans::VansTransformStore::Read(handle->transformID);
 	transform.m_Rotation = ReadVec3(L, 2);
+	Vans::VansTransformStore::Write(handle->transformID, transform);
 	return 0;
 }
 
@@ -584,8 +589,9 @@ int LuaTransformTranslate(lua_State* L)
 	auto* handle = CheckTransform(L, 1);
 	if (!handle || handle->transformID == UINT32_MAX)
 		return 0;
-	auto& transform = VansGraphics::VansTransformStore::GetTransform(handle->transformID);
+	Vans::VansTransform transform = Vans::VansTransformStore::Read(handle->transformID);
 	transform.m_Position += ReadVec3(L, 2);
+	Vans::VansTransformStore::Write(handle->transformID, transform);
 	return 0;
 }
 
@@ -798,7 +804,7 @@ int LuaComponentSetEnabled(lua_State* L)
 	if (runtimeWorld && handle->runtimeComponent.IsValid())
 	{
 		runtimeWorld->Commands().SetComponentEnabled(handle->runtimeComponent, enabled);
-		runtimeWorld->FlushCommands();
+		runtimeWorld->CommitCommands(Vans::VansRuntimeCommandCommitPoint::RuntimeFrame);
 		runtimeEffectiveEnabled = runtimeWorld->IsComponentEffectivelyEnabled(handle->runtimeComponent);
 		projectedByRuntime = scene->ApplyRuntimeComponentEnabled(
 			handle->runtimeComponent,
@@ -841,7 +847,7 @@ int LuaComponentPlay(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 	{
-		audio->m_Source.Play();
+		if (auto* voice = AudioVoice(audio)) voice->Play();
 	}
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 	{
@@ -864,7 +870,7 @@ int LuaComponentPause(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 	{
-		audio->m_Source.Pause();
+		if (auto* voice = AudioVoice(audio)) voice->Pause();
 	}
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 	{
@@ -886,7 +892,7 @@ int LuaComponentStop(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 	{
-		audio->m_Source.Stop();
+		if (auto* voice = AudioVoice(audio)) voice->Stop();
 	}
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
 	{
@@ -904,7 +910,7 @@ int LuaComponentResume(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 	{
-		audio->m_Source.Resume();
+		if (auto* voice = AudioVoice(audio)) voice->Resume();
 	}
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 	{
@@ -987,12 +993,12 @@ int LuaComponentUIReleasePreloaded(lua_State* L)
 int LuaComponentSwitchSource(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
-	const char* name = luaL_checkstring(L, 2);
+	const char* assetGuid = luaL_checkstring(L, 2);
 	bool ok = false;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
-		ok = audio->SwitchSource(name);
+		ok = audio->SwitchSource(assetGuid);
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
-		ok = video->SwitchSource(name);
+		ok = video->SwitchSource(assetGuid);
 	lua_pushboolean(L, ok);
 	return 1;
 }
@@ -1003,7 +1009,7 @@ int LuaComponentIsPlaying(lua_State* L)
 	auto* component = handle->component;
 	bool value = false;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
-		value = audio->m_Source.IsPlaying();
+		value = AudioVoice(audio) && AudioVoice(audio)->IsPlaying();
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 		value = video->m_VideoTex && video->m_VideoTex->IsPlaying();
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
@@ -1020,7 +1026,7 @@ int LuaComponentIsPaused(lua_State* L)
 	auto* component = handle->component;
 	bool value = false;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
-		value = audio->m_Source.IsPaused();
+		value = AudioVoice(audio) && AudioVoice(audio)->IsPaused();
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 		value = video->m_VideoTex && video->m_VideoTex->IsReady() && !video->m_VideoTex->IsPlaying();
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
@@ -1063,6 +1069,8 @@ int LuaComponentSetMotionIntent(lua_State* L)
 	intent.jumpRequested = lua_toboolean(L, 6) != 0;
 	intent.jumpSpeed = static_cast<float>(luaL_optnumber(L, 7, 5.5));
 	intent.gravity = static_cast<float>(luaL_optnumber(L, 8, 16.0));
+	// Optional final argument. Existing scripts retain filtered facing.
+	intent.immediateFacing = lua_toboolean(L, 9) != 0;
 	intent.valid = true;
 	cct->m_ControllerNode->SetMotionIntent(intent);
 	return 0;
@@ -1078,8 +1086,6 @@ int LuaComponentVehicleSetInputs(lua_State* L)
 		const float brake = static_cast<float>(luaL_optnumber(L, 3, 0.0));
 		const float steer = static_cast<float>(luaL_optnumber(L, 4, 0.0));
 		const float handbrake = static_cast<float>(luaL_optnumber(L, 5, 0.0));
-		auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
-		std::lock_guard<std::mutex> simLock(physics.GetSimulationMutex());
 		vehicle->m_Vehicle->SetInputs(throttle, brake, steer, handbrake);
 	}
 	return 0;
@@ -1089,18 +1095,24 @@ int LuaComponentVehicleSetGear(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* vehicle = dynamic_cast<VansScriptVehicleComponent*>(component);
-	if (vehicle && vehicle->m_Vehicle)
-		vehicle->m_Vehicle->SetGear(static_cast<std::uint32_t>(luaL_checkinteger(L, 2)));
-	return 0;
+	const lua_Integer requestedGear = luaL_checkinteger(L, 2);
+	const bool validIndex = requestedGear >= 0 &&
+		static_cast<unsigned long long>(requestedGear) <=
+		static_cast<unsigned long long>((std::numeric_limits<std::uint32_t>::max)());
+	const bool applied = vehicle && vehicle->m_Vehicle && validIndex &&
+		vehicle->m_Vehicle->SetGear(static_cast<std::uint32_t>(requestedGear));
+	lua_pushboolean(L, applied ? 1 : 0);
+	return 1;
 }
 
 int LuaComponentVehicleSetAutomaticGear(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* vehicle = dynamic_cast<VansScriptVehicleComponent*>(component);
-	if (vehicle && vehicle->m_Vehicle)
+	const bool applied = vehicle && vehicle->m_Vehicle &&
 		vehicle->m_Vehicle->SetAutomaticGear(lua_toboolean(L, 2) != 0);
-	return 0;
+	lua_pushboolean(L, applied ? 1 : 0);
+	return 1;
 }
 
 int LuaComponentSetPosition(lua_State* L)
@@ -1113,7 +1125,7 @@ int LuaComponentSetPosition(lua_State* L)
 	}
 	else if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 	{
-		audio->m_Source.SetPosition(position.x, position.y, position.z);
+		if (auto* voice = AudioVoice(audio)) voice->SetPosition(position.x, position.y, position.z);
 	}
 	return 0;
 }
@@ -1225,6 +1237,109 @@ int LuaComponentAnimSetFloat(lua_State* L)
 	return 0;
 }
 
+int LuaComponentAnimGetCurveValue(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	const char* name = luaL_checkstring(L, 2);
+	const float fallback = static_cast<float>(luaL_optnumber(L, 3, 0.0));
+	float value = fallback;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	if (anim && anim->m_AnimNode)
+	{
+		// Curves belong to the controller that owns character motion.  During
+		// source-proxy retargeting the target controller only runs post-process
+		// nodes, so querying it first would silently return an empty curve set and
+		// break turn/foot/transition decisions.  Keep the target controller as a
+		// generic fallback for ordinary non-retargeted animation components.
+		auto readCurve = [&](const auto* controller) -> bool
+		{
+			if (!controller)
+				return false;
+			for (const auto& curve : controller->GetSampledCurves())
+			{
+				if (curve.name == name && curve.present)
+				{
+					value = curve.value;
+					return true;
+				}
+			}
+			return false;
+		};
+		const auto* motionController = anim->m_AnimNode->GetCharacterMotionController();
+		if (!readCurve(motionController) && anim->m_AnimNode->GetController() != motionController)
+			readCurve(anim->m_AnimNode->GetController());
+	}
+	lua_pushnumber(L, value);
+	return 1;
+}
+
+int LuaComponentAnimGetStateName(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	const std::string state = anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetCurrentStateName() : std::string{};
+	lua_pushlstring(L, state.data(), state.size());
+	return 1;
+}
+
+int LuaComponentAnimGetStatePath(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	const std::string path = anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetActiveStatePath() : std::string{};
+	lua_pushlstring(L, path.data(), path.size());
+	return 1;
+}
+
+int LuaComponentAnimGetPrimaryClip(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	const std::string clip = anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetPrimaryClipName() : std::string{};
+	lua_pushlstring(L, clip.data(), clip.size());
+	return 1;
+}
+
+int LuaComponentAnimGetPlaybackState(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	const auto state = anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetState()
+		: VansGraphics::AnimationState::Stopped;
+	const char* name = "Stopped";
+	switch (state)
+	{
+	case VansGraphics::AnimationState::Playing: name = "Playing"; break;
+	case VansGraphics::AnimationState::Paused: name = "Paused"; break;
+	case VansGraphics::AnimationState::Blending: name = "Blending"; break;
+	case VansGraphics::AnimationState::Stopped: break;
+	}
+	lua_pushstring(L, name);
+	return 1;
+}
+
+int LuaComponentAnimGetDuration(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	lua_pushnumber(L, anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetDuration() : 0.0f);
+	return 1;
+}
+
+int LuaComponentAnimGetNormalizedTime(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	lua_pushnumber(L, anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetNormalizedTime() : 0.0f);
+	return 1;
+}
+
 int LuaComponentAnimRestartLayer(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
@@ -1244,10 +1359,18 @@ int LuaComponentAnimPlaySlot(lua_State* L)
 	const bool loop = lua_toboolean(L, 4) != 0;
 	const float rate = static_cast<float>(luaL_optnumber(L, 5, 1.0));
 	const int priority = static_cast<int>(luaL_optinteger(L, 6, 0));
+	const float startTime = static_cast<float>(luaL_optnumber(L, 7, 0.0));
+	const std::optional<float> blendIn = lua_isnoneornil(L, 8)
+		? std::nullopt
+		: std::optional<float>(static_cast<float>(luaL_checknumber(L, 8)));
+	const std::optional<float> blendOut = lua_isnoneornil(L, 9)
+		? std::nullopt
+		: std::optional<float>(static_cast<float>(luaL_checknumber(L, 9)));
 	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
-	if (!anim || !anim->m_AnimNode || !anim->m_AnimNode->GetController()
-		|| !anim->m_AnimNode->GetController()->GetClip(clipName)
-		|| !anim->m_AnimNode->GetController()->FindSlotDefinition(slotId))
+	VansGraphics::VansAnimationController* motionController = anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetCharacterMotionController() : nullptr;
+	if (!motionController || !motionController->GetClip(clipName)
+		|| !motionController->FindSlotDefinition(slotId))
 	{
 		lua_pushinteger(L, 0);
 		return 1;
@@ -1257,7 +1380,10 @@ int LuaComponentAnimPlaySlot(lua_State* L)
 	request.playRate = rate;
 	request.loopCount = loop ? std::numeric_limits<int>::max() : 1;
 	request.priority = priority;
-	const auto handle = anim->m_AnimNode->GetController()->PlaySlot(slotId, request);
+	request.startTime = startTime;
+	request.blendIn = blendIn;
+	request.blendOut = blendOut;
+	const auto handle = motionController->PlaySlot(slotId, request);
 	lua_pushinteger(L, static_cast<lua_Integer>(handle.value));
 	return 1;
 }
@@ -1269,9 +1395,42 @@ int LuaComponentAnimStopSlot(lua_State* L)
 		static_cast<std::uint64_t>(luaL_checkinteger(L, 2))};
 	const float blendOut = static_cast<float>(luaL_optnumber(L, 3, 0.12));
 	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
-	const bool stopped = anim && anim->m_AnimNode && anim->m_AnimNode->GetController()
-		&& anim->m_AnimNode->GetController()->StopSlot(handle, blendOut, true);
+	VansGraphics::VansAnimationController* motionController = anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetCharacterMotionController() : nullptr;
+	const bool stopped = motionController
+		&& motionController->StopSlot(handle, blendOut, true);
 	lua_pushboolean(L, stopped ? 1 : 0);
+	return 1;
+}
+
+int LuaComponentAnimGetSlotStatus(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	const auto handle = VansGraphics::VansSlotPlaybackHandle{
+		static_cast<std::uint64_t>(luaL_checkinteger(L, 2))};
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	VansGraphics::VansSlotPlaybackStatus status;
+	if (anim && anim->m_AnimNode && anim->m_AnimNode->GetCharacterMotionController())
+		status = anim->m_AnimNode->GetCharacterMotionController()->GetSlotStatus(handle);
+	const char* state = "Invalid";
+	switch (status.state)
+	{
+	case VansGraphics::VansSlotPlaybackState::Queued: state = "Queued"; break;
+	case VansGraphics::VansSlotPlaybackState::BlendingIn: state = "BlendingIn"; break;
+	case VansGraphics::VansSlotPlaybackState::Playing: state = "Playing"; break;
+	case VansGraphics::VansSlotPlaybackState::BlendingOut: state = "BlendingOut"; break;
+	case VansGraphics::VansSlotPlaybackState::Completed: state = "Completed"; break;
+	case VansGraphics::VansSlotPlaybackState::Interrupted: state = "Interrupted"; break;
+	case VansGraphics::VansSlotPlaybackState::Rejected: state = "Rejected"; break;
+	case VansGraphics::VansSlotPlaybackState::Invalid: break;
+	}
+	lua_createtable(L, 0, 6);
+	lua_pushstring(L, state); lua_setfield(L, -2, "state");
+	lua_pushlstring(L, status.slotId.data(), status.slotId.size()); lua_setfield(L, -2, "slotId");
+	lua_pushlstring(L, status.clipName.data(), status.clipName.size()); lua_setfield(L, -2, "clipName");
+	lua_pushlstring(L, status.tag.data(), status.tag.size()); lua_setfield(L, -2, "tag");
+	lua_pushnumber(L, status.playbackTime); lua_setfield(L, -2, "playbackTime");
+	lua_pushnumber(L, status.weight); lua_setfield(L, -2, "weight");
 	return 1;
 }
 
@@ -1365,7 +1524,8 @@ int LuaComponentGetVolume(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushnumber(L, audio ? audio->m_Source.GetVolume() : 0.0f);
+	auto* voice = AudioVoice(audio);
+	lua_pushnumber(L, voice ? voice->GetVolume() : 0.0f);
 	return 1;
 }
 
@@ -1373,8 +1533,8 @@ int LuaComponentSetVolume(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio)
-		audio->m_Source.SetVolume(static_cast<float>(luaL_checknumber(L, 2)));
+	if (auto* voice = AudioVoice(audio))
+		voice->SetVolume(static_cast<float>(luaL_checknumber(L, 2)));
 	return 0;
 }
 
@@ -1382,7 +1542,8 @@ int LuaComponentGetPitch(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushnumber(L, audio ? audio->m_Source.GetPitch() : 0.0f);
+	auto* voice = AudioVoice(audio);
+	lua_pushnumber(L, voice ? voice->GetPitch() : 0.0f);
 	return 1;
 }
 
@@ -1390,8 +1551,8 @@ int LuaComponentSetPitch(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio)
-		audio->m_Source.SetPitch(static_cast<float>(luaL_checknumber(L, 2)));
+	if (auto* voice = AudioVoice(audio))
+		voice->SetPitch(static_cast<float>(luaL_checknumber(L, 2)));
 	return 0;
 }
 
@@ -1399,7 +1560,8 @@ int LuaComponentGetLoop(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushboolean(L, audio && audio->m_Source.GetLoop());
+	auto* voice = AudioVoice(audio);
+	lua_pushboolean(L, voice && voice->GetLoop());
 	return 1;
 }
 
@@ -1407,8 +1569,8 @@ int LuaComponentSetLoop(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio)
-		audio->m_Source.SetLoop(lua_toboolean(L, 2) != 0);
+	if (auto* voice = AudioVoice(audio))
+		voice->SetLoop(lua_toboolean(L, 2) != 0);
 	return 0;
 }
 
@@ -1416,7 +1578,8 @@ int LuaComponentGetSpatial(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushboolean(L, audio && audio->m_Source.GetSpatial());
+	auto* voice = AudioVoice(audio);
+	lua_pushboolean(L, voice && voice->GetSpatial());
 	return 1;
 }
 
@@ -1424,8 +1587,8 @@ int LuaComponentSetSpatial(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio)
-		audio->m_Source.SetSpatial(lua_toboolean(L, 2) != 0);
+	if (auto* voice = AudioVoice(audio))
+		voice->SetSpatial(lua_toboolean(L, 2) != 0);
 	return 0;
 }
 
@@ -1433,7 +1596,8 @@ int LuaComponentGetRefDistance(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushnumber(L, audio ? audio->m_Source.GetRefDistance() : 0.0f);
+	auto* voice = AudioVoice(audio);
+	lua_pushnumber(L, voice ? voice->GetRefDistance() : 0.0f);
 	return 1;
 }
 
@@ -1441,8 +1605,8 @@ int LuaComponentSetRefDistance(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio)
-		audio->m_Source.SetRefDistance(static_cast<float>(luaL_checknumber(L, 2)));
+	if (auto* voice = AudioVoice(audio))
+		voice->SetRefDistance(static_cast<float>(luaL_checknumber(L, 2)));
 	return 0;
 }
 
@@ -1450,7 +1614,8 @@ int LuaComponentGetMaxDistance(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushnumber(L, audio ? audio->m_Source.GetMaxDistance() : 0.0f);
+	auto* voice = AudioVoice(audio);
+	lua_pushnumber(L, voice ? voice->GetMaxDistance() : 0.0f);
 	return 1;
 }
 
@@ -1458,8 +1623,8 @@ int LuaComponentSetMaxDistance(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio)
-		audio->m_Source.SetMaxDistance(static_cast<float>(luaL_checknumber(L, 2)));
+	if (auto* voice = AudioVoice(audio))
+		voice->SetMaxDistance(static_cast<float>(luaL_checknumber(L, 2)));
 	return 0;
 }
 
@@ -1467,7 +1632,8 @@ int LuaComponentGetRolloff(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushnumber(L, audio ? audio->m_Source.GetRolloff() : 0.0f);
+	auto* voice = AudioVoice(audio);
+	lua_pushnumber(L, voice ? voice->GetRolloff() : 0.0f);
 	return 1;
 }
 
@@ -1475,8 +1641,8 @@ int LuaComponentSetRolloff(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio)
-		audio->m_Source.SetRolloff(static_cast<float>(luaL_checknumber(L, 2)));
+	if (auto* voice = AudioVoice(audio))
+		voice->SetRolloff(static_cast<float>(luaL_checknumber(L, 2)));
 	return 0;
 }
 
@@ -1484,8 +1650,9 @@ int LuaComponentGetAttenuationMode(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushstring(L, audio
-		? VansEngine::AudioAttenuationModeToString(audio->m_Source.GetAttenuationMode())
+	auto* voice = AudioVoice(audio);
+	lua_pushstring(L, voice
+		? VansEngine::AudioAttenuationModeToString(voice->GetAttenuationMode())
 		: "");
 	return 1;
 }
@@ -1494,8 +1661,8 @@ int LuaComponentSetAttenuationMode(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio)
-		audio->m_Source.SetAttenuationMode(
+	if (auto* voice = AudioVoice(audio))
+		voice->SetAttenuationMode(
 			VansEngine::AudioAttenuationModeFromString(luaL_checkstring(L, 2)));
 	return 0;
 }
@@ -1504,7 +1671,8 @@ int LuaComponentGetReverbSend(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushnumber(L, audio ? audio->m_Source.GetReverbSend() : 0.0f);
+	auto* voice = AudioVoice(audio);
+	lua_pushnumber(L, voice ? voice->GetReverbSend() : 0.0f);
 	return 1;
 }
 
@@ -1512,8 +1680,8 @@ int LuaComponentSetReverbSend(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio)
-		audio->m_Source.SetReverbSend(static_cast<float>(luaL_checknumber(L, 2)));
+	if (auto* voice = AudioVoice(audio))
+		voice->SetReverbSend(static_cast<float>(luaL_checknumber(L, 2)));
 	return 0;
 }
 
@@ -1521,7 +1689,8 @@ int LuaComponentGetLowpassHighFrequencyGain(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushnumber(L, audio ? audio->m_Source.GetLowpassHighFrequencyGain() : 1.0f);
+	auto* voice = AudioVoice(audio);
+	lua_pushnumber(L, voice ? voice->GetLowpassHighFrequencyGain() : 1.0f);
 	return 1;
 }
 
@@ -1529,8 +1698,8 @@ int LuaComponentSetLowpassHighFrequencyGain(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio)
-		audio->m_Source.SetLowpassHighFrequencyGain(static_cast<float>(luaL_checknumber(L, 2)));
+	if (auto* voice = AudioVoice(audio))
+		voice->SetLowpassHighFrequencyGain(static_cast<float>(luaL_checknumber(L, 2)));
 	return 0;
 }
 
@@ -1538,7 +1707,8 @@ int LuaComponentGetBus(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushstring(L, audio ? audio->m_Source.GetBusName().c_str() : "");
+	auto* voice = AudioVoice(audio);
+	lua_pushstring(L, voice ? voice->GetBusName().c_str() : "");
 	return 1;
 }
 
@@ -1546,8 +1716,8 @@ int LuaComponentSetBus(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio)
-		audio->m_Source.SetBusName(luaL_checkstring(L, 2));
+	if (auto* voice = AudioVoice(audio))
+		voice->SetBusName(luaL_checkstring(L, 2));
 	return 0;
 }
 
@@ -1994,7 +2164,7 @@ int LuaComponentSetDopplerEnabled(lua_State* L)
 	{
 		audio->m_DopplerEnabled = lua_toboolean(L, 2) != 0;
 		if (!audio->m_DopplerEnabled)
-			audio->m_Source.SetVelocity(0.0f, 0.0f, 0.0f);
+			if (auto* voice = AudioVoice(audio)) voice->SetVelocity(0.0f, 0.0f, 0.0f);
 		SyncRuntimeAudioComponent(audio);
 	}
 	return 0;
@@ -2015,7 +2185,7 @@ int LuaComponentSetCone(lua_State* L)
 	audio->m_ConeSettings.outerGain =
 		static_cast<float>(luaL_optnumber(L, 5, audio->m_ConeSettings.outerGain));
 	audio->m_ConeSettings.Normalize();
-	audio->m_Source.SetCone(audio->m_ConeSettings);
+	if (auto* voice = AudioVoice(audio)) voice->SetCone(audio->m_ConeSettings);
 	SyncRuntimeAudioComponent(audio);
 	return 0;
 }
@@ -2024,9 +2194,12 @@ int LuaComponentGetFilePath(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
-		lua_pushstring(L, audio->m_Source.GetFilePath().c_str());
+	{
+		auto* voice = AudioVoice(audio);
+		lua_pushstring(L, voice ? voice->GetFilePath().c_str() : "");
+	}
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
-		lua_pushstring(L, video->m_VideoName.c_str());
+		lua_pushstring(L, video->m_VideoAssetGuid.c_str());
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
 		lua_pushstring(L, particle->m_ParticleAssetGuid.c_str());
 	else
@@ -2081,11 +2254,11 @@ int LuaComponentGetResolvedForward(lua_State* L)
 		return 2;
 	}
 
-	VansGraphics::VansCameraControlPose pose = camera->m_Camera->CaptureControlPose();
+	Vans::VansCameraViewSnapshot view = camera->m_Camera->CaptureView();
 	bool resolved = false;
 	if (scene && scene->GetCamera() == camera->m_Camera)
-		resolved = scene->CameraControlArbiter().GetLastResolvedPose(pose);
-	const float yaw = glm::radians(pose.rotationDegrees.y);
+		resolved = scene->CameraControlArbiter().GetLastResolvedView(view);
+	const float yaw = glm::radians(view.pose.rotationDegrees.y);
 	PushVec3(L, glm::vec3(std::cos(yaw), 0.0f, std::sin(yaw)));
 	lua_pushboolean(L, resolved);
 	return 2;
@@ -2095,13 +2268,13 @@ int LuaComponentGetResolvedViewForward(lua_State* L)
 {
 	auto* camera = dynamic_cast<VansScriptCameraComponent*>(CheckComponent(L, 1)->component);
 	auto* scene = Scene();
-	VansGraphics::VansCameraControlPose pose;
+	Vans::VansCameraViewSnapshot view;
 	const bool resolved = camera && camera->m_Camera && scene && scene->GetCamera() == camera->m_Camera &&
-		scene->CameraControlArbiter().GetLastResolvedPose(pose);
+		scene->CameraControlArbiter().GetLastResolvedView(view);
 	glm::vec3 forward(0.0f);
 	if (resolved)
 	{
-		const auto angles = glm::radians(pose.rotationDegrees);
+		const auto angles = glm::radians(view.pose.rotationDegrees);
 		forward = glm::vec3(std::cos(angles.y) * std::cos(angles.x), std::sin(angles.x),
 			std::sin(angles.y) * std::cos(angles.x));
 	}
@@ -2187,7 +2360,8 @@ int LuaComponentGetRagdollDiagnostics(lua_State* L)
 	auto* handle = CheckComponent(L, 1);
 	auto* component = handle ? dynamic_cast<VansScriptRagdollComponent*>(handle->component) : nullptr;
 	if (!component) { lua_pushnil(L); return 1; }
-	const auto d = VansEngine::VansRagdollSystem::GetInstance().GetDiagnostics(component->m_AnimNode);
+	const auto d = VansEngine::VansRagdollSystem::GetInstance().GetDiagnostics(
+		component->GetRagdollKey());
 	lua_newtable(L);
 	lua_pushinteger(L,d.collidingBodyPairs); lua_setfield(L,-2,"colliding_body_pairs");
 	lua_pushnumber(L,d.maxPenetration); lua_setfield(L,-2,"max_penetration");
@@ -2214,9 +2388,7 @@ int LuaComponentGetRuntimeJointCount(lua_State* L)
 int LuaComponentHasRuntimeBody(lua_State* L)
 {
 	auto* physics = dynamic_cast<VansScriptPhysicsComponent*>(CheckComponent(L, 1)->component);
-	std::lock_guard<std::mutex> lock(VansEngine::VansPhysicsSystem::GetInstance().GetSimulationMutex());
-	lua_pushboolean(L, physics && physics->m_PhysicsNode && physics->m_PhysicsNode->GetActor()
-		&& physics->m_PhysicsNode->GetActor()->getScene());
+	lua_pushboolean(L, physics && physics->m_PhysicsNode && physics->m_PhysicsNode->IsInScene());
 	return 1;
 }
 
@@ -2258,7 +2430,6 @@ int LuaComponentApplyImpulseAtPosition(lua_State* L)
 int LuaComponentGetLinearVelocity(lua_State* L)
 {
     auto* physics = dynamic_cast<VansScriptPhysicsComponent*>(CheckComponent(L, 1)->component);
-    std::lock_guard<std::mutex> lock(VansEngine::VansPhysicsSystem::GetInstance().GetSimulationMutex());
     PushVec3(L, physics && physics->m_PhysicsNode ? physics->m_PhysicsNode->GetLinearVelocity() : glm::vec3(0));
     return 1;
 }
@@ -2609,7 +2780,12 @@ int LuaComponentGetPlayTime(lua_State* L)
 {
 	auto* handle = CheckComponent(L, 1);
 	auto* component = handle->component;
-	if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
+	if (auto* animation = dynamic_cast<VansScriptAnimationComponent*>(component))
+	{
+		lua_pushnumber(L, animation->m_AnimNode
+			? animation->m_AnimNode->GetCurrentPlayTime() : 0.0f);
+	}
+	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
 	{
 		lua_pushnumber(L, particle->GetPlayTime());
 	}
@@ -2637,7 +2813,7 @@ int LuaComponentSetAssetGuid(lua_State* L)
 	return 1;
 }
 
-VansGraphics::VansParticleEmitterRuntime* GetParticleEmitterAt(VansScriptParticleComponent* particle, lua_Integer index)
+const VansGraphics::VansParticleEmitterRuntime* GetParticleEmitterAt(VansScriptParticleComponent* particle, lua_Integer index)
 {
 	return particle && particle->GetRuntime() && index >= 0
         ? particle->GetRuntime()->GetEmitter(static_cast<std::size_t>(index)) : nullptr;
@@ -2669,11 +2845,11 @@ int LuaComponentGetAliveCount(lua_State* L)
 	if (lua_gettop(L) >= 2)
 	{
 		auto* emitter = GetParticleEmitterAt(particle, luaL_checkinteger(L, 2));
-		lua_pushinteger(L, emitter ? static_cast<lua_Integer>(emitter->m_ParticlePool.m_AliveCount) : 0);
+		lua_pushinteger(L, emitter ? static_cast<lua_Integer>(emitter->AliveCount()) : 0);
 		return 1;
 	}
 	lua_pushinteger(L, particle && particle->GetRuntime()
-		? static_cast<lua_Integer>(particle->GetRuntime()->m_AliveInstanceCount.load(std::memory_order_acquire))
+		? static_cast<lua_Integer>(particle->GetRuntime()->AliveInstanceCount())
 		: 0);
 	return 1;
 }
@@ -2704,9 +2880,9 @@ int LuaComponentGetParticleSample(lua_State* L)
 	auto* particle = dynamic_cast<VansScriptParticleComponent*>(CheckComponent(L, 1)->component);
 	const auto* emitter = GetParticleEmitterAt(particle, luaL_checkinteger(L, 2));
 	const auto index = luaL_checkinteger(L, 3);
-	if (!emitter || index < 0 || static_cast<uint64_t>(index) >= emitter->m_ParticlePool.m_AliveCount)
+	if (!emitter || index < 0 || static_cast<uint64_t>(index) >= emitter->AliveCount())
 	{ lua_pushnil(L); return 1; }
-	const auto& pool = emitter->m_ParticlePool;
+	const auto& pool = emitter->ParticlePool();
 	lua_newtable(L);
 	PushVec3(L, pool.m_Position[index]); lua_setfield(L, -2, "position");
 	PushVec3(L, pool.m_Velocity[index]); lua_setfield(L, -2, "velocity");
@@ -2731,7 +2907,7 @@ int LuaComponentIsEmitterEnabled(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	auto* particle = dynamic_cast<VansScriptParticleComponent*>(component);
 	auto* emitter = GetParticleEmitterAt(particle, luaL_checkinteger(L, 2));
-	lua_pushboolean(L, emitter && emitter->m_Enabled);
+	lua_pushboolean(L, emitter && emitter->IsEnabled());
 	return 1;
 }
 
@@ -2805,9 +2981,14 @@ int LuaParticleDiagnostics(lua_State* L)
     lua_newtable(L);
     const auto number = [&](const char* name,double value) { lua_pushnumber(L,value); lua_setfield(L,-2,name); };
     number("active_instances",snapshot.activeInstances); number("point_capacity",snapshot.pointCapacity);
-    number("rejected_instances",snapshot.rejectedInstances); number("simulation_ms",snapshot.simulationMilliseconds); number("wait_ms",snapshot.waitMilliseconds);
+    number("rejected_instances",snapshot.rejectedInstances); number("simulation_ms",snapshot.simulationMilliseconds);
+    number("resimulation_ms",snapshot.resimulationMilliseconds); number("resimulation_steps",snapshot.resimulationSteps);
+    number("pending_resimulations",snapshot.pendingResimulations);
+    number("main_thread_overlap_ms",snapshot.mainThreadOverlapMilliseconds); number("wait_ms",snapshot.waitMilliseconds);
     number("upload_bytes",snapshot.rendering.uploadBytes); number("allocated_bytes",snapshot.rendering.allocatedBytes);
-    number("draws",snapshot.rendering.drawCount); number("dropped_draws",snapshot.rendering.droppedDraws); number("render_prepare_ms",snapshot.rendering.prepareMilliseconds);
+    number("draws",snapshot.rendering.drawCount); number("dropped_draws",snapshot.rendering.droppedDraws);
+    number("rejected_ribbon_points",snapshot.rendering.rejectedRibbonPoints); number("split_ribbon_runs",snapshot.rendering.splitRibbonRuns);
+    number("render_prepare_ms",snapshot.rendering.prepareMilliseconds);
     lua_newtable(L); int effectIndex=0;
     for (const auto& effect : snapshot.effects)
     {
@@ -2886,6 +3067,49 @@ int LuaTimeSeconds(lua_State* L)
 	return 1;
 }
 
+constexpr const char* kLuaScriptSourceGuidRegistryKey =
+	"Vans.Script.CurrentSourceGuid";
+
+class LuaScriptSourceScope
+{
+public:
+	LuaScriptSourceScope(lua_State* luaState, const std::string& sourceGuid)
+		: m_LuaState(luaState)
+	{
+		lua_getfield(m_LuaState, LUA_REGISTRYINDEX,
+			kLuaScriptSourceGuidRegistryKey);
+		m_PreviousRef = luaL_ref(m_LuaState, LUA_REGISTRYINDEX);
+		lua_pushlstring(m_LuaState, sourceGuid.data(), sourceGuid.size());
+		lua_setfield(m_LuaState, LUA_REGISTRYINDEX,
+			kLuaScriptSourceGuidRegistryKey);
+	}
+
+	~LuaScriptSourceScope()
+	{
+		lua_rawgeti(m_LuaState, LUA_REGISTRYINDEX, m_PreviousRef);
+		lua_setfield(m_LuaState, LUA_REGISTRYINDEX,
+			kLuaScriptSourceGuidRegistryKey);
+		luaL_unref(m_LuaState, LUA_REGISTRYINDEX, m_PreviousRef);
+	}
+
+	LuaScriptSourceScope(const LuaScriptSourceScope&) = delete;
+	LuaScriptSourceScope& operator=(const LuaScriptSourceScope&) = delete;
+
+private:
+	lua_State* m_LuaState = nullptr;
+	int m_PreviousRef = LUA_NOREF;
+};
+
+std::string ReadCurrentLuaScriptSourceGuid(lua_State* L)
+{
+	lua_getfield(L, LUA_REGISTRYINDEX, kLuaScriptSourceGuidRegistryKey);
+	size_t length = 0;
+	const char* value = lua_tolstring(L, -1, &length);
+	std::string sourceGuid = value ? std::string(value, length) : std::string();
+	lua_pop(L, 1);
+	return sourceGuid;
+}
+
 Vans::VansEntityHandle ReadAIEventTarget(lua_State* L, int index)
 {
 	if (luaL_testudata(L, index, "Vans.Object"))
@@ -2906,20 +3130,26 @@ Vans::VansEntityHandle ReadAIEventTarget(lua_State* L, int index)
 int LuaAIRequestActivation(lua_State* L)
 {
 	const Vans::VansEntityHandle target = ReadAIEventTarget(L, 1);
-	if (target.IsValid())
+	const std::string sourceGuid = ReadCurrentLuaScriptSourceGuid(L);
+	const bool accepted = target.IsValid() && !sourceGuid.empty();
+	if (accepted)
 		Vans::VansEventBus::Get().Enqueue(
-			Vans::VansAIActivationRequested{ target }, Vans::VansEventLane::GameLogic);
-	lua_pushboolean(L, target.IsValid());
+			Vans::VansAIActivationRequested{ target, sourceGuid },
+			Vans::VansEventLane::GameLogic);
+	lua_pushboolean(L, accepted);
 	return 1;
 }
 
 int LuaAIReleaseToGameplay(lua_State* L)
 {
 	const Vans::VansEntityHandle target = ReadAIEventTarget(L, 1);
-	if (target.IsValid())
+	const std::string sourceGuid = ReadCurrentLuaScriptSourceGuid(L);
+	const bool accepted = target.IsValid() && !sourceGuid.empty();
+	if (accepted)
 		Vans::VansEventBus::Get().Enqueue(
-			Vans::VansAIGameplayReleased{ target }, Vans::VansEventLane::GameLogic);
-	lua_pushboolean(L, target.IsValid());
+			Vans::VansAIGameplayReleased{ target, sourceGuid },
+			Vans::VansEventLane::GameLogic);
+	lua_pushboolean(L, accepted);
 	return 1;
 }
 
@@ -3036,44 +3266,43 @@ Vans::MouseButton MouseButtonFromLua(lua_State* L, int index)
 	return Vans::MouseButton::Left;
 }
 
-void PushPhysicsHit(lua_State* L, const physx::PxRaycastHit& hit)
+void PushPhysicsHit(lua_State* L, const VansEngine::VansPhysicsQueryHit& hit)
 {
 	lua_createtable(L, 0, 8);
 	lua_pushboolean(L, true);
 	lua_setfield(L, -2, "hit");
 	lua_pushnumber(L, hit.distance);
 	lua_setfield(L, -2, "distance");
-	PushVec3(L, glm::vec3(hit.position.x, hit.position.y, hit.position.z));
+	PushVec3(L, hit.position);
 	lua_setfield(L, -2, "position");
-	PushVec3(L, glm::vec3(hit.normal.x, hit.normal.y, hit.normal.z));
+	PushVec3(L, hit.normal);
 	lua_setfield(L, -2, "normal");
-
-	auto* node = hit.actor ? static_cast<VansEngine::VansPhysicsNode*>(hit.actor->userData) : nullptr;
-	lua_pushstring(L, node ? node->GetName().c_str() : (hit.actor && hit.actor->getName() ? hit.actor->getName() : ""));
+	lua_pushstring(L, hit.objectName.c_str());
 	lua_setfield(L, -2, "object_name");
-	lua_pushstring(L, node ? node->GetProperties().hitRegion.c_str() : "");
+	lua_pushstring(L, hit.hitRegion.c_str());
 	lua_setfield(L, -2, "hit_region");
-	const int transformID = node ? static_cast<int>(node->GetTransformID()) : -1;
+	const int transformID = hit.transformId == (std::numeric_limits<std::uint32_t>::max)()
+		? -1 : static_cast<int>(hit.transformId);
 	lua_pushinteger(L, transformID);
 	lua_setfield(L, -2, "transform_id");
 	PushObject(L, transformID >= 0 ? FindObjectByTransformID(static_cast<std::uint32_t>(transformID)) : nullptr);
 	lua_setfield(L, -2, "object");
 }
 
-void PushOverlapHit(lua_State* L, const physx::PxOverlapHit& hit)
+void PushOverlapHit(lua_State* L, const VansEngine::VansPhysicsQueryHit& hit)
 {
 	lua_createtable(L, 0, 4);
-	auto* node = hit.actor ? static_cast<VansEngine::VansPhysicsNode*>(hit.actor->userData) : nullptr;
-	lua_pushstring(L, node ? node->GetName().c_str() : (hit.actor && hit.actor->getName() ? hit.actor->getName() : ""));
+	lua_pushstring(L, hit.objectName.c_str());
 	lua_setfield(L, -2, "object_name");
-	lua_pushstring(L, node ? node->GetProperties().hitRegion.c_str() : "");
+	lua_pushstring(L, hit.hitRegion.c_str());
 	lua_setfield(L, -2, "hit_region");
-	const int transformID = node ? static_cast<int>(node->GetTransformID()) : -1;
+	const int transformID = hit.transformId == (std::numeric_limits<std::uint32_t>::max)()
+		? -1 : static_cast<int>(hit.transformId);
 	lua_pushinteger(L, transformID);
 	lua_setfield(L, -2, "transform_id");
 	PushObject(L, transformID >= 0 ? FindObjectByTransformID(static_cast<std::uint32_t>(transformID)) : nullptr);
 	lua_setfield(L, -2, "object");
-	lua_pushboolean(L, hit.shape != nullptr);
+	lua_pushboolean(L, hit.hasShape);
 	lua_setfield(L, -2, "has_shape");
 }
 
@@ -3092,28 +3321,17 @@ int LuaPhysicsRaycast(lua_State* L)
 	}
 	direction /= length;
 
-	auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
-	auto* scene = physics.GetScene();
-	if (!scene)
+	VansEngine::VansPhysicsRaycastRequest request;
+	request.origin = origin;
+	request.direction = direction;
+	request.distance = maxDistance;
+	VansEngine::VansPhysicsQueryHit hit;
+	if (!VansEngine::VansPhysicsQuery::RaycastClosest(request, hit))
 	{
 		lua_pushnil(L);
 		return 1;
 	}
-
-	std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
-	physx::PxSceneReadLock scopedReadLock(*scene);
-	physx::PxRaycastBuffer hit;
-	const bool ok = scene->raycast(
-		physx::PxVec3(origin.x, origin.y, origin.z),
-		physx::PxVec3(direction.x, direction.y, direction.z),
-		maxDistance,
-		hit);
-	if (!ok || !hit.hasBlock)
-	{
-		lua_pushnil(L);
-		return 1;
-	}
-	PushPhysicsHit(L, hit.block);
+	PushPhysicsHit(L, hit);
 	return 1;
 }
 
@@ -3132,34 +3350,17 @@ int LuaPhysicsRaycastAll(lua_State* L)
 	}
 	direction /= length;
 
-	auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
-	auto* scene = physics.GetScene();
-	if (!scene)
+	VansEngine::VansPhysicsRaycastRequest request;
+	request.origin = origin;
+	request.direction = direction;
+	request.distance = maxDistance;
+	std::vector<VansEngine::VansPhysicsQueryHit> hits;
+	VansEngine::VansPhysicsQuery::RaycastAll(request, 64, hits);
+	lua_createtable(L, static_cast<int>(hits.size()), 0);
+	for (std::size_t index = 0; index < hits.size(); ++index)
 	{
-		lua_newtable(L);
-		return 1;
-	}
-
-	std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
-	physx::PxSceneReadLock scopedReadLock(*scene);
-	physx::PxRaycastHit hits[64];
-	physx::PxRaycastBuffer buffer(hits, 64);
-	scene->raycast(
-		physx::PxVec3(origin.x, origin.y, origin.z),
-		physx::PxVec3(direction.x, direction.y, direction.z),
-		maxDistance,
-		buffer);
-	lua_createtable(L, static_cast<int>(buffer.nbTouches) + (buffer.hasBlock ? 1 : 0), 0);
-	int outIndex = 1;
-	for (physx::PxU32 i = 0; i < buffer.nbTouches; ++i)
-	{
-		PushPhysicsHit(L, buffer.touches[i]);
-		lua_rawseti(L, -2, outIndex++);
-	}
-	if (buffer.hasBlock)
-	{
-		PushPhysicsHit(L, buffer.block);
-		lua_rawseti(L, -2, outIndex++);
+		PushPhysicsHit(L, hits[index]);
+		lua_rawseti(L, -2, static_cast<int>(index + 1));
 	}
 	return 1;
 }
@@ -3170,33 +3371,21 @@ int LuaPhysicsOverlapSphere(lua_State* L)
 	const int radiusIndex = lua_istable(L, 1) ? 2 : 4;
 	const float radius = static_cast<float>(luaL_checknumber(L, radiusIndex));
 
-	auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
-	auto* scene = physics.GetScene();
-	if (!scene || radius <= 0.0f)
+	if (radius <= 0.0f)
 	{
 		lua_newtable(L);
 		return 1;
 	}
-
-	std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
-	physx::PxSceneReadLock scopedReadLock(*scene);
-	physx::PxOverlapHit hits[64];
-	physx::PxOverlapBuffer buffer(hits, 64);
-	scene->overlap(
-		physx::PxSphereGeometry(radius),
-		physx::PxTransform(physx::PxVec3(center.x, center.y, center.z)),
-		buffer);
-	lua_createtable(L, static_cast<int>(buffer.nbTouches) + (buffer.hasBlock ? 1 : 0), 0);
-	int outIndex = 1;
-	for (physx::PxU32 i = 0; i < buffer.nbTouches; ++i)
+	VansEngine::VansPhysicsSphereOverlapRequest request;
+	request.center = center;
+	request.radius = radius;
+	std::vector<VansEngine::VansPhysicsQueryHit> hits;
+	VansEngine::VansPhysicsQuery::OverlapSphere(request, 64, hits);
+	lua_createtable(L, static_cast<int>(hits.size()), 0);
+	for (std::size_t index = 0; index < hits.size(); ++index)
 	{
-		PushOverlapHit(L, buffer.touches[i]);
-		lua_rawseti(L, -2, outIndex++);
-	}
-	if (buffer.hasBlock)
-	{
-		PushOverlapHit(L, buffer.block);
-		lua_rawseti(L, -2, outIndex++);
+		PushOverlapHit(L, hits[index]);
+		lua_rawseti(L, -2, static_cast<int>(index + 1));
 	}
 	return 1;
 }
@@ -3330,6 +3519,13 @@ void RegisterMethods(lua_State* L, const char* metatableName, const luaL_Reg* me
 	lua_setfield(L, -2, "__index");
 	luaL_setfuncs(L, methods, 0);
 	lua_pop(L, 1);
+}
+
+void RegisterSubtable(lua_State* state, const char* name, const luaL_Reg* bindings)
+{
+	lua_newtable(state);
+	luaL_setfuncs(state, bindings, 0);
+	lua_setfield(state, -2, name);
 }
 
 bool ProtectedCall(lua_State* L, int argCount, int resultCount, std::string& error)
@@ -3533,7 +3729,7 @@ VansScriptObject::~VansScriptObject()
 	}
 	m_Components.clear();
 	if (m_OwnsTransform)
-		VansGraphics::VansTransformStore::FreeTransform(m_TransformID);
+		Vans::VansTransformStore::Release(m_TransformID);
 }
 
 void VansScriptRenderComponent::OnEnable()
@@ -3564,27 +3760,39 @@ void VansScriptClothComponent::OnEnable() { if (m_ClothNode) m_ClothNode->SetEna
 void VansScriptClothComponent::OnDisable() { if (m_ClothNode) m_ClothNode->SetEnabled(false); }
 void VansScriptAnimationComponent::OnEnable() { if (m_AnimNode) m_AnimNode->SetEnabled(true); }
 void VansScriptAnimationComponent::OnDisable() { if (m_AnimNode) m_AnimNode->SetEnabled(false); }
-void VansScriptCameraComponent::OnEnable() { if (m_Camera) m_Camera->SetEnabled(true); }
-void VansScriptCameraComponent::OnDisable() { if (m_Camera) m_Camera->SetEnabled(false); }
+void VansScriptCameraComponent::OnEnable()
+{
+	if (m_Camera && m_Camera->GetTransformID() == m_TransformID)
+		m_Camera->SetEnabled(true);
+}
+void VansScriptCameraComponent::OnDisable()
+{
+	if (m_Camera && m_Camera->GetTransformID() == m_TransformID)
+		m_Camera->SetEnabled(false);
+}
 void VansScriptCameraComponent::OnDestroy()
 {
-	if (m_Camera) m_Camera->SetTransformID(UINT32_MAX);
+	if (m_Camera && m_Camera->GetTransformID() == m_TransformID)
+		m_Camera->SetTransformID(UINT32_MAX);
 }
 void VansScriptAudioComponent::OnEnable()
 {
-	m_Source.SetEnabled(true);
+	if (auto* voice = m_Source.GetVoice()) voice->SetPlaybackEnabled(true);
 	SyncRuntimeAudioComponent(this);
 }
 void VansScriptAudioComponent::OnDisable()
 {
-	m_Source.SetVelocity(0.0f, 0.0f, 0.0f);
-	m_Source.SetEnabled(false);
+	if (auto* voice = m_Source.GetVoice())
+	{
+		voice->SetVelocity(0.0f, 0.0f, 0.0f);
+		voice->SetPlaybackEnabled(false);
+	}
 	m_HasLastAudioPosition = false;
 	SyncRuntimeAudioComponent(this);
 }
 void VansScriptAudioComponent::OnDestroy()
 {
-	m_Source.Stop();
+	if (auto* voice = m_Source.GetVoice()) voice->Stop();
 	SyncRuntimeAudioComponent(this);
 }
 void VansScriptParticleComponent::OnEnable() { Control(VansParticleControl::EffectiveEnabled, 1); }
@@ -3671,10 +3879,17 @@ void VansScriptRagdollComponent::OnDisable() { if (m_AnimNode) m_AnimNode->SetEn
 void VansScriptCharacterControllerComponent::OnEnable() { if (m_ControllerNode) m_ControllerNode->SetEnabled(true); }
 void VansScriptCharacterControllerComponent::OnDisable() { if (m_ControllerNode) m_ControllerNode->SetEnabled(false); }
 
+Vans::VansRagdollKey VansScriptRagdollComponent::GetRagdollKey() const
+{
+	return m_AnimNode ? m_AnimNode->GetRagdollKey() : Vans::VansRagdollKey{};
+}
+
 void VansScriptRagdollComponent::SetDriveMode(int mode) { SetDriveModeWithVelocity(mode, 0.0f, 0.0f, 0.0f); }
 void VansScriptRagdollComponent::SetDriveModeWithVelocity(int mode, float vx, float vy, float vz)
 {
 	if (!m_AnimNode) return;
+	const Vans::VansRagdollKey key = GetRagdollKey();
+	if (!key.IsValid()) return;
 	auto driveMode = VansEngine::RagdollDriveMode::Animation;
 	if (mode == 1) driveMode = VansEngine::RagdollDriveMode::Physics;
 	else if (mode == 2) driveMode = VansEngine::RagdollDriveMode::Blend;
@@ -3682,22 +3897,31 @@ void VansScriptRagdollComponent::SetDriveModeWithVelocity(int mode, float vx, fl
 	// 纯动画模式不保留物理实例；进入物理/混合模式时才从当前骨骼姿态创建。
 	if (driveMode == VansEngine::RagdollDriveMode::Animation)
 	{
-		system.DestroyRagdoll(m_AnimNode);
+		system.DestroyRagdoll(key);
 		return;
 	}
-	if (!system.HasRagdoll(m_AnimNode) && (!m_Profile || !system.CreateRagdoll(m_AnimNode, *m_Profile))) return;
-	system.SetBlendWeight(m_AnimNode, m_BlendWeight);
-	system.SetDriveMode(m_AnimNode, driveMode, glm::vec3(vx, vy, vz));
+	Vans::VansRagdollPoseView animationPose;
+	if (!m_AnimNode->GetRagdollPoseView(animationPose)) return;
+	if (!system.HasRagdoll(key))
+	{
+		Vans::VansRagdollSkeletonBinding binding;
+		if (!m_Profile || !m_AnimNode->BuildRagdollSkeletonBinding(binding) ||
+			!system.CreateRagdoll(key, *m_Profile, binding, animationPose))
+			return;
+	}
+	system.SetBlendWeight(key, m_BlendWeight);
+	if (!system.SetDriveMode(key, driveMode, animationPose, glm::vec3(vx, vy, vz)))
+		system.DestroyRagdoll(key);
 }
 int VansScriptRagdollComponent::GetDriveMode() const
 {
 	if (!m_AnimNode) return 0;
-	return static_cast<int>(VansEngine::VansRagdollSystem::GetInstance().GetDriveMode(m_AnimNode));
+	return static_cast<int>(VansEngine::VansRagdollSystem::GetInstance().GetDriveMode(GetRagdollKey()));
 }
 void VansScriptRagdollComponent::SetBlendWeight(float weight)
 {
 	m_BlendWeight = glm::clamp(weight, 0.f, 1.f);
-	if (m_AnimNode) VansEngine::VansRagdollSystem::GetInstance().SetBlendWeight(m_AnimNode, m_BlendWeight);
+	if (m_AnimNode) VansEngine::VansRagdollSystem::GetInstance().SetBlendWeight(GetRagdollKey(), m_BlendWeight);
 }
 float VansScriptRagdollComponent::GetBlendWeight() const
 {
@@ -3705,37 +3929,37 @@ float VansScriptRagdollComponent::GetBlendWeight() const
 }
 bool VansScriptRagdollComponent::HasRuntimeRagdoll() const
 {
-	return m_AnimNode && VansEngine::VansRagdollSystem::GetInstance().HasRagdoll(m_AnimNode);
+	return m_AnimNode && VansEngine::VansRagdollSystem::GetInstance().HasRagdoll(GetRagdollKey());
 }
 int VansScriptRagdollComponent::GetRuntimeBodyCount() const
 {
-	return m_AnimNode ? VansEngine::VansRagdollSystem::GetInstance().GetBodyCount(m_AnimNode) : 0;
+	return m_AnimNode ? VansEngine::VansRagdollSystem::GetInstance().GetBodyCount(GetRagdollKey()) : 0;
 }
 int VansScriptRagdollComponent::GetRuntimeJointCount() const
 {
-	return m_AnimNode ? VansEngine::VansRagdollSystem::GetInstance().GetJointCount(m_AnimNode) : 0;
+	return m_AnimNode ? VansEngine::VansRagdollSystem::GetInstance().GetJointCount(GetRagdollKey()) : 0;
 }
 void VansScriptRagdollComponent::ApplyImpulse(const std::string& boneName, float ix, float iy, float iz)
 {
-	if (m_AnimNode) VansEngine::VansRagdollSystem::GetInstance().ApplyImpulse(m_AnimNode, boneName, glm::vec3(ix, iy, iz));
+	if (m_AnimNode) VansEngine::VansRagdollSystem::GetInstance().ApplyImpulse(GetRagdollKey(), boneName, glm::vec3(ix, iy, iz));
 }
 
 bool VansScriptRagdollComponent::AddLinearVelocity(const glm::vec3& delta)
 {
-    return m_AnimNode && VansEngine::VansRagdollSystem::GetInstance().AddLinearVelocity(m_AnimNode, delta);
+    return m_AnimNode && VansEngine::VansRagdollSystem::GetInstance().AddLinearVelocity(GetRagdollKey(), delta);
 }
 
 bool VansScriptRagdollComponent::AddVelocityAtPosition(const std::string& boneName,
 	const glm::vec3& velocityDelta, const glm::vec3& worldPosition, float maxAngularVelocityDelta)
 {
 	return m_AnimNode && VansEngine::VansRagdollSystem::GetInstance().AddVelocityAtPosition(
-		m_AnimNode, boneName, velocityDelta, worldPosition, maxAngularVelocityDelta);
+		GetRagdollKey(), boneName, velocityDelta, worldPosition, maxAngularVelocityDelta);
 }
 
 void VansScriptCharacterControllerComponent::BindFollowRagdoll(VansScriptRagdollComponent* ragdollComp, const std::string& rootBone)
 {
-	if (m_ControllerNode && ragdollComp && ragdollComp->m_AnimNode)
-		m_ControllerNode->SetFollowRagdoll(ragdollComp->m_AnimNode, rootBone);
+	if (m_ControllerNode && ragdollComp)
+		m_ControllerNode->SetFollowRagdoll(ragdollComp->GetRagdollKey(), rootBone);
 }
 void VansScriptCharacterControllerComponent::ClearFollowRagdoll() { if (m_ControllerNode) m_ControllerNode->ClearFollowRagdoll(); }
 bool VansScriptCharacterControllerComponent::IsFollowRagdollEnabled() const { return m_ControllerNode && m_ControllerNode->IsFollowRagdollEnabled(); }
@@ -3776,34 +4000,29 @@ void VansScriptRectLightComponent::RebindSceneLightIndex(
 		m_LightIndex = newIndex;
 }
 
-bool VansScriptAudioComponent::SwitchSource(const std::string& name)
+bool VansScriptAudioComponent::SwitchSource(const std::string& assetGuid)
 {
-	const bool switched = m_Source.SwitchSource(name);
+	const bool switched = m_Source.SwitchSource(assetGuid);
 	if (switched)
 	{
-		m_Source.SetVelocity(0.0f, 0.0f, 0.0f);
+		m_Source.GetVoice()->SetVelocity(0.0f, 0.0f, 0.0f);
 		m_HasLastAudioPosition = false;
 		SyncRuntimeAudioComponent(this);
 	}
 	return switched;
 }
 
-bool VansScriptVideoComponent::SwitchSource(const std::string& name)
+bool VansScriptVideoComponent::SwitchSource(const std::string& assetGuid)
 {
 	if (!m_VideoManager) return false;
-	auto* newVideo = m_VideoManager->Get(name);
+	auto* newVideo = m_VideoManager->GetByAssetGuid(assetGuid);
 	if (!newVideo) return false;
 	if (m_VideoTex && m_VideoTex->IsPlaying())
 		m_VideoTex->Pause();
 	m_VideoTex = newVideo;
-	m_VideoName = name;
+	m_VideoAssetGuid = assetGuid;
 	SyncRuntimeVideoComponent(this);
 	return true;
-}
-
-void VansScriptVideoComponent::OnDestroy()
-{
-	if (m_VideoTex) m_VideoTex->Pause();
 }
 
 void VansScriptParticleComponent::Play() { Control(VansParticleControl::Play); }
@@ -3920,6 +4139,7 @@ bool VansLuaScriptComponent::Instantiate()
 	}
 
 	std::string error;
+	LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
 	if (!ProtectedCall(L, 0, 1, error))
 	{
 		EnterFaultedState("execute", error);
@@ -4010,6 +4230,7 @@ void VansLuaScriptComponent::OnEnable()
 	if (!m_IsValid) return;
 	m_State = VansLuaScriptState::Active;
 	lua_State* L = VansScriptContext::GetInstance()->GetLuaState();
+	LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
 
 	if (!m_HasStarted && m_OnStartRef != LUA_NOREF)
 	{
@@ -4043,6 +4264,7 @@ void VansLuaScriptComponent::OnDisable()
 		return;
 	}
 	lua_State* L = VansScriptContext::GetInstance()->GetLuaState();
+	LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_OnDisableRef);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_InstanceRef);
 	std::string error;
@@ -4056,6 +4278,7 @@ void VansLuaScriptComponent::CallUpdate(float deltaTime)
 {
 	if (!m_IsValid || m_State != VansLuaScriptState::Active || m_UpdateRef == LUA_NOREF) return;
 	lua_State* L = VansScriptContext::GetInstance()->GetLuaState();
+	LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_UpdateRef);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_InstanceRef);
 	lua_pushnumber(L, deltaTime);
@@ -4068,6 +4291,11 @@ void VansLuaScriptComponent::Teardown()
 {
 	if (m_State == VansLuaScriptState::Destroyed)
 		return;
+	// Teardown is the last point at which the Lua VM is guaranteed to exist.
+	// Drive the normal effective-disable transition before releasing callback
+	// references so later scene-object destruction cannot call into a closed VM.
+	if (IsEffectivelyEnabled())
+		SetEnabled(false);
 	if (auto* context = VansScriptContext::GetInstance())
 	{
 		context->UnregisterScriptComponent(this);
@@ -4090,6 +4318,7 @@ void VansLuaScriptComponent::CallOnCollisionEnter(const VansScriptPhysicsEventIn
 {
 	if (!m_IsValid || m_State != VansLuaScriptState::Active || m_CollisionEnterRef == LUA_NOREF) return;
 	lua_State* L = VansScriptContext::GetInstance()->GetLuaState();
+	LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_CollisionEnterRef);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_InstanceRef);
 	PushPhysicsEvent(L, info);
@@ -4100,6 +4329,7 @@ void VansLuaScriptComponent::CallOnCollisionExit(const VansScriptPhysicsEventInf
 {
 	if (!m_IsValid || m_State != VansLuaScriptState::Active || m_CollisionExitRef == LUA_NOREF) return;
 	lua_State* L = VansScriptContext::GetInstance()->GetLuaState();
+	LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_CollisionExitRef);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_InstanceRef);
 	PushPhysicsEvent(L, info);
@@ -4110,6 +4340,7 @@ void VansLuaScriptComponent::CallOnTriggerEnter(const VansScriptPhysicsEventInfo
 {
 	if (!m_IsValid || m_State != VansLuaScriptState::Active || m_TriggerEnterRef == LUA_NOREF) return;
 	lua_State* L = VansScriptContext::GetInstance()->GetLuaState();
+	LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_TriggerEnterRef);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_InstanceRef);
 	PushPhysicsEvent(L, info);
@@ -4120,6 +4351,7 @@ void VansLuaScriptComponent::CallOnTriggerExit(const VansScriptPhysicsEventInfo&
 {
 	if (!m_IsValid || m_State != VansLuaScriptState::Active || m_TriggerExitRef == LUA_NOREF) return;
 	lua_State* L = VansScriptContext::GetInstance()->GetLuaState();
+	LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_TriggerExitRef);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_InstanceRef);
 	PushPhysicsEvent(L, info);
@@ -4164,8 +4396,7 @@ void VansScriptContext::VansScriptSetup()
 			HandlePhysicsContactEvent(event);
 		},
 		Vans::VansEventLane::Physics,
-		0,
-		"VansScriptContext.PhysicsContact"));
+		0));
 	RebuildScriptSchedule();
 	VANS_LOG("[LuaScript] Lua runtime initialized");
 }
@@ -4176,7 +4407,7 @@ void VansScriptContext::RefreshActiveProjectRoot()
 	if (projectManager.IsProjectLoaded() && !projectManager.GetProjectRootPath().empty())
 		m_ActiveProjectRoot = projectManager.GetProjectRootPath();
 	else if (m_ActiveProjectRoot.empty())
-		m_ActiveProjectRoot = VansConfigration::GetInstance()->GetProjectRootPath();
+		m_ActiveProjectRoot = projectManager.GetPathResolver().GetEngineRoot();
 }
 
 void VansScriptContext::SetActiveProjectRoot(const std::string& projectRoot)
@@ -4227,13 +4458,9 @@ void VansScriptContext::RegisterLuaBindings()
 
 	const luaL_Reg transformMethods[] = {
 		{ "get_position", LuaTransformGetPosition },
-		{ "getPosition", LuaTransformGetPosition },
 		{ "set_position", LuaTransformSetPosition },
-		{ "setPosition", LuaTransformSetPosition },
 		{ "get_rotation", LuaTransformGetRotation },
-		{ "getRotation", LuaTransformGetRotation },
 		{ "set_rotation", LuaTransformSetRotation },
-		{ "setRotation", LuaTransformSetRotation },
 		{ "translate", LuaTransformTranslate },
 		{ nullptr, nullptr }
 	};
@@ -4241,53 +4468,33 @@ void VansScriptContext::RegisterLuaBindings()
 
 	const luaL_Reg objectMethods[] = {
 		{ "is_valid", LuaObjectIsValid },
-		{ "isValid", LuaObjectIsValid },
 		{ "get_name", LuaObjectGetName },
 		{ "get_guid", LuaObjectGetGuid },
 		{ "get_parent", LuaObjectGetParent },
-		{ "getName", LuaObjectGetName },
 		{ "get_transform", LuaObjectGetTransform },
-		{ "getTransform", LuaObjectGetTransform },
 		{ "get_transform_id", LuaObjectGetTransformID },
-		{ "getTransformID", LuaObjectGetTransformID },
 		{ "reparent_to_socket", LuaObjectReparentToSocket },
 		{ "detach_from_parent", LuaObjectDetachFromParent },
 		{ "reparent_to_entity", LuaObjectReparentToEntity },
 		{ "bind_to_socket_profile", LuaObjectBindToSocketProfile },
 		{ "get_component_count", LuaObjectGetComponentCount },
-		{ "getComponentCount", LuaObjectGetComponentCount },
 		{ "get_component_by_index", LuaObjectGetComponentByIndex },
-		{ "getComponentByIndex", LuaObjectGetComponentByIndex },
 		{ "destroy", LuaObjectDestroy },
 		{ "get_render_comp", PushObjectComponent<VansScriptRenderComponent> },
 		{ "get_physics_comp", PushObjectComponent<VansScriptPhysicsComponent> },
-		{ "getRenderComp", PushObjectComponent<VansScriptRenderComponent> },
 		{ "get_anim_comp", PushObjectComponent<VansScriptAnimationComponent> },
-		{ "getAnimComp", PushObjectComponent<VansScriptAnimationComponent> },
 		{ "get_ragdoll_comp", PushObjectComponent<VansScriptRagdollComponent> },
-		{ "getRagdollComp", PushObjectComponent<VansScriptRagdollComponent> },
 		{ "get_cct_comp", PushObjectComponent<VansScriptCharacterControllerComponent> },
-		{ "getCCTComp", PushObjectComponent<VansScriptCharacterControllerComponent> },
 		{ "get_vehicle_comp", PushObjectComponent<VansScriptVehicleComponent> },
-		{ "getVehicleComp", PushObjectComponent<VansScriptVehicleComponent> },
 		{ "get_camera_comp", PushObjectComponent<VansScriptCameraComponent> },
-		{ "getCameraComp", PushObjectComponent<VansScriptCameraComponent> },
 		{ "get_directional_light_comp", PushObjectComponent<VansScriptDirectionalLightComponent> },
-		{ "getDirectionalLightComp", PushObjectComponent<VansScriptDirectionalLightComponent> },
 		{ "get_point_light_comp", PushObjectComponent<VansScriptPointLightComponent> },
-		{ "getPointLightComp", PushObjectComponent<VansScriptPointLightComponent> },
 		{ "get_spot_light_comp", PushObjectComponent<VansScriptSpotLightComponent> },
-		{ "getSpotLightComp", PushObjectComponent<VansScriptSpotLightComponent> },
 		{ "get_rect_light_comp", PushObjectComponent<VansScriptRectLightComponent> },
-		{ "getRectLightComp", PushObjectComponent<VansScriptRectLightComponent> },
 		{ "get_audio_comp", PushObjectComponent<VansScriptAudioComponent> },
-		{ "getAudioComp", PushObjectComponent<VansScriptAudioComponent> },
 		{ "get_video_comp", PushObjectComponent<VansScriptVideoComponent> },
-		{ "getVideoComp", PushObjectComponent<VansScriptVideoComponent> },
 		{ "get_particle_comp", PushObjectComponent<VansScriptParticleComponent> },
-		{ "getParticleComp", PushObjectComponent<VansScriptParticleComponent> },
 		{ "get_ui_comp", PushObjectComponent<VansScriptUIComponent> },
-		{ "getUIComp", PushObjectComponent<VansScriptUIComponent> },
 		{ nullptr, nullptr }
 	};
 	RegisterMethods(L, "Vans.Object", objectMethods);
@@ -4295,8 +4502,6 @@ void VansScriptContext::RegisterLuaBindings()
 	const luaL_Reg componentMethods[] = {
 		{ "is_valid", LuaComponentIsValid },
 		{ "is_bound", LuaComponentIsValid },
-		{ "isValid", LuaComponentIsValid },
-		{ "isBound", LuaComponentIsValid },
 		{ "set_enabled", LuaComponentSetEnabled },
 		{ "is_enabled", LuaComponentIsEnabled },
 		{ "get_name", LuaComponentGetName },
@@ -4347,11 +4552,8 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "queue_move", LuaComponentQueueMove },
 		{ "set_motion_intent", LuaComponentSetMotionIntent },
 		{ "set_inputs", LuaComponentVehicleSetInputs },
-		{ "setInputs", LuaComponentVehicleSetInputs },
 		{ "set_gear", LuaComponentVehicleSetGear },
-		{ "setGear", LuaComponentVehicleSetGear },
 		{ "set_automatic_gear", LuaComponentVehicleSetAutomaticGear },
-		{ "setAutomaticGear", LuaComponentVehicleSetAutomaticGear },
 		{ "get_position", LuaComponentGetPosition },
 		{ "set_position", LuaComponentSetPosition },
 		{ "sync_from_transform", LuaComponentSyncControllerFromTransform },
@@ -4363,9 +4565,17 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "set_bool", LuaComponentAnimSetBool },
 		{ "set_root_motion_enabled", LuaComponentAnimSetRootMotionEnabled },
 		{ "set_float", LuaComponentAnimSetFloat },
+		{ "get_curve_value", LuaComponentAnimGetCurveValue },
+		{ "get_state_name", LuaComponentAnimGetStateName },
+		{ "get_state_path", LuaComponentAnimGetStatePath },
+		{ "get_primary_clip", LuaComponentAnimGetPrimaryClip },
+		{ "get_playback_state", LuaComponentAnimGetPlaybackState },
+		{ "get_duration", LuaComponentAnimGetDuration },
+		{ "get_normalized_time", LuaComponentAnimGetNormalizedTime },
 		{ "restart_layer", LuaComponentAnimRestartLayer },
 		{ "play_slot", LuaComponentAnimPlaySlot },
 		{ "stop_slot", LuaComponentAnimStopSlot },
+		{ "get_slot_status", LuaComponentAnimGetSlotStatus },
 		{ "set_int", LuaComponentAnimSetInt },
 		{ "set_vector3", LuaComponentAnimSetVector3 },
 		{ "set_trigger", LuaComponentAnimSetTrigger },
@@ -4428,117 +4638,104 @@ void VansScriptContext::RegisterLuaBindings()
 	};
 	RegisterMethods(L, "Vans.Component", componentMethods);
 
-	lua_newtable(L);
-	lua_pushcfunction(L, LuaLog); lua_setfield(L, -2, "log");
-    lua_pushcfunction(L, LuaParticleDiagnostics); lua_setfield(L,-2,"particle_diagnostics");
-	lua_pushcfunction(L, LuaImpactDecalSnapshot); lua_setfield(L,-2,"impact_decals");
-	lua_pushcfunction(L, LuaFindObject); lua_setfield(L, -2, "find_object");
-	lua_pushcfunction(L, LuaFindObjectByGuid); lua_setfield(L, -2, "find_object_by_guid");
-	lua_pushcfunction(L, LuaFindEntity); lua_setfield(L, -2, "find_entity");
-	lua_pushcfunction(L, LuaTimeSeconds); lua_setfield(L, -2, "time_seconds");
+	const luaL_Reg rootBindings[] = {
+		{ "log", LuaLog },
+		{ "particle_diagnostics", LuaParticleDiagnostics },
+		{ "impact_decals", LuaImpactDecalSnapshot },
+		{ "find_object", LuaFindObject },
+		{ "find_object_by_guid", LuaFindObjectByGuid },
+		{ "find_entity", LuaFindEntity },
+		{ "time_seconds", LuaTimeSeconds },
+		{ nullptr, nullptr }
+	};
+	const luaL_Reg aiBindings[] = {
+		{ "request_activation", LuaAIRequestActivation },
+		{ "release_to_gameplay", LuaAIReleaseToGameplay },
+		{ nullptr, nullptr }
+	};
+	const luaL_Reg timelineBindings[] = {
+		{ "play", LuaTimelinePlay },
+		{ "pause", LuaTimelinePause },
+		{ "resume", LuaTimelineResume },
+		{ "stop", LuaTimelineStop },
+		{ "state", LuaTimelineState },
+		{ nullptr, nullptr }
+	};
+	const luaL_Reg audioBindings[] = {
+		{ "play_one_shot_at", LuaAudioPlayOneShotAt },
+		{ "set_bus_gain", LuaAudioSetBusGain },
+		{ "set_bus_lowpass_high_frequency_gain", LuaAudioSetBusLowpassHighFrequencyGain },
+		{ "fade_bus_gain", LuaAudioFadeBusGain },
+		{ "set_bus_muted", LuaAudioSetBusMuted },
+		{ "set_bus_soloed", LuaAudioSetBusSoloed },
+		{ "get_bus_state", LuaAudioGetBusState },
+		{ "apply_snapshot", LuaAudioApplySnapshot },
+		{ "apply_named_snapshot", LuaAudioApplyNamedSnapshot },
+		{ "apply_snapshot_asset", LuaAudioApplySnapshotAsset },
+		{ "add_ducking_rule", LuaAudioAddDuckingRule },
+		{ "clear_ducking_rules", LuaAudioClearDuckingRules },
+		{ "load_ducking_rules_asset", LuaAudioLoadDuckingRulesAsset },
+		{ nullptr, nullptr }
+	};
+	const luaL_Reg physicsQueryBindings[] = {
+		{ "raycast", LuaPhysicsRaycast },
+		{ "raycast_vec", LuaPhysicsRaycast },
+		{ "raycast_all", LuaPhysicsRaycastAll },
+		{ "overlap_sphere", LuaPhysicsOverlapSphere },
+		{ "overlap_sphere_vec", LuaPhysicsOverlapSphere },
+		{ nullptr, nullptr }
+	};
+	const luaL_Reg inputBindings[] = {
+		{ "is_key_down", LuaInputIsKeyDown },
+		{ "is_key_pressed", LuaInputIsKeyPressed },
+		{ "is_key_released", LuaInputIsKeyReleased },
+		{ "get_mouse_delta", LuaInputGetMouseDelta },
+		{ "get_mouse_position", LuaInputGetMousePosition },
+		{ "get_ui_mouse_position", LuaInputGetUIMousePosition },
+		{ "get_window_size", LuaInputGetWindowSize },
+		{ "get_ui_view_size", LuaInputGetUIViewSize },
+		{ "is_mouse_button_down", LuaInputIsMouseButtonDown },
+		{ "is_mouse_button_pressed", LuaInputIsMouseButtonPressed },
+		{ "is_mouse_button_released", LuaInputIsMouseButtonReleased },
+		{ "set_cursor_mode", LuaInputSetCursorMode },
+		{ "get_cursor_mode", LuaInputGetCursorMode },
+		{ "get_effective_cursor_mode", LuaInputGetEffectiveCursorMode },
+		{ nullptr, nullptr }
+	};
 
 	lua_newtable(L);
-	lua_pushcfunction(L, LuaAIRequestActivation); lua_setfield(L, -2, "request_activation");
-	lua_pushcfunction(L, LuaAIReleaseToGameplay); lua_setfield(L, -2, "release_to_gameplay");
-	lua_setfield(L, -2, "ai");
-
-	lua_newtable(L);
-	lua_pushcfunction(L, LuaTimelinePlay); lua_setfield(L, -2, "play");
-	lua_pushcfunction(L, LuaTimelinePause); lua_setfield(L, -2, "pause");
-	lua_pushcfunction(L, LuaTimelineResume); lua_setfield(L, -2, "resume");
-	lua_pushcfunction(L, LuaTimelineStop); lua_setfield(L, -2, "stop");
-	lua_pushcfunction(L, LuaTimelineState); lua_setfield(L, -2, "state");
-	lua_setfield(L, -2, "timeline");
-
-	lua_newtable(L);
-	lua_pushcfunction(L, LuaAudioPlayOneShotAt); lua_setfield(L, -2, "play_one_shot_at");
-	lua_pushcfunction(L, LuaAudioPlayOneShotAt); lua_setfield(L, -2, "playOneShotAt");
-	lua_pushcfunction(L, LuaAudioSetBusGain); lua_setfield(L, -2, "set_bus_gain");
-	lua_pushcfunction(L, LuaAudioSetBusGain); lua_setfield(L, -2, "setBusGain");
-	lua_pushcfunction(L, LuaAudioSetBusLowpassHighFrequencyGain); lua_setfield(L, -2, "set_bus_lowpass_high_frequency_gain");
-	lua_pushcfunction(L, LuaAudioSetBusLowpassHighFrequencyGain); lua_setfield(L, -2, "setBusLowpassHighFrequencyGain");
-	lua_pushcfunction(L, LuaAudioFadeBusGain); lua_setfield(L, -2, "fade_bus_gain");
-	lua_pushcfunction(L, LuaAudioFadeBusGain); lua_setfield(L, -2, "fadeBusGain");
-	lua_pushcfunction(L, LuaAudioSetBusMuted); lua_setfield(L, -2, "set_bus_muted");
-	lua_pushcfunction(L, LuaAudioSetBusMuted); lua_setfield(L, -2, "setBusMuted");
-	lua_pushcfunction(L, LuaAudioSetBusSoloed); lua_setfield(L, -2, "set_bus_soloed");
-	lua_pushcfunction(L, LuaAudioSetBusSoloed); lua_setfield(L, -2, "setBusSoloed");
-	lua_pushcfunction(L, LuaAudioGetBusState); lua_setfield(L, -2, "get_bus_state");
-	lua_pushcfunction(L, LuaAudioGetBusState); lua_setfield(L, -2, "getBusState");
-	lua_pushcfunction(L, LuaAudioApplySnapshot); lua_setfield(L, -2, "apply_snapshot");
-	lua_pushcfunction(L, LuaAudioApplySnapshot); lua_setfield(L, -2, "applySnapshot");
-	lua_pushcfunction(L, LuaAudioApplyNamedSnapshot); lua_setfield(L, -2, "apply_named_snapshot");
-	lua_pushcfunction(L, LuaAudioApplyNamedSnapshot); lua_setfield(L, -2, "applyNamedSnapshot");
-	lua_pushcfunction(L, LuaAudioApplySnapshotAsset); lua_setfield(L, -2, "apply_snapshot_asset");
-	lua_pushcfunction(L, LuaAudioApplySnapshotAsset); lua_setfield(L, -2, "applySnapshotAsset");
-	lua_pushcfunction(L, LuaAudioAddDuckingRule); lua_setfield(L, -2, "add_ducking_rule");
-	lua_pushcfunction(L, LuaAudioAddDuckingRule); lua_setfield(L, -2, "addDuckingRule");
-	lua_pushcfunction(L, LuaAudioClearDuckingRules); lua_setfield(L, -2, "clear_ducking_rules");
-	lua_pushcfunction(L, LuaAudioClearDuckingRules); lua_setfield(L, -2, "clearDuckingRules");
-	lua_pushcfunction(L, LuaAudioLoadDuckingRulesAsset); lua_setfield(L, -2, "load_ducking_rules_asset");
-	lua_pushcfunction(L, LuaAudioLoadDuckingRulesAsset); lua_setfield(L, -2, "loadDuckingRulesAsset");
-	lua_setfield(L, -2, "audio");
-
-	lua_newtable(L);
-	lua_pushcfunction(L, LuaPhysicsRaycast); lua_setfield(L, -2, "raycast");
-	lua_pushcfunction(L, LuaPhysicsRaycast); lua_setfield(L, -2, "raycast_vec");
-	lua_pushcfunction(L, LuaPhysicsRaycastAll); lua_setfield(L, -2, "raycast_all");
-	lua_pushcfunction(L, LuaPhysicsOverlapSphere); lua_setfield(L, -2, "overlap_sphere");
-	lua_pushcfunction(L, LuaPhysicsOverlapSphere); lua_setfield(L, -2, "overlap_sphere_vec");
-	lua_setfield(L, -2, "physics_query");
-
-	lua_newtable(L);
-	lua_pushcfunction(L, LuaInputIsKeyDown); lua_setfield(L, -2, "is_key_down");
-	lua_pushcfunction(L, LuaInputIsKeyPressed); lua_setfield(L, -2, "is_key_pressed");
-	lua_pushcfunction(L, LuaInputIsKeyReleased); lua_setfield(L, -2, "is_key_released");
-	lua_pushcfunction(L, LuaInputGetMouseDelta); lua_setfield(L, -2, "get_mouse_delta");
-	lua_pushcfunction(L, LuaInputGetMousePosition); lua_setfield(L, -2, "get_mouse_position");
-	lua_pushcfunction(L, LuaInputGetUIMousePosition); lua_setfield(L, -2, "get_ui_mouse_position");
-	lua_pushcfunction(L, LuaInputGetWindowSize); lua_setfield(L, -2, "get_window_size");
-	lua_pushcfunction(L, LuaInputGetUIViewSize); lua_setfield(L, -2, "get_ui_view_size");
-	lua_pushcfunction(L, LuaInputIsMouseButtonDown); lua_setfield(L, -2, "is_mouse_button_down");
-	lua_pushcfunction(L, LuaInputIsMouseButtonPressed); lua_setfield(L, -2, "is_mouse_button_pressed");
-	lua_pushcfunction(L, LuaInputIsMouseButtonReleased); lua_setfield(L, -2, "is_mouse_button_released");
-	lua_pushcfunction(L, LuaInputSetCursorMode); lua_setfield(L, -2, "set_cursor_mode");
-	lua_pushcfunction(L, LuaInputGetCursorMode); lua_setfield(L, -2, "get_cursor_mode");
-	lua_pushcfunction(L, LuaInputGetEffectiveCursorMode); lua_setfield(L, -2, "get_effective_cursor_mode");
-	lua_setfield(L, -2, "input");
+	luaL_setfuncs(L, rootBindings, 0);
+	RegisterSubtable(L, "ai", aiBindings);
+	RegisterSubtable(L, "timeline", timelineBindings);
+	RegisterSubtable(L, "audio", audioBindings);
+	RegisterSubtable(L, "physics_query", physicsQueryBindings);
+	RegisterSubtable(L, "input", inputBindings);
 
 	VansRuntime::VansLuaUIBridge::Register(L);
 	VansRuntime::VansLuaGameplayActionBridge::Register(L);
 	lua_setglobal(L, "vans");
 
+	const luaL_Reg scriptInstanceBindings[] = {
+		{ "get_object", LuaSelfGetObject },
+		{ "get_transform", LuaSelfGetTransform },
+		{ "get_render_comp", LuaSelfGetOwnerComponent<VansScriptRenderComponent> },
+		{ "get_anim_comp", LuaSelfGetOwnerComponent<VansScriptAnimationComponent> },
+		{ "get_ragdoll_comp", LuaSelfGetOwnerComponent<VansScriptRagdollComponent> },
+		{ "get_cct_comp", LuaSelfGetOwnerComponent<VansScriptCharacterControllerComponent> },
+		{ "get_vehicle_comp", LuaSelfGetOwnerComponent<VansScriptVehicleComponent> },
+		{ "get_camera_comp", LuaSelfGetOwnerComponent<VansScriptCameraComponent> },
+		{ "get_directional_light_comp", LuaSelfGetOwnerComponent<VansScriptDirectionalLightComponent> },
+		{ "get_point_light_comp", LuaSelfGetOwnerComponent<VansScriptPointLightComponent> },
+		{ "get_spot_light_comp", LuaSelfGetOwnerComponent<VansScriptSpotLightComponent> },
+		{ "get_rect_light_comp", LuaSelfGetOwnerComponent<VansScriptRectLightComponent> },
+		{ "get_audio_comp", LuaSelfGetOwnerComponent<VansScriptAudioComponent> },
+		{ "get_video_comp", LuaSelfGetOwnerComponent<VansScriptVideoComponent> },
+		{ "get_particle_comp", LuaSelfGetOwnerComponent<VansScriptParticleComponent> },
+		{ "get_ui_comp", LuaSelfGetOwnerComponent<VansScriptUIComponent> },
+		{ nullptr, nullptr }
+	};
 	lua_newtable(L);
-	lua_pushcfunction(L, LuaSelfGetObject); lua_setfield(L, -2, "get_object");
-	lua_pushcfunction(L, LuaSelfGetTransform); lua_setfield(L, -2, "get_transform");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptRenderComponent>); lua_setfield(L, -2, "get_render_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptRenderComponent>); lua_setfield(L, -2, "getRenderComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptAnimationComponent>); lua_setfield(L, -2, "get_anim_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptAnimationComponent>); lua_setfield(L, -2, "getAnimComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptRagdollComponent>); lua_setfield(L, -2, "get_ragdoll_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptRagdollComponent>); lua_setfield(L, -2, "getRagdollComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptCharacterControllerComponent>); lua_setfield(L, -2, "get_cct_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptCharacterControllerComponent>); lua_setfield(L, -2, "getCCTComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptVehicleComponent>); lua_setfield(L, -2, "get_vehicle_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptVehicleComponent>); lua_setfield(L, -2, "getVehicleComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptCameraComponent>); lua_setfield(L, -2, "get_camera_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptCameraComponent>); lua_setfield(L, -2, "getCameraComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptDirectionalLightComponent>); lua_setfield(L, -2, "get_directional_light_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptDirectionalLightComponent>); lua_setfield(L, -2, "getDirectionalLightComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptPointLightComponent>); lua_setfield(L, -2, "get_point_light_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptPointLightComponent>); lua_setfield(L, -2, "getPointLightComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptSpotLightComponent>); lua_setfield(L, -2, "get_spot_light_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptSpotLightComponent>); lua_setfield(L, -2, "getSpotLightComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptRectLightComponent>); lua_setfield(L, -2, "get_rect_light_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptRectLightComponent>); lua_setfield(L, -2, "getRectLightComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptAudioComponent>); lua_setfield(L, -2, "get_audio_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptAudioComponent>); lua_setfield(L, -2, "getAudioComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptVideoComponent>); lua_setfield(L, -2, "get_video_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptVideoComponent>); lua_setfield(L, -2, "getVideoComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptParticleComponent>); lua_setfield(L, -2, "get_particle_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptParticleComponent>); lua_setfield(L, -2, "getParticleComp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptUIComponent>); lua_setfield(L, -2, "get_ui_comp");
-	lua_pushcfunction(L, LuaSelfGetOwnerComponent<VansScriptUIComponent>); lua_setfield(L, -2, "getUIComp");
+	luaL_setfuncs(L, scriptInstanceBindings, 0);
 	lua_setglobal(L, "__vans_script_instance_methods");
 }
 
@@ -4547,9 +4744,9 @@ void VansScriptContext::ShutdownLua()
 	if (!m_LuaState) return;
 	AssertLuaThread();
 	m_EventConnections.DisconnectAll();
+	ClearTrackedModules();
 	VansRuntime::VansLuaUIBridge::Shutdown(m_LuaState);
 	VansRuntime::VansLuaGameplayActionBridge::Shutdown(m_LuaState);
-	ClearTrackedModules();
 	s_Instance = nullptr;
 	lua_close(m_LuaState);
 	m_LuaState = nullptr;
@@ -4595,13 +4792,13 @@ void VansScriptContext::AttachSceneWithoutRebuild(VansGraphics::VansScene* scene
 	m_Scene = scene;
 }
 
-void VansScriptContext::RegisterScriptComponent(VansScriptObject* owner, VansLuaScriptComponent* component)
+bool VansScriptContext::RegisterScriptComponent(VansScriptObject* owner, VansLuaScriptComponent* component)
 {
-	if (!owner || !component) return;
+	if (!owner || !component) return false;
 	auto existing = std::find_if(m_ScheduledScripts.begin(), m_ScheduledScripts.end(),
 		[component](const ScheduledScript& scheduled) { return scheduled.component == component; });
 	if (existing != m_ScheduledScripts.end())
-		return;
+		return true;
 	const bool cameraScript = owner->GetComponent<VansScriptCameraComponent>() != nullptr;
 	ScheduledScript scheduled;
 	scheduled.owner = owner;
@@ -4639,6 +4836,7 @@ void VansScriptContext::RegisterScriptComponent(VansScriptObject* owner, VansLua
 		}
 	}
 	m_EventSubscribers[owner->m_TransformID].push_back(std::move(subscriber));
+	return true;
 }
 
 void VansScriptContext::UnregisterScriptComponent(VansLuaScriptComponent* component)
@@ -4759,7 +4957,6 @@ void VansScriptContext::VansScriptPreUpdate()
 {
 	if (!m_Scene) return;
 	m_Scene->FlushPendingEntityDestructions();
-	Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Physics);
 }
 
 void VansScriptContext::UpdateScriptComponents(bool cameraScriptsOnly, bool skipCameraScripts)

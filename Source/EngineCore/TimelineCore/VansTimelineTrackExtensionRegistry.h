@@ -19,8 +19,8 @@ public:
 	VansTimelineRegistrySlot SlotOf(VansTimelineTrackTypeId typeId) const;
 	const VansTimelineTrackExtensionDescriptor* At(VansTimelineRegistrySlot slot) const;
 	const std::vector<VansTimelineTrackExtensionDescriptor>& All() const { return m_Descriptors; }
+	std::vector<VansTimelineOutputTypeId> DeclaredOutputTypes(bool applierRequiredOnly = false) const;
 	std::uint64_t ManifestHash() const;
-	static VansTimelineTrackExtensionRegistry& BuiltIns();
 
 private:
 	bool m_Sealed = false;

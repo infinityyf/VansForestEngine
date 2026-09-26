@@ -2,6 +2,7 @@
 
 #include "../Serialization/VansPostProcessProfileJsonCodec.h"
 #include "../../AssetCore/Storage/VansJsonFileStorage.h"
+#include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 
 #include <nlohmann/json.hpp>
 
@@ -12,10 +13,11 @@ bool VansPostProcessProfileStorage::Load(
 	VansPostProcessProfile& profile,
 	std::string& error)
 {
-	PostProcessProfileJson root;
+	nlohmann::ordered_json root;
 	if (!Vans::VansJsonFileStorage::Read(filePath, root, error))
 		return false;
-	return VansPostProcessProfileJsonCodec::Decode(root, filePath, profile, error);
+	return VansPostProcessProfileJsonCodec::Decode(
+		Vans::DecodeSerializedValueJson(root), filePath, profile, error);
 }
 
 bool VansPostProcessProfileStorage::SaveAtomic(
@@ -25,7 +27,8 @@ bool VansPostProcessProfileStorage::SaveAtomic(
 {
 	return Vans::VansJsonFileStorage::WriteAtomic(
 		filePath,
-		VansPostProcessProfileJsonCodec::Encode(profile),
+		Vans::EncodeSerializedValueJson<nlohmann::ordered_json>(
+			VansPostProcessProfileJsonCodec::Encode(profile)),
 		error);
 }
 }

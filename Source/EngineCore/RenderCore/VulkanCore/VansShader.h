@@ -12,7 +12,9 @@
 #include "VansVKBuffer.h"
 #include "../VansAsset.h"
 #include <memory>
+#include <filesystem>
 #include <string>
+#include <utility>
 #include <map>
 #include <unordered_map>
 #include <mutex>
@@ -81,6 +83,11 @@ namespace VansGraphics
 		void* GetPushConstantData() { return m_PushConstantData; }
 
 		std::string GetShaderFolder() { return m_ShaderFolder; }
+		void SetArtifactRoot(std::filesystem::path artifactRoot)
+		{
+			m_ArtifactRoot = std::move(artifactRoot);
+		}
+		const std::filesystem::path& GetArtifactRoot() const { return m_ArtifactRoot; }
 
 		void SetPipelineProgramDesc(const VansPipelineProgramDesc& desc)
 		{
@@ -101,6 +108,7 @@ namespace VansGraphics
 		}
 	private:
 		std::string m_ShaderFolder;
+		std::filesystem::path m_ArtifactRoot;
 		std::map<VkShaderStageFlagBits, std::string> m_ExplicitStageFiles;
 		ShaderType m_ShaderType = ShaderType::Normal;
 

@@ -4,7 +4,7 @@
 
 namespace Vans::EditorAPI
 {
-class IEngineEditorAPI;
+class IAssetAuthoringEditorAPI;
 }
 
 namespace Vans
@@ -14,6 +14,6 @@ void MergeMaterialAuthoringParameterSchema(
     const VansSerializedValue& shaderParameters);
 
 void MergeMaterialAuthoringSchema(
-    EditorAPI::IEngineEditorAPI& api,
+    EditorAPI::IAssetAuthoringEditorAPI& api,
     VansSerializedValue& materialRoot);
 }

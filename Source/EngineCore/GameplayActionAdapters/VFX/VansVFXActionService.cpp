@@ -1,12 +1,11 @@
 #include "VansVFXActionService.h"
 #include "VansVFXActionCapability.h"
-#include "../../GameplayActionCore/VansGameplayRuntime.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 
 namespace Vans
 {
-VansVFXActionService::VansVFXActionService(VansGameplayRuntime& gameplay,VansVFXSceneBackend backend)
-    : m_Gameplay(gameplay),m_Backend(std::move(backend)) {}
+VansVFXActionService::VansVFXActionService(IVansGameplayServiceRuntime& runtime,VansVFXSceneBackend backend)
+    : m_Runtime(runtime),m_Backend(std::move(backend)) {}
 const VansActionServiceCapability& VansVFXActionService::Capability() const { return VansVFXActionCapability(); }
 VansActionCommandResult VansVFXActionService::Execute(const VansActionCommand& command)
 {
@@ -68,7 +67,7 @@ void VansVFXActionService::Tick(double)
             effect.instance = {};
         }
         // 尚未转交 World 的完成令牌仍由原账本释放，不能绕过账本提前复用。
-        if (!effect.instance.IsValid() && m_Gameplay.ForgetCompletedWorldResource(Capability().service,handle))
+        if (!effect.instance.IsValid() && m_Runtime.ForgetCompletedWorldResource(Capability().service,handle))
             completed.push_back(handle);
     });
     for (auto handle : completed) m_Effects.Release(handle);

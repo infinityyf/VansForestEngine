@@ -1,8 +1,9 @@
 #pragma once
 
-#include "VansAssetDocumentRegistry.h"
+#include "../AuthoringCore/VansAssetDocumentRegistry.h"
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -26,6 +27,12 @@ struct VansAssetSaveResult
     explicit operator bool() const { return ok; }
 };
 
+struct VansEditorAssetSaveOperations
+{
+    std::function<bool(const std::string& plantGuid, std::string& error)> buildPcgPlantLods;
+    std::function<bool(const std::filesystem::path& sourcePath, std::string& error)> refreshProjectAsset;
+};
+
 class VansEditorAssetSaveService
 {
 public:
@@ -35,8 +42,12 @@ public:
     VansAssetSaveResult SaveAsset(EditorAPI::IEngineEditorAPI& editorAPI, const std::shared_ptr<VansOpenAssetDocument>& document);
     VansAssetSaveResult SaveAllDirtyAssets(EditorAPI::IEngineEditorAPI& editorAPI);
     VansAssetSaveResult SaveSceneAndOwnedAssets(EditorAPI::IEngineEditorAPI& editorAPI, VansSceneDocument* scene);
+    VansAssetSaveResult SaveSceneAndAssets(EditorAPI::IEngineEditorAPI& editorAPI, VansSceneDocument& scene,
+        const std::vector<std::shared_ptr<VansOpenAssetDocument>>& documents);
+    VansAssetSaveResult SaveSceneAndAssets(const VansEditorAssetSaveOperations& operations, VansSceneDocument& scene,
+        const std::vector<std::shared_ptr<VansOpenAssetDocument>>& documents);
 private:
-    VansAssetSaveResult SaveDocuments(EditorAPI::IEngineEditorAPI& editorAPI,
+    VansAssetSaveResult SaveDocuments(const VansEditorAssetSaveOperations& operations,
         const std::vector<std::shared_ptr<VansOpenAssetDocument>>& documents, VansSceneDocument* scene);
 };
 }

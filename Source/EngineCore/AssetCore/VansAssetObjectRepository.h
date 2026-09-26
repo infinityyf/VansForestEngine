@@ -115,6 +115,8 @@ public:
 	std::shared_ptr<const VansAssetObjectRepository> CreateSnapshot() const;
 	bool FindInfo(VansAssetGuid guid, VansAssetObjectSnapshotInfo& outInfo) const;
 	bool Remove(VansAssetGuid guid);
+	// 原子接管 staged 仓库，并推进现有 GUID 的 generation，保证旧 handle 失效。
+	bool ReplaceWith(VansAssetObjectRepository& stagedRepository, std::string& error);
 	void Clear();
 	std::size_t Size() const;
 

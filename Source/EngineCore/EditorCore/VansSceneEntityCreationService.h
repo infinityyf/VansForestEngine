@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../EngineAPILayer/Public/IRuntimeSceneEditorAPI.h"
 #include "../SceneCore/VansSceneLocalVolumetricFogComponentConfig.h"
 #include "../SceneCore/VansSceneParentReference.h"
 
@@ -44,13 +44,13 @@ public:
     };
 
     static Result CreateEmptyObject(
-        Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+        Vans::EditorAPI::IRuntimeSceneEditorAPI& editorAPI,
         const Vans::VansSceneDocument& document,
         Vans::VansSceneEditService& editService,
         const EmptyObjectRequest& request);
 
     static Result CreateLocalVolumetricFog(
-        Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+        Vans::EditorAPI::IRuntimeSceneEditorAPI& editorAPI,
         const Vans::VansSceneDocument& document,
         Vans::VansSceneEditService& editService,
         const LocalVolumetricFogRequest& request);

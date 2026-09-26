@@ -8,11 +8,12 @@
 #include <condition_variable>
 #include <thread>
 #include <atomic>
+#include <memory>
 
-// FFmpeg 前向声明，避免将 C 头文件暴露到整个引擎
-struct AVFormatContext;
-struct AVCodecContext;
-struct SwsContext;
+namespace VansEngine
+{
+    class VansMediaDecodeSession;
+}
 
 namespace VansGraphics
 {
@@ -25,25 +26,24 @@ namespace VansGraphics
     };
 
     // ===========================================================================
-    // VansVideoTexture — CPU 解码（FFmpeg）+ Vulkan 逐帧上传
+    // VansVideoTexture — 媒体帧消费 + Vulkan 逐帧上传
     //
     // 使用方式：
     //   1. Open()        — 打开文件，解码首帧初始化 GPU 纹理，启动后台解码线程
     //   2. Tick(dt)      — 每帧调用：推进播放时间，挑选本帧应显示的新帧
     //   3. RecordPendingUpload(cmd) — 在渲染命令录制阶段将新帧上传到 GPU
     //   4. GetTexture()  — 获取底层 VansTexture*（可用于绑定到 PBR 材质）
-    //   5. Close()       — 停止后台线程，释放所有 FFmpeg 资源
+    //   5. Close()       — 停止后台线程，释放媒体会话和 GPU 资源
     //
     // 线程模型：
-    //   - 后台解码线程负责 av_read_frame → avcodec_receive_frame → sws_scale，
-    //     结果写入 m_FrameQueue（mutex 保护）。
+    //   - 后台解码线程从 MediaCore 取得 RGBA 帧，写入 m_FrameQueue（mutex 保护）。
     //   - 主线程 Tick() 从 m_FrameQueue 取帧并缓存像素，GPU 上传延迟到
     //     RecordPendingUpload()，合并进当前帧图形命令缓冲，避免同步 submit/wait。
     // ===========================================================================
     class VansVideoTexture
     {
     public:
-        VansVideoTexture()  = default;
+        VansVideoTexture();
         ~VansVideoTexture();
 
         // ── 打开 / 关闭 ──────────────────────────────────────────────────────
@@ -128,14 +128,9 @@ namespace VansGraphics
         void ConsumeNewFrame()   { m_HasNewFrame = false; }
 
     private:
-        // ── FFmpeg 解码上下文 ──────────────────────────────────────────────
-        AVFormatContext* m_FmtCtx      = nullptr;
-        AVCodecContext*  m_CodecCtx    = nullptr;
-        SwsContext*      m_SwsCtx      = nullptr;
-        int              m_VideoStream = -1;
-        double           m_TimeBase    = 0.0;    // av_q2d(stream->time_base)
+        // ── MediaCore 解码会话 ─────────────────────────────────────────────
+        std::unique_ptr<VansEngine::VansMediaDecodeSession> m_DecodeSession;
         double           m_VideoDuration = 0.0;  // 视频总时长（秒），用于循环 PTS 偏移
-        std::string      m_FilePath;
 
         // ── 视频属性 ────────────────────────────────────────────────────────
         int  m_Width  = 0;

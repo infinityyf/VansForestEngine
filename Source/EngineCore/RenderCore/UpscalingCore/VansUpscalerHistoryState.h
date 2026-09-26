@@ -22,13 +22,13 @@ namespace VansGraphics
 			return m_PendingReasons != VansUpscalerResetReason::None;
 		}
 		VansUpscalerResetReason GetPendingReasons() const { return m_PendingReasons; }
-		VansUpscalerResetReason GetLastConsumedReasons() const { return m_LastConsumedReasons; }
+		VansUpscalerResetReason GetLastConsumedResetReasons() const { return m_LastConsumedResetReasons; }
 		void OnTemporalDispatchSucceeded();
 		void ClearForOffBackend();
 
 	private:
 		VansUpscalerResetReason m_PendingReasons = VansUpscalerResetReason::FirstFrame;
-		VansUpscalerResetReason m_LastConsumedReasons = VansUpscalerResetReason::None;
+		VansUpscalerResetReason m_LastConsumedResetReasons = VansUpscalerResetReason::None;
 		std::uint64_t m_LastObservedFrameIndex = 0;
 		std::uint64_t m_LastCameraIdentity = 0;
 		VansExtent2D m_LastRenderExtent;

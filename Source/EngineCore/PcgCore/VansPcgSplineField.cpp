@@ -1,5 +1,7 @@
 #include "VansPcgSplineField.h"
 #include "Serialization/VansPcgSplineAssetCodec.h"
+#include "../TerrainCore/VansTerrainHeightEncoding.h"
+#include "../Util/VansFileFingerprint.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -77,11 +79,6 @@ struct Contribution
     float endDistance = 0;
 };
 glm::vec2 XZ(glm::vec3 v) { return {v.x,v.z}; }
-void Hash(std::uint64_t& h, std::uint64_t value)
-{
-    for (unsigned i=0;i<8;++i) {h^=(value>>(i*8))&255;h*=1099511628211ull;}
-}
-
 Contribution EvaluateAt(const Curve& curve, const Candidate& candidate, glm::vec2 world)
 {
     Contribution result;
@@ -248,7 +245,8 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
     std::vector<Curve> curves;
     for (const auto& spline:asset.splines) if (spline.enabled && spline.points.size()>=2)
     {
-        if (spline.kind==VansPcgSplineKind::River && spline.shoulder<4*output->texelSize)
+        if (spline.kind==VansPcgSplineKind::River &&
+            spline.shoulder<MinimumPcgRiverTransitionWidth(output->texelSize))
         {error=spline.name+": bank transition must span at least four field texels to bury the water mask edge.";return {};}
         Curve curve;curve.source=&spline;
         if (!VansPcgSplineEvaluator::Evaluate(spline,asset.sampleSpacing,asset.curveTolerance,curve.evaluated,error))
@@ -324,12 +322,13 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
     for (const auto& [key,candidates]:index)
     {
         const auto tx=static_cast<std::uint32_t>(key),tz=static_cast<std::uint32_t>(key>>32);
-        std::uint64_t fingerprint=14695981039346656037ull;
+        std::uint64_t fingerprint=VANS_FNV1A64_OFFSET_BASIS;
         std::uint64_t terrainShapeFingerprint=fingerprint;
         for (const auto& c:candidates)
         {
-            Hash(fingerprint,curves[c.curve].hash);
-            Hash(terrainShapeFingerprint,curves[c.curve].terrainShapeHash);
+            fingerprint=ContinueUint64LittleEndianFnv1a64(fingerprint,curves[c.curve].hash);
+            terrainShapeFingerprint=ContinueUint64LittleEndianFnv1a64(
+                terrainShapeFingerprint,curves[c.curve].terrainShapeHash);
         }
         const auto old=previous?previous->FindTile(tx,tz):nullptr;
         const bool reuse=old && old->fingerprint==fingerprint;
@@ -388,10 +387,12 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
                         VansPcgSplineEvaluator::SmoothWeight((buriedWidth-c.endDistance)/surfaceBlend);
                     if (weight<=0) continue;
                     // 独立水面场：边界向河内过渡，首尾可延长；汇流区取并集，避免支流端点在主河上挖洞。
-                    const float transitionWidth=std::max(curve.source->waterBlendWidthMeters,4*output->texelSize);
+                    const float transitionWidth=std::max(curve.source->waterBlendWidthMeters,
+                        MinimumPcgRiverTransitionWidth(output->texelSize));
                     const float sideBlend=VansPcgSplineEvaluator::SmoothWeight((c.edgeDistance+buriedWidth)/transitionWidth);
                     const float endBlend=VansPcgSplineEvaluator::SmoothWeight((buriedWidth-c.endDistance)/std::min(transitionWidth,buriedWidth));
-                    const float endpointBlend=VansPcgSplineEvaluator::WaterEndpointWeight(*curve.source,c.sample.distance,curve.evaluated.length,4*output->texelSize);
+                    const float endpointBlend=VansPcgSplineEvaluator::WaterEndpointWeight(*curve.source,
+                        c.sample.distance,curve.evaluated.length,MinimumPcgRiverTransitionWidth(output->texelSize));
                     // 在整个场的外边缘也收敛到全局水面，不能在地图裁切处留下硬边。
                     const float fieldEdge=size*.5f-std::max(std::abs(world.x),std::abs(world.y));
                     const float fieldBlend=VansPcgSplineEvaluator::SmoothWeight((fieldEdge-output->texelSize)/transitionWidth);
@@ -432,11 +433,12 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
             if (old && old->terrainShapeFingerprint==terrainShapeFingerprint && previous->terrainFingerprint==output->terrainFingerprint)
             {effective->heights[pixel]=previous->effectiveTerrain->heights[pixel];continue;}
             const glm::vec2 world((float(x)+.5f)/terrain->width*size-size*.5f,(float(z)+.5f)/terrain->height*size-size*.5f);
-            float h=terrain->heights[pixel]*(terrain->settings.maxHeight/65535.0f)+terrain->settings.heightOffset;
+            float h=VansTerrainHeightEncoding::DecodeWorld(
+                terrain->heights[pixel], terrain->settings.maxHeight, terrain->settings.heightOffset);
             for (const auto& candidate:candidates) h=DeformHeight(h,curves[candidate.curve],EvaluateAt(curves[candidate.curve],candidate,world));
             const float normalized=(h-terrain->settings.heightOffset)/terrain->settings.maxHeight;
             if (normalized<0 || normalized>1) {error="Spline deformation lies outside terrain's encodable height range.";return {};}
-            effective->heights[pixel]=static_cast<std::uint16_t>(std::lround(normalized*65535));
+            effective->heights[pixel]=VansTerrainHeightEncoding::EncodeNormalized(normalized);
         }
     }
     if (previous) for (const auto& [key,tile]:previous->tiles)
@@ -451,7 +453,8 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
             height+=(x?fraction.x:1-fraction.x)*(z?fraction.y:1-fraction.y)*
                 effective->heights[std::size_t(at.y)*effective->width+at.x];
         }
-        return height*(effective->settings.maxHeight/65535.f)+effective->settings.heightOffset;
+        return height * (effective->settings.maxHeight /
+            VansTerrainHeightEncoding::kMaximumSampleFloat) + effective->settings.heightOffset;
     };
     for (const auto& [key,tile]:output->tiles) if (tile->hasRiver)
     {

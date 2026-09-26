@@ -44,8 +44,6 @@ namespace VansGraphics
 			VansUpscalerFallbackReason reason,
 			std::string message);
 
-		void ClearFallback();
-
 		const VansUpscalerConfig& GetDesiredConfig() const { return m_Desired; }
 		const VansUpscalerConfig& GetEffectiveConfig() const { return m_Effective; }
 		VansUpscalerFallbackReason GetFallbackReason() const { return m_FallbackReason; }
@@ -54,8 +52,10 @@ namespace VansGraphics
 		const VansUpscalerHistoryState& GetHistory() const { return m_History; }
 
 	private:
-		static bool ValidateConfig(const VansUpscalerConfig& config, std::string& error);
 		static bool IsCapabilityUsable(
+			const VansUpscalerCapabilities& capabilities,
+			VansUpscaleQualityMode quality);
+		static VansUpscalerFallbackReason ClassifyCapabilityFailure(
 			const VansUpscalerCapabilities& capabilities,
 			VansUpscaleQualityMode quality);
 

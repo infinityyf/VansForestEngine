@@ -1,7 +1,10 @@
+#include "../../SceneRuntime/Transform/VansTransformStore.h"
 #include "VansSceneVehicleComponentBuilder.h"
 
 #include "../../PhysicsCore/VansCollisionLayerManager.h"
 #include "../../PhysicsCore/VansPhysics.h"
+#include "../../PhysicsCore/VansPhysicsVehicle.h"
+
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../Util/VansLog.h"
 #include "../VulkanCore/VansMesh.h"
@@ -10,6 +13,10 @@
 #include <array>
 #include <cfloat>
 #include <optional>
+
+using namespace physx;
+using namespace physx::vehicle2;
+
 
 namespace VansGraphics
 {
@@ -73,54 +80,35 @@ std::string NormalizeToken(std::string token)
 	return token;
 }
 
-PxVehicleAxes::Enum ParseVehicleAxis(const Vans::VansSceneVehicleTokenConfig& value, PxVehicleAxes::Enum fallback)
+bool ParseVehicleAxis(
+	const Vans::VansSceneVehicleTokenConfig& value,
+	PxVehicleAxes::Enum& axis)
 {
 	if (value.index)
 	{
-		const int axis = *value.index;
-		if (axis >= 0 && axis < static_cast<int>(PxVehicleAxes::eMAX_NB_AXES))
-			return static_cast<PxVehicleAxes::Enum>(axis);
-		return fallback;
+		const int index = *value.index;
+		if (index < 0 || index >= static_cast<int>(PxVehicleAxes::eMAX_NB_AXES))
+			return false;
+		axis = static_cast<PxVehicleAxes::Enum>(index);
+		return true;
 	}
 	if (!value.name)
-		return fallback;
+		return false;
 
-	std::string axis = NormalizeToken(*value.name);
-	if (axis == "posx" || axis == "+x" || axis == "x") return PxVehicleAxes::ePosX;
-	if (axis == "negx" || axis == "-x") return PxVehicleAxes::eNegX;
-	if (axis == "posy" || axis == "+y" || axis == "y") return PxVehicleAxes::ePosY;
-	if (axis == "negy" || axis == "-y") return PxVehicleAxes::eNegY;
-	if (axis == "posz" || axis == "+z" || axis == "z") return PxVehicleAxes::ePosZ;
-	if (axis == "negz" || axis == "-z") return PxVehicleAxes::eNegZ;
-	return fallback;
+	const std::string token = NormalizeToken(*value.name);
+	if (token == "posx") axis = PxVehicleAxes::ePosX;
+	else if (token == "negx") axis = PxVehicleAxes::eNegX;
+	else if (token == "posy") axis = PxVehicleAxes::ePosY;
+	else if (token == "negy") axis = PxVehicleAxes::eNegY;
+	else if (token == "posz") axis = PxVehicleAxes::ePosZ;
+	else if (token == "negz") axis = PxVehicleAxes::eNegZ;
+	else return false;
+	return true;
 }
 
-PxVec3 VehicleAxisToVec3(PxVehicleAxes::Enum axis)
+float VehicleAxisCoordinate(const PxVec3& value, const PxVec3& axis)
 {
-	switch (axis)
-	{
-	case PxVehicleAxes::ePosX: return PxVec3(1.0f, 0.0f, 0.0f);
-	case PxVehicleAxes::eNegX: return PxVec3(-1.0f, 0.0f, 0.0f);
-	case PxVehicleAxes::ePosY: return PxVec3(0.0f, 1.0f, 0.0f);
-	case PxVehicleAxes::eNegY: return PxVec3(0.0f, -1.0f, 0.0f);
-	case PxVehicleAxes::ePosZ: return PxVec3(0.0f, 0.0f, 1.0f);
-	case PxVehicleAxes::eNegZ: return PxVec3(0.0f, 0.0f, -1.0f);
-	default: return PxVec3(0.0f, 1.0f, 0.0f);
-	}
-}
-
-float VehicleAxisCoordinate(const PxVec3& value, PxVehicleAxes::Enum axis)
-{
-	switch (axis)
-	{
-	case PxVehicleAxes::ePosX: return value.x;
-	case PxVehicleAxes::eNegX: return -value.x;
-	case PxVehicleAxes::ePosY: return value.y;
-	case PxVehicleAxes::eNegY: return -value.y;
-	case PxVehicleAxes::ePosZ: return value.z;
-	case PxVehicleAxes::eNegZ: return -value.z;
-	default: return value.y;
-	}
+	return value.dot(axis);
 }
 
 bool AccumulateMeshBounds(VansMesh* mesh, PxVec3& outMin, PxVec3& outMax)
@@ -199,27 +187,16 @@ bool CalculateBoundsFromRenderNodes(const std::vector<VansRenderNode*>& renderNo
 	return any;
 }
 
-float VehicleAxisExtent(const PxVec3& boundsMin, const PxVec3& boundsMax, PxVehicleAxes::Enum axis)
+float VehicleAxisExtent(const PxVec3& boundsMin, const PxVec3& boundsMax, const PxVec3& axis)
 {
-	switch (axis)
-	{
-	case PxVehicleAxes::ePosX:
-	case PxVehicleAxes::eNegX:
-		return boundsMax.x - boundsMin.x;
-	case PxVehicleAxes::ePosY:
-	case PxVehicleAxes::eNegY:
-		return boundsMax.y - boundsMin.y;
-	case PxVehicleAxes::ePosZ:
-	case PxVehicleAxes::eNegZ:
-		return boundsMax.z - boundsMin.z;
-	default:
-		return 0.0f;
-	}
+	return (boundsMax - boundsMin).dot(PxVec3(std::abs(axis.x), std::abs(axis.y), std::abs(axis.z)));
 }
 
-VansEngine::VansVehicleTuning ParseVehicleTuning(const Vans::VansSceneVehicleComponentConfig& vehicleConfig)
+bool ParseVehicleTuning(
+	const Vans::VansSceneVehicleComponentConfig& vehicleConfig,
+	VansEngine::VansVehicleTuning& tuning,
+	std::string& error)
 {
-	VansEngine::VansVehicleTuning tuning;
 	const Vans::VansSceneVehicleTuningConfig& t = vehicleConfig.tuning;
 
 	if (t.bodyMass) tuning.bodyMass = *t.bodyMass;
@@ -231,34 +208,43 @@ VansEngine::VansVehicleTuning ParseVehicleTuning(const Vans::VansSceneVehicleCom
 	ApplyPxVec3(t.bodyGeometryPadding, tuning.bodyGeometryPadding);
 	ApplyPxVec3(t.bodyGeometryHalfExtentsScale, tuning.bodyGeometryHalfExtentsScale);
 	ApplyPxVec3(t.bodyGeometryCenterOffset, tuning.bodyGeometryCenterOffset);
-	if (t.longitudinalAxis) tuning.longitudinalAxis = ParseVehicleAxis(*t.longitudinalAxis, tuning.longitudinalAxis);
-	if (t.forwardAxis) tuning.longitudinalAxis = ParseVehicleAxis(*t.forwardAxis, tuning.longitudinalAxis);
-	if (t.lateralAxis) tuning.lateralAxis = ParseVehicleAxis(*t.lateralAxis, tuning.lateralAxis);
-	if (t.verticalAxis) tuning.verticalAxis = ParseVehicleAxis(*t.verticalAxis, tuning.verticalAxis);
+	if (t.longitudinalAxis && !ParseVehicleAxis(*t.longitudinalAxis, tuning.longitudinalAxis))
+	{
+		error = "Vehicle tuning has an invalid longitudinalAxis";
+		return false;
+	}
+	if (t.lateralAxis && !ParseVehicleAxis(*t.lateralAxis, tuning.lateralAxis))
+	{
+		error = "Vehicle tuning has an invalid lateralAxis";
+		return false;
+	}
+	if (t.verticalAxis && !ParseVehicleAxis(*t.verticalAxis, tuning.verticalAxis))
+	{
+		error = "Vehicle tuning has an invalid verticalAxis";
+		return false;
+	}
 
 	if (t.wheelRadius) tuning.wheelRadius = *t.wheelRadius;
 	if (t.wheelHalfWidth) tuning.wheelHalfWidth = *t.wheelHalfWidth;
-	tuning.wheelRadius = std::clamp(tuning.wheelRadius, 0.01f, 2.0f);
-	tuning.wheelHalfWidth = std::clamp(tuning.wheelHalfWidth, 0.01f, 2.0f);
 	if (t.wheelMass) tuning.wheelMass = *t.wheelMass;
 	if (t.wheelMoi) tuning.wheelMoi = *t.wheelMoi;
 	if (t.wheelDampingRate) tuning.wheelDampingRate = *t.wheelDampingRate;
 	if (t.visualWheelRollSign) tuning.visualWheelRollSign = *t.visualWheelRollSign;
 	if (t.wheelVisualGroundClearance) tuning.wheelVisualGroundClearance = *t.wheelVisualGroundClearance;
-	if (t.enableWheelSimulationCollision) tuning.enableWheelSimulationCollision = *t.enableWheelSimulationCollision;
 	if (t.collisionLayer) tuning.collisionLayerName = *t.collisionLayer;
-	if (t.layer) tuning.collisionLayerName = *t.layer;
 	if (t.useRoadQueryLayerFilter) tuning.useRoadQueryLayerFilter = *t.useRoadQueryLayerFilter;
-	if (t.roadQueryLayerFilter) tuning.useRoadQueryLayerFilter = *t.roadQueryLayerFilter;
 	if (t.physxActorUpdateMode)
 	{
-		std::string mode = NormalizeToken(*t.physxActorUpdateMode);
-		if (mode == "acceleration" || mode == "applyacceleration")
+		const std::string mode = NormalizeToken(*t.physxActorUpdateMode);
+		if (mode == "acceleration")
 			tuning.physxActorUpdateMode = PxVehiclePhysXActorUpdateMode::eAPPLY_ACCELERATION;
-		else if (mode == "velocity" || mode == "applyvelocity")
+		else if (mode == "velocity")
 			tuning.physxActorUpdateMode = PxVehiclePhysXActorUpdateMode::eAPPLY_VELOCITY;
 		else
-			VANS_LOG_WARN("[VehicleTuning] Unknown physxActorUpdateMode '" << mode << "'; using default velocity mode.");
+		{
+			error = "Vehicle tuning physxActorUpdateMode must be 'velocity' or 'acceleration'";
+			return false;
+		}
 	}
 	if (t.roadQueryMask)
 	{
@@ -271,31 +257,33 @@ VansEngine::VansVehicleTuning ParseVehicleTuning(const Vans::VansSceneVehicleCom
 		auto& layerMgr = VansEngine::VansCollisionLayerManager::Get();
 		for (const std::string& layerName : t.roadQueryLayers)
 		{
-			const int layerIndex = layerMgr.GetLayerIndex(layerName);
-			if (layerIndex >= 0 && layerIndex < 32)
-				roadMask |= (1u << static_cast<PxU32>(layerIndex));
+			int layerIndex = 0;
+			if (!layerMgr.TryGetLayerIndex(layerName, layerIndex))
+			{
+				error = "Vehicle tuning roadQueryLayers contains an unknown layer: " + layerName;
+				return false;
+			}
+			roadMask |= (1u << static_cast<PxU32>(layerIndex));
 		}
-		if (roadMask != 0u)
-		{
-			tuning.roadQueryMask = roadMask;
-			tuning.useCustomRoadQueryMask = true;
-		}
-		else
-		{
-			VANS_LOG_WARN("[VehicleTuning] roadQueryLayers resolved to an empty mask; using the collision layer mask.");
-		}
+		tuning.roadQueryMask = roadMask;
+		tuning.useCustomRoadQueryMask = true;
 	}
 	if (t.autoAlignToGround) tuning.autoAlignToGround = *t.autoAlignToGround;
 	if (t.groundHeight) tuning.groundHeight = *t.groundHeight;
 	if (t.groundClearance) tuning.groundClearance = *t.groundClearance;
-	tuning.groundClearance = std::clamp(tuning.groundClearance, -0.5f, 1.0f);
 	if (t.startHeightOffset) tuning.startHeightOffset = *t.startHeightOffset;
 	if (t.wheelCollisionMode)
 	{
-		std::string mode = NormalizeToken(*t.wheelCollisionMode);
-		tuning.enableWheelSimulationCollision =
-			(mode == "simulation" || mode == "simulationandquery" ||
-			 mode == "simulation_and_query" || mode == "collider");
+		const std::string mode = NormalizeToken(*t.wheelCollisionMode);
+		if (mode == "simulation")
+			tuning.enableWheelSimulationCollision = true;
+		else if (mode == "query")
+			tuning.enableWheelSimulationCollision = false;
+		else
+		{
+			error = "Vehicle tuning wheelCollisionMode must be 'query' or 'simulation'";
+			return false;
+		}
 	}
 
 	ApplyVec3Array4(t.suspensionAttachmentPositions, tuning.suspensionAttachmentPositions);
@@ -306,20 +294,77 @@ VansEngine::VansVehicleTuning ParseVehicleTuning(const Vans::VansSceneVehicleCom
 
 	if (t.brakeMaxTorque) tuning.brakeMaxTorque = *t.brakeMaxTorque;
 	if (t.handbrakeMaxTorque) tuning.handbrakeMaxTorque = *t.handbrakeMaxTorque;
-	if (t.maxSteerAngleDeg) tuning.maxSteerAngleRad = glm::radians(*t.maxSteerAngleDeg);
-	if (t.maxSteerAngleRad) tuning.maxSteerAngleRad = *t.maxSteerAngleRad;
+	if (t.maxSteerAngleDegrees) tuning.maxSteerAngleRadians = glm::radians(*t.maxSteerAngleDegrees);
 	if (t.ackermannWheelBase) tuning.ackermannWheelBase = *t.ackermannWheelBase;
 	if (t.ackermannTrackWidth) tuning.ackermannTrackWidth = *t.ackermannTrackWidth;
 	if (t.ackermannStrength) tuning.ackermannStrength = *t.ackermannStrength;
 
 	if (t.enginePeakTorque) tuning.enginePeakTorque = *t.enginePeakTorque;
 	if (t.engineMaxOmega) tuning.engineMaxOmega = *t.engineMaxOmega;
+	if (t.engineMoi) tuning.engineMoi = *t.engineMoi;
+	if (t.engineIdleOmega) tuning.engineIdleOmega = *t.engineIdleOmega;
+	if (t.engineDampingFullThrottle) tuning.engineDampingFullThrottle = *t.engineDampingFullThrottle;
+	if (t.engineDampingZeroThrottleClutchEngaged)
+		tuning.engineDampingZeroThrottleClutchEngaged = *t.engineDampingZeroThrottleClutchEngaged;
+	if (t.engineDampingZeroThrottleClutchDisengaged)
+		tuning.engineDampingZeroThrottleClutchDisengaged = *t.engineDampingZeroThrottleClutchDisengaged;
+	if (!t.engineTorqueCurve.empty())
+	{
+		tuning.engineTorqueCurve.clear();
+		for (const std::array<float, 2>& point : t.engineTorqueCurve)
+			tuning.engineTorqueCurve.push_back({ point[0], point[1] });
+	}
+	if (!t.gearRatios.empty()) tuning.gearRatios.assign(t.gearRatios.begin(), t.gearRatios.end());
+	if (t.neutralGear) tuning.neutralGear = *t.neutralGear;
 	if (t.gearboxFinalRatio) tuning.gearboxFinalRatio = *t.gearboxFinalRatio;
 	if (t.gearboxSwitchTime) tuning.gearboxSwitchTime = *t.gearboxSwitchTime;
+	if (!t.autoboxUpRatios.empty()) tuning.autoboxUpRatios.assign(t.autoboxUpRatios.begin(), t.autoboxUpRatios.end());
+	if (!t.autoboxDownRatios.empty()) tuning.autoboxDownRatios.assign(t.autoboxDownRatios.begin(), t.autoboxDownRatios.end());
 	if (t.autoboxLatency) tuning.autoboxLatency = *t.autoboxLatency;
 	if (t.clutchStrength) tuning.clutchStrength = *t.clutchStrength;
+	if (t.clutchEstimateIterations) tuning.clutchEstimateIterations = *t.clutchEstimateIterations;
 
-	return tuning;
+	if (t.tireLongitudinalStiffness) tuning.tireLongitudinalStiffness = *t.tireLongitudinalStiffness;
+	if (t.tireLateralStiffnessX) tuning.tireLateralStiffnessX = *t.tireLateralStiffnessX;
+	ApplyFloatArray4(t.tireLateralStiffnessY, tuning.tireLateralStiffnessY);
+	if (t.tireCamberStiffness) tuning.tireCamberStiffness = *t.tireCamberStiffness;
+	ApplyFloatArray4(t.tireRestLoad, tuning.tireRestLoad);
+	if (t.tireFrictionVsSlip)
+	{
+		for (size_t i = 0; i < tuning.tireFrictionVsSlip.size(); ++i)
+			tuning.tireFrictionVsSlip[i] = { (*t.tireFrictionVsSlip)[i][0], (*t.tireFrictionVsSlip)[i][1] };
+	}
+	if (t.tireLoadFilter)
+	{
+		for (size_t i = 0; i < tuning.tireLoadFilter.size(); ++i)
+			tuning.tireLoadFilter[i] = { (*t.tireLoadFilter)[i][0], (*t.tireLoadFilter)[i][1] };
+	}
+
+	ApplyFloatArray4(t.differentialTorqueRatios, tuning.differentialTorqueRatios);
+	ApplyFloatArray4(t.differentialAverageWheelSpeedRatios, tuning.differentialAverageWheelSpeedRatios);
+	if (t.differentialCenterBias) tuning.differentialCenterBias = *t.differentialCenterBias;
+	if (t.differentialCenterTarget) tuning.differentialCenterTarget = *t.differentialCenterTarget;
+	if (t.differentialFrontBias) tuning.differentialFrontBias = *t.differentialFrontBias;
+	if (t.differentialFrontTarget) tuning.differentialFrontTarget = *t.differentialFrontTarget;
+	if (t.differentialRearBias) tuning.differentialRearBias = *t.differentialRearBias;
+	if (t.differentialRearTarget) tuning.differentialRearTarget = *t.differentialRearTarget;
+	if (t.differentialRate) tuning.differentialRate = *t.differentialRate;
+
+	if (t.materialStaticFriction) tuning.materialStaticFriction = *t.materialStaticFriction;
+	if (t.materialDynamicFriction) tuning.materialDynamicFriction = *t.materialDynamicFriction;
+	if (t.materialRestitution) tuning.materialRestitution = *t.materialRestitution;
+	if (t.tireFriction) tuning.tireFriction = *t.tireFriction;
+	if (t.suspensionLimitRestitution) tuning.suspensionLimitRestitution = *t.suspensionLimitRestitution;
+	if (t.drivetrainSubsteps) tuning.drivetrainSubsteps = *t.drivetrainSubsteps;
+
+	int collisionLayerIndex = 0;
+	if (!VansEngine::VansCollisionLayerManager::Get().TryGetLayerIndex(
+		tuning.collisionLayerName, collisionLayerIndex))
+	{
+		error = "Vehicle tuning collisionLayer is unknown: " + tuning.collisionLayerName;
+		return false;
+	}
+	return tuning.IsValid(error);
 }
 
 int ParseWheelSlot(const Vans::VansSceneVehicleTokenConfig& value)
@@ -334,28 +379,23 @@ int ParseWheelSlot(const Vans::VansSceneVehicleTokenConfig& value)
 
 	std::string slot = NormalizeToken(*value.name);
 
-	if (slot == "frontleft" || slot == "leftfront" || slot == "fl" || slot == "lf") return 0;
-	if (slot == "frontright" || slot == "rightfront" || slot == "fr" || slot == "rf") return 1;
-	if (slot == "rearleft" || slot == "leftrear" || slot == "rl" || slot == "lr" ||
-		slot == "backleft" || slot == "leftback") return 2;
-	if (slot == "rearright" || slot == "rightrear" || slot == "rr" || slot == "rightr" ||
-		slot == "backright" || slot == "rightback") return 3;
+	if (slot == "frontleft") return 0;
+	if (slot == "frontright") return 1;
+	if (slot == "rearleft") return 2;
+	if (slot == "rearright") return 3;
 	return -1;
 }
 
 bool ParseConfiguredWheelOrder(
-	const std::optional<std::array<Vans::VansSceneVehicleTokenConfig, 4>>& configuredOrder,
+	const std::array<Vans::VansSceneVehicleTokenConfig, 4>& configuredOrder,
 	const std::string& objectName,
 	size_t wheelCount,
-	std::vector<size_t>& outOrder)
+	std::vector<size_t>& outOrder,
+	std::string& error)
 {
-	if (!configuredOrder)
-		return false;
-
-	if (configuredOrder->size() < 4)
+	if (wheelCount < configuredOrder.size())
 	{
-		VANS_LOG_WARN("[VehicleWheelOrder] object='" << objectName
-			<< "' wheelOrder must contain four wheel slots; keeping tireObjects order.");
+		error = "Vehicle '" + objectName + "' wheelOrder requires four resolved tire groups";
 		return false;
 	}
 
@@ -364,59 +404,59 @@ bool ParseConfiguredWheelOrder(
 		outOrder[i] = i;
 
 	std::array<bool, 4> seen = { false, false, false, false };
-	for (size_t sourceIndex = 0; sourceIndex < configuredOrder->size(); ++sourceIndex)
+	for (size_t sourceIndex = 0; sourceIndex < configuredOrder.size(); ++sourceIndex)
 	{
-		const int slot = ParseWheelSlot((*configuredOrder)[sourceIndex]);
+		const int slot = ParseWheelSlot(configuredOrder[sourceIndex]);
 		if (slot < 0 || seen[slot])
 		{
-			VANS_LOG_WARN("[VehicleWheelOrder] object='" << objectName
-				<< "' invalid wheelOrder entry at index " << sourceIndex
-				<< "; keeping tireObjects order.");
+			error = "Vehicle '" + objectName + "' has an invalid or duplicate wheelOrder entry at index " +
+				std::to_string(sourceIndex);
 			return false;
 		}
 		seen[slot] = true;
 		outOrder[slot] = sourceIndex;
 	}
 
-	return seen[0] && seen[1] && seen[2] && seen[3];
+	return true;
 }
 }
 
-VansScriptVehicleComponent* VansSceneVehicleComponentBuilder::AddVehiclePlaceholder(
-	VansScriptObject& object,
-	const Vans::VansSceneVehicleObjectConfig& objectConfig)
-{
-	if (!objectConfig.vehicle)
-		return nullptr;
-	auto* vehicleComp = new VansScriptVehicleComponent();
-	vehicleComp->m_ComponentName = "vehicle";
-	vehicleComp->m_Vehicle = nullptr;
-	object.AddComponent(vehicleComp);
-	return vehicleComp;
-}
-
-std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
+VansSceneVehicleBuildResult VansSceneVehicleComponentBuilder::BuildVehicles(
 	VansScene& scene,
-	const Vans::VansSceneVehicleObjectConfigs& objectConfigs)
+	const std::vector<VansSceneVehicleBuildRequest>& requests)
 {
-	std::unordered_set<uint32_t> vehicleDrivenTransformIDs;
+	VansSceneVehicleBuildResult result;
 	const auto& sceneObjects = scene.GetSceneObjects();
-	int objIndex = 0;
-	for (const Vans::VansSceneVehicleObjectConfig& objectConfig : objectConfigs)
+	result.builtVehicles.reserve(requests.size());
+	for (const VansSceneVehicleBuildRequest& request : requests)
 	{
-		if (objectConfig.vehicle)
+		if (request.ownerEntityGuid.empty() || request.componentGuid.empty())
 		{
-			const Vans::VansSceneVehicleComponentConfig& vehicleConfig = *objectConfig.vehicle;
-			VansScriptObject* obj = sceneObjects[sceneObjects.size() - objectConfigs.size() + objIndex];
-			auto* vc = obj->GetComponent<VansScriptVehicleComponent>();
+			result.error = "Vehicle build request is missing a stable owner or component GUID";
+			return result;
+		}
+		VansScriptObject* obj = scene.FindObjectByGuid(request.ownerEntityGuid);
+		if (!obj)
+		{
+			result.error = "Vehicle owner is unavailable for entity '" +
+				request.ownerEntityGuid + "'";
+			return result;
+		}
+		if (obj->GetComponent<VansScriptVehicleComponent>())
+		{
+			result.error = "Vehicle component is already present for entity '" +
+				request.ownerEntityGuid + "'";
+			return result;
+		}
+		const Vans::VansSceneVehicleComponentConfig& vehicleConfig = request.config;
 
-			std::string bodyNodeName;
+		std::string bodyNodeName;
 			uint32_t bodyTransformID = UINT32_MAX;
 			VansScriptObject* bodyObj = nullptr;
 			std::vector<VansRenderNode*> bodyRenderNodesForBounds;
 			if (vehicleConfig.bodyObject)
 			{
-				std::string bodyObjName = *vehicleConfig.bodyObject;
+				const std::string& bodyObjName = *vehicleConfig.bodyObject;
 				bodyObj = scene.FindSceneObjectByName(bodyObjName);
 				if (bodyObj)
 				{
@@ -427,7 +467,8 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 				}
 				else
 				{
-					VANS_LOG_WARN("[LoadSceneObjects] Vehicle body object not found: " << bodyObjName);
+					result.error = "Vehicle body object was not found: " + bodyObjName;
+					return result;
 				}
 			}
 			if (bodyObj && !bodyObj->m_EntityGuid.empty())
@@ -478,14 +519,14 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 						VansScriptObject* tireObj = scene.FindSceneObjectByName(tireObjName);
 						if (!tireObj)
 						{
-							VANS_LOG_WARN("[LoadSceneObjects] Vehicle tire object not found: " << tireObjName);
-							continue;
+							result.error = "Vehicle tire object was not found: " + tireObjName;
+							return result;
 						}
 
 						PendingWheelVisual visual;
 						visual.transformID = GetObjectTransformID(tireObj);
 						if (visual.transformID != UINT32_MAX)
-							vehicleDrivenTransformIDs.insert(visual.transformID);
+							result.drivenTransformIds.insert(visual.transformID);
 
 						auto* rc = tireObj->GetComponent<VansScriptRenderComponent>();
 						if (rc && rc->m_RenderNode)
@@ -545,18 +586,33 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 					(*vehicleConfig.position)[2]);
 			}
 			else if (bodyTransformID != UINT32_MAX &&
-					 bodyTransformID < static_cast<uint32_t>(VansTransformStore::GlobalTransforms.size()))
+					 Vans::VansTransformStore::IsAllocated(bodyTransformID))
 			{
-				spawnPos = VansTransformStore::GetTransform(bodyTransformID).m_Position;
+				spawnPos = Vans::VansTransformStore::Read(bodyTransformID).m_Position;
 			}
 
-			VansEngine::VansVehicleTuning tuning = ParseVehicleTuning(vehicleConfig);
+			VansEngine::VansVehicleTuning tuning;
+			std::string tuningError;
+			if (!ParseVehicleTuning(vehicleConfig, tuning, tuningError))
+			{
+				result.error = "Vehicle tuning is invalid for object '" + obj->m_ObjectName + "': " + tuningError;
+				return result;
+			}
 
 			std::vector<size_t> wheelOrder;
-			if (wheelGroupPivots.size() >= 4 &&
-				(ParseConfiguredWheelOrder(vehicleConfig.wheelOrder, obj->m_ObjectName, wheelGroupPivots.size(), wheelOrder) ||
-				 ParseConfiguredWheelOrder(vehicleConfig.tuning.wheelOrder, obj->m_ObjectName, wheelGroupPivots.size(), wheelOrder)))
+			if (vehicleConfig.wheelOrder)
 			{
+				std::string wheelOrderError;
+				if (!ParseConfiguredWheelOrder(
+					*vehicleConfig.wheelOrder,
+					obj->m_ObjectName,
+					wheelGroupPivots.size(),
+					wheelOrder,
+					wheelOrderError))
+				{
+					result.error = wheelOrderError;
+					return result;
+				}
 				auto applyWheelOrder = [&](auto& values)
 				{
 					auto ordered = values;
@@ -572,19 +628,10 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 				applyWheelOrder(wheelVisualBindings);
 				applyWheelOrder(tireTransformIDs);
 				applyWheelOrder(tireNodeNames);
-
-				VANS_LOG("[VehicleWheelOrder] object='" << obj->m_ObjectName
-					<< "' configured wheelOrder applied: frontLeft=(" << wheelGroupPivots[0].x << ", "
-					<< wheelGroupPivots[0].y << ", " << wheelGroupPivots[0].z << ")"
-					<< " frontRight=(" << wheelGroupPivots[1].x << ", "
-					<< wheelGroupPivots[1].y << ", " << wheelGroupPivots[1].z << ")"
-					<< " rearLeft=(" << wheelGroupPivots[2].x << ", "
-					<< wheelGroupPivots[2].y << ", " << wheelGroupPivots[2].z << ")"
-					<< " rearRight=(" << wheelGroupPivots[3].x << ", "
-					<< wheelGroupPivots[3].y << ", " << wheelGroupPivots[3].z << ")");
 			}
 
 			const bool autoWheelGeometry = vehicleConfig.tuning.autoWheelGeometry.value_or(false);
+			const PxVehicleFrame vehicleFrame = tuning.BuildFrame();
 			if (!vehicleConfig.tuning.bodyGeometryExcludeObjects.empty())
 			{
 				for (const std::string& excludeName : vehicleConfig.tuning.bodyGeometryExcludeObjects)
@@ -619,19 +666,6 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 						std::max(halfExtents.y, 0.01f),
 						std::max(halfExtents.z, 0.01f));
 					tuning.bodyBoxLocalPose = PxTransform(center, PxQuat(PxIdentity));
-					VANS_LOG("[VehicleAutoBodyGeometry] object='" << obj->m_ObjectName
-						<< "' bodyNodes=" << filteredBodyRenderNodes.size()
-						<< " excludedTireNodes=" << tireRenderNodesForBodyExclusion.size()
-						<< " bodyBoundsMin=(" << bodyBoundsMin.x << ", " << bodyBoundsMin.y << ", " << bodyBoundsMin.z << ")"
-						<< " bodyBoundsMax=(" << bodyBoundsMax.x << ", " << bodyBoundsMax.y << ", " << bodyBoundsMax.z << ")"
-						<< " bodyHalfExtentsScale=(" << tuning.bodyGeometryHalfExtentsScale.x << ", "
-						<< tuning.bodyGeometryHalfExtentsScale.y << ", " << tuning.bodyGeometryHalfExtentsScale.z << ")"
-						<< " bodyCenterOffset=(" << tuning.bodyGeometryCenterOffset.x << ", "
-						<< tuning.bodyGeometryCenterOffset.y << ", " << tuning.bodyGeometryCenterOffset.z << ")"
-						<< " bodyBoxHalfExtents=(" << tuning.bodyBoxHalfExtents.x << ", "
-						<< tuning.bodyBoxHalfExtents.y << ", " << tuning.bodyBoxHalfExtents.z << ")"
-						<< " bodyBoxLocalPosition=(" << tuning.bodyBoxLocalPose.p.x << ", "
-						<< tuning.bodyBoxLocalPose.p.y << ", " << tuning.bodyBoxLocalPose.p.z << ")");
 				}
 			}
 			if (autoWheelGeometry && wheelGroupBoundsMin.size() >= 4 && wheelGroupBoundsMax.size() >= 4)
@@ -640,30 +674,18 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 				float halfWidthSum = 0.0f;
 				for (size_t wi = 0; wi < 4; ++wi)
 				{
-					const float verticalExtent = VehicleAxisExtent(wheelGroupBoundsMin[wi], wheelGroupBoundsMax[wi], tuning.verticalAxis);
-					const float longitudinalExtent = VehicleAxisExtent(wheelGroupBoundsMin[wi], wheelGroupBoundsMax[wi], tuning.longitudinalAxis);
-					const float lateralExtent = VehicleAxisExtent(wheelGroupBoundsMin[wi], wheelGroupBoundsMax[wi], tuning.lateralAxis);
+					const float verticalExtent = VehicleAxisExtent(wheelGroupBoundsMin[wi], wheelGroupBoundsMax[wi], vehicleFrame.getVrtAxis());
+					const float longitudinalExtent = VehicleAxisExtent(wheelGroupBoundsMin[wi], wheelGroupBoundsMax[wi], vehicleFrame.getLngAxis());
+					const float lateralExtent = VehicleAxisExtent(wheelGroupBoundsMin[wi], wheelGroupBoundsMax[wi], vehicleFrame.getLatAxis());
 					radiusSum += 0.5f * std::max(verticalExtent, longitudinalExtent);
 					halfWidthSum += 0.5f * lateralExtent;
-					VANS_LOG("[VehicleAutoWheelGeometry] object='" << obj->m_ObjectName
-						<< "' wheel=" << wi
-						<< " boundsMin=(" << wheelGroupBoundsMin[wi].x << ", " << wheelGroupBoundsMin[wi].y << ", " << wheelGroupBoundsMin[wi].z << ")"
-						<< " boundsMax=(" << wheelGroupBoundsMax[wi].x << ", " << wheelGroupBoundsMax[wi].y << ", " << wheelGroupBoundsMax[wi].z << ")"
-						<< " verticalExtent=" << verticalExtent
-						<< " longitudinalExtent=" << longitudinalExtent
-						<< " lateralExtent=" << lateralExtent
-						<< " renderRadius=" << (0.5f * std::max(verticalExtent, longitudinalExtent))
-						<< " renderHalfWidth=" << (0.5f * lateralExtent));
 				}
 				tuning.wheelRadius = std::max(0.01f, radiusSum * 0.25f);
 				tuning.wheelHalfWidth = std::max(0.01f, halfWidthSum * 0.25f);
-				VANS_LOG("[VehicleAutoWheelGeometry] object='" << obj->m_ObjectName
-					<< "' final wheelRadius=" << tuning.wheelRadius
-					<< " wheelHalfWidth=" << tuning.wheelHalfWidth);
 			}
 			if (!vehicleConfig.tuning.suspensionAttachmentPositions && wheelGroupPivots.size() >= 4)
 			{
-				const PxVec3 upAxis = VehicleAxisToVec3(tuning.verticalAxis);
+				const PxVec3 upAxis = vehicleFrame.getVrtAxis();
 				constexpr float kGravityMagnitude = 9.81f;
 				for (size_t wi = 0; wi < 4; ++wi)
 				{
@@ -674,19 +696,11 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 						tuning.suspensionTravelDist);
 					const float visualRestOffset = tuning.suspensionTravelDist - staticJounce + tuning.wheelVisualGroundClearance;
 					tuning.suspensionAttachmentPositions[wi] = wheelGroupPivots[wi] + upAxis * visualRestOffset;
-					VANS_LOG("[VehicleAutoSuspension] object='" << obj->m_ObjectName
-						<< "' wheel=" << wi
-						<< " pivot=(" << wheelGroupPivots[wi].x << ", " << wheelGroupPivots[wi].y << ", " << wheelGroupPivots[wi].z << ")"
-						<< " staticJounce=" << staticJounce
-						<< " clearance=" << tuning.wheelVisualGroundClearance
-						<< " attachment=(" << tuning.suspensionAttachmentPositions[wi].x << ", "
-						<< tuning.suspensionAttachmentPositions[wi].y << ", "
-						<< tuning.suspensionAttachmentPositions[wi].z << ")");
 				}
 			}
 			if (tuning.autoAlignToGround && wheelGroupPivots.size() >= 4)
 			{
-				const PxVec3 upAxis = VehicleAxisToVec3(tuning.verticalAxis);
+				const PxVec3 upAxis = vehicleFrame.getVrtAxis();
 				const PxVec3 suspensionTravelDir = -upAxis;
 				float averageWheelCenterHeight = 0.0f;
 				for (size_t wi = 0; wi < 4; ++wi)
@@ -699,35 +713,39 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 					const PxVec3 wheelCenterLocal =
 						tuning.suspensionAttachmentPositions[wi] +
 						suspensionTravelDir * (tuning.suspensionTravelDist - staticJounce);
-					averageWheelCenterHeight += VehicleAxisCoordinate(wheelCenterLocal, tuning.verticalAxis);
+					averageWheelCenterHeight += VehicleAxisCoordinate(wheelCenterLocal, upAxis);
 				}
 				averageWheelCenterHeight *= 0.25f;
 
 				const PxVec3 spawnPx(spawnPos.x, spawnPos.y, spawnPos.z);
-				const float spawnHeight = VehicleAxisCoordinate(spawnPx, tuning.verticalAxis);
+				const float spawnHeight = VehicleAxisCoordinate(spawnPx, upAxis);
 				const float desiredWheelCenterHeight =
 					tuning.groundHeight + tuning.wheelRadius + tuning.groundClearance;
 				const float currentWheelCenterHeight = spawnHeight + averageWheelCenterHeight;
 				const float deltaHeight = desiredWheelCenterHeight - currentWheelCenterHeight;
 				spawnPos += glm::vec3(upAxis.x, upAxis.y, upAxis.z) * deltaHeight;
-
-				VANS_LOG("[VehicleAutoGroundAlign] object='" << obj->m_ObjectName
-					<< "' groundHeight=" << tuning.groundHeight
-					<< " wheelRadius=" << tuning.wheelRadius
-					<< " groundClearance=" << tuning.groundClearance
-					<< " averageWheelCenterHeight=" << averageWheelCenterHeight
-					<< " oldSpawnHeight=" << spawnHeight
-					<< " newSpawn=(" << spawnPos.x << ", " << spawnPos.y << ", " << spawnPos.z << ")");
 			}
 
-			VansEngine::VansPhysicsVehicle* vehicle = scene.BuildVehicleRuntime(&VansEngine::VansPhysicsSystem::GetInstance(), spawnPos,
-				bodyNodeName, tireNodeNames, bodyTransformID, tireTransformIDs, tuning, wheelVisualBindings);
-			if (vc)
-				vc->m_Vehicle = vehicle;
-		}
-		++objIndex;
+			std::string runtimeError;
+			VansEngine::VansPhysicsVehicle* vehicle = scene.BuildVehicleRuntime(
+				&VansEngine::VansPhysicsSystem::GetInstance(), spawnPos,
+				bodyNodeName, tireNodeNames, bodyTransformID, tireTransformIDs,
+				tuning, wheelVisualBindings, runtimeError);
+			if (!vehicle)
+			{
+				result.error = "Vehicle runtime could not be created for object '" +
+					obj->m_ObjectName + "': " + runtimeError;
+				return result;
+			}
+		auto* component = new VansScriptVehicleComponent();
+		component->m_ComponentName = "vehicle";
+		component->m_ComponentGuid = request.componentGuid;
+		component->m_Vehicle = vehicle;
+		obj->AddComponent(component);
+		result.builtVehicles.push_back({ request.ownerEntityGuid, component });
 	}
 
-	return vehicleDrivenTransformIDs;
+	result.success = true;
+	return result;
 }
 }

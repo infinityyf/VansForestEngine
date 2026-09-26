@@ -4,12 +4,12 @@
 #include "VansEditorWindow.h"
 #include "../SceneCore/VansSceneDocument.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
-#include "../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../EngineAPILayer/Public/ISceneInteractionEditorAPI.h"
 
 namespace Vans
 {
 EditorAPI::EditorScenePickResult VansScenePickingService::Pick(
-	EditorAPI::IEngineEditorAPI& editorAPI,
+	EditorAPI::ISceneInteractionEditorAPI& editorAPI,
 	const EditorAPI::Ray& ray,
 	float maxDistance, bool toggle, bool additive)
 {

@@ -12,9 +12,7 @@ namespace Vans
 namespace TimelineClockNames
 {
 inline constexpr std::string_view GameTime = "Timeline.Clock.GameTime";
-inline constexpr std::string_view UnscaledTime = "Timeline.Clock.UnscaledTime";
 inline constexpr std::string_view Manual = "Timeline.Clock.Manual";
-inline constexpr std::string_view FixedTick = "Timeline.Clock.FixedTick";
 }
 
 struct VansTimelineClockSample
@@ -44,7 +42,6 @@ public:
 	bool Seal(std::string& error);
 	bool IsSealed() const { return m_Sealed; }
 	std::shared_ptr<IVansTimelineClockSource> Resolve(VansTimelineClockTypeId type) const;
-	static VansTimelineClockRegistry& BuiltIns();
 
 private:
 	struct Entry { VansTimelineClockTypeId type; std::string name; std::shared_ptr<IVansTimelineClockSource> source; };

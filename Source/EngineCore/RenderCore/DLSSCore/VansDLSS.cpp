@@ -68,7 +68,12 @@ namespace VansGraphics
 	void VansDLSS::Cleanup()
 	{
 		if (m_Diagnostics.contextReady)
+		{
+			VANS_LOG("[DLSS] Releasing context: successfulDispatches="
+				<< m_Diagnostics.successfulDispatchCount
+				<< " failedDispatches=" << m_Diagnostics.failedDispatchCount);
 			VansStreamlineRuntime::Get().ReleaseDLSSResources();
+		}
 		m_Diagnostics.contextReady = false;
 	}
 

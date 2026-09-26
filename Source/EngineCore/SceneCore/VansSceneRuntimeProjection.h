@@ -12,21 +12,26 @@ namespace Vans
 		const std::array<float, 4>& rotationXYZW,
 		bool yawOnly);
 
-	struct VansSkinProfile;
 	struct VansSerializedValue;
 	struct VansSceneContentBuildPlan;
+	struct VansSceneAuthoringEntityProjection;
 	struct VansSceneLocalVolumetricFogComponentConfig;
 
 	class VansSceneRuntimeProjection
 	{
 	public:
-        static bool ValidateEntityComponentTypes(const VansSerializedValue& entities, std::string& error);
-		static VansSerializedValue BuildSkinProfileMaterialParameters(const VansSkinProfile& profile);
-
 		// 使用与完整场景投影相同的当前 schema 读取器，为编辑器实时预览生成运行时配置。
 		static bool ProjectLocalVolumetricFogComponent(
 			const VansSerializedValue& component,
 			VansSceneLocalVolumetricFogComponentConfig& outConfig);
+
+		static bool ProjectAuthoringEntity(
+			const VansSerializedValue& entity,
+			VansSceneAuthoringEntityProjection& outProjection);
+		static bool ProjectAuthoringEntityFromSceneRoot(
+			const VansSerializedValue& sceneRoot,
+			const std::string& entityGuid,
+			VansSceneAuthoringEntityProjection& outProjection);
 
 		// Projects an in-memory array of current-schema entities without requiring or
 		// synthesizing a complete Scene document. Used by editor/runtime entity creation.

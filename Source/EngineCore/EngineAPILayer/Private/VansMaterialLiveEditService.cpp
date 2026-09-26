@@ -4,8 +4,11 @@
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../RenderCore/VansMaterial.h"
 #include "../../RenderCore/VansRenderNode.h"
+#include "../../RenderCore/VansRenderSystem.h"
+#include "../../RenderCore/VansRenderThreadTransaction.h"
 #include "../../RenderCore/VansScene.h"
 #include "../../RenderCore/VulkanCore/VansVKDescriptorManager.h"
+#include "../../RuntimeCore/VansThreadContract.h"
 #include "../../Util/VansLog.h"
 
 #include <algorithm>
@@ -19,6 +22,41 @@ namespace VansGraphics
 {
 namespace
 {
+struct MaterialOverrideBatchState final
+{
+	VansScene* scene = nullptr;
+	std::vector<Vans::EditorAPI::RuntimeRendererMaterialOverrideEdit> edits;
+	bool anyApplied = false;
+	bool anyFailed = false;
+};
+
+class MaterialOverrideBatchTransaction final : public IVansRenderThreadTransaction
+{
+public:
+	explicit MaterialOverrideBatchTransaction(std::shared_ptr<MaterialOverrideBatchState> state)
+		: m_State(std::move(state))
+	{
+	}
+
+	bool Execute(VansGraphicsDevice& backend) override
+	{
+		VANS_ASSERT_RENDER_THREAD();
+		if (!m_State || !m_State->scene || !backend.WaitForIdle())
+			return false;
+		VansMaterialLiveEditService liveEdit;
+		for (const Vans::EditorAPI::RuntimeRendererMaterialOverrideEdit& edit : m_State->edits)
+		{
+			const bool itemApplied = liveEdit.ApplyRendererMaterialOverride(m_State->scene, edit);
+			m_State->anyApplied |= itemApplied;
+			m_State->anyFailed |= !itemApplied;
+		}
+		return !m_State->anyFailed;
+	}
+
+private:
+	std::shared_ptr<MaterialOverrideBatchState> m_State;
+};
+
 std::filesystem::path NormalizeAssetPath(const std::filesystem::path& path)
 {
 	std::error_code error;
@@ -639,6 +677,27 @@ bool VansMaterialLiveEditService::ApplyRendererMaterialOverride(
 		changed = true;
 	}
 	return changed;
+}
+
+VansMaterialOverrideBatchResult VansMaterialLiveEditService::ApplyRendererMaterialOverrideBatch(
+	VansRenderSystem& renderSystem,
+	VansScene& scene,
+	std::vector<Vans::EditorAPI::RuntimeRendererMaterialOverrideEdit> edits)
+{
+	VansMaterialOverrideBatchResult result;
+	if (edits.empty())
+	{
+		result.transactionSucceeded = true;
+		return result;
+	}
+	auto state = std::make_shared<MaterialOverrideBatchState>();
+	state->scene = &scene;
+	state->edits = std::move(edits);
+	result.transactionSucceeded = renderSystem.ExecuteRenderThreadTransaction(
+		std::make_unique<MaterialOverrideBatchTransaction>(state));
+	result.anyApplied = state->anyApplied;
+	result.anyFailed = state->anyFailed;
+	return result;
 }
 }
 

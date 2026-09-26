@@ -1,11 +1,17 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "VansGizmos.h"
+#include "VansEditorDebugViewState.h"
 #include "VansEditorWindow.h"
 #include "Windows/VansParticleDebugWindow.h"
-#include "VansEditorSelection.h"
+#include "VansEditorSelectionService.h"
 #include "VansSceneEditService.h"
+#include "../EngineAPILayer/Public/IAnimationEditorAPI.h"
+#include "../EngineAPILayer/Public/IGIEditorAPI.h"
+#include "../EngineAPILayer/Public/IReflectionProbeEditorAPI.h"
+#include "../EngineAPILayer/Public/IRenderEditorAPI.h"
 #include "imgui.h"
 #include "../Util/VansInputManager.h"
+#include "../Util/VansLog.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -31,14 +37,57 @@ ImGuizmo::OPERATION VansGizmos::OperationFromMode(GizmoMode mode)
     }
 }
 
-void VansGizmos::SyncTransformToSceneDocument(const std::string& entityGuid,
-                                              const Vans::EditorAPI::RuntimeTransformSnapshot& transform)
+void VansGizmos::ResetPendingTransform()
 {
-    if (entityGuid.empty()) return;
+    m_TransformEditPending = false;
+    m_TransformEditEntityGuid.clear();
+    m_BeforeLocalTransform = {};
+}
 
-    Vans::VansSceneEditService* editService = VansEditorWindow::GetSceneEditService();
-    if (!editService) return;
-    editService->SetEntityTransform(entityGuid, transform);
+void VansGizmos::CancelPendingTransform(Vans::EditorAPI::ISceneInteractionEditorAPI& api)
+{
+    if (m_TransformEditPending && m_BeforeLocalTransform.available)
+    {
+        Vans::EditorAPI::RuntimeEntityPreviewChange rollback;
+        rollback.hasTransform = true;
+        rollback.transform.entityGuid = m_TransformEditEntityGuid;
+        rollback.transform.space = Vans::EditorAPI::RuntimeTransformSpace::Local;
+        rollback.transform.position = m_BeforeLocalTransform.position;
+        rollback.transform.rotationDegrees = m_BeforeLocalTransform.rotationDegrees;
+        rollback.transform.scale = m_BeforeLocalTransform.scale;
+        api.ApplyRuntimeEntityPreviewChange(rollback);
+    }
+    ResetPendingTransform();
+    m_WasUsing = false;
+}
+
+void VansGizmos::FinishPendingTransform(
+    Vans::EditorAPI::ISceneInteractionEditorAPI& api,
+    Vans::VansSceneEditService& sceneEdits)
+{
+    if (!m_TransformEditPending)
+        return;
+
+    const Vans::EditorAPI::RuntimeTransformSnapshot local = api.GetRuntimeTransform(
+        m_TransformEditEntityGuid,
+        Vans::EditorAPI::RuntimeTransformSpace::Local);
+    if (!local.available)
+    {
+        VANS_LOG_WARN("[Gizmo] Final local transform is unavailable; restoring the drag origin");
+        CancelPendingTransform(api);
+        return;
+    }
+
+    const Vans::SceneEditResult result = sceneEdits.SetEntityTransform(
+        m_TransformEditEntityGuid,
+        local);
+    if (!result)
+    {
+        VANS_LOG_WARN("[Gizmo] Scene transform commit failed: " << result.message);
+        CancelPendingTransform(api);
+        return;
+    }
+    ResetPendingTransform();
 }
 
 glm::vec3 ToGlm(const Vans::EditorAPI::Vec3& value)
@@ -69,20 +118,26 @@ glm::mat4 BuildModelMatrix(const Vans::EditorAPI::RuntimeTransformSnapshot& tran
 
 
 void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
+                      Vans::VansSceneEditService* sceneEdits,
                       VansCamera* camera,
                       ImVec2      windowPos,
-                      ImVec2      windowSize)
+                      ImVec2      windowSize,
+					  const VansEditorDebugViewState& debugViewState)
 {
     if (!camera) return;
+	Vans::EditorAPI::IGIEditorAPI& giAPI = api;
+	Vans::EditorAPI::IReflectionProbeEditorAPI& probeAPI = api;
+	Vans::EditorAPI::IRenderEditorAPI& renderAPI = api;
+	Vans::EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI = api;
 
     ImGuizmo::SetID(0x53434E45); // "SCNE": Scene Transform Gizmo
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     ImGuizmo::SetRect(windowPos.x, windowPos.y, windowSize.x, windowSize.y);
 
     // 反射探针 gizmo 只由 Reflection Probe 窗口驱动，窗口关闭时不拉取整份探针 DTO。
-    if (VansEditorWindow::m_ReflectionProbeWindowOpen)
+    if (VansEditorWindow::IsWindowOpen(VansEditorWindowId::ReflectionProbe))
     {
-        const auto probeSettings = api.GetReflectionProbeSettings();
+        const auto probeSettings = probeAPI.GetReflectionProbeSettings();
         if (probeSettings.available && probeSettings.editor.showProbeGizmos)
         {
             const glm::mat4 viewProjection = camera->GetProjectiveMatrix() * camera->GetViewMatrix();
@@ -157,9 +212,9 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
     }
 
     // GI gizmo 同样由 GI Inspector 窗口驱动，避免 Scene 视口常驻复制 GI 调试数据。
-    if (VansEditorWindow::m_GIWindowOpen)
+    if (VansEditorWindow::IsWindowOpen(VansEditorWindowId::GI))
     {
-        const auto giSettings = api.GetGISettings();
+        const auto giSettings = giAPI.GetGISettings();
 		if (giSettings.available && !giSettings.regions.empty() &&
 			(giSettings.showProbeGizmos || giSettings.showProbeVolume))
 		{
@@ -198,7 +253,7 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
 
             std::shared_ptr<const Vans::EditorAPI::GIProbeDebugSnapshot> giProbeDebug;
             if (giSettings.showProbeGizmos)
-                giProbeDebug = api.GetGIProbeDebugSnapshot();
+                giProbeDebug = giAPI.GetGIProbeDebugSnapshot();
             if (giSettings.showProbeGizmos && giSettings.placement.enabled && giProbeDebug && giProbeDebug->available)
             {
                 for (const auto& probe : giProbeDebug->probes)
@@ -241,9 +296,9 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
         }
     }
 
-    if (VansEditorWindow::m_HiZCullDebugVisualization)
+    if (debugViewState.hiZCullDebugVisualization)
     {
-        const auto hizSnapshot = api.GetMainCameraHiZCullDebugSnapshot();
+        const auto hizSnapshot = renderAPI.GetMainCameraHiZCullDebugSnapshot();
         if (hizSnapshot.available && hizSnapshot.enabled && !hizSnapshot.culledNodes.empty())
         {
             const glm::mat4 viewProjection = camera->GetProjectiveMatrix() * camera->GetViewMatrix();
@@ -292,16 +347,16 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
         }
     }
 
-    if (VansEditorWindow::m_ParticleDebugWindow)
-        VansEditorWindow::m_ParticleDebugWindow->DrawSceneOverlay(api,
-            camera->GetProjectiveMatrix() * camera->GetViewMatrix(), windowPos, windowSize);
+	VansEditorWindow::DrawParticleDebugSceneOverlay(api,
+		camera->GetProjectiveMatrix() * camera->GetViewMatrix(), windowPos, windowSize);
 
-    if (VansEditorWindow::m_SkeletonDebugGizmos)
+    if (debugViewState.skeletonDebugGizmos)
     {
-        const std::string filterGuid = VansEditorWindow::m_SkeletonDebugSelectedOnly
-            ? Vans::VansEditorSelection::EntityGuid()
+        const std::string filterGuid = debugViewState.skeletonDebugSelectedOnly
+            ? Vans::VansEditorSelectionService::Get().EntityGuid()
             : std::string();
-        const auto skeletonSnapshot = api.GetSkeletonDebugSnapshot(filterGuid);
+		const auto skeletonSnapshot =
+			static_cast<Vans::EditorAPI::IAnimationEditorAPI&>(api).GetSkeletonDebugSnapshot(filterGuid);
         if (skeletonSnapshot.available)
         {
             const glm::mat4 viewProjection = camera->GetProjectiveMatrix() * camera->GetViewMatrix();
@@ -324,7 +379,7 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
             constexpr ImU32 kSourceRootColor = IM_COL32(255, 120, 210, 250);
             for (const auto& rig : skeletonSnapshot.rigs)
             {
-                if (rig.retargetSource && !VansEditorWindow::m_SkeletonDebugShowRetargetSource)
+                if (rig.retargetSource && !debugViewState.skeletonDebugShowRetargetSource)
                     continue;
                 const ImU32 boneColor = rig.retargetSource ? kSourceBoneColor : kBoneColor;
                 const ImU32 jointColor = rig.retargetSource ? kSourceJointColor : kJointColor;
@@ -346,7 +401,7 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
 
                     drawList->AddCircleFilled(boneScreen, bone.parentIndex < 0 ? 4.0f : 2.4f,
                         bone.parentIndex < 0 ? rootColor : jointColor, 10);
-                    if (VansEditorWindow::m_SkeletonDebugShowNames)
+                    if (debugViewState.skeletonDebugShowNames)
                         drawList->AddText(ImVec2(boneScreen.x + 5.0f, boneScreen.y - 5.0f),
                             rig.retargetSource ? IM_COL32(255, 220, 255, 230) : IM_COL32(235, 245, 255, 230),
                             bone.name.c_str());
@@ -355,10 +410,15 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
         }
     }
 
-    const std::string selectedGuid = Vans::VansEditorSelection::EntityGuid();
-    auto transform = api.GetRuntimeTransform(
+    const std::string selectedGuid = Vans::VansEditorSelectionService::Get().EntityGuid();
+    if (m_TransformEditPending &&
+        (selectedGuid.empty() || selectedGuid != m_TransformEditEntityGuid || !sceneEdits))
+    {
+        CancelPendingTransform(sceneInteractionAPI);
+    }
+    auto transform = sceneInteractionAPI.GetRuntimeTransform(
         selectedGuid, Vans::EditorAPI::RuntimeTransformSpace::World);
-    if (!transform.available)  return;
+    if (!transform.available || !sceneEdits) return;
 
 
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
@@ -396,6 +456,17 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
 
     if (changed)
     {
+        if (!m_TransformEditPending)
+        {
+            m_BeforeLocalTransform = sceneInteractionAPI.GetRuntimeTransform(
+                selectedGuid,
+                Vans::EditorAPI::RuntimeTransformSpace::Local);
+            if (!m_BeforeLocalTransform.available)
+                return;
+            m_TransformEditPending = true;
+            m_TransformEditEntityGuid = selectedGuid;
+        }
+
         glm::vec3 pos, rotDeg, scale;
         ImGuizmo::DecomposeMatrixToComponents(
             glm::value_ptr(modelMatrix),
@@ -423,29 +494,29 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
 
         Vans::EditorAPI::RuntimeTransformEdit edit;
         edit.entityGuid = selectedGuid;
+        edit.space = Vans::EditorAPI::RuntimeTransformSpace::World;
         edit.position = transform.position;
         edit.rotationDegrees = transform.rotationDegrees;
         edit.scale = transform.scale;
         edit.writePosition = m_Mode == GizmoMode::Translate;
         edit.writeRotation = m_Mode == GizmoMode::Rotate;
         edit.writeScale = m_Mode == GizmoMode::Scale;
-        api.ApplyRuntimeTransform(edit);
-
-        m_PendingDocumentSync = true;
-        m_PendingDocumentSyncEntityGuid = selectedGuid;
-        m_PendingDocumentSyncTransform = transform;
+        Vans::EditorAPI::RuntimeEntityPreviewChange preview;
+        preview.hasTransform = true;
+        preview.transform = edit;
+        if (!sceneInteractionAPI.ApplyRuntimeEntityPreviewChange(preview))
+        {
+            VANS_LOG_WARN("[Gizmo] Runtime transform preview failed; restoring the drag origin");
+            CancelPendingTransform(sceneInteractionAPI);
+            return;
+        }
     }
 
     const bool isUsing = ImGuizmo::IsUsing();
     if ((m_WasUsing && !isUsing) || (changed && !isUsing))
     {
-        if (m_PendingDocumentSync)
-        {
-            SyncTransformToSceneDocument(m_PendingDocumentSyncEntityGuid, m_PendingDocumentSyncTransform);
-            m_PendingDocumentSync = false;
-            m_PendingDocumentSyncEntityGuid.clear();
-            m_PendingDocumentSyncTransform = {};
-        }
+        if (m_TransformEditPending)
+            FinishPendingTransform(sceneInteractionAPI, *sceneEdits);
     }
     m_WasUsing = isUsing;
 }
@@ -469,7 +540,7 @@ void VansGizmos::HandleHotkeys()
         m_Space = (m_Space == GizmoSpace::World) ? GizmoSpace::Local : GizmoSpace::World;
 
     if (input.IsKeyPressed(GLFW_KEY_ESCAPE))
-        Vans::VansEditorSelection::Clear();
+        Vans::VansEditorSelectionService::Get().Clear("GizmoDelete");
 }
 
 } // namespace VansGraphics

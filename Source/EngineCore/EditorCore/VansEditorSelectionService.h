@@ -1,6 +1,6 @@
 #pragma once
 
-#include "VansEditorObjectReference.h"
+#include "../AuthoringCore/VansEditorObjectReference.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -45,17 +45,13 @@ namespace Vans
 		void SelectScene(const std::string& source);
 		void SelectAsset(std::filesystem::path assetPath, const std::string& source);
 
-		const std::string& EntityGuid() const { return m_ActiveEntityGuid; }
-		const std::filesystem::path& AssetPath() const { return m_ActiveAssetPath; }
-		bool IsSceneSelected() const { return m_SceneSelected; }
+		const std::string& EntityGuid() const;
+		std::filesystem::path AssetPath() const;
+		bool IsSceneSelected() const;
 
 	private:
-		void ReplaceFacadeStateFromActive(const EditorObjectHandle& active);
 		static bool SameObject(const EditorObjectHandle& left, const EditorObjectHandle& right);
 
 		EditorSelectionSnapshot m_Snapshot;
-		std::string m_ActiveEntityGuid;
-		std::filesystem::path m_ActiveAssetPath;
-		bool m_SceneSelected = false;
 	};
 }

@@ -1,4 +1,5 @@
 #include "VansSceneWindow.h"
+#include "../../EngineAPILayer/Public/IPcgEditorAPI.h"
 #include "imgui.h"
 #include "ImGuizmo.h"
 #include <glm/gtc/type_ptr.hpp>
@@ -7,7 +8,7 @@
 
 namespace VansGraphics
 {
-void VansSceneWindow::FinishSplineGizmo(Vans::EditorAPI::IEngineEditorAPI& api,bool cancel)
+void VansSceneWindow::FinishSplineGizmo(Vans::EditorAPI::IPcgEditorAPI& api,bool cancel)
 {
     if (!m_SplineGizmoDragging) return;
     m_SplineGizmoEdit.phase=cancel?Vans::EditorAPI::PcgSplineEditPhase::Cancel:Vans::EditorAPI::PcgSplineEditPhase::Commit;
@@ -19,7 +20,7 @@ void VansSceneWindow::FinishSplineGizmo(Vans::EditorAPI::IEngineEditorAPI& api,b
     m_SplineGizmoDragging=false;
 }
 
-void VansSceneWindow::DrawSplineTools(Vans::EditorAPI::IEngineEditorAPI& api,const Vans::EditorAPI::PcgSplineSnapshot& snapshot,
+void VansSceneWindow::DrawSplineTools(Vans::EditorAPI::IPcgEditorAPI& api,const Vans::EditorAPI::PcgSplineSnapshot& snapshot,
     glm::vec2 origin,glm::vec2 size,bool inside)
 {
     using namespace Vans::EditorAPI;

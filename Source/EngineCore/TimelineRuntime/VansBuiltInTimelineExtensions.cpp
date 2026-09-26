@@ -8,11 +8,26 @@
 #include "../TimelineCore/VansTimelineValidator.h"
 
 #include <algorithm>
+#include <array>
 
 namespace Vans
 {
 namespace
 {
+struct SignalLaneDescriptor
+{
+	std::string_view stableName;
+	VansEventLane lane = VansEventLane::GameLogic;
+};
+
+constexpr std::array<SignalLaneDescriptor, 5> SignalLanes = {
+	SignalLaneDescriptor{ "GameLogic", VansEventLane::GameLogic },
+	SignalLaneDescriptor{ "Script", VansEventLane::Script },
+	SignalLaneDescriptor{ "MainThread", VansEventLane::MainThread },
+	SignalLaneDescriptor{ "Diagnostics", VansEventLane::Diagnostics },
+	SignalLaneDescriptor{ "RenderPrep", VansEventLane::RenderPrep }
+};
+
 void CollectEventSignalDependencies(
 	const VansTimelineTrack& track,
 	std::vector<VansTimelineDependency>& dependencies)
@@ -96,6 +111,30 @@ double SampleClockRate(
 }
 }
 
+const std::vector<std::string>& VansTimelineSignalLaneNames()
+{
+	static const std::vector<std::string> names = []
+	{
+		std::vector<std::string> result;
+		result.reserve(SignalLanes.size());
+		for (const SignalLaneDescriptor& descriptor : SignalLanes)
+			result.emplace_back(descriptor.stableName);
+		return result;
+	}();
+	return names;
+}
+
+bool VansResolveTimelineSignalLane(std::string_view stableName, VansEventLane& lane)
+{
+	for (const SignalLaneDescriptor& descriptor : SignalLanes)
+		if (descriptor.stableName == stableName)
+		{
+			lane = descriptor.lane;
+			return true;
+		}
+	return false;
+}
+
 bool VansRegisterTimelineRuntimeExtensions(
 	VansTimelineTrackExtensionRegistry& registry,
 	std::string& error)
@@ -114,7 +153,7 @@ bool VansRegisterTimelineRuntimeExtensions(
 			VansMakeTimelineSourceField("payloadType", F::String, std::string(), true),
 			VansMakeTimelineSourceField("payload", F::Struct, VansTimelineStructValue{}),
 			VansMakeTimelineSourceField("lane", F::Enum, std::string("GameLogic"), false,
-				{ "GameLogic", "Script", "MainThread", "Editor", "Diagnostics", "RenderPrep" }),
+				VansTimelineSignalLaneNames()),
 			VansMakeTimelineSourceField("dispatchTiming", F::Enum, std::string("SameFrame"), false,
 				{ "SameFrame", "NextFrame" }),
 			VansMakeTimelineSourceField("firePolicy", F::Enum, std::string("EveryCrossing"), false,

@@ -33,6 +33,7 @@ struct VansScenePhysicsNodeConfig
 	std::optional<std::string> layer;
 	std::optional<bool> isTrigger;
 	std::optional<std::string> hitRegion;
+	std::optional<std::string> navigationArea;
 	std::optional<std::string> mesh;
 	std::optional<std::string> name;
 };

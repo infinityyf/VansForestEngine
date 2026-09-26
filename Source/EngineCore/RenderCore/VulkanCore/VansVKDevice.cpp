@@ -11,7 +11,7 @@
 #include "VansShader.h"
 #include "../VansShaderManager.h"
 #include "../VansScene.h"
-#include "../../Configration/VansConfigration.h"
+#include "../VansRenderBootstrapSettings.h"
 #include "../../Interfaces/INativeWindowProvider.h"
 #include "../../VansTimer.h"
 #include "../../Util/VansLog.h"
@@ -223,8 +223,7 @@ namespace VansGraphics
 		m_Features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
 		m_Features11.pNext = &m_Features12;
 
-		auto vansConfigration = VansConfigration::GetInstance();
-		if (vansConfigration->GetSupportRayTracing())
+		if (kVansRenderBootstrapSettings.requestRayTracing)
 		{
 			m_RaytracingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
 			m_RaytracingFeature.pNext = nullptr;
@@ -862,19 +861,27 @@ namespace VansGraphics
 
 	bool VansVKDevice::DestroyVulkanLogicDevice()
 	{
+		VANS_LOG("[VansVKDevice] Shutdown stage: logic-device begin");
 		if (m_VansVKLogicDevice != VK_NULL_HANDLE)
 		{
 			WaitForDevice();
+			VANS_LOG("[VansVKDevice] Shutdown stage: logic-device idle");
 			m_FrameSubmitOrchestrator.Shutdown();
+			VANS_LOG("[VansVKDevice] Shutdown stage: submit orchestrator released");
 			// Persist cache entries before shader-owned pipeline objects are released.
 			m_PipelineCacheService.Flush(VansPipelineCacheFlushReason::Shutdown);
+			VANS_LOG("[VansVKDevice] Shutdown stage: pipeline cache flushed");
 		}
 
 		VansShaderManager::Get().ReleaseLoadedShaderAssets();
+		VANS_LOG("[VansVKDevice] Shutdown stage: loaded shader assets released");
 		VansPipelineRegistry::Get().Clear();
+		VANS_LOG("[VansVKDevice] Shutdown stage: pipeline registry cleared");
 		m_PipelineCacheService.Shutdown();
+		VANS_LOG("[VansVKDevice] Shutdown stage: pipeline cache released");
 
 		VansVKDescriptorManager::GetInstance()->DestroyDescriptorPool();
+		VANS_LOG("[VansVKDevice] Shutdown stage: descriptor pool released");
 
 		m_StageBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
 		DestroyFrameContextRingResources();
@@ -911,6 +918,7 @@ namespace VansGraphics
 		// Tear down VMA before destroying the logical device. All buffer/image
 		// owners must have released their allocations by this point.
 		VansVKMemoryAllocator::Get().Shutdown();
+		VANS_LOG("[VansVKDevice] Shutdown stage: allocator released");
 
 		if (m_VansVKLogicDevice)
 		{
@@ -962,7 +970,6 @@ namespace VansGraphics
 		{
 		};
 
-		auto vansConfigration = VansConfigration::GetInstance();
 		// RenderDoc's Vulkan layer is injected by RenderDoc itself. Requiring
 		// VK_LAYER_RENDERDOC_Capture here makes ordinary debug launches fail on
 		// machines without RenderDoc and incorrectly disables capture with RT on.
@@ -1014,7 +1021,7 @@ namespace VansGraphics
 			VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
 		};
 
-		if (vansConfigration->GetSupportRayTracing())
+		if (kVansRenderBootstrapSettings.requestRayTracing)
 		{
 			desired_device_extrensions.insert(desired_device_extrensions.end(), RayTracingDeviceExtensions.begin(), RayTracingDeviceExtensions.end());
 		}
@@ -1033,7 +1040,7 @@ namespace VansGraphics
 		{
 			return false;
 		}
-		VansStreamlineRuntime::Get().RefreshDeviceCapabilities();
+		VansStreamlineRuntime::Get().RefreshDeviceCapabilities(m_VansVKPhysicalDevice);
 
 		// Pipeline cache persistence is an optional optimization. Failure must not
 		// prevent the editor or a packaged build from starting.
@@ -1117,11 +1124,10 @@ namespace VansGraphics
 
 	bool VansVKDevice::VulkanDestroy()
 	{
-		WaitForDevice();
-		FlushCurrentFrameDeferredDeletes();
-		CleanupFSR();
-		CleanupDLSS();
-		CleanupUpscalerOutputImage();
+		DrainDeferredDeletesAfterDeviceIdle();
+		// Normal shutdown already released these on the render thread. Keep this
+		// idempotent fallback for construction failures before RenderThread startup.
+		CleanupUpscalerResources();
 		VansStreamlineRuntime::Get().ShutdownBeforeVulkan();
 		{
 			m_VansVKSurface.DestroyVulkanSwapChain(m_VansVKLogicDevice);
@@ -1136,4 +1142,3 @@ namespace VansGraphics
 		return true;
 	}
 }
-

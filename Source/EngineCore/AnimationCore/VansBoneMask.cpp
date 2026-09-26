@@ -47,40 +47,19 @@ namespace VansGraphics
 		}
 	}
 
-	std::uint64_t VansBoneMaskCompiler::ComputeSkeletonSignature(const Skeleton& skeleton)
-	{
-		std::uint64_t hash = 14695981039346656037ull;
-		auto addByte = [&](unsigned char byte)
-		{
-			hash ^= byte;
-			hash *= 1099511628211ull;
-		};
-		for (size_t index = 0; index < skeleton.bones.size(); ++index)
-		{
-			for (unsigned char character : skeleton.bones[index].name)
-				addByte(character);
-			addByte(0xff);
-			const std::uint32_t parent = static_cast<std::uint32_t>(skeleton.bones[index].parentIndex + 1);
-			for (int shift = 0; shift < 32; shift += 8)
-				addByte(static_cast<unsigned char>((parent >> shift) & 0xffu));
-		}
-		return hash;
-	}
-
 	VansCompiledBoneMask VansBoneMaskCompiler::Compile(const VansBoneMaskAsset& asset,
 	                                                   const Skeleton& skeleton)
 	{
 		VansCompiledBoneMask result;
 		result.assetId = asset.id;
-		result.skeletonSignature = ComputeSkeletonSignature(skeleton);
+		result.skeletonSignature = skeleton.ComputeSignature();
 		result.weights.assign(skeleton.bones.size(), std::clamp(asset.defaultWeight, 0.0f, 1.0f));
 		bool hasError = false;
 
 		for (const VansBoneMaskBranchRule& rule : asset.branchRules)
 		{
-			auto root = skeleton.boneNameToIndex.find(rule.rootBone);
-			if (root == skeleton.boneNameToIndex.end()
-			    || root->second < 0 || root->second >= static_cast<int>(skeleton.bones.size()))
+			const int rootBone = skeleton.FindBoneIndex(rule.rootBone);
+			if (rootBone < 0 || rootBone >= static_cast<int>(skeleton.bones.size()))
 			{
 				const bool error = rule.mode == VansBoneMaskRuleMode::Include;
 				result.diagnostics.push_back({
@@ -92,7 +71,7 @@ namespace VansGraphics
 				continue;
 			}
 			std::vector<BoneAtDepth> branch = CollectBranch(
-				skeleton, root->second, rule.includeDescendants, rule.maxDepth);
+				skeleton, rootBone, rule.includeDescendants, rule.maxDepth);
 			int deepest = 0;
 			for (const BoneAtDepth& item : branch)
 				deepest = std::max(deepest, item.depth);
@@ -109,15 +88,14 @@ namespace VansGraphics
 
 		for (const auto& [boneName, explicitWeight] : asset.explicitWeights)
 		{
-			auto bone = skeleton.boneNameToIndex.find(boneName);
-			if (bone == skeleton.boneNameToIndex.end()
-			    || bone->second < 0 || bone->second >= static_cast<int>(skeleton.bones.size()))
+			const int boneIndex = skeleton.FindBoneIndex(boneName);
+			if (boneIndex < 0 || boneIndex >= static_cast<int>(skeleton.bones.size()))
 			{
 				result.diagnostics.push_back({ VansBoneMaskDiagnosticSeverity::Warning, {},
 					"Bone mask explicit weight references missing bone '" + boneName + "'" });
 				continue;
 			}
-			result.weights[static_cast<size_t>(bone->second)] = std::clamp(explicitWeight, 0.0f, 1.0f);
+			result.weights[static_cast<size_t>(boneIndex)] = std::clamp(explicitWeight, 0.0f, 1.0f);
 		}
 
 		int rootIndex = -1;

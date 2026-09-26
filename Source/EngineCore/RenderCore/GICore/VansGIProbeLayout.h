@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VansGISettings.h"
+#include "VansLayoutConstraints.h"
 #include "../GeometryCore/VansSceneGeometrySnapshot.h"
 #include <array>
 #include <memory>
@@ -74,7 +75,8 @@ namespace VansGraphics
     {
     public:
         bool Build(const std::vector<GIResolvedRegion>& regions, const GIProbePlacementSettings& settings,
-            const VansSceneGeometrySnapshot& geometry, std::string& error);
+            const VansSceneGeometrySnapshot& geometry, const IVansLayoutConstraints* constraints,
+            std::string& error);
         uint32_t LocateLeaf(uint32_t region, const glm::vec3& position, uint32_t* visitedNodes = nullptr) const;
         uint32_t LocateNode(uint32_t region, const glm::vec3& position, uint32_t* visitedNodes = nullptr) const;
         const std::vector<GIProbeLayoutRegion>& Regions() const { return m_Regions; }

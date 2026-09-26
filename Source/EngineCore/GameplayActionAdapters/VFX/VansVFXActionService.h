@@ -1,12 +1,12 @@
 #pragma once
 #include "../../GameplayActionCore/VansActionServices.h"
+#include "../../GameplayActionCore/VansGameplayServiceRuntime.h"
 #include "../../RuntimeCore/VansGenerationPool.h"
 #include "../../SceneCore/VansSceneParentReference.h"
 #include <functional>
 
 namespace Vans
 {
-class VansGameplayRuntime;
 enum class VansVFXStopMode { Drain, DetachAndDrain, Immediate };
 struct VansVFXSpawnRequest
 {
@@ -28,14 +28,14 @@ struct VansVFXSceneBackend
 class VansVFXActionService final : public IVansActionService
 {
 public:
-    VansVFXActionService(VansGameplayRuntime& gameplay,VansVFXSceneBackend backend);
+    VansVFXActionService(IVansGameplayServiceRuntime& runtime,VansVFXSceneBackend backend);
     const VansActionServiceCapability& Capability() const override;
     VansActionCommandResult Execute(const VansActionCommand& command) override;
     bool Release(VansGenerationHandle resource,std::string& error) override;
     void Tick(double deltaSeconds) override;
 private:
     struct Effect { VansGenerationHandle instance; bool justSpawned = true; };
-    VansGameplayRuntime& m_Gameplay;
+    IVansGameplayServiceRuntime& m_Runtime;
     VansVFXSceneBackend m_Backend;
     VansGenerationPool<Effect> m_Effects;
 };

@@ -2,17 +2,16 @@
 
 #include "VansEventConnection.h"
 #include "VansEventLane.h"
-#include "VansEventStats.h"
 #include "VansEventTypeId.h"
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
-#include <string>
-#include <typeinfo>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -28,21 +27,19 @@ namespace Vans
 		VansEventConnection Subscribe(
 			std::function<void(const EventT&)> handler,
 			VansEventLane lane,
-			int priority = 0,
-			const char* debugName = nullptr)
+			int priority = 0)
 		{
 			if (!handler)
 				return {};
 
 			auto dispatcher = GetOrCreateDispatcher<EventT>();
-			return dispatcher->Subscribe(std::move(handler), lane, priority, debugName);
+			return dispatcher->Subscribe(std::move(handler), lane, priority);
 		}
 
 		template <typename EventT>
 		void PublishNow(const EventT& event)
 		{
 			auto dispatcher = GetDispatcher<EventT>();
-			RecordPublish(GetVansEventTypeId<EventT>(), GetDebugName<EventT>());
 			if (dispatcher)
 				dispatcher->Publish(event, nullptr);
 		}
@@ -50,27 +47,17 @@ namespace Vans
 		template <typename EventT>
 		void Enqueue(EventT event, VansEventLane lane)
 		{
-			const VansEventTypeId typeId = GetVansEventTypeId<EventT>();
-			const char* debugName = GetDebugName<EventT>();
-			RecordEnqueue(typeId, debugName, lane);
-
 			auto queued = std::make_unique<QueuedEvent<EventT>>(std::move(event), lane);
 			LaneQueue& queue = m_LaneQueues[ToEventLaneIndex(lane)];
 			{
 				std::lock_guard<std::mutex> lock(queue.mutex);
 				queue.events.push_back(std::move(queued));
-				if (queue.events.size() > queue.peakQueueLength)
-					queue.peakQueueLength = queue.events.size();
 			}
 		}
 
 		template <typename EventT>
 		void EnqueueNextFrame(EventT event, VansEventLane lane)
 		{
-			const VansEventTypeId typeId = GetVansEventTypeId<EventT>();
-			const char* debugName = GetDebugName<EventT>();
-			RecordEnqueue(typeId, debugName, lane);
-
 			auto queued = std::make_unique<QueuedEvent<EventT>>(std::move(event), lane);
 			LaneQueue& queue = m_NextFrameQueues[ToEventLaneIndex(lane)];
 			std::lock_guard<std::mutex> lock(queue.mutex);
@@ -79,16 +66,11 @@ namespace Vans
 
 		void BeginFrame();
 		void Flush(VansEventLane lane);
-		void FlushMainThreadLanes();
-		VansEventStatsSnapshot GetStatsSnapshot() const;
-		void ResetFrameStats();
 
 	private:
 		struct IEventDispatcher
 		{
 			virtual ~IEventDispatcher() = default;
-			virtual std::size_t GetListenerCount() const = 0;
-			virtual const char* GetDebugName() const = 0;
 		};
 
 		template <typename EventT>
@@ -97,18 +79,22 @@ namespace Vans
 		public:
 			using Handler = std::function<void(const EventT&)>;
 
-			explicit EventDispatcher(const char* debugName)
-				: m_DebugName(debugName ? debugName : "UnnamedEvent")
+			VansEventConnection Subscribe(Handler handler, VansEventLane lane, int priority)
 			{
-			}
-
-			VansEventConnection Subscribe(Handler handler, VansEventLane lane, int priority, const char* debugName)
-			{
-				const std::uint64_t id = m_NextId++;
+				std::uint64_t id = 0;
 				{
 					std::lock_guard<std::mutex> lock(m_Mutex);
-					m_Slots.push_back(Slot{ id, lane, priority, true, debugName ? debugName : "", std::move(handler) });
-					m_Sorted = false;
+					id = m_NextId++;
+					Slot slot{ id, lane, priority, true, std::move(handler) };
+					if (m_DispatchDepth == 0)
+					{
+						m_Slots.push_back(std::move(slot));
+						m_Sorted = false;
+					}
+					else
+					{
+						m_PendingSlots.push_back(std::move(slot));
+					}
 				}
 
 				return VansEventConnection([weak = std::weak_ptr<EventDispatcher<EventT>>(m_Self), id]()
@@ -128,52 +114,41 @@ namespace Vans
 				std::size_t dispatchCount = 0;
 				{
 					std::lock_guard<std::mutex> lock(m_Mutex);
-					SortIfNeeded();
+					if (m_DispatchDepth == 0)
+						SortIfNeeded();
+					assert(m_DispatchDepth < MaximumDispatchDepth);
 					++m_DispatchDepth;
 					dispatchCount = m_Slots.size();
 				}
 
-				for (std::size_t index = 0; index < dispatchCount; ++index)
+				try
 				{
-					Handler handler;
+					for (std::size_t index = 0; index < dispatchCount; ++index)
 					{
-						std::lock_guard<std::mutex> lock(m_Mutex);
-						if (index >= m_Slots.size())
-							continue;
-						Slot& slot = m_Slots[index];
-						if (!slot.connected)
-							continue;
-						if (laneFilter && slot.lane != *laneFilter)
-							continue;
-						handler = slot.handler;
+						Handler handler;
+						{
+							std::lock_guard<std::mutex> lock(m_Mutex);
+							if (index >= m_Slots.size())
+								continue;
+							Slot& slot = m_Slots[index];
+							if (!slot.connected)
+								continue;
+							if (laneFilter && slot.lane != *laneFilter)
+								continue;
+							handler = slot.handler;
+						}
+
+						if (handler)
+							handler(event);
 					}
-
-					if (handler)
-						handler(event);
 				}
-
+				catch (...)
 				{
-					std::lock_guard<std::mutex> lock(m_Mutex);
-					if (m_DispatchDepth > 0)
-						--m_DispatchDepth;
-					if (m_DispatchDepth == 0)
-						Compact();
+					FinishDispatch();
+					throw;
 				}
-			}
 
-			std::size_t GetListenerCount() const override
-			{
-				std::lock_guard<std::mutex> lock(m_Mutex);
-				std::size_t count = 0;
-				for (const Slot& slot : m_Slots)
-					if (slot.connected)
-						++count;
-				return count;
-			}
-
-			const char* GetDebugName() const override
-			{
-				return m_DebugName.c_str();
+				FinishDispatch();
 			}
 
 		private:
@@ -183,23 +158,46 @@ namespace Vans
 				VansEventLane lane = VansEventLane::MainThread;
 				int priority = 0;
 				bool connected = false;
-				std::string debugName;
 				Handler handler;
 			};
 
 			void Disconnect(std::uint64_t id)
 			{
 				std::lock_guard<std::mutex> lock(m_Mutex);
-				for (Slot& slot : m_Slots)
+				const auto disconnect = [id](std::vector<Slot>& slots)
 				{
-					if (slot.id == id)
+					for (Slot& slot : slots)
 					{
-						slot.connected = false;
-						break;
+						if (slot.id == id)
+						{
+							slot.connected = false;
+							return true;
+						}
 					}
-				}
+					return false;
+				};
+				if (!disconnect(m_Slots))
+					disconnect(m_PendingSlots);
 				if (m_DispatchDepth == 0)
 					Compact();
+			}
+
+			void FinishDispatch()
+			{
+				std::lock_guard<std::mutex> lock(m_Mutex);
+				assert(m_DispatchDepth > 0);
+				--m_DispatchDepth;
+				if (m_DispatchDepth != 0)
+					return;
+				if (!m_PendingSlots.empty())
+				{
+					m_Slots.insert(m_Slots.end(),
+						std::make_move_iterator(m_PendingSlots.begin()),
+						std::make_move_iterator(m_PendingSlots.end()));
+					m_PendingSlots.clear();
+					m_Sorted = false;
+				}
+				Compact();
 			}
 
 			void SortIfNeeded()
@@ -224,19 +222,18 @@ namespace Vans
 
 			mutable std::mutex m_Mutex;
 			std::vector<Slot> m_Slots;
+			std::vector<Slot> m_PendingSlots;
 			std::uint64_t m_NextId = 1;
 			std::size_t m_DispatchDepth = 0;
 			bool m_Sorted = true;
-			std::string m_DebugName;
 			std::weak_ptr<EventDispatcher<EventT>> m_Self;
+			static constexpr std::size_t MaximumDispatchDepth = 16;
 		};
 
 		struct IQueuedEvent
 		{
 			virtual ~IQueuedEvent() = default;
 			virtual void Dispatch(VansEventBus& bus) = 0;
-			virtual VansEventLane GetLane() const = 0;
-			virtual VansEventTypeId GetTypeId() const = 0;
 		};
 
 		template <typename EventT>
@@ -252,11 +249,7 @@ namespace Vans
 			{
 				if (auto dispatcher = bus.GetDispatcher<EventT>())
 					dispatcher->Publish(event, &lane);
-				bus.RecordDispatch(GetVansEventTypeId<EventT>(), GetDebugName<EventT>(), lane);
 			}
-
-			VansEventLane GetLane() const override { return lane; }
-			VansEventTypeId GetTypeId() const override { return GetVansEventTypeId<EventT>(); }
 
 			EventT event;
 			VansEventLane lane = VansEventLane::MainThread;
@@ -266,24 +259,7 @@ namespace Vans
 		{
 			mutable std::mutex mutex;
 			std::vector<std::unique_ptr<IQueuedEvent>> events;
-			std::size_t peakQueueLength = 0;
-			std::uint64_t enqueuedCount = 0;
-			std::uint64_t flushedCount = 0;
 		};
-
-		struct TypeStats
-		{
-			std::string debugName;
-			std::uint64_t publishNowCount = 0;
-			std::uint64_t enqueueCount = 0;
-			std::uint64_t dispatchCount = 0;
-		};
-
-		template <typename EventT>
-		static const char* GetDebugName()
-		{
-			return typeid(EventT).name();
-		}
 
 		template <typename EventT>
 		std::shared_ptr<EventDispatcher<EventT>> GetDispatcher() const
@@ -305,21 +281,15 @@ namespace Vans
 			if (it != m_Dispatchers.end())
 				return std::static_pointer_cast<EventDispatcher<EventT>>(it->second);
 
-			auto dispatcher = std::make_shared<EventDispatcher<EventT>>(GetDebugName<EventT>());
+			auto dispatcher = std::make_shared<EventDispatcher<EventT>>();
 			dispatcher->BindSelf(dispatcher);
 			m_Dispatchers[typeId] = dispatcher;
 			return dispatcher;
 		}
 
-		void RecordPublish(VansEventTypeId typeId, const char* debugName);
-		void RecordEnqueue(VansEventTypeId typeId, const char* debugName, VansEventLane lane);
-		void RecordDispatch(VansEventTypeId typeId, const char* debugName, VansEventLane lane);
-
 		mutable std::mutex m_DispatchersMutex;
 		std::unordered_map<VansEventTypeId, std::shared_ptr<IEventDispatcher>> m_Dispatchers;
 
-		mutable std::mutex m_StatsMutex;
-		std::unordered_map<VansEventTypeId, TypeStats> m_TypeStats;
 		std::array<LaneQueue, ToEventLaneIndex(VansEventLane::Count)> m_LaneQueues;
 		std::array<LaneQueue, ToEventLaneIndex(VansEventLane::Count)> m_NextFrameQueues;
 	};

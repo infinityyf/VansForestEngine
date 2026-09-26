@@ -1,7 +1,8 @@
 #include "Public/VansUIComponent.h"
 
-#include "Public/VansUIActionBus.h"
+#include "Public/VansUIEvents.h"
 #include "Public/VansUIElementHandle.h"
+#include "../EventCore/VansEventBus.h"
 
 #include <type_traits>
 #include <utility>
@@ -138,7 +139,7 @@ namespace VansRuntime
                 if (!actionParam.empty())
                     params[actionParam] = GetProperty(actionParam);
 
-                VansUIActionBus::Get().Dispatch(VansUIAction{
+                Vans::VansEventBus::Get().PublishNow(VansUIActionEvent{
                     actionName,
                     std::move(params),
                     kInvalidUIHandle,

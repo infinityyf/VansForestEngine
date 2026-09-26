@@ -1,21 +1,22 @@
-#include <unordered_set>
 #include "VansSceneRuntimeProjection.h"
 #include "../AssetCore/Serialization/VansSerializedObjectReference.h"
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 
 #include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/VansAssetMeta.h"
+#include "../AssetCore/VansAssetReference.h"
 #include "../AssetCore/VansMaterialAuthoringAsset.h"
 #include "../AssetCore/VansShaderAuthoringAsset.h"
 #include "../AssetCore/VansSkinProfile.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AudioCore/VansAudioReverbEnvironment.h"
-#include "../AudioCore/VansAudioReverbPresetAsset.h"
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../TerrainCore/VansTerrainAsset.h"
 #include "../Util/VansLog.h"
 #include "../ScriptCore/VansScriptComponentReader.h"
 #include "../ScriptCore/VansScriptUIComponentReader.h"
 #include "VansSceneAnimationComponentReader.h"
+#include "VansSceneAuthoringEntityProjection.h"
 #include "VansSceneCameraMediaComponentReader.h"
 #include "VansSceneContentBuildPlan.h"
 #include "VansSceneEnvironmentNodeConfigReader.h"
@@ -25,7 +26,7 @@
 #include "VansSceneReflectionProbeConfigReader.h"
 #include "VansSceneRenderSettingsConfigReader.h"
 #include "VansSceneTimelineComponentReader.h"
-#include "VansSceneRuntimeComponentKey.h"
+#include "VansComponentTypeCatalog.h"
 #include "VansSceneSchema.h"
 #include "VansSceneVehicleComponentReader.h"
 #include "Serialization/VansVegetationConfigCodec.h"
@@ -39,6 +40,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <system_error>
 #include <unordered_map>
@@ -78,43 +80,6 @@ std::string LowerAsciiCopy(std::string value)
 	return value;
 }
 
-std::string ResolveTextureGuidFromAlias(const std::string& textureName, const std::string& preferredRoot)
-{
-	if (textureName.empty())
-		return {};
-
-	VansAssetGuid parsed;
-	if (VansAssetGuid::TryParse(textureName, parsed))
-		return textureName;
-
-	const auto candidates = VansProjectManager::Get().EnumerateAssetRecords();
-	if (candidates.empty())
-		return {};
-
-	const std::string wantedStem = LowerAsciiCopy(std::filesystem::path(textureName).stem().string());
-	const std::string wantedFile = LowerAsciiCopy(textureName);
-	const std::string preferredToken = LowerAsciiCopy(preferredRoot);
-	std::string fallbackGuid;
-	for (const VansAssetRecord& candidate : candidates)
-	{
-		if (candidate.type != VansAssetType::Texture || candidate.state == VansAssetState::Missing)
-			continue;
-
-		const std::string candidateStem = LowerAsciiCopy(candidate.sourcePath.stem().string());
-		const std::string candidateFile = LowerAsciiCopy(candidate.sourcePath.filename().string());
-		if (candidateStem != wantedStem && candidateFile != wantedFile)
-			continue;
-
-		if (fallbackGuid.empty())
-			fallbackGuid = candidate.guid.ToString();
-
-		const std::string candidatePath = LowerAsciiCopy(candidate.sourcePath.generic_string());
-		if (!preferredToken.empty() && candidatePath.find(preferredToken) != std::string::npos)
-			return candidate.guid.ToString();
-	}
-	return fallbackGuid;
-}
-
 const std::filesystem::path& RuntimeReadPath(const VansAssetRecord& record)
 {
 	return !record.artifactPath.empty() ? record.artifactPath : record.sourcePath;
@@ -127,7 +92,7 @@ std::string RuntimeAssetNameFromGuid(const std::string& guid)
 
 	VansAssetGuid parsedGuid;
 	if (!VansAssetGuid::TryParse(guid, parsedGuid))
-		return guid;
+		return {};
 	const VansAssetObjectRepository& repository =
 		VansProjectManager::Get().GetAssetObjectRepository();
 	if (const auto meta = repository.ResolveLatest<VansAssetMeta>(parsedGuid))
@@ -142,84 +107,81 @@ std::string RuntimeAssetNameFromGuid(const std::string& guid)
 	return guid;
 }
 
-std::string ProjectRelativeAssetPathFromGuid(
+bool ResolveProjectRelativeAssetPathFromGuid(
 	const std::string& guidText,
 	VansAssetType expectedType,
 	const std::string& projectRoot,
-	bool leadingSlash)
+	bool leadingSlash,
+	std::string& outPath,
+	std::string& outError)
 {
+	outPath.clear();
 	if (guidText.empty())
-		return {};
-
-	VansAssetGuid guid;
-	if (!VansAssetGuid::TryParse(guidText, guid))
-		return guidText;
-
-	std::optional<VansAssetRecord> record = VansProjectManager::Get().FindAssetRecord(guid);
-	if (!record || record->type != expectedType || record->state == VansAssetState::Missing)
-		return guidText;
-
-	if (projectRoot.empty())
-		return RuntimeReadPath(*record).generic_string();
-
-	std::error_code ec;
-	std::filesystem::path relative = std::filesystem::relative(
-		RuntimeReadPath(*record),
-		std::filesystem::path(projectRoot),
-		ec);
-	if (ec || relative.empty())
-		return RuntimeReadPath(*record).generic_string();
-
-	std::string result = relative.generic_string();
-	if (leadingSlash && !result.empty() && result.front() != '/')
-		result.insert(result.begin(), '/');
-	return result;
-}
-
-std::string RuntimeAssetNameFromReference(const VansSerializedValue& reference)
-{
-	if (reference.kind == VansSerializedValue::Kind::String)
-		return reference.stringValue;
-	if (reference.kind != VansSerializedValue::Kind::Object)
-		return {};
-
-	const std::string guid = ReadSerializedStringField(reference, "guid");
-	return RuntimeAssetNameFromGuid(guid);
-}
-
-std::string AssetGuidFromReference(const VansSerializedValue& reference)
-{
-	if (reference.kind == VansSerializedValue::Kind::String)
-		return reference.stringValue;
-	if (reference.kind != VansSerializedValue::Kind::Object)
-		return {};
-	return ReadSerializedStringField(reference, "guid");
-}
-
-bool TryApplyAudioReverbPresetAsset(
-	const VansSerializedValue& reference,
-	VansSceneAudioReverbZoneConfig& config)
-{
-	const std::string guidText = AssetGuidFromReference(reference);
-	if (guidText.empty())
-		return false;
-
-	VansAssetGuid guid;
-	if (!VansAssetGuid::TryParse(guidText, guid))
-		return false;
-
-	const auto asset = VansProjectManager::Get().GetAssetObjectRepository()
-		.ResolveLatest<VansAudioReverbPresetAsset>(guid);
-	if (!asset)
 	{
-		VANS_LOG_ERROR("[SceneRuntimeProjection] Audio reverb preset is not loaded: " << guidText);
+		outError = "Timeline asset reference has no GUID";
 		return false;
 	}
 
-	config.presetAssetGuid = guidText;
-	config.presetParameters = asset->parameters;
-	config.overridePresetParameters = true;
+	VansAssetGuid guid;
+	if (!VansAssetGuid::TryParse(guidText, guid))
+	{
+		outError = "Timeline asset reference has an invalid GUID: " + guidText;
+		return false;
+	}
+
+	std::optional<VansAssetRecord> record = VansProjectManager::Get().FindAssetRecord(guid);
+	if (!record)
+	{
+		outError = "Timeline asset GUID is not indexed: " + guidText;
+		return false;
+	}
+	if (record->type != expectedType || record->state == VansAssetState::Missing)
+	{
+		outError = "Timeline asset GUID is missing or has the wrong asset type: " + guidText;
+		return false;
+	}
+	const std::filesystem::path& runtimePath = RuntimeReadPath(*record);
+	if (runtimePath.empty())
+	{
+		outError = "Timeline asset has no readable source or artifact path: " + guidText;
+		return false;
+	}
+
+	if (projectRoot.empty())
+	{
+		outPath = runtimePath.generic_string();
+		return true;
+	}
+
+	std::error_code ec;
+	std::filesystem::path relative = std::filesystem::relative(
+		runtimePath,
+		std::filesystem::path(projectRoot),
+		ec);
+	if (ec || relative.empty())
+	{
+		outError = "Timeline asset path cannot be made project-relative: " + guidText;
+		return false;
+	}
+
+	outPath = relative.generic_string();
+	if (leadingSlash && !outPath.empty() && outPath.front() != '/')
+		outPath.insert(outPath.begin(), '/');
 	return true;
+}
+
+std::string RuntimeAssetNameFromGuidReference(const VansSerializedValue& reference)
+{
+	VansAssetGuid guid;
+	if (!TryReadAssetGuidReference(reference, guid))
+		return {};
+	return RuntimeAssetNameFromGuid(guid.ToString());
+}
+
+std::string AssetGuidFromExactReference(const VansSerializedValue& reference)
+{
+	VansAssetGuid guid;
+	return TryReadAssetGuidReference(reference, guid) ? guid.ToString() : std::string{};
 }
 
 VansSerializedValue Vec3MaterialValue(const glm::vec3& value)
@@ -268,13 +230,10 @@ VansSerializedValue BuildSkinProfileMaterialParametersValue(const VansSkinProfil
 
 bool TryMergeSkinProfileAsset(VansSerializedValue& material, const VansSerializedValue& reference)
 {
-	const std::string guidText = AssetGuidFromReference(reference);
-	if (guidText.empty())
-		return false;
-
 	VansAssetGuid guid;
-	if (!VansAssetGuid::TryParse(guidText, guid))
+	if (!TryReadAssetGuidReference(reference, guid))
 		return false;
+	const std::string guidText = guid.ToString();
 
 	const auto profile = VansProjectManager::Get().GetAssetObjectRepository()
 		.ResolveLatest<VansSkinProfile>(guid);
@@ -310,13 +269,10 @@ VansSerializedValue RuntimeShaderAssetFromReference(const VansSerializedValue& r
 	if (reference.kind != VansSerializedValue::Kind::Object)
 		return VansSerializedValue::Object({});
 
-	const std::string guidText = ReadSerializedStringField(reference, "guid");
-	if (guidText.empty())
-		return VansSerializedValue::Object({});
-
 	VansAssetGuid guid;
-	if (!VansAssetGuid::TryParse(guidText, guid))
+	if (!TryReadAssetGuidReference(reference, guid))
 		return VansSerializedValue::Object({});
+	const std::string guidText = guid.ToString();
 
 	const auto shader = VansProjectManager::Get().GetAssetObjectRepository()
 		.ResolveLatest<VansShaderAuthoringAsset>(guid);
@@ -392,49 +348,30 @@ VansSerializedValue MergeShaderTextureDefaults(
 			if (!existing)
 				continue;
 
-			if (value.kind == VansSerializedValue::Kind::String)
-			{
-				SetSerializedObjectField(*existing, "value", value);
-			}
-			else if (value.kind == VansSerializedValue::Kind::Object && FindObjectField(value, "guid"))
+			if (value.kind == VansSerializedValue::Kind::Object && FindObjectField(value, "guid"))
 			{
 				SetSerializedObjectField(
 					*existing,
 					"value",
-					VansSerializedValue::String(RuntimeAssetNameFromReference(value)));
-			}
-			else if (value.kind == VansSerializedValue::Kind::Object)
-			{
-				for (const auto& [field, overrideValue] : value.objectFields)
-					SetSerializedObjectField(*existing, field, overrideValue);
+					VansSerializedValue::String(RuntimeAssetNameFromGuidReference(value)));
 			}
 		}
 	}
 	return merged;
 }
 
-std::string RuntimeTextureNameFromAssetReference(const VansSerializedValue& reference, const std::string& preferredRoot)
+std::string RuntimeTextureNameFromAssetReference(const VansSerializedValue& reference)
 {
-	if (reference.kind == VansSerializedValue::Kind::Object && FindObjectField(reference, "guid"))
-		return RuntimeAssetNameFromReference(reference);
-
-	if (reference.kind == VansSerializedValue::Kind::String)
-	{
-		const std::string& textureName = reference.stringValue;
-		const std::string resolvedGuid = ResolveTextureGuidFromAlias(textureName, preferredRoot);
-		return resolvedGuid.empty() ? textureName : resolvedGuid;
-	}
-	return {};
+	VansAssetGuid guid;
+	return TryReadAssetGuidReference(reference, guid)
+		? RuntimeAssetNameFromGuid(guid.ToString())
+		: std::string{};
 }
 
 VansSerializedValue RuntimeMaterialShaderValue(const VansSerializedValue& shader)
 {
-	if (shader.kind == VansSerializedValue::Kind::String)
-		return shader;
 	if (shader.kind == VansSerializedValue::Kind::Object && FindObjectField(shader, "guid"))
-		return VansSerializedValue::String(RuntimeAssetNameFromReference(shader));
-	if (shader.kind == VansSerializedValue::Kind::Object)
-		return shader;
+		return VansSerializedValue::String(RuntimeAssetNameFromGuidReference(shader));
 	return VansSerializedValue::Null();
 }
 
@@ -451,7 +388,6 @@ std::optional<VansSceneMaterialConfig> RuntimeMaterialConfigFromAsset(const Vans
 	const VansMaterialAuthoringAsset& asset = *assetObject;
 
 	const std::string materialType = MaterialAuthoringTypeOrDefault(asset.materialType);
-	const std::string preferredRoot = asset.preferredImportModel;
 	const bool customShaderMaterial = IsCustomShaderMaterialAuthoringType(materialType);
 	const VansSerializedValue shaderAsset = asset.shader.IsNull()
 		? VansSerializedValue::Object({})
@@ -469,6 +405,13 @@ std::optional<VansSceneMaterialConfig> RuntimeMaterialConfigFromAsset(const Vans
 			const VansSerializedValue skinProfileReference = *skinProfile;
 			TryMergeSkinProfileAsset(material, skinProfileReference);
 		}
+		else if (const VansSerializedValue* skinProfilePreset =
+			FindObjectField(material, "skinProfilePreset");
+			skinProfilePreset && skinProfilePreset->kind == VansSerializedValue::Kind::String)
+		{
+			SetSerializedObjectField(material, "skinProfile", *skinProfilePreset);
+			EraseSerializedObjectField(material, "skinProfilePreset");
+		}
 	}
 
 	if (!asset.shader.IsNull())
@@ -483,13 +426,11 @@ std::optional<VansSceneMaterialConfig> RuntimeMaterialConfigFromAsset(const Vans
 		VansSerializedValue shaderPasses = VansSerializedValue::Object({});
 		for (const auto& [passName, shaderRef] : asset.shaderPasses.objectFields)
 		{
-			if (shaderRef.kind == VansSerializedValue::Kind::String)
-				SetSerializedObjectField(shaderPasses, passName, shaderRef);
-			else if (shaderRef.kind == VansSerializedValue::Kind::Object && FindObjectField(shaderRef, "guid"))
+			if (shaderRef.kind == VansSerializedValue::Kind::Object && FindObjectField(shaderRef, "guid"))
 				SetSerializedObjectField(
 					shaderPasses,
 					passName,
-					VansSerializedValue::String(RuntimeAssetNameFromReference(shaderRef)));
+					VansSerializedValue::String(RuntimeAssetNameFromGuidReference(shaderRef)));
 		}
 		SetSerializedObjectField(material, "shaderPasses", std::move(shaderPasses));
 	}
@@ -505,7 +446,7 @@ std::optional<VansSceneMaterialConfig> RuntimeMaterialConfigFromAsset(const Vans
 			const std::string slot = ReadSerializedStringField(entry, "slot");
 			std::string textureName;
 			if (const VansSerializedValue* texture = FindObjectField(entry, "texture"))
-				textureName = RuntimeTextureNameFromAssetReference(*texture, preferredRoot);
+				textureName = RuntimeTextureNameFromAssetReference(*texture);
 			if (!slot.empty() && !textureName.empty())
 			{
 				runtimeTextures.push_back(VansSerializedValue::Object({
@@ -529,7 +470,7 @@ std::optional<VansSceneMaterialConfig> RuntimeMaterialConfigFromAsset(const Vans
 		{
 			for (const auto& [slot, reference] : asset.textures.objectFields)
 			{
-				const std::string textureName = RuntimeTextureNameFromAssetReference(reference, preferredRoot);
+				const std::string textureName = RuntimeTextureNameFromAssetReference(reference);
 				if (!textureName.empty())
 					SetSerializedObjectField(
 						material,
@@ -557,16 +498,12 @@ std::optional<VansSceneMaterialConfig> RuntimeMaterialConfigFromAsset(const Vans
 
 		for (const auto& [slot, reference] : asset.customTextures.objectFields)
 		{
-			if (reference.kind == VansSerializedValue::Kind::String)
-			{
-				SetSerializedObjectField(customTextures, slot, reference);
-			}
-			else if (reference.kind == VansSerializedValue::Kind::Object && FindObjectField(reference, "guid"))
+			if (reference.kind == VansSerializedValue::Kind::Object && FindObjectField(reference, "guid"))
 			{
 				SetSerializedObjectField(
 					customTextures,
 					slot,
-					VansSerializedValue::String(RuntimeAssetNameFromReference(reference)));
+					VansSerializedValue::String(RuntimeAssetNameFromGuidReference(reference)));
 			}
 		}
 	}
@@ -576,66 +513,29 @@ std::optional<VansSceneMaterialConfig> RuntimeMaterialConfigFromAsset(const Vans
 	return config;
 }
 
-std::string RuntimeComponentKey(const std::string& type)
-{
-	static const std::unordered_map<std::string, std::string> keys = {
-		{ "Physics", "physics" }, { "Camera", "camera" }, { "Animation", "animation" },
-		{ "CharacterController", "charController" }, { "DirectionalLight", "directional_light" },
-		{ "PointLight", "point_light" }, { "SpotLight", "spot_light" }, { "RectLight", "rect_light" },
-		{ "Audio", "audio" }, { "AudioVolume", "audio_volume" },
-		{ "AudioReverbZone", "audio_reverb_zone" }, { "Video", "video" }, { "Particle", "particle" },
-		{ "Cloth", "cloth" }, { "Vehicle", "vehicle" }, { "Timeline", "timeline" },
-		{ "NavigationAgent", "navigation_agent" }, { "AIAgent", "ai_agent" }
-	};
-
-	const auto found = keys.find(type);
-	if (found != keys.end())
-		return found->second;
-
-	if (type.empty())
-		return {};
-
-	std::string result = type;
-	result.front() = static_cast<char>(std::tolower(static_cast<unsigned char>(result.front())));
-	return result;
-}
-
 bool IsLightComponentType(const std::string& type)
 {
-	return type == "DirectionalLight" ||
-		type == "PointLight" ||
-		type == "SpotLight" ||
-		type == "RectLight";
+	return VansComponentTypeCatalog::HasTrait(type, VansComponentTypeTrait::Light);
 }
 
 bool IsCameraMediaComponentType(const std::string& type)
 {
-	return type == "Camera" || type == "Audio" || type == "Video";
+	return VansComponentTypeCatalog::HasTrait(type, VansComponentTypeTrait::CameraMedia);
 }
 
 bool IsParticleComponentType(const std::string& type)
 {
-	return type == "Particle";
+	return VansComponentTypeCatalog::HasTrait(type, VansComponentTypeTrait::Particle);
 }
 
 bool IsMultiMeshRootComponentType(const std::string& type)
 {
-	return type == "MultiMeshRoot";
-}
-
-bool IsPhysicsComponentType(const std::string& type)
-{
-	return type == "Physics" || type == "Cloth" || type == "CharacterController";
-}
-
-bool IsVehicleComponentType(const std::string& type)
-{
-	return type == "Vehicle";
+	return VansComponentTypeCatalog::HasTrait(type, VansComponentTypeTrait::MultiMeshRoot);
 }
 
 bool IsAnimationComponentType(const std::string& type)
 {
-	return type == "Animation";
+	return VansComponentTypeCatalog::HasTrait(type, VansComponentTypeTrait::Animation);
 }
 
 const VansSerializedValue* FindSerializedObjectField(const VansSerializedValue& object, const char* key)
@@ -1019,7 +919,6 @@ bool TryBuildAuthoringRenderNode(
 		outRender.submesh = ReadSerializedUInt32Field(*submesh, "index").value_or(0u);
 		outRender.submeshSlotName = ReadSerializedStringField(*submesh, "slotName");
 	}
-	outRender.parent = ReadSerializedStringField(*data, "sourceNode");
 
 	const VansSerializedValue* renderRole = FindObjectField(*data, "renderRole");
 	outSpecialRenderNode = renderRole && renderRole->kind == VansSerializedValue::Kind::String;
@@ -1087,7 +986,7 @@ void CollectAuthoringRuntimeComponentMetadata(
 			continue;
 		}
 
-		const std::string runtimeKey = RuntimeComponentKey(type);
+		const std::string runtimeKey = VansComponentTypeCatalog::CanonicalRuntimeKey(type);
 		if (!componentGuid.empty())
 			outComponentGuids[CanonicalRuntimeComponentKeyForName(runtimeKey)] = componentGuid;
 	}
@@ -1133,12 +1032,18 @@ std::optional<VansSceneParticleComponentConfig> ReadAuthoringParticleComponent(
 	return VansSceneParticleComponentReader::ReadParticle(data ? *data : emptyData);
 }
 
-VansSceneCameraMediaComponentConfig ReadAuthoringCameraMediaComponents(const VansSerializedValue& entity)
+bool ReadAuthoringCameraMediaComponents(
+	const VansSerializedValue& entity,
+	VansSceneCameraMediaComponentConfig& outConfig,
+	std::string& outError)
 {
 	VansSceneCameraMediaComponentConfig config;
 	const VansSerializedValue* authoringComponents = FindSerializedArrayField(entity, "components");
 	if (!authoringComponents)
-		return config;
+	{
+		outConfig = std::move(config);
+		return true;
+	}
 
 	for (const VansSerializedValue& component : authoringComponents->arrayItems)
 	{
@@ -1155,23 +1060,45 @@ VansSceneCameraMediaComponentConfig ReadAuthoringCameraMediaComponents(const Van
 		}
 		else if (type == "Audio")
 		{
+			if (const VansSerializedValue* source = FindObjectField(componentData, "source"))
+			{
+				std::optional<VansAssetGuid> guid;
+				if (!TryReadOptionalAssetGuidReference(*source, guid))
+				{
+					outError = "Audio.source must be an object containing exactly one guid";
+					return false;
+				}
+			}
 			config.audio = VansSceneCameraMediaComponentReader::ReadAudio(
 				componentData,
-				[](const VansSerializedValue& source) { return AssetGuidFromReference(source); });
+				[](const VansSerializedValue& source) { return AssetGuidFromExactReference(source); });
 		}
 		else if (type == "Video")
 		{
+			if (const VansSerializedValue* source = FindObjectField(componentData, "source"))
+			{
+				std::optional<VansAssetGuid> guid;
+				if (!TryReadOptionalAssetGuidReference(*source, guid))
+				{
+					outError = "Video.source must be an object containing exactly one guid";
+					return false;
+				}
+			}
 			config.video = VansSceneCameraMediaComponentReader::ReadVideo(
 				componentData,
-				[](const VansSerializedValue& source) { return AssetGuidFromReference(source); });
+				[](const VansSerializedValue& source) { return AssetGuidFromExactReference(source); });
 		}
 	}
-	return config;
+	outConfig = std::move(config);
+	return true;
 }
 
-std::optional<VansSceneAudioReverbZoneConfig> ReadAuthoringAudioReverbZoneComponent(
-	const VansSerializedValue& entity)
+bool ReadAuthoringAudioReverbZoneComponent(
+	const VansSerializedValue& entity,
+	std::optional<VansSceneAudioReverbZoneConfig>& outConfig,
+	std::string& outError)
 {
+	outConfig.reset();
 	const VansSerializedValue* zoneComponent = FindComponent(entity, "AudioVolume");
 	std::string componentType = "AudioVolume";
 	if (!zoneComponent)
@@ -1180,7 +1107,7 @@ std::optional<VansSceneAudioReverbZoneConfig> ReadAuthoringAudioReverbZoneCompon
 		componentType = "AudioReverbZone";
 	}
 	if (!zoneComponent || !ReadSerializedBoolField(*zoneComponent, "enabled", true))
-		return std::nullopt;
+		return true;
 
 	VansSerializedValue emptyData = VansSerializedValue::Object({});
 	const VansSerializedValue* data = FindSerializedObjectField(*zoneComponent, "data");
@@ -1225,8 +1152,18 @@ std::optional<VansSceneAudioReverbZoneConfig> ReadAuthoringAudioReverbZoneCompon
 		config.presetParameters.decayTime = readPresetParameter("decayTime", config.presetParameters.decayTime, 0.1f, 20.0f);
 	}
 	if (const VansSerializedValue* presetAsset = FindObjectField(zoneData, "presetAsset"))
-		TryApplyAudioReverbPresetAsset(*presetAsset, config);
-	return config;
+	{
+		std::optional<VansAssetGuid> guid;
+		if (!TryReadOptionalAssetGuidReference(*presetAsset, guid))
+		{
+			outError = componentType + ".presetAsset must be an object containing exactly one guid";
+			return false;
+		}
+		if (guid)
+			config.presetAssetGuid = guid->ToString();
+	}
+	outConfig = std::move(config);
+	return true;
 }
 
 std::optional<VansSceneLocalVolumetricFogComponentConfig>
@@ -1307,6 +1244,7 @@ std::optional<VansSceneMultiMeshRootConfig> ReadAuthoringMultiMeshRootComponent(
 	{
 		if (const VansSerializedValue* model = FindSerializedObjectField(*data, "model"))
 			config.modelGuid = ReadSerializedStringField(*model, "guid");
+		config.submeshCount = ReadSerializedUInt32Field(*data, "submeshCount").value_or(0);
 	}
 	return config;
 }
@@ -1442,10 +1380,12 @@ std::optional<VansSceneNavigationAgentConfig> ReadAuthoringNavigationAgentCompon
 		readFloat("acceleration", config.runtime.acceleration));
 	config.runtime.stoppingDistance = std::max(0.0f,
 		readFloat("stoppingDistance", config.runtime.stoppingDistance));
-	config.runtime.repathInterval = std::max(0.02f,
-		readFloat("repathInterval", config.runtime.repathInterval));
-	config.runtime.targetMoveThreshold = std::max(0.0f,
-		readFloat("targetMoveThreshold", config.runtime.targetMoveThreshold));
+	config.runtime.repathInterval =
+		readFloat("repathInterval", config.runtime.repathInterval);
+	config.runtime.targetMoveThreshold =
+		readFloat("targetMoveThreshold", config.runtime.targetMoveThreshold);
+	config.runtime.forceRepathDistance =
+		readFloat("forceRepathDistance", config.runtime.forceRepathDistance);
 	return config;
 }
 
@@ -1515,13 +1455,26 @@ std::optional<VansSceneAIAgentConfig> ReadAuthoringAIAgentComponent(
 		config.runtime.facing.yawOnly = ReadSerializedBoolField(
 			*facing, "yawOnly", config.runtime.facing.yawOnly);
 	}
+	if (const VansSerializedValue* timing = FindObjectField(*data, "timing"))
+	{
+		if (const VansSerializedValue* value = FindObjectField(*timing, "perceptionInterval"))
+			config.runtime.timing.perceptionInterval = static_cast<float>(
+				ReadSerializedNumber(*value, config.runtime.timing.perceptionInterval));
+		if (const VansSerializedValue* value = FindObjectField(*timing, "decisionInterval"))
+			config.runtime.timing.decisionInterval = static_cast<float>(
+				ReadSerializedNumber(*value, config.runtime.timing.decisionInterval));
+		if (const VansSerializedValue* value = FindObjectField(*timing, "maximumDeltaSeconds"))
+			config.runtime.timing.maximumDeltaSeconds = static_cast<float>(
+				ReadSerializedNumber(*value, config.runtime.timing.maximumDeltaSeconds));
+	}
 	return config;
 }
 
 bool AppendAuthoringEntityToContentPlan(
 	const VansSerializedValue& entity,
 	VansSceneContentBuildPlan& plan,
-	const std::string& projectRoot)
+	const std::string& projectRoot,
+	std::string& outError)
 {
 	if (entity.kind != VansSerializedValue::Kind::Object)
 		return true;
@@ -1537,7 +1490,10 @@ bool AppendAuthoringEntityToContentPlan(
 		VansSceneParentReference parsed;
 		std::string error;
 		if (!TryReadSceneParentReference(*parent, parsed, error))
+		{
+			outError = std::move(error);
 			return false;
+		}
 		parentReference = std::move(parsed);
 	}
 	const std::string parentEntityGuid = parentReference
@@ -1558,7 +1514,8 @@ bool AppendAuthoringEntityToContentPlan(
 
 	if (specialRenderNode)
 	{
-		plan.renderNodes.push_back(std::move(render));
+		if (hasRender)
+			plan.renderNodes.push_back(std::move(render));
 		return true;
 	}
 
@@ -1601,21 +1558,31 @@ bool AppendAuthoringEntityToContentPlan(
 	objectConfig.physicsComponents = VansScenePhysicsComponentReader::ReadAuthoringComponents(entity);
 	objectConfig.vehicleObject = VansSceneVehicleComponentReader::ReadAuthoringComponents(entity);
 	objectConfig.lightComponents = ReadAuthoringLightComponents(entity);
-	objectConfig.cameraMediaComponents = ReadAuthoringCameraMediaComponents(entity);
-	objectConfig.audioReverbZone = ReadAuthoringAudioReverbZoneComponent(entity);
+	if (!ReadAuthoringCameraMediaComponents(
+		entity, objectConfig.cameraMediaComponents, outError))
+		return false;
+	if (!ReadAuthoringAudioReverbZoneComponent(
+		entity, objectConfig.audioReverbZone, outError))
+		return false;
 	objectConfig.localVolumetricFog =
 		ReadAuthoringLocalVolumetricFogComponent(entity);
 	objectConfig.animation = VansSceneAnimationComponentReader::ReadFromAuthoringEntity(entity);
 	objectConfig.particle = ReadAuthoringParticleComponent(entity);
-	objectConfig.timeline = VansSceneTimelineComponentReader::ReadFromAuthoringEntity(entity);
-	if (objectConfig.timeline)
+	if (!VansSceneTimelineComponentReader::ReadFromAuthoringEntity(
+		entity, objectConfig.timeline, outError))
+		return false;
+	if (objectConfig.timeline && objectConfig.timeline->valid)
 	{
-		const std::string resolvedPath = ProjectRelativeAssetPathFromGuid(
+		std::string resolvedPath;
+		if (!ResolveProjectRelativeAssetPathFromGuid(
 			objectConfig.timeline->timelineAssetGuid,
 			VansAssetType::Timeline,
 			projectRoot,
-			true);
-		if (!resolvedPath.empty()) objectConfig.timeline->timelineAssetPath = resolvedPath;
+			true,
+			resolvedPath,
+			outError))
+			return false;
+		objectConfig.timeline->timelineAssetPath = std::move(resolvedPath);
 	}
 	objectConfig.actionHost = ReadAuthoringActionHostComponent(entity);
 	objectConfig.navigationAgent = ReadAuthoringNavigationAgentComponent(entity, projectRoot);
@@ -1637,47 +1604,18 @@ bool AppendAuthoringEntitiesToContentPlan(
 		return false;
 	}
 
-    if (!VansSceneRuntimeProjection::ValidateEntityComponentTypes(entities, outError)) return false;
 	plan.objects.objects.reserve(
 		plan.objects.objects.size() + entities.arrayItems.size());
 	for (const VansSerializedValue& entity : entities.arrayItems)
 	{
-		if (!AppendAuthoringEntityToContentPlan(entity, plan, projectRoot))
+		if (!AppendAuthoringEntityToContentPlan(entity, plan, projectRoot, outError))
 		{
-			outError = "Invalid Scene entity";
+			if (outError.empty()) outError = "Invalid Scene entity";
 			return false;
 		}
 	}
 	return true;
 }
-}
-
-bool VansSceneRuntimeProjection::ValidateEntityComponentTypes(const VansSerializedValue& entities, std::string& error)
-{
-    static const std::unordered_set<std::string> types{
-        "Transform", "ModelRenderer", "MultiMeshRoot", "Physics", "Cloth", "CharacterController", "Vehicle",
-        "DirectionalLight", "PointLight", "SpotLight", "RectLight", "Camera", "Audio", "Video", "Particle",
-        "AudioReverbZone", "AudioVolume", "LocalVolumetricFog", "Animation", "Timeline", "ActionHost",
-        "GameplayActionHost", "NavigationAgent", "AIAgent", "LODGroup", "Script", "UIController"
-    };
-    if (entities.kind != VansSerializedValue::Kind::Array) { error = "Entities must be an array"; return false; }
-    for (const auto& entity : entities.arrayItems)
-    {
-        const auto* components = FindSerializedArrayField(entity, "components");
-        if (!components) { error = "Entity has no components array"; return false; }
-        for (const auto& component : components->arrayItems)
-        {
-            const auto type = ReadSerializedStringField(component, "type");
-            if (!types.count(type))
-            { error = "Unsupported runtime component '" + type + "' on entity '" + ReadSerializedStringField(entity, "name") + "'"; return false; }
-        }
-    }
-    return true;
-}
-
-VansSerializedValue VansSceneRuntimeProjection::BuildSkinProfileMaterialParameters(const VansSkinProfile& profile)
-{
-	return BuildSkinProfileMaterialParametersValue(profile);
 }
 
 bool VansSceneRuntimeProjection::ProjectLocalVolumetricFogComponent(
@@ -1691,6 +1629,125 @@ bool VansSceneRuntimeProjection::ProjectLocalVolumetricFogComponent(
 	return true;
 }
 
+bool VansSceneRuntimeProjection::ProjectAuthoringEntity(
+	const VansSerializedValue& entity,
+	VansSceneAuthoringEntityProjection& outProjection)
+{
+	outProjection = {};
+	if (entity.kind != VansSerializedValue::Kind::Object)
+		return false;
+	outProjection.entityGuid = ReadSerializedStringField(entity, "id");
+	if (outProjection.entityGuid.empty())
+		return false;
+	outProjection.name = ReadSerializedStringField(entity, "name");
+	outProjection.active = ReadSerializedBoolField(entity, "active", true);
+
+	const VansSerializedValue* components = FindSerializedArrayField(entity, "components");
+	if (!components)
+		return true;
+	const auto aiAgent = ReadAuthoringAIAgentComponent(entity, {});
+	const bool yawOnly = aiAgent && aiAgent->runtime.facing.yawOnly;
+	for (const VansSerializedValue& component : components->arrayItems)
+	{
+		const std::string type = ReadSerializedStringField(component, "type");
+		const bool enabled = ReadSerializedBoolField(component, "enabled", true);
+		VansSceneAuthoringComponentProjection state;
+		state.guid = ReadSerializedStringField(component, "id");
+		state.type = type;
+		state.enabled = enabled;
+		if (type == "LocalVolumetricFog")
+			state.localVolumetricFogComponent = component;
+		outProjection.components.push_back(std::move(state));
+
+		const VansSerializedValue* data = FindSerializedObjectField(component, "data");
+		if (type == "Transform" && enabled && data)
+		{
+			VansSceneAuthoringTransformProjection transform;
+			const auto readFloat3 = [](const VansSerializedValue* value)
+				-> std::optional<std::array<float, 3>>
+			{
+				if (!value || value->kind != VansSerializedValue::Kind::Array ||
+					value->arrayItems.size() < 3)
+					return std::nullopt;
+				return std::array<float, 3>{
+					static_cast<float>(ReadSerializedNumber(value->arrayItems[0])),
+					static_cast<float>(ReadSerializedNumber(value->arrayItems[1])),
+					static_cast<float>(ReadSerializedNumber(value->arrayItems[2])) };
+			};
+			transform.position = readFloat3(FindObjectField(*data, "position"));
+			transform.scale = readFloat3(FindObjectField(*data, "scale"));
+			if (const VansSerializedValue* rotation = FindObjectField(*data, "rotation"))
+			{
+				if (rotation->kind == VansSerializedValue::Kind::Array &&
+					rotation->arrayItems.size() == 4)
+				{
+					transform.rotationDegrees = ProjectSceneQuaternionToEulerDegrees({
+						static_cast<float>(ReadSerializedNumber(rotation->arrayItems[0])),
+						static_cast<float>(ReadSerializedNumber(rotation->arrayItems[1])),
+						static_cast<float>(ReadSerializedNumber(rotation->arrayItems[2])),
+						static_cast<float>(ReadSerializedNumber(rotation->arrayItems[3])) }, yawOnly);
+				}
+				else
+					transform.rotationDegrees = readFloat3(rotation);
+			}
+			if (transform.position || transform.rotationDegrees || transform.scale)
+				outProjection.transform = std::move(transform);
+		}
+
+		if (enabled && IsLightComponentType(type) && data)
+		{
+			VansSceneAuthoringLightProjection light;
+			light.componentType = type;
+			light.enabled = true;
+			light.hasCookie = FindObjectField(*data, "cookie") != nullptr;
+			if (type == "DirectionalLight")
+				light.config = VansSceneLightComponentReader::ReadDirectionalLight(*data);
+			else if (type == "PointLight")
+				light.config = VansSceneLightComponentReader::ReadPointLight(*data);
+			else if (type == "SpotLight")
+				light.config = VansSceneLightComponentReader::ReadSpotLight(*data);
+			else
+				light.config = VansSceneLightComponentReader::ReadRectLight(*data);
+			outProjection.lights.push_back(std::move(light));
+		}
+
+		if (type == "ModelRenderer" && enabled && data)
+		{
+			const auto appendOverrides = [&](const char* field)
+			{
+				const VansSerializedValue* overrides = FindSerializedObjectField(*data, field);
+				if (!overrides) return;
+				for (const auto& [slot, reference] : overrides->objectFields)
+				{
+					const std::string guid = ReadObjectReferenceGuid(reference);
+					if (!guid.empty())
+						outProjection.materialOverrides.push_back({ slot, guid });
+				}
+			};
+			appendOverrides("materialOverrides");
+			appendOverrides("submeshMaterialOverrides");
+		}
+	}
+	return true;
+}
+
+bool VansSceneRuntimeProjection::ProjectAuthoringEntityFromSceneRoot(
+	const VansSerializedValue& sceneRoot,
+	const std::string& entityGuid,
+	VansSceneAuthoringEntityProjection& outProjection)
+{
+	outProjection = {};
+	if (entityGuid.empty())
+		return false;
+	const VansSerializedValue* entities = FindSerializedArrayField(sceneRoot, "entities");
+	if (!entities)
+		return false;
+	for (const VansSerializedValue& entity : entities->arrayItems)
+		if (ReadSerializedStringField(entity, "id") == entityGuid)
+			return ProjectAuthoringEntity(entity, outProjection);
+	return false;
+}
+
 bool VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
 	const VansSerializedValue& entities,
 	const std::string& projectRoot,
@@ -1699,6 +1756,17 @@ bool VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
 {
 	outPlan = {};
 	outError.clear();
+	const SceneDiagnostics diagnostics = VansSceneSchema::ValidateEntityComponents(entities);
+	const auto diagnostic = std::find_if(
+		diagnostics.begin(), diagnostics.end(), [](const SceneDiagnostic& value)
+		{
+			return value.severity == SceneDiagnosticSeverity::Error;
+		});
+	if (diagnostic != diagnostics.end())
+	{
+		outError = diagnostic->message;
+		return false;
+	}
 	if (!AppendAuthoringEntitiesToContentPlan(
 		entities, outPlan, projectRoot, outError))
 	{
@@ -1717,13 +1785,20 @@ bool VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
 {
 	outPlan = {};
 	outError.clear();
-
-	const VansSerializedValue* entities = FindSerializedArrayField(sceneRoot, "entities");
-	if (ReadSerializedIntField(sceneRoot, "schemaVersion", 0) != VansSceneSchemaVersion || !entities)
+	const SceneDiagnostics diagnostics = VansSceneSchema::ValidateSceneJson(
+		EncodeSerializedValueJson<SceneJson>(sceneRoot));
+	const auto diagnostic = std::find_if(
+		diagnostics.begin(), diagnostics.end(), [](const SceneDiagnostic& value)
+		{
+			return value.severity == SceneDiagnosticSeverity::Error;
+		});
+	if (diagnostic != diagnostics.end())
 	{
-		outError = "Invalid Scene document";
+		outError = diagnostic->message;
 		return false;
 	}
+
+	const VansSerializedValue* entities = FindSerializedArrayField(sceneRoot, "entities");
 
 	const VansSerializedValue* settings = FindSerializedObjectField(sceneRoot, "settings");
 	if (!settings)

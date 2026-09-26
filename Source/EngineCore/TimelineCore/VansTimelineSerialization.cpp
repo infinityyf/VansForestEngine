@@ -124,7 +124,7 @@ Json BindingJson(const VansTimelineBinding& binding)
 		{ "id", binding.id }, { "displayName", binding.displayName },
 		{ "kind", EnumToName(binding.kind, BindingKinds, "SceneEntity") },
 		{ "targetGuid", binding.targetGuid }, { "componentGuid", binding.componentGuid },
-		{ "componentTypeId", binding.componentTypeId }, { "assetGuid", binding.assetGuid },
+		{ "componentType", binding.componentType }, { "assetGuid", binding.assetGuid },
 		{ "assetPath", binding.assetPath }, { "scenePathHint", binding.scenePathHint },
 		{ "required", binding.required }
 	};
@@ -139,7 +139,8 @@ bool ReadBinding(const Json& source, VansTimelineBinding& binding)
 	if (!ParseEnum(source.value("kind", "SceneEntity"), BindingKinds, binding.kind)) return false;
 	binding.targetGuid = source.value("targetGuid", "");
 	binding.componentGuid = source.value("componentGuid", "");
-	binding.componentTypeId = source.value("componentTypeId", std::uint16_t{});
+	if (source.contains("componentTypeId")) return false;
+	binding.componentType = source.value("componentType", "");
 	binding.assetGuid = source.value("assetGuid", "");
 	binding.assetPath = source.value("assetPath", "");
 	binding.scenePathHint = source.value("scenePathHint", "");

@@ -26,8 +26,8 @@ VansMakeGameplayPrimitivesGAFContributor()
 				{
 					const std::string tagName = ReadSerializedStringField(inputs, "tag");
 					const std::int64_t count = ReadSerializedIntField(inputs, "count", 1);
-					const VansGameplayTagDefinition* tag = assets.Tags().Find(tagName);
-					if (!tag || count <= 0 || !host.Tags().Add(tag->id, source,
+					const std::optional<VansGameplayTagId> tag = assets.Tags().FindId(tagName);
+					if (!tag || count <= 0 || !host.Tags().Add(*tag, source,
 						static_cast<std::uint32_t>(count)))
 					{
 						initializerError = "ActionHost Tag initializer is invalid: " + tagName;
@@ -46,8 +46,12 @@ VansMakeGameplayPrimitivesGAFContributor()
 					const double number = value ? ReadSerializedNumber(*value) : 0.0;
 					const VansAttributeId attribute =
 						VansMakeStableId<VansAttributeIdTag>(attributeName);
-					if (!std::isfinite(number) || !assets.Attributes().Resolve(attribute) ||
-						!host.Attributes().SetBase(attribute, number))
+					const VansAttributeDefinition* definition =
+						assets.Attributes().Resolve(attribute);
+					if (!definition || !definition->IsValueInRange(number) ||
+						!host.Attributes().ApplyBase(attribute,
+							VansAttributeBaseOperation::Set, number,
+							VansAttributeBoundsPolicy::Reject))
 					{
 						initializerError = "ActionHost Attribute initializer is invalid: " +
 							attributeName;
@@ -78,6 +82,9 @@ VansMakeGameplayPrimitivesGAFContributor()
 					VansEffectSpec spec;
 					spec.definition = definition;
 					spec.source = source;
+					if (!VansDecodeEffectSetByCaller(
+						FindObjectField(inputs, "setByCaller"),
+						spec.setByCaller, initializerError)) return false;
 					spec.context.SetEntity(VansActionContextSlots::Owner, host.Owner());
 					spec.context.SetEntity(VansActionContextSlots::Instigator, host.Owner());
 					spec.context.SetEntity(VansActionContextSlots::PrimaryTarget, host.Owner());
@@ -110,7 +117,9 @@ VansMakeGameplayPrimitivesGAFContributor()
 						ReadSerializedStringField(inputs, "releasePolicy", "OnRevoke");
 					const VansAttributeId attribute =
 						VansMakeStableId<VansAttributeIdTag>(attributeName);
-					if (!std::isfinite(number) || !assets->Attributes().Resolve(attribute) ||
+					const VansAttributeDefinition* definition =
+						assets->Attributes().Resolve(attribute);
+					if (!definition || !definition->IsValueInRange(number) ||
 						(releasePolicy != "OnRevoke" && releasePolicy != "Retain"))
 					{
 						initializerError = "ActionSet Attribute initializer is invalid: " + attributeName;
@@ -118,8 +127,8 @@ VansMakeGameplayPrimitivesGAFContributor()
 					}
 					VansAttributeModifierDesc modifier;
 					modifier.attribute = attribute;
-					modifier.operation = VansAttributeModifierOperation::Additive;
-					modifier.magnitude = number - host.Attributes().Current(attribute);
+					modifier.operation = VansAttributeModifierOperation::Override;
+					modifier.magnitude = number;
 					modifier.source = source;
 					host.Attributes().BeginBatch();
 					const VansAttributeModifierHandle applied = host.Attributes().AddModifier(modifier);

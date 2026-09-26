@@ -1,3 +1,4 @@
+#include "../../SceneRuntime/Transform/VansTransformStore.h"
 #include "../VansScene.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../RuntimeCore/VansThreadContract.h"
@@ -13,11 +14,11 @@ bool VansScene::ResolveParticleSource(const ParticleSourceBinding& binding,glm::
 {
     if (!m_RuntimeWorld || !m_RuntimeWorld->IsAlive(binding.sourceEntity)
         || !m_RuntimeWorld->Entities().IsHierarchyActive(binding.sourceEntity)) return false;
-    const auto* storage = static_cast<const Vans::VansComponentStorage<Vans::VansRuntimeTransformComponent>*>(
-        m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Transform));
+    const auto* storage = m_RuntimeWorld->FindStorage<Vans::VansRuntimeTransformComponent>(
+        Vans::VansRuntimeComponentType_Transform);
     const auto* transform = storage ? storage->Get(storage->FindFirstOwnedBy(binding.sourceEntity)) : nullptr;
-    if (!transform || !VansTransformStore::IsAllocated(transform->transformStoreId)) return false;
-    world = VansTransformStore::GetTransform(transform->transformStoreId).GetModelMatrix();
+    if (!transform || !Vans::VansTransformStore::IsAllocated(transform->transformStoreId)) return false;
+    world = Vans::VansTransformStore::Read(transform->transformStoreId).GetModelMatrix();
     if (binding.source.IsAnchor())
     {
         glm::mat4 model(1); std::uint64_t revision = 0;
@@ -43,7 +44,7 @@ void VansScene::PrepareParticleSources()
     {
         binding.pendingStart = false;
         if (binding.detached) continue;
-        auto* runtime = m_ParticleManager.Resolve(binding.instance);
+        const auto* runtime = m_ParticleManager.Resolve(binding.instance);
         if (!runtime) continue;
         glm::mat4 world(1);
         if (!m_RuntimeWorld->IsAlive(binding.owner) || !m_RuntimeWorld->Entities().IsHierarchyActive(binding.owner)
@@ -52,7 +53,11 @@ void VansScene::PrepareParticleSources()
             m_ParticleManager.Queue(binding.instance,VansParticleControl::DetachAndDrain);
             binding.detached = true;
         }
-        else { binding.lastSourcePosition = glm::vec3(world[3]); runtime->SetOwnerWorldTransform(world); }
+        else
+        {
+            binding.lastSourcePosition = glm::vec3(world[3]);
+            m_ParticleManager.SetOwnerWorldTransform(binding.instance,world);
+        }
     }
 }
 Vans::VansVFXSceneBackend VansScene::MakeVFXSceneBackend()
@@ -70,7 +75,7 @@ Vans::VansVFXSceneBackend VansScene::MakeVFXSceneBackend()
         if (binding.source.IsAnchor())
         {
             const auto component = m_RuntimeWorld->FindComponentByGuid(binding.source.animationComponentGuid.ToString(),Vans::VansRuntimeComponentType_Animation);
-            const auto* storage = static_cast<const Vans::VansComponentStorage<Vans::VansRuntimeAnimationComponent>*>(m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Animation));
+            const auto* storage = m_RuntimeWorld->FindStorage<Vans::VansRuntimeAnimationComponent>(Vans::VansRuntimeComponentType_Animation);
             const auto* animation = storage ? storage->Get(component) : nullptr;
             const auto* header = storage ? storage->GetHeader(component) : nullptr;
             if (!animation || !header || header->owner != binding.sourceEntity) { error = "VFX source animation does not belong to its entity"; return {}; }
@@ -91,13 +96,13 @@ Vans::VansVFXSceneBackend VansScene::MakeVFXSceneBackend()
             for (auto& active : m_ParticleSources)
             {
                 if (!active.autoRelease || active.detached || !sameSource(active)) continue;
-                auto* runtime = m_ParticleManager.Resolve(active.instance);
+                const auto* runtime = m_ParticleManager.Resolve(active.instance);
                 if (!runtime || (!active.pendingStart && runtime->IsFinished())) continue;
                 if (!m_ParticleManager.Queue(active.instance,VansParticleControl::RefreshEmission))
                 { error = "VFX pulse could not refresh its active instance"; return {}; }
                 VANS_LOG("[VFX] Refresh effect=" << request.effect.ToString() << " instance=" << active.instance.index
                     << ":" << active.instance.generation << " playTime=" << runtime->GetPlayTime()
-                    << " alive=" << runtime->m_AliveInstanceCount.load());
+                    << " alive=" << runtime->AliveInstanceCount());
                 return active.instance;
             }
         }
@@ -109,7 +114,12 @@ Vans::VansVFXSceneBackend VansScene::MakeVFXSceneBackend()
         binding.instance = m_ParticleManager.Create(asset);
         if (!binding.instance.IsValid()) { error = "Particle scene capacity exhausted"; return {}; }
         binding.lastSourcePosition = glm::vec3(world[3]);
-        m_ParticleManager.Resolve(binding.instance)->SetOwnerWorldTransform(world);
+        if (!m_ParticleManager.SetOwnerWorldTransform(binding.instance,world))
+        {
+            m_ParticleManager.Destroy(binding.instance);
+            error = "Particle source transform could not be initialized";
+            return {};
+        }
         m_ParticleManager.Queue(binding.instance,VansParticleControl::Play);
         m_ParticleManager.Queue(binding.instance,VansParticleControl::DeferFirstUpdate);
         m_ParticleSources.push_back(binding);
@@ -138,7 +148,12 @@ VansSceneParticleDiagnostics VansScene::CaptureParticleDiagnostics(bool includeP
     VansSceneParticleDiagnostics result;
     result.activeInstances = m_ParticleManager.ActiveCount(); result.pointCapacity = m_ParticleManager.PointCapacity();
     result.rejectedInstances = m_ParticleManager.RejectedInstances();
-    result.simulationMilliseconds = m_ParticleManager.SimulationMilliseconds(); result.waitMilliseconds = m_ParticleManager.WaitMilliseconds();
+    result.resimulationSteps = m_ParticleManager.ResimulationSteps();
+    result.pendingResimulations = m_ParticleManager.PendingResimulations();
+    result.simulationMilliseconds = m_ParticleManager.SimulationMilliseconds();
+    result.resimulationMilliseconds = m_ParticleManager.ResimulationMilliseconds();
+    result.mainThreadOverlapMilliseconds = m_ParticleManager.MainThreadOverlapMilliseconds();
+    result.waitMilliseconds = m_ParticleManager.WaitMilliseconds();
     result.rendering = m_ParticleRenderSystem.Diagnostics();
     for (const auto& binding : m_ParticleSources)
     {
@@ -146,11 +161,11 @@ VansSceneParticleDiagnostics VansScene::CaptureParticleDiagnostics(bool includeP
         VansParticleEffectDiagnostics effect;
         effect.instance = binding.instance; effect.effectGuid = binding.effect.ToString(); effect.sourceGuid = binding.source.entityGuid.ToString();
         effect.sourcePosition = binding.lastSourcePosition; effect.detached = binding.detached;
-        effect.playTime = runtime->GetPlayTime(); effect.alivePoints = runtime->m_AliveInstanceCount.load(); effect.substepOverruns = runtime->m_SubstepOverruns;
+        effect.playTime = runtime->GetPlayTime(); effect.alivePoints = runtime->AliveInstanceCount(); effect.substepOverruns = runtime->SubstepOverruns();
         static const char* states[] = {"Stopped", "Delayed", "Emitting", "Draining", "Finished"};
         effect.state = runtime->IsPaused() ? "Paused" : states[static_cast<unsigned>(runtime->GetState())];
         for (size_t i=0; i<runtime->GetAsset()->m_Emitters.size(); ++i)
-            if (const auto* emitter = runtime->GetEmitter(i)) { effect.droppedSpawns += emitter->m_DroppedSpawns; effect.breaks += emitter->m_BreakCount; }
+            if (const auto* emitter = runtime->GetEmitter(i)) { effect.droppedSpawns += emitter->DroppedSpawns(); effect.breaks += emitter->BreakCount(); }
         if (includePoints) effect.ribbons = runtime->GetFrameData().ribbons;
         result.effects.push_back(std::move(effect));
     }

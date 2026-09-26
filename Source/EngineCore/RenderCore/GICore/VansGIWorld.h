@@ -1,6 +1,7 @@
 #pragma once
 #include "VansGIWorldData.h"
 #include "VansGIVoxelSource.h"
+#include "VansLayoutConstraints.h"
 #include "../VulkanCore/VansVKBuffer.h"
 #include "../VulkanCore/VansShader.h"
 #include <memory>
@@ -14,7 +15,6 @@ namespace VansGraphics
     class VansVKDevice;
     class VansVKCommandBuffer;
     class VansTexture;
-    struct VansSceneGeometrySnapshot;
     struct alignas(16) GIWorldParameters
     {
         glm::vec4 terrain{0};
@@ -41,7 +41,7 @@ namespace VansGraphics
     };
 
     // 只在开关打开后创建。所有资源由该对象持有，在既有安全重建点释放。
-    class VansGIWorld
+    class VansGIWorld final : public IVansLayoutConstraints
     {
     public:
         VansGIWorld() = default;
@@ -63,11 +63,15 @@ namespace VansGraphics
         bool ApplyColorPatch(uint32_t map,uint32_t x,uint32_t y,uint32_t w,uint32_t h,const std::vector<uint8_t>& pixels);
         std::optional<GIWorldBounds> TakeLightingChanges()
         {auto changed=m_PendingLightingBounds;m_PendingLightingBounds.reset();return changed;}
-        void AddLayoutQueries(VansSceneGeometrySnapshot& geometry) const;
+        bool IsPositionValid(glm::vec3 position, float clearance) const override;
+        VansGeometrySurfaceMeasure MeasureSurface(
+            glm::vec3 minimum, glm::vec3 maximum) const override;
         void SetViewCenter(glm::vec3 center) { m_ViewCenter=center; }
         void InvalidateSources() { m_SourceDirty=true; }
         bool SourcesDirty() const { return m_SourceDirty; }
-        static bool CookShaders(const std::string& shaderRoot,std::vector<Vans::VansShaderCookProgram>& programs,std::string& error);
+        static bool CookShaders(const std::string& shaderRoot,
+            const std::filesystem::path& artifactRoot,
+            std::vector<Vans::VansShaderCookProgram>& programs,std::string& error);
         VkDescriptorSetLayout Layout() const { return m_Layout; }
         VkDescriptorSet Descriptor() const { return m_Sets.empty()?VK_NULL_HANDLE:m_Sets[0]; }
         VansComputeShader& Trace() { return *m_Trace; }
@@ -149,6 +153,7 @@ namespace VansGraphics
         VkDescriptorSetLayout m_Layout=VK_NULL_HANDLE;
         std::vector<VkDescriptorSet> m_Sets;
         std::string m_ShaderFolder;
+        std::filesystem::path m_ShaderArtifactRoot;
         std::unique_ptr<VansComputeShader> m_Trace,m_Lighting,m_Visibility,m_Bias,m_Atlas,m_State;
         uint64_t m_Revision=1;
     };

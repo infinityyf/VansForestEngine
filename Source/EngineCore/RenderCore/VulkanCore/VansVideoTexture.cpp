@@ -1,20 +1,13 @@
 #include "VansVideoTexture.h"
+#include "../../MediaCore/VansMediaDecodeSession.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
 #include <cstring>
 
-// FFmpeg C 头文件必须在 extern "C" 块内引入，避免 C++ 名称修饰
-extern "C"
-{
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/avutil.h>
-#include <libswscale/swscale.h>
-}
-
 namespace VansGraphics
 {
+
+VansVideoTexture::VansVideoTexture() = default;
 
 // ===========================================================================
 // 析构函数
@@ -39,149 +32,58 @@ bool VansVideoTexture::Open(VansVKDevice* device,
         return false;
     }
 
-    m_VkDevice     = device;
-    m_FilePath     = filePath;
-    m_Loop         = loop;
-    m_IsSrgb       = isSrgb;
-    m_PlayTime     = 0.0;
+    Close();
+    m_VkDevice = device;
+    m_Loop = loop;
+    m_IsSrgb = isSrgb;
+    m_PlayTime = 0.0;
     m_ShouldStop.store(false);
+    m_NeedRestart.store(false);
+    m_SeekRequestSeconds.store(-1.0);
 
-    // ── 1. 打开容器 ──────────────────────────────────────────────────────────
-    if (avformat_open_input(&m_FmtCtx, filePath.c_str(), nullptr, nullptr) < 0)
+    auto decodeSession = std::make_unique<VansEngine::VansMediaDecodeSession>();
+    std::string error;
+    if (!decodeSession->OpenVideo(filePath, error))
     {
-        VANS_LOG_ERROR("[VansVideoTexture] avformat_open_input 失败: " << filePath);
+        VANS_LOG_ERROR("[VansVideoTexture] 打开视频失败: " << filePath << " (" << error << ")");
         return false;
     }
 
-    if (avformat_find_stream_info(m_FmtCtx, nullptr) < 0)
-    {
-        VANS_LOG_ERROR("[VansVideoTexture] avformat_find_stream_info 失败: " << filePath);
-        avformat_close_input(&m_FmtCtx);
-        return false;
-    }
+    m_Width = decodeSession->GetWidth();
+    m_Height = decodeSession->GetHeight();
+    m_VideoDuration = decodeSession->GetDuration();
 
-    // ── 2. 查找视频流 ────────────────────────────────────────────────────────
-    m_VideoStream = -1;
-    for (unsigned i = 0; i < m_FmtCtx->nb_streams; ++i)
-    {
-        if (m_FmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
-        {
-            m_VideoStream = static_cast<int>(i);
-            break;
-        }
-    }
-
-    if (m_VideoStream < 0)
-    {
-        VANS_LOG_ERROR("[VansVideoTexture] 未找到视频流: " << filePath);
-        avformat_close_input(&m_FmtCtx);
-        return false;
-    }
-
-    AVStream* stream = m_FmtCtx->streams[m_VideoStream];
-    m_TimeBase       = av_q2d(stream->time_base);
-    m_Width          = stream->codecpar->width;
-    m_Height         = stream->codecpar->height;
-
-    // 计算视频总时长，用于循环时的 PTS 偏移
-    if (stream->duration != AV_NOPTS_VALUE)
-        m_VideoDuration = static_cast<double>(stream->duration) * m_TimeBase;
-    else if (m_FmtCtx->duration != AV_NOPTS_VALUE)
-        m_VideoDuration = static_cast<double>(m_FmtCtx->duration) / static_cast<double>(AV_TIME_BASE);
-    else
-        m_VideoDuration = 0.0; // 未知时长，循环 PTS 偏移将为 0
-
-    // ── 3. 初始化解码器 ──────────────────────────────────────────────────────
-    const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
-    if (!codec)
-    {
-        VANS_LOG_ERROR("[VansVideoTexture] 找不到解码器: " << filePath);
-        avformat_close_input(&m_FmtCtx);
-        return false;
-    }
-
-    m_CodecCtx = avcodec_alloc_context3(codec);
-    if (!m_CodecCtx)
-    {
-        VANS_LOG_ERROR("[VansVideoTexture] avcodec_alloc_context3 失败: " << filePath);
-        avformat_close_input(&m_FmtCtx);
-        return false;
-    }
-
-    if (avcodec_parameters_to_context(m_CodecCtx, stream->codecpar) < 0)
-    {
-        VANS_LOG_ERROR("[VansVideoTexture] avcodec_parameters_to_context 失败: " << filePath);
-        avcodec_free_context(&m_CodecCtx);
-        avformat_close_input(&m_FmtCtx);
-        return false;
-    }
-
-    if (avcodec_open2(m_CodecCtx, codec, nullptr) < 0)
-    {
-        VANS_LOG_ERROR("[VansVideoTexture] avcodec_open2 失败: " << filePath);
-        avcodec_free_context(&m_CodecCtx);
-        avformat_close_input(&m_FmtCtx);
-        return false;
-    }
-
-    // ── 4. 初始化 SwsContext（所有像素格式 → RGBA8）─────────────────────────
-    m_SwsCtx = sws_getContext(
-        m_Width, m_Height, m_CodecCtx->pix_fmt,
-        m_Width, m_Height, AV_PIX_FMT_RGBA,
-        SWS_BILINEAR, nullptr, nullptr, nullptr);
-
-    if (!m_SwsCtx)
-    {
-        VANS_LOG_ERROR("[VansVideoTexture] sws_getContext 失败: " << filePath);
-        avcodec_free_context(&m_CodecCtx);
-        avformat_close_input(&m_FmtCtx);
-        return false;
-    }
-
-    // ── 5. 解码首帧，初始化 GPU 纹理 ──────────────────────────────────────────
+    // ── 1. 解码首帧，初始化 GPU 纹理 ──────────────────────────────────────────
     // 首帧解码完成后用于 LoadFromMemory 创建 VkImage；
     // 解码完成后立即 seek 回起点，保证后台线程从头开始。
     const int firstFrameSize = m_Width * m_Height * 4;
     std::vector<uint8_t> firstPixels(static_cast<size_t>(firstFrameSize), 0);
-    bool gotFirstFrame = false;
 
     {
         VANS_PROFILE_SCOPE("Video::Open.FirstFrameDecode", Vans::ProfileCategory::Video);
-        AVFrame*  frame  = av_frame_alloc();
-        AVPacket* packet = av_packet_alloc();
-
-        if (frame && packet)
+        double firstFrameTime = 0.0;
+        const VansEngine::VansMediaDecodeStatus status = decodeSession->DecodeVideoFrame(
+            firstPixels,
+            firstFrameTime,
+            VansEngine::VansMediaEndPolicy::StopAtInputEnd,
+            error);
+        if (status == VansEngine::VansMediaDecodeStatus::Failed)
         {
-            while (!gotFirstFrame && av_read_frame(m_FmtCtx, packet) >= 0)
-            {
-                if (packet->stream_index == m_VideoStream &&
-                    avcodec_send_packet(m_CodecCtx, packet) >= 0)
-                {
-                    while (avcodec_receive_frame(m_CodecCtx, frame) >= 0)
-                    {
-                        uint8_t* dstData[4]   = { firstPixels.data(), nullptr, nullptr, nullptr };
-                        int      dstStride[4] = { m_Width * 4, 0, 0, 0 };
-                        sws_scale(m_SwsCtx,
-                            frame->data, frame->linesize, 0, m_Height,
-                            dstData, dstStride);
-                        gotFirstFrame = true;
-                        av_frame_unref(frame);
-                        break;
-                    }
-                }
-                av_packet_unref(packet);
-            }
+            VANS_LOG_WARN("[VansVideoTexture] 首帧解码失败，使用黑色初始帧: "
+                << filePath << " (" << error << ")");
+            firstPixels.assign(static_cast<size_t>(firstFrameSize), 0);
         }
-
-        if (frame)  av_frame_free(&frame);
-        if (packet) av_packet_free(&packet);
     }
 
-    // seek 回视频起点，后台线程将从头解码
-    av_seek_frame(m_FmtCtx, m_VideoStream, 0, AVSEEK_FLAG_BACKWARD);
-    avcodec_flush_buffers(m_CodecCtx);
+    error.clear();
+    if (!decodeSession->Reset(error))
+    {
+        VANS_LOG_ERROR("[VansVideoTexture] 视频复位失败: " << filePath << " (" << error << ")");
+        return false;
+    }
+    m_DecodeSession = std::move(decodeSession);
 
-    // ── 6. 在 GPU 上创建纹理 ───────────────────────────────────────────────────
+    // ── 2. 在 GPU 上创建纹理 ───────────────────────────────────────────────────
     VkFormat gpuFormat = m_IsSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     {
         VANS_PROFILE_SCOPE("Video::Open.InitialTextureUpload", Vans::ProfileCategory::Video);
@@ -196,7 +98,7 @@ bool VansVideoTexture::Open(VansVKDevice* device,
 
     m_IsReady.store(true);
 
-    // ── 7. 启动后台解码线程 ──────────────────────────────────────────────────
+    // ── 3. 启动后台解码线程 ──────────────────────────────────────────────────
     if (autoPlay)
         m_Playing.store(true);
 
@@ -209,7 +111,7 @@ bool VansVideoTexture::Open(VansVKDevice* device,
 }
 
 // ===========================================================================
-// Close — 停止后台线程，释放所有 FFmpeg 资源
+// Close — 停止后台线程，释放媒体会话和 GPU 资源
 // ===========================================================================
 void VansVideoTexture::Close()
 {
@@ -235,15 +137,12 @@ void VansVideoTexture::Close()
         ClearUploadSlotsLocked();
     }
 
-    // 释放 FFmpeg 资源
-    if (m_SwsCtx)   { sws_freeContext(m_SwsCtx);          m_SwsCtx    = nullptr; }
-    if (m_CodecCtx) { avcodec_free_context(&m_CodecCtx);                          }
-    if (m_FmtCtx)   { avformat_close_input(&m_FmtCtx);                            }
+    m_DecodeSession.reset();
 
     m_IsReady.store(false);
-    m_VideoStream  = -1;
     m_Width        = 0;
     m_Height       = 0;
+    m_VideoDuration = 0.0;
     m_PlayTime     = 0.0;
     m_HasNewFrame = false;
     m_HasPendingUpload = false;
@@ -630,24 +529,14 @@ VkSampler VansVideoTexture::GetSampler()
 // ===========================================================================
 // DecodeThreadFunc — 后台解码线程
 //
-// 流程：
-//   av_read_frame → avcodec_send_packet → avcodec_receive_frame
-//     → sws_scale（转 RGBA）→ 写入 m_FrameQueue
-//
-// 循环处理：
-//   遇到 EOF 且 m_Loop==true 时，seek 回起点并将 ptsOffset 增加 m_VideoDuration，
-//   使后续 PTS 对主线程 m_PlayTime 单调递增，无需重置 m_PlayTime，避免数据竞争。
+// MediaCore 统一负责容器、codec、seek 与 RGBA 转换；这里保留播放状态、循环
+// PTS、帧池、上传槽和有界队列。循环 PTS 单调递增，主线程无需重置播放时间。
 // ===========================================================================
 void VansVideoTexture::DecodeThreadFunc()
 {
-    AVFrame*  frame  = av_frame_alloc();
-    AVPacket* packet = av_packet_alloc();
-
-    if (!frame || !packet)
+    if (!m_DecodeSession)
     {
-        VANS_LOG_ERROR("[VansVideoTexture] DecodeThreadFunc: 内存分配失败");
-        if (frame)  av_frame_free(&frame);
-        if (packet) av_packet_free(&packet);
+        VANS_LOG_ERROR("[VansVideoTexture] DecodeThreadFunc: 媒体会话未初始化");
         return;
     }
 
@@ -659,14 +548,12 @@ void VansVideoTexture::DecodeThreadFunc()
 		const double seekSeconds = m_SeekRequestSeconds.exchange(-1.0);
 		if (seekSeconds >= 0.0)
 		{
-			const int64_t timestamp = m_TimeBase > 0.0
-				? static_cast<int64_t>(seekSeconds / m_TimeBase)
-				: 0;
 			ptsOffset = 0.0;
-			av_seek_frame(m_FmtCtx, m_VideoStream, timestamp, AVSEEK_FLAG_BACKWARD);
-			avcodec_flush_buffers(m_CodecCtx);
+			std::string error;
+			if (!m_DecodeSession->Seek(seekSeconds, error))
+				VANS_LOG_WARN("[VansVideoTexture] 视频跳转失败: " << error);
 		}
-        // Stop() 请求：清空队列、seek 回起点、重置 ptsOffset
+        // Stop() 请求：清空队列、复位媒体会话和 ptsOffset。
         if (m_NeedRestart.exchange(false))
         {
             {
@@ -680,126 +567,94 @@ void VansVideoTexture::DecodeThreadFunc()
                 }
             }
             ptsOffset = 0.0;
-            av_seek_frame(m_FmtCtx, m_VideoStream, 0, AVSEEK_FLAG_BACKWARD);
-            avcodec_flush_buffers(m_CodecCtx);
+            std::string error;
+            if (!m_DecodeSession->Reset(error))
+                VANS_LOG_WARN("[VansVideoTexture] 视频复位失败: " << error);
         }
 
-        const int readRet = av_read_frame(m_FmtCtx, packet);
-
-        if (readRet < 0)
+        // 暂停时不预解码，队列满时等待主线程消费。
         {
-            // EOF 或读取错误
-            if (m_Loop && !m_ShouldStop.load())
-            {
-                // 循环回绕：偏移 PTS，seek 到起点
-                ptsOffset += (m_VideoDuration > 0.0 ? m_VideoDuration : 1.0);
-                av_seek_frame(m_FmtCtx, m_VideoStream, 0, AVSEEK_FLAG_BACKWARD);
-                avcodec_flush_buffers(m_CodecCtx);
+            std::unique_lock<std::mutex> lock(m_QueueMutex);
+            m_ProducerCv.wait(lock, [this] {
+                return (static_cast<int>(m_FrameQueue.size()) < MAX_QUEUE_SIZE
+                        && m_Playing.load())
+                    || m_ShouldStop.load()
+                    || m_NeedRestart.load()
+                    || m_SeekRequestSeconds.load() >= 0.0;
+            });
+            if (m_ShouldStop.load())
+                break;
+            if (m_NeedRestart.load() || m_SeekRequestSeconds.load() >= 0.0)
                 continue;
-            }
-            break; // 非循环模式：播放结束
         }
 
-        if (packet->stream_index != m_VideoStream)
+        VideoFrameData frame;
         {
-            av_packet_unref(packet);
-            continue;
+            std::lock_guard<std::mutex> lock(m_QueueMutex);
+            frame.pixels = AcquireFramePixelsLocked(rgbaBufSize);
+            frame.uploadSlot = AcquireUploadSlotLocked();
         }
 
-        // 发送 packet 给解码器
-        if (avcodec_send_packet(m_CodecCtx, packet) < 0)
+        std::string error;
+        double presentationTime = 0.0;
         {
-            av_packet_unref(packet);
-            continue;
-        }
-        av_packet_unref(packet);
-
-        // 接收并处理所有解码帧
-        while (!m_ShouldStop.load())
-        {
-            const int recvRet = avcodec_receive_frame(m_CodecCtx, frame);
-            if (recvRet == AVERROR(EAGAIN) || recvRet == AVERROR_EOF)
-                break;
-            if (recvRet < 0)
-                break;
-
-            // 计算调整后 PTS（秒）
-            double pts = ptsOffset;
-            if (frame->best_effort_timestamp != AV_NOPTS_VALUE)
-                pts += static_cast<double>(frame->best_effort_timestamp) * m_TimeBase;
-
-            // 等待队列有空位 且 处于播放状态（暂停时不预解码，避免占用帧队列）
-            // m_NeedRestart 也会唤醒，以便尽快丢弃当前帧并返回外层循环执行 seek
+            VANS_PROFILE_SCOPE("Video::Decode.MediaFrame", Vans::ProfileCategory::Video);
+            const VansEngine::VansMediaDecodeStatus status = m_DecodeSession->DecodeVideoFrame(
+                frame.pixels,
+                presentationTime,
+                VansEngine::VansMediaEndPolicy::StopAtInputEnd,
+                error);
+            if (status == VansEngine::VansMediaDecodeStatus::EndOfStream)
             {
-                std::unique_lock<std::mutex> lock(m_QueueMutex);
-                m_ProducerCv.wait(lock, [this] {
-                    return (static_cast<int>(m_FrameQueue.size()) < MAX_QUEUE_SIZE
-                            && m_Playing.load())
-                        || m_ShouldStop.load()
-                        || m_NeedRestart.load()
-						|| m_SeekRequestSeconds.load() >= 0.0;
-                });
-                if (m_ShouldStop.load())
+                std::lock_guard<std::mutex> lock(m_QueueMutex);
+                RecycleFramePixelsLocked(frame.pixels);
+                RecycleUploadSlotLocked(frame.uploadSlot);
+                if (!m_Loop || m_ShouldStop.load())
+                    break;
+
+                ptsOffset += (m_VideoDuration > 0.0 ? m_VideoDuration : 1.0);
+                if (!m_DecodeSession->Reset(error))
                 {
-                    av_frame_unref(frame);
-                    goto done;
-                }
-                // Stop() 请求：丢弃当前帧，返回外层循环执行 seek
-                if (m_NeedRestart.load())
-                {
-                    av_frame_unref(frame);
+                    VANS_LOG_ERROR("[VansVideoTexture] 循环复位失败: " << error);
                     break;
                 }
-				if (m_SeekRequestSeconds.load() >= 0.0)
-				{
-					av_frame_unref(frame);
-					break;
-				}
+                continue;
             }
-
-            // 格式转换并推入队列
+            if (status == VansEngine::VansMediaDecodeStatus::Failed)
             {
-                VideoFrameData vfd;
-                vfd.pts = pts;
-
-                {
-                    std::lock_guard<std::mutex> lock(m_QueueMutex);
-                    vfd.pixels = AcquireFramePixelsLocked(rgbaBufSize);
-                    vfd.uploadSlot = AcquireUploadSlotLocked();
-                }
-
-                uint8_t* dstData[4]   = { vfd.pixels.data(), nullptr, nullptr, nullptr };
-                int      dstStride[4] = { m_Width * 4, 0, 0, 0 };
-                {
-                    VANS_PROFILE_SCOPE("Video::Decode.sws_scale", Vans::ProfileCategory::Video);
-                    sws_scale(m_SwsCtx,
-                        frame->data, frame->linesize, 0, m_Height,
-                        dstData, dstStride);
-                }
-
-                if (vfd.uploadSlot >= 0)
-                {
-                    VANS_PROFILE_SCOPE("Video::Decode.StageUploadMemcpy", Vans::ProfileCategory::Video);
-                    const VkDeviceSize uploadOffset =
-                        static_cast<VkDeviceSize>(vfd.uploadSlot) * static_cast<VkDeviceSize>(rgbaBufSize);
-                    m_FrameUploadBuffer.UpdateMapped(vfd.pixels.data(), uploadOffset, rgbaBufSize);
-                }
-
-                {
-                    VANS_PROFILE_SCOPE("Video::Decode.QueuePush", Vans::ProfileCategory::Video);
-                    std::lock_guard<std::mutex> lock(m_QueueMutex);
-                    m_FrameQueue.push(std::move(vfd));
-                    m_ConsumerCv.notify_one();
-                }
+                std::lock_guard<std::mutex> lock(m_QueueMutex);
+                RecycleFramePixelsLocked(frame.pixels);
+                RecycleUploadSlotLocked(frame.uploadSlot);
+                VANS_LOG_ERROR("[VansVideoTexture] 视频帧解码失败: " << error);
+                break;
             }
+        }
 
-            av_frame_unref(frame);
+        if (m_ShouldStop.load() || m_NeedRestart.load() ||
+            m_SeekRequestSeconds.load() >= 0.0)
+        {
+            std::lock_guard<std::mutex> lock(m_QueueMutex);
+            RecycleFramePixelsLocked(frame.pixels);
+            RecycleUploadSlotLocked(frame.uploadSlot);
+            continue;
+        }
+
+        frame.pts = ptsOffset + presentationTime;
+        if (frame.uploadSlot >= 0)
+        {
+            VANS_PROFILE_SCOPE("Video::Decode.StageUploadMemcpy", Vans::ProfileCategory::Video);
+            const VkDeviceSize uploadOffset =
+                static_cast<VkDeviceSize>(frame.uploadSlot) * static_cast<VkDeviceSize>(rgbaBufSize);
+            m_FrameUploadBuffer.UpdateMapped(frame.pixels.data(), uploadOffset, rgbaBufSize);
+        }
+
+        {
+            VANS_PROFILE_SCOPE("Video::Decode.QueuePush", Vans::ProfileCategory::Video);
+            std::lock_guard<std::mutex> lock(m_QueueMutex);
+            m_FrameQueue.push(std::move(frame));
+            m_ConsumerCv.notify_one();
         }
     }
-
-done:
-    av_frame_free(&frame);
-    av_packet_free(&packet);
 }
 
 } // namespace VansGraphics

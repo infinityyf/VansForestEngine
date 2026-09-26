@@ -1,11 +1,11 @@
 #include "VansAssetDatabase.h"
+#include "VansDerivedArtifactLayout.h"
 #include "Importers/VansTextureCooker.h"
 #include "Storage/VansAssetMetaStorage.h"
 #include "../Util/VansFileFingerprint.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cwctype>
 #include <mutex>
 #include <utility>
@@ -14,67 +14,103 @@ namespace Vans
 {
 namespace
 {
-struct SerializedAssetTypeEntry
+constexpr VansAssetTypeDescriptor AssetTypes[] =
 {
-    VansAssetType type;
-    std::string_view name;
+	{ VansAssetType::Model, "model", ".fbx", "ModelImporter" },
+	{ VansAssetType::Texture, "texture", ".png", "TextureImporter" },
+	{ VansAssetType::IESProfile, "iesProfile", ".ies", "IESProfileImporter" },
+	{ VansAssetType::Material, "material", ".mat", "MaterialImporter" },
+	{ VansAssetType::Shader, "shader", ".vshader", "ShaderImporter" },
+	{ VansAssetType::Audio, "audio", ".wav", "AudioImporter" },
+	{ VansAssetType::Video, "video", ".mp4", "VideoImporter" },
+	{ VansAssetType::Scene, "scene", ".vscene", "SceneImporter" },
+	{ VansAssetType::Particle, "particle", ".particle", "ParticleImporter" },
+	{ VansAssetType::AnimationClip, "animationClip", ".vclip", "AnimationClipImporter" },
+	{ VansAssetType::AnimatorController, "animatorController", ".vanimator", "AnimatorControllerImporter" },
+	{ VansAssetType::AnimationRig, "animationRig", ".vanimrig", "AnimationRigImporter" },
+	{ VansAssetType::RetargetProfile, "retargetProfile", ".vretarget", "RetargetProfileImporter" },
+	{ VansAssetType::BoneMask, "boneMask", ".vbonemask", "BoneMaskImporter" },
+	{ VansAssetType::Timeline, "timeline", ".vtimeline", "TimelineImporter" },
+	{ VansAssetType::NavigationMesh, "navigationMesh", ".vnavmesh", "NavigationMeshImporter" },
+	{ VansAssetType::AIBehavior, "aiBehavior", ".vaibehavior", "AIBehaviorImporter" },
+	{ VansAssetType::ActionDefinition, "actionDefinition", ".vaction", "GameplayActionImporter" },
+	{ VansAssetType::ActionSet, "actionSet", ".vactionset", "GameplayActionSetImporter" },
+	{ VansAssetType::GameplayEffect, "gameplayEffect", ".veffect", "GameplayEffectImporter" },
+	{ VansAssetType::GameplayCue, "gameplayCue", ".vcue", "GameplayCueImporter" },
+	{ VansAssetType::AttributeSet, "attributeSet", ".vattributeset", "GameplayAttributeSetImporter" },
+	{ VansAssetType::TargetingPolicy, "targetingPolicy", ".vtargeting", "GameplayTargetingImporter" },
+	{ VansAssetType::GameplayTagTree, "gameplayTagTree", ".vtagtree", "GameplayTagTreeImporter" },
+	{ VansAssetType::PayloadSchema, "payloadSchema", ".vpayloadschema", "GameplayPayloadSchemaImporter" },
+	{ VansAssetType::ActionGraph, "actionGraph", ".vactiongraph", "GameplayActionGraphImporter" },
+	{ VansAssetType::CameraRigProfile, "cameraRigProfile", ".vcamerarig", "CameraRigProfileImporter" },
+	{ VansAssetType::CameraShakeProfile, "cameraShakeProfile", ".vcamerashake", "CameraShakeProfileImporter" },
+	{ VansAssetType::GAFEditorLayout, "gafEditorLayout", ".gafeditorlayout", "GAFEditorLayoutImporter" },
+	{ VansAssetType::ClothProfile, "clothProfile", ".clothprofile", "ClothProfileImporter" },
+	{ VansAssetType::SkinProfile, "skinProfile", ".skinprofile", "SkinProfileImporter" },
+	{ VansAssetType::PostProcessProfile, "postProcessProfile", ".pprofile", "PostProcessProfileImporter" },
+	{ VansAssetType::RagdollProfile, "ragdollProfile", ".vragdoll", "RagdollProfileImporter" },
+	{ VansAssetType::AudioReverbPreset, "audioReverbPreset", ".vreverb", "AudioReverbPresetImporter" },
+	{ VansAssetType::AudioBusSnapshot, "audioBusSnapshot", ".vaudiosnapshot", "AudioBusSnapshotImporter" },
+	{ VansAssetType::AudioDuckingRules, "audioDuckingRules", ".vducking", "AudioDuckingRulesImporter" },
+	{ VansAssetType::UIScreen, "uiScreen", ".vui.json", "UIScreenImporter" },
+	{ VansAssetType::UIComponent, "uiComponent", ".vcomp.json", "UIComponentImporter" },
+	{ VansAssetType::UIThemeTokens, "uiThemeTokens", ".tokens.json", "UIThemeTokensImporter" },
+	{ VansAssetType::UILocalization, "uiLocalization", ".loc.json", "UILocalizationImporter" },
+	{ VansAssetType::UIXaml, "uiXaml", ".xaml", "UIXamlImporter" },
+	{ VansAssetType::VegetationConfig, "vegetationConfig", {}, "VegetationConfigImporter" },
+	{ VansAssetType::Terrain, "terrain", ".vterrain", "TerrainImporter" },
+	{ VansAssetType::PlantType, "plantType", ".vplant", "PlantTypeImporter" },
+	{ VansAssetType::PcgMask, "pcgMask", ".vpcgmask", "PcgMaskImporter" },
+	{ VansAssetType::PcgSpline, "pcgSpline", ".vpcgspline", "PcgSplineImporter" },
+	{ VansAssetType::DamageProfile, "damageProfile", ".vdamage", "DamageProfileImporter" },
+	{ VansAssetType::Prefab, "prefab", ".vprefab", "PrefabImporter" }
 };
 
-constexpr SerializedAssetTypeEntry SerializedAssetTypes[] = {
-    { VansAssetType::Prefab, "prefab" },
-    { VansAssetType::Model, "model" },
-    { VansAssetType::Texture, "texture" },
-    { VansAssetType::Material, "material" },
-    { VansAssetType::Shader, "shader" },
-    { VansAssetType::Audio, "audio" },
-    { VansAssetType::Video, "video" },
-    { VansAssetType::Scene, "scene" },
-    { VansAssetType::Particle, "particle" },
-    { VansAssetType::AnimationClip, "animationClip" },
-    { VansAssetType::AnimatorController, "animatorController" },
-    { VansAssetType::AnimationRig, "animationRig" },
-    { VansAssetType::RetargetProfile, "retargetProfile" },
-    { VansAssetType::BoneMask, "boneMask" },
-    { VansAssetType::Timeline, "timeline" },
-    { VansAssetType::NavigationMesh, "navigationMesh" },
-    { VansAssetType::AIBehavior, "aiBehavior" },
-    { VansAssetType::ActionDefinition, "actionDefinition" },
-    { VansAssetType::ActionSet, "actionSet" },
-    { VansAssetType::GameplayEffect, "gameplayEffect" },
-    { VansAssetType::GameplayCue, "gameplayCue" },
-    { VansAssetType::AttributeSet, "attributeSet" },
-    { VansAssetType::TargetingPolicy, "targetingPolicy" },
-    { VansAssetType::GameplayTagTree, "gameplayTagTree" },
-    { VansAssetType::PayloadSchema, "payloadSchema" },
-    { VansAssetType::ActionGraph, "actionGraph" },
-    { VansAssetType::CameraRigProfile, "cameraRigProfile" },
-    { VansAssetType::CameraShakeProfile, "cameraShakeProfile" },
-    { VansAssetType::DamageProfile, "damageProfile" },
-    { VansAssetType::GAFEditorLayout, "gafEditorLayout" },
-    { VansAssetType::ClothProfile, "clothProfile" },
-    { VansAssetType::SkinProfile, "skinProfile" },
-    { VansAssetType::PostProcessProfile, "postProcessProfile" },
-    { VansAssetType::RagdollProfile, "ragdollProfile" },
-    { VansAssetType::AudioReverbPreset, "audioReverbPreset" },
-    { VansAssetType::AudioBusSnapshot, "audioBusSnapshot" },
-    { VansAssetType::AudioDuckingRules, "audioDuckingRules" },
-	{ VansAssetType::UIScreen, "uiScreen" },
-	{ VansAssetType::UIComponent, "uiComponent" },
-	{ VansAssetType::UIThemeTokens, "uiThemeTokens" },
-	{ VansAssetType::UILocalization, "uiLocalization" },
-	{ VansAssetType::UIXaml, "uiXaml" },
-	{ VansAssetType::VegetationConfig, "vegetationConfig" },
-	{ VansAssetType::Terrain, "terrain" },
-	{ VansAssetType::PlantType, "plantType" },
-	{ VansAssetType::PcgMask, "pcgMask" },
-	{ VansAssetType::PcgSpline, "pcgSpline" }
+struct VansAssetExtensionAlias
+{
+	VansAssetType type;
+	std::string_view extension;
 };
 
-std::wstring LowerExtension(const std::filesystem::path& path)
+constexpr VansAssetExtensionAlias AssetExtensionAliases[] =
 {
-    std::wstring extension = path.extension().wstring();
-    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t value) { return std::towlower(value); });
-    return extension;
+	{ VansAssetType::Model, ".obj" },
+	{ VansAssetType::Model, ".gltf" },
+	{ VansAssetType::Model, ".glb" },
+	{ VansAssetType::Texture, ".jpg" },
+	{ VansAssetType::Texture, ".jpeg" },
+	{ VansAssetType::Texture, ".tga" },
+	{ VansAssetType::Texture, ".hdr" },
+	{ VansAssetType::Texture, ".exr" },
+	{ VansAssetType::Texture, ".cubemap" },
+	{ VansAssetType::Shader, ".vshader.json" },
+	{ VansAssetType::Audio, ".mp3" },
+	{ VansAssetType::Audio, ".ogg" },
+	{ VansAssetType::Audio, ".flac" },
+	{ VansAssetType::Video, ".mkv" },
+	{ VansAssetType::Video, ".avi" },
+	{ VansAssetType::Video, ".mov" },
+	{ VansAssetType::Video, ".webm" },
+	{ VansAssetType::Scene, ".scene" },
+};
+
+std::wstring LowerFileName(const std::filesystem::path& path)
+{
+	std::wstring value = path.filename().wstring();
+	std::transform(value.begin(), value.end(), value.begin(), [](wchar_t character)
+	{
+		return static_cast<wchar_t>(std::towlower(character));
+	});
+	return value;
+}
+
+bool EndsWith(std::wstring_view value, std::string_view asciiSuffix)
+{
+	if (value.size() < asciiSuffix.size()) return false;
+	const std::size_t offset = value.size() - asciiSuffix.size();
+	for (std::size_t index = 0; index < asciiSuffix.size(); ++index)
+		if (value[offset + index] != static_cast<wchar_t>(asciiSuffix[index])) return false;
+	return true;
 }
 
 bool HasPathComponent(const std::filesystem::path& path, const std::wstring& expected)
@@ -151,7 +187,7 @@ VansAssetScanResult VansAssetDatabase::Scan(const VansAssetOperationPolicy& poli
             ec.clear();
             continue;
         }
-        if (!it->is_regular_file(ec) || LowerExtension(it->path()) == L".meta")
+        if (!it->is_regular_file(ec) || EndsWith(LowerFileName(it->path()), ".meta"))
             continue;
         if (Classify(it->path()) == VansAssetType::Unknown)
             continue;
@@ -250,17 +286,17 @@ bool VansAssetDatabase::RegisterOrRefresh(
     }
 	else if (type == VansAssetType::Texture && !m_ArtifactRoot.empty())
 	{
-        const std::filesystem::path packagedTextureArtifact =
-            m_ArtifactRoot / "Textures" / (meta.guid.ToString() + ".vtex");
-		if (std::filesystem::is_regular_file(packagedTextureArtifact, ec))
-			cookedArtifactPath = packagedTextureArtifact;
+		const VansDerivedArtifactLocation artifact =
+			VansDerivedArtifactLayout::ImportedRuntimeCache(m_ArtifactRoot, type, meta.guid);
+		if (artifact && std::filesystem::is_regular_file(artifact.path, ec))
+			cookedArtifactPath = artifact.path;
 	}
 	else if (type == VansAssetType::Model && !m_ArtifactRoot.empty())
 	{
-		const std::filesystem::path meshArtifact =
-			m_ArtifactRoot / "Meshes" / (meta.guid.ToString() + ".vmesh");
-		if (std::filesystem::is_regular_file(meshArtifact, ec))
-			cookedArtifactPath = meshArtifact;
+		const VansDerivedArtifactLocation artifact =
+			VansDerivedArtifactLayout::ImportedRuntimeCache(m_ArtifactRoot, type, meta.guid);
+		if (artifact && std::filesystem::is_regular_file(artifact.path, ec))
+			cookedArtifactPath = artifact.path;
 	}
 
     std::unique_lock lock(m_Mutex);
@@ -313,10 +349,8 @@ bool VansAssetDatabase::RegisterOrRefresh(
 		record.textureImport.linear = colorSpace.empty()
 			? !meta.ReadBoolSetting("sRGB", true)
 			: colorSpace == "linear";
-		record.textureImport.compressed =
-			meta.ReadBoolSetting("useCompress", "compress", true);
-		record.textureImport.mipmapped =
-			meta.ReadBoolSetting("needMip", "generateMip", true);
+		record.textureImport.compressed = meta.ReadBoolSetting("useCompress", true);
+		record.textureImport.mipmapped = meta.ReadBoolSetting("needMip", true);
 		record.textureImport.channelCount = meta.ReadIntSetting("importChannel", 4);
 		record.textureImport.precision = meta.ReadStringSetting("precision", "low8");
 	}
@@ -542,141 +576,43 @@ std::vector<VansAssetRecord> VansAssetDatabase::All() const
 
 VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePath)
 {
-    const std::wstring extension = LowerExtension(sourcePath);
-    if (extension == L".fbx" || extension == L".obj" || extension == L".gltf" || extension == L".glb") return VansAssetType::Model;
-	if (extension == L".png" || extension == L".jpg" || extension == L".jpeg" || extension == L".tga" || extension == L".hdr" || extension == L".exr" || extension == L".cubemap") return VansAssetType::Texture;
-    if (extension == L".mat") return VansAssetType::Material;
-    if (extension == L".vshader") return VansAssetType::Shader;
-    if (extension == L".json")
-    {
-        std::wstring fileName = sourcePath.filename().wstring();
-        std::transform(fileName.begin(), fileName.end(), fileName.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-        const std::wstring suffix = L".vshader.json";
-        if (fileName.size() >= suffix.size() &&
-            fileName.compare(fileName.size() - suffix.size(), suffix.size(), suffix) == 0)
-            return VansAssetType::Shader;
-		const auto hasSuffix = [&](const std::wstring& value)
-		{
-			return fileName.size() >= value.size() &&
-				fileName.compare(fileName.size() - value.size(), value.size(), value) == 0;
-		};
-		if (hasSuffix(L".vui.json")) return VansAssetType::UIScreen;
-		if (hasSuffix(L".vcomp.json")) return VansAssetType::UIComponent;
-		if (hasSuffix(L".tokens.json")) return VansAssetType::UIThemeTokens;
-		if (hasSuffix(L".loc.json")) return VansAssetType::UILocalization;
-		if (HasPathComponent(sourcePath.parent_path(), L"vegetation"))
-			return VansAssetType::VegetationConfig;
-    }
-	if (extension == L".xaml") return VansAssetType::UIXaml;
-	if (extension == L".wav" || extension == L".mp3" || extension == L".ogg" || extension == L".flac") return VansAssetType::Audio;
-	if (extension == L".mp4" || extension == L".mkv" || extension == L".avi" || extension == L".mov" || extension == L".webm") return VansAssetType::Video;
-    if (extension == L".scene" || extension == L".vscene") return VansAssetType::Scene;
-    if (extension == L".particle") return VansAssetType::Particle;
-    if (extension == L".vclip") return VansAssetType::AnimationClip;
-    if (extension == L".vanimator") return VansAssetType::AnimatorController;
-	if (extension == L".vanimrig") return VansAssetType::AnimationRig;
-	if (extension == L".vretarget") return VansAssetType::RetargetProfile;
-	if (extension == L".vbonemask") return VansAssetType::BoneMask;
-    if (extension == L".vtimeline") return VansAssetType::Timeline;
-	if (extension == L".vnavmesh") return VansAssetType::NavigationMesh;
-	if (extension == L".vaibehavior") return VansAssetType::AIBehavior;
-	if (extension == L".vaction") return VansAssetType::ActionDefinition;
-	if (extension == L".vactionset") return VansAssetType::ActionSet;
-	if (extension == L".veffect") return VansAssetType::GameplayEffect;
-	if (extension == L".vcue") return VansAssetType::GameplayCue;
-	if (extension == L".vattributeset") return VansAssetType::AttributeSet;
-	if (extension == L".vtargeting") return VansAssetType::TargetingPolicy;
-	if (extension == L".vtagtree") return VansAssetType::GameplayTagTree;
-	if (extension == L".vpayloadschema") return VansAssetType::PayloadSchema;
-	if (extension == L".vactiongraph") return VansAssetType::ActionGraph;
-	if (extension == L".vcamerarig") return VansAssetType::CameraRigProfile;
-	if (extension == L".vdamage") return VansAssetType::DamageProfile;
-    if (extension == L".vprefab") return VansAssetType::Prefab;
-	if (extension == L".vcamerashake") return VansAssetType::CameraShakeProfile;
-	if (extension == L".gafeditorlayout") return VansAssetType::GAFEditorLayout;
-    if (extension == L".clothprofile") return VansAssetType::ClothProfile;
-    if (extension == L".skinprofile") return VansAssetType::SkinProfile;
-    if (extension == L".pprofile") return VansAssetType::PostProcessProfile;
-    if (extension == L".vragdoll") return VansAssetType::RagdollProfile;
-    if (extension == L".vreverb") return VansAssetType::AudioReverbPreset;
-    if (extension == L".vaudiosnapshot" || extension == L".vbusnapshot") return VansAssetType::AudioBusSnapshot;
-	if (extension == L".vducking") return VansAssetType::AudioDuckingRules;
-	if (extension == L".vterrain") return VansAssetType::Terrain;
-	if (extension == L".vplant") return VansAssetType::PlantType;
-	if (extension == L".vpcgmask") return VansAssetType::PcgMask;
-	if (extension == L".vpcgspline") return VansAssetType::PcgSpline;
-    return VansAssetType::Unknown;
+	const std::wstring fileName = LowerFileName(sourcePath);
+	for (const VansAssetTypeDescriptor& descriptor : AssetTypes)
+		if (!descriptor.canonicalExtension.empty() &&
+			EndsWith(fileName, descriptor.canonicalExtension))
+			return descriptor.type;
+	for (const VansAssetExtensionAlias& alias : AssetExtensionAliases)
+		if (EndsWith(fileName, alias.extension)) return alias.type;
+	if (EndsWith(fileName, ".json") &&
+		HasPathComponent(sourcePath.parent_path(), L"vegetation"))
+		return VansAssetType::VegetationConfig;
+	return VansAssetType::Unknown;
+}
+
+const VansAssetTypeDescriptor* VansAssetDatabase::Describe(VansAssetType type) noexcept
+{
+	for (const VansAssetTypeDescriptor& descriptor : AssetTypes)
+		if (descriptor.type == type) return &descriptor;
+	return nullptr;
 }
 
 std::string VansAssetDatabase::ImporterFor(VansAssetType type)
 {
-    switch (type)
-    {
-    case VansAssetType::Model: return "ModelImporter";
-    case VansAssetType::Texture: return "TextureImporter";
-    case VansAssetType::Material: return "MaterialImporter";
-    case VansAssetType::Shader: return "ShaderImporter";
-	case VansAssetType::Audio: return "AudioImporter";
-	case VansAssetType::Video: return "VideoImporter";
-    case VansAssetType::Scene: return "SceneImporter";
-    case VansAssetType::Particle: return "ParticleImporter";
-    case VansAssetType::AnimationClip: return "AnimationClipImporter";
-    case VansAssetType::AnimatorController: return "AnimatorControllerImporter";
-	case VansAssetType::AnimationRig: return "AnimationRigImporter";
-	case VansAssetType::RetargetProfile: return "RetargetProfileImporter";
-	case VansAssetType::BoneMask: return "BoneMaskImporter";
-    case VansAssetType::Timeline: return "TimelineImporter";
-	case VansAssetType::NavigationMesh: return "NavigationMeshImporter";
-	case VansAssetType::AIBehavior: return "AIBehaviorImporter";
-	case VansAssetType::ActionDefinition: return "GameplayActionImporter";
-	case VansAssetType::ActionSet: return "GameplayActionSetImporter";
-	case VansAssetType::GameplayEffect: return "GameplayEffectImporter";
-	case VansAssetType::GameplayCue: return "GameplayCueImporter";
-	case VansAssetType::AttributeSet: return "GameplayAttributeSetImporter";
-	case VansAssetType::TargetingPolicy: return "GameplayTargetingImporter";
-	case VansAssetType::GameplayTagTree: return "GameplayTagTreeImporter";
-	case VansAssetType::PayloadSchema: return "GameplayPayloadSchemaImporter";
-	case VansAssetType::ActionGraph: return "GameplayActionGraphImporter";
-	case VansAssetType::CameraRigProfile: return "CameraRigProfileImporter";
-	case VansAssetType::CameraShakeProfile: return "CameraShakeProfileImporter";
-	case VansAssetType::DamageProfile: return "DamageProfileImporter";
-    case VansAssetType::Prefab: return "PrefabImporter";
-	case VansAssetType::GAFEditorLayout: return "GAFEditorLayoutImporter";
-    case VansAssetType::ClothProfile: return "ClothProfileImporter";
-    case VansAssetType::SkinProfile: return "SkinProfileImporter";
-    case VansAssetType::PostProcessProfile: return "PostProcessProfileImporter";
-    case VansAssetType::RagdollProfile: return "RagdollProfileImporter";
-    case VansAssetType::AudioReverbPreset: return "AudioReverbPresetImporter";
-    case VansAssetType::AudioBusSnapshot: return "AudioBusSnapshotImporter";
-    case VansAssetType::AudioDuckingRules: return "AudioDuckingRulesImporter";
-	case VansAssetType::UIScreen: return "UIScreenImporter";
-	case VansAssetType::UIComponent: return "UIComponentImporter";
-	case VansAssetType::UIThemeTokens: return "UIThemeTokensImporter";
-	case VansAssetType::UILocalization: return "UILocalizationImporter";
-	case VansAssetType::UIXaml: return "UIXamlImporter";
-	case VansAssetType::VegetationConfig: return "VegetationConfigImporter";
-	case VansAssetType::Terrain: return "TerrainImporter";
-	case VansAssetType::PlantType: return "PlantTypeImporter";
-	case VansAssetType::PcgMask: return "PcgMaskImporter";
-	case VansAssetType::PcgSpline: return "PcgSplineImporter";
-    default: return {};
-    }
+	const VansAssetTypeDescriptor* descriptor = Describe(type);
+	return descriptor ? std::string(descriptor->importer) : std::string{};
 }
 
 std::string_view VansAssetDatabase::SerializedTypeName(VansAssetType type) noexcept
 {
-    for (const SerializedAssetTypeEntry& entry : SerializedAssetTypes)
-        if (entry.type == type)
-            return entry.name;
-    return "unknown";
+	const VansAssetTypeDescriptor* descriptor = Describe(type);
+	return descriptor ? descriptor->serializedName : std::string_view("unknown");
 }
 
 VansAssetType VansAssetDatabase::ParseSerializedType(std::string_view value) noexcept
 {
-    for (const SerializedAssetTypeEntry& entry : SerializedAssetTypes)
-        if (entry.name == value)
-            return entry.type;
-    return VansAssetType::Unknown;
+	for (const VansAssetTypeDescriptor& descriptor : AssetTypes)
+		if (descriptor.serializedName == value) return descriptor.type;
+	return VansAssetType::Unknown;
 }
 
 std::filesystem::path VansAssetDatabase::Normalize(const std::filesystem::path& path) const

@@ -13,7 +13,9 @@ namespace VansGraphics
 	class VansPunctualShadowManager
 	{
 	public:
-		VansPunctualShadowManager(uint32_t atlasSize = 4096, uint32_t basePageSize = 128, uint32_t gutter = 2);
+		VansPunctualShadowManager(
+			uint32_t atlasSize = kVansRenderBootstrapSettings.punctualShadowAtlasWidth,
+			uint32_t basePageSize = 128, uint32_t gutter = 2);
 
 		void Reset();
 		void PrepareFrame(

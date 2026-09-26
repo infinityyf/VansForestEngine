@@ -2,7 +2,6 @@
 #include "VansAudioDecoder.h"
 #include "VansAudioMixConfig.h"
 #include "VansAudioSystem.h"
-#include "../SceneCore/VansSceneAudioRuntimeConfig.h"
 #include "../SceneCore/VansSceneResourcePlan.h"
 #include "../Util/VansLog.h"
 
@@ -40,13 +39,13 @@ void VansAudioManager::Load(
 
         const std::string fullPath = std::filesystem::path(rel).lexically_normal().string();
 
-        AudioNodeProperties props;
+        VansAudioProperties props;
         props.m_Name = displayName;
         props.m_FilePath = fullPath;
         std::string playMode = entry.playMode;
         std::transform(playMode.begin(), playMode.end(), playMode.begin(),
             [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        props.m_PlayMode = playMode == "streaming" ? AudioPlayMode::Streaming : AudioPlayMode::Static;
+        props.m_PlayMode = playMode == "streaming" ? VansAudioPlayMode::Streaming : VansAudioPlayMode::Static;
         props.m_Loop = entry.loop;
         props.m_AutoPlay = entry.autoPlay;
         props.m_Volume = entry.volume;
@@ -71,39 +70,6 @@ void VansAudioManager::Load(
         VANS_LOG("[VansAudioManager] Loaded audio: " << key
             << " (" << displayName << ") <- " << rel);
         m_Nodes[key] = std::move(node);
-    }
-}
-
-void VansAudioManager::ApplySceneConfig(
-    const std::vector<Vans::VansSceneAudioRuntimeOverride>& audioSources)
-{
-    for (const Vans::VansSceneAudioRuntimeOverride& entry : audioSources)
-    {
-        if (entry.name.empty())
-        {
-            continue;
-        }
-
-        VansAudioNode* node = Get(entry.name);
-        if (!node)
-        {
-            VANS_LOG_WARN("[VansAudioManager] ApplySceneConfig: audio node not found '" << entry.name << "'");
-            continue;
-        }
-
-        if (entry.volume) node->SetVolume(*entry.volume);
-        if (entry.pitch) node->SetPitch(*entry.pitch);
-        if (entry.loop) node->SetLoop(*entry.loop);
-        if (entry.spatial) node->SetSpatial(*entry.spatial);
-        if (entry.referenceDistance) node->SetRefDistance(*entry.referenceDistance);
-        if (entry.maxDistance) node->SetMaxDistance(*entry.maxDistance);
-        if (entry.rolloff) node->SetRolloff(*entry.rolloff);
-        if (entry.attenuationMode)
-            node->SetAttenuationMode(AudioAttenuationModeFromString(*entry.attenuationMode));
-        if (entry.reverbSend) node->SetReverbSend(*entry.reverbSend);
-        if (entry.bus) node->SetBusName(*entry.bus);
-        if (entry.lowpassHighFrequencyGain)
-            node->SetLowpassHighFrequencyGain(*entry.lowpassHighFrequencyGain);
     }
 }
 
@@ -132,8 +98,8 @@ VansAudioOneShotHandle VansAudioManager::PlayAssetOneShot(
     request.pitch = asset->GetPitch() * pitchScale;
     request.spatial = spatial;
     request.bus = asset->GetBusName();
-    request.referenceDistance = asset->GetRefDist();
-    request.maxDistance = asset->GetMaxDist();
+    request.referenceDistance = asset->GetRefDistance();
+    request.maxDistance = asset->GetMaxDistance();
     request.rolloff = asset->GetRolloff();
     request.reverbSend = asset->GetReverbSend();
     request.positionX = positionX;
@@ -146,23 +112,24 @@ VansAudioOneShotHandle VansAudioManager::PlayOneShot(const VansAudioOneShotReque
 {
     if (request.sourceName.empty() || !Get(request.sourceName)) return {};
     auto binding = std::make_unique<VansAudioSourceBinding>();
-    if (!binding->Bind(this, request.sourceName) || !binding->UsesIndependentPlayback()) return {};
-    binding->SetVolume(request.volume);
-    binding->SetPitch(request.pitch);
-    binding->SetStereoPan(request.stereoPan);
-    binding->SetBusName(request.bus);
-    binding->SetSpatial(request.spatial);
-    binding->SetLoop(request.loop);
-    binding->SetRefDistance(request.referenceDistance);
-    binding->SetMaxDistance(request.maxDistance);
-    binding->SetRolloff(request.rolloff);
-    binding->SetReverbSend(request.reverbSend);
-    binding->SetPosition(request.positionX, request.positionY, request.positionZ);
-    binding->SetBusGain(GetEffectiveBusGain(request.bus));
-    binding->SetBusLowpassHighFrequencyGain(GetBusState("Master").lowpassHighFrequencyGain *
-        (NormalizeAudioBusName(request.bus) == "Master" ? 1.0f : GetBusState(request.bus).lowpassHighFrequencyGain));
-    if (request.startSeconds > 0.0) binding->Seek(request.startSeconds);
-    binding->Play();
+    if (!binding->Bind(this, request.sourceName)) return {};
+    VansAudioVoice* voice = binding->GetVoice();
+    voice->SetVolume(request.volume);
+    voice->SetPitch(request.pitch);
+    voice->SetStereoPan(request.stereoPan);
+    voice->SetBusName(request.bus);
+    voice->SetSpatial(request.spatial);
+    voice->SetLoop(request.loop);
+    voice->SetRefDistance(request.referenceDistance);
+    voice->SetMaxDistance(request.maxDistance);
+    voice->SetRolloff(request.rolloff);
+    voice->SetReverbSend(request.reverbSend);
+    voice->SetPosition(request.positionX, request.positionY, request.positionZ);
+    voice->SetBusGain(GetEffectiveBusGain(request.bus));
+    voice->SetBusLowpassHighFrequencyGain(
+        GetEffectiveBusLowpassHighFrequencyGain(request.bus));
+    if (request.startSeconds > 0.0) voice->Seek(request.startSeconds);
+    voice->Play();
     return m_OneShots.Emplace(OneShot{ std::move(binding), true });
 }
 
@@ -170,7 +137,8 @@ bool VansAudioManager::StopOneShot(VansAudioOneShotHandle handle)
 {
     OneShot* oneShot = m_OneShots.Resolve(handle);
     if (!oneShot) return false;
-    if (oneShot->binding) oneShot->binding->Stop();
+    if (oneShot->binding && oneShot->binding->GetVoice())
+        oneShot->binding->GetVoice()->Stop();
     return m_OneShots.Release(handle);
 }
 
@@ -207,14 +175,20 @@ void VansAudioManager::TickAll(
     m_OneShots.ForEach([&](VansAudioOneShotHandle handle, OneShot& oneShot)
     {
         if (!oneShot.binding) { completedOneShots.push_back(handle); return; }
-        oneShot.binding->Tick();
-        oneShot.binding->UpdateDistanceGain(camPosX, camPosY, camPosZ);
-        const auto& bus = oneShot.binding->GetBusName();
-        oneShot.binding->SetBusGain(GetEffectiveBusGain(bus));
-        oneShot.binding->SetBusLowpassHighFrequencyGain(GetBusState("Master").lowpassHighFrequencyGain *
-            (NormalizeAudioBusName(bus) == "Master" ? 1.0f : GetBusState(bus).lowpassHighFrequencyGain));
-        oneShot.observedPlaying = oneShot.observedPlaying || oneShot.binding->IsPlaying();
-        if (oneShot.observedPlaying && !oneShot.binding->IsPlaying() && !oneShot.binding->IsPaused())
+        VansAudioVoice* voice = oneShot.binding->GetVoice();
+        if (!voice)
+        {
+            completedOneShots.push_back(handle);
+            return;
+        }
+        voice->Tick();
+        voice->UpdateDistanceGain(camPosX, camPosY, camPosZ);
+        const auto& bus = voice->GetBusName();
+        voice->SetBusGain(GetEffectiveBusGain(bus));
+        voice->SetBusLowpassHighFrequencyGain(
+            GetEffectiveBusLowpassHighFrequencyGain(bus));
+        oneShot.observedPlaying = oneShot.observedPlaying || voice->IsPlaying();
+        if (oneShot.observedPlaying && !voice->IsPlaying() && !voice->IsPaused())
             completedOneShots.push_back(handle);
     });
     for (VansAudioOneShotHandle handle : completedOneShots) m_OneShots.Release(handle);
@@ -275,8 +249,7 @@ void VansAudioManager::ApplyBusGains()
         const bool busIsMaster = busName == "Master";
         node->SetBusGain(ComputeAudioBusEffectiveGain(master, bus, anySoloed, busIsMaster));
         node->SetBusLowpassHighFrequencyGain(
-            master.lowpassHighFrequencyGain *
-                (busIsMaster ? 1.0f : bus.lowpassHighFrequencyGain));
+            ComputeAudioBusEffectiveLowpassGain(master, bus, busIsMaster));
     }
 }
 
@@ -332,9 +305,9 @@ bool VansAudioManager::ApplyNamedBusSnapshot(const std::string& snapshotName)
     return true;
 }
 
-void VansAudioManager::ApplyMixConfig(const AudioMixConfig& config)
+void VansAudioManager::ApplyMixConfig(const VansAudioMixConfig& config)
 {
-    for (const AudioMixBusConfig& busConfig : config.buses)
+    for (const VansAudioMixBusConfig& busConfig : config.buses)
     {
         AudioBusState& bus = EnsureBus(busConfig.busName);
         SetAudioBusGainImmediate(bus, busConfig.gain);
@@ -438,6 +411,16 @@ float VansAudioManager::GetEffectiveBusGain(const std::string& busName) const
     return ComputeAudioBusEffectiveGain(master, bus, HasSoloedBus(), normalized == "Master");
 }
 
+float VansAudioManager::GetEffectiveBusLowpassHighFrequencyGain(
+    const std::string& busName) const
+{
+    const std::string normalized = NormalizeAudioBusName(busName);
+    return ComputeAudioBusEffectiveLowpassGain(
+        GetBusState("Master"),
+        GetBusState(normalized),
+        normalized == "Master");
+}
+
 std::vector<AudioBusDebugEntry> VansAudioManager::GetBusDebugSnapshot() const
 {
     std::vector<AudioBusDebugEntry> snapshot;
@@ -514,7 +497,7 @@ void VansAudioManager::PlayAutoPlay()
         if (m_SuppressedResourceAutoPlay.count(name) != 0)
             continue;
 
-        if (node->IsAutoPlay() && node->GetProperties().m_PlayMode == AudioPlayMode::Streaming)
+        if (node->IsAutoPlay())
         {
             node->Play();
             VANS_LOG("[VansAudioManager] AutoPlay: " << name);
@@ -527,7 +510,8 @@ void VansAudioManager::StopAll()
 	std::vector<VansAudioOneShotHandle> oneShots;
 	m_OneShots.ForEach([&](VansAudioOneShotHandle handle, OneShot& oneShot)
 	{
-		if (oneShot.binding) oneShot.binding->Stop();
+		if (oneShot.binding && oneShot.binding->GetVoice())
+			oneShot.binding->GetVoice()->Stop();
 		oneShots.push_back(handle);
 	});
 	for (VansAudioOneShotHandle handle : oneShots) m_OneShots.Release(handle);

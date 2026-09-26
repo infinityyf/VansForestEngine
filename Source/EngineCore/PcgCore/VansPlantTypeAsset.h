@@ -2,6 +2,7 @@
 
 #include "../AssetCore/VansAssetGuid.h"
 #include "../AssetCore/VansModelLod.h"
+#include "VansPcgConfigurationField.h"
 
 #include <array>
 #include <cstdint>
@@ -40,6 +41,17 @@ struct VansPlantVariant
 	VansModelLodAsset lod;
 };
 
+struct VansPlantTreeRuntimeBounds
+{
+	std::array<float, 3> center{};
+	float radius = 0;
+};
+
+bool ResolvePlantTreeRuntimeBounds(
+	const VansPlantVariant& variant,
+	VansPlantTreeRuntimeBounds& result,
+	std::string& error);
+
 struct VansPlantGrassSettings
 {
 	std::uint32_t boneCount = 0;
@@ -72,9 +84,45 @@ struct VansPlantRenderSettings
 	float cullDistance = 0;
 	float hizBias = 0;
 	bool castShadows = false;
-	std::array<float, 2> lodDistances{60.f, 180.f};
+	std::vector<float> lodDistances{60.f, 180.f};
 	float lodHysteresis = 0.1f;
 
+};
+
+inline const std::array<VansPcgConfigurationFieldDescriptor<VansPlantGrassSettings>, 21> VansPlantGrassConfigurationFields{
+	VansPcgConfigurationFieldDescriptor<VansPlantGrassSettings>{ "boneCount", "Bones", "", &VansPlantGrassSettings::boneCount, .01f, 0, 64, true, true, false, 0, 0, 0 },
+	{ "subBladeCount", "Blades per instance", "", &VansPlantGrassSettings::subBladeCount, .01f, 1, 32, true, true, false, 0, 0, 1 },
+	{ "scatterSeed", "Sub-blade scatter seed", "", &VansPlantGrassSettings::scatterSeed, .01f, 0, 0, false, false, false, 0, 0, 7 },
+	{ "windDirection", "Wind direction", "", &VansPlantGrassSettings::windDirection, .01f, 0, 0, false, false, false, 0, 0, 2 },
+	{ "bladeHeight", "Blade height (m)", "", &VansPlantGrassSettings::bladeHeight, .01f, 0, 0, true, false, false, 0, 0, 3 },
+	{ "leanDeviation", "Lean deviation (degrees)", "", &VansPlantGrassSettings::leanDeviation, .01f, 0, 0, true, false, false, 0, 0, 4 },
+	{ "restTipBendDegrees", "Rest tip bend (degrees)", "", &VansPlantGrassSettings::restTipBendDegrees, .01f, 0, 90, true, true, false, 0, 0, 5 },
+	{ "restRootBendDegrees", "Rest root bend (degrees)", "", &VansPlantGrassSettings::restRootBendDegrees, .01f, 0, 90, true, true, false, 0, 0, 6 },
+	{ "scatterRadiusMin", "Scatter radius minimum (m)", "", &VansPlantGrassSettings::scatterRadiusMin, .01f, 0, 0, true, false, false, 0, 0, 8 },
+	{ "scatterRadiusMax", "Scatter radius maximum (m)", "", &VansPlantGrassSettings::scatterRadiusMax, .01f, 0, 0, true, false, false, 0, 0, 9 },
+	{ "windStrength", "Wind strength", "", &VansPlantGrassSettings::windStrength, .01f, 0, 0, true, false, false, 0, 0, 10 },
+	{ "windFrequency", "Wind frequency", "", &VansPlantGrassSettings::windFrequency, .01f, 0, 0, true, false, false, 0, 0, 11 },
+	{ "windSpeed", "Wind speed", "", &VansPlantGrassSettings::windSpeed, .01f, 0, 0, true, false, false, 0, 0, 12 },
+	{ "windBendMultiplier", "Wind bend multiplier", "", &VansPlantGrassSettings::windBendMultiplier, .01f, 0, 0, true, false, false, 0, 0, 13 },
+	{ "stiffness", "Stiffness", "", &VansPlantGrassSettings::stiffness, .01f, 0, 0, true, false, false, 0, 0, 14 },
+	{ "damping", "Damping", "", &VansPlantGrassSettings::damping, .01f, 0, 1, true, true, false, 0, 0, 15 },
+	{ "softness", "Softness", "", &VansPlantGrassSettings::softness, .01f, 0, 1, true, true, false, 0, 0, 16 },
+	{ "simulationFullDistance", "Full simulation distance", "", &VansPlantGrassSettings::simulationFullDistance, .01f, 0, 0, true, false, false, 0, 0, 17 },
+	{ "simulationFadeDistance", "Simulation fade distance", "", &VansPlantGrassSettings::simulationFadeDistance, .01f, 0, 0, true, false, false, 0, 0, 18 },
+	{ "subBladeLodMidDistance", "Sub-blade middle LOD distance", "", &VansPlantGrassSettings::subBladeLodMidDistance, .01f, 0, 0, true, false, false, 0, 0, 19 },
+	{ "subBladeLodFarDistance", "Sub-blade far LOD distance", "", &VansPlantGrassSettings::subBladeLodFarDistance, .01f, 0, 0, true, false, false, 0, 0, 20 }
+};
+
+inline const std::array<VansPcgConfigurationFieldDescriptor<VansPlantRenderSettings>, 7> VansPlantRenderConfigurationFields{
+	VansPcgConfigurationFieldDescriptor<VansPlantRenderSettings>{ "cullingEnabled", "Culling", "", &VansPlantRenderSettings::cullingEnabled, .01f, 0, 0, false, false, false, 0, 0, 0 },
+	{ "hizEnabled", "Hi-Z", "", &VansPlantRenderSettings::hizEnabled, .01f, 0, 0, false, false, false, 0, 0, 4 },
+	{ "cullDistance", "Cull distance", "Shadow distance", &VansPlantRenderSettings::cullDistance, .01f, 0, 0, true, false, false, 0, 0, 1 },
+	{ "hizBias", "Hi-Z bias", "", &VansPlantRenderSettings::hizBias, .01f, 0, 0, true, false, false, 0, 0, 5 },
+	{ "castShadows", "Cast directional shadows (first 2 cascades)", "", &VansPlantRenderSettings::castShadows, .01f, 0, 0, false, false, false, 0, 0, 6 },
+	{ "lodDistances", "LOD distance (m)", "", &VansPlantRenderSettings::lodDistances, 1.f, 1, 100000, true, true, true,
+		MinimumModelLodLevelCount, MaximumModelLodLevelCount, 2, VansPcgConfigurationFieldPersistence::TreeOnly },
+	{ "lodHysteresis", "Tree LOD hysteresis", "", &VansPlantRenderSettings::lodHysteresis, .01f, 0, .3f, true, true, false,
+		0, 0, 3, VansPcgConfigurationFieldPersistence::TreeOnly }
 };
 
 // 植物外观是独立用户资产，不包含场景范围、分布点、Mask 或内置植物配方。

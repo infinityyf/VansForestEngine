@@ -30,15 +30,18 @@ namespace Vans::EditorAPI
 
 		struct AttachmentSessionState
 		{
+			AnimationPreviewWriteToken writeToken;
 			std::uint64_t revision = 0;
 			std::unordered_map<std::string, OriginalAttachmentState> originals;
 			std::unordered_set<std::string> dirtyEntities;
 		};
 
-		std::unordered_map<AnimationPreviewSessionId, AttachmentSessionState>& Sessions()
+		bool Matches(
+			AnimationPreviewWriteToken writeToken,
+			const AttachmentSessionState& state)
 		{
-			static std::unordered_map<AnimationPreviewSessionId, AttachmentSessionState> sessions;
-			return sessions;
+			return writeToken.sessionId == state.writeToken.sessionId
+				&& writeToken.sceneContentRevision == state.writeToken.sceneContentRevision;
 		}
 
 		RuntimeParentReference ToDTO(const VansSceneParentReference& parent, bool hasParent)
@@ -164,8 +167,8 @@ namespace Vans::EditorAPI
 				const auto handle = runtime->FindComponentByGuid(component, VansRuntimeComponentType_Animation);
 				const auto* header = runtime->GetComponentHeader(handle);
 				const auto* entity = header ? runtime->Entities().Get(header->owner) : nullptr;
-				const auto* storage = static_cast<const VansComponentStorage<VansRuntimeAnimationComponent>*>(
-					runtime->FindStorage(VansRuntimeComponentType_Animation));
+				const auto* storage = runtime->FindStorage<VansRuntimeAnimationComponent>(
+					VansRuntimeComponentType_Animation);
 				const auto* value = storage ? storage->Get(handle) : nullptr;
 				if (entity && entity->stableGuid == owner && value && value->animationNode)
 					for (const auto& binding : value->animationNode->GetTargetBindings())
@@ -233,23 +236,37 @@ namespace Vans::EditorAPI
 		}
 	}
 
-	void AnimationPreviewAttachmentAuthoringService::BeginSession(
-		AnimationPreviewSessionId sessionId)
+	struct AnimationPreviewAttachmentAuthoringService::Impl
 	{
-		Sessions().insert_or_assign(sessionId, AttachmentSessionState{});
+		std::unordered_map<AnimationPreviewSessionId, AttachmentSessionState> sessions;
+	};
+
+	AnimationPreviewAttachmentAuthoringService::AnimationPreviewAttachmentAuthoringService()
+		: m_Impl(std::make_unique<Impl>())
+	{
+	}
+
+	AnimationPreviewAttachmentAuthoringService::~AnimationPreviewAttachmentAuthoringService() = default;
+
+	void AnimationPreviewAttachmentAuthoringService::BeginSession(
+		AnimationPreviewWriteToken writeToken)
+	{
+		AttachmentSessionState state;
+		state.writeToken = writeToken;
+		m_Impl->sessions.insert_or_assign(writeToken.sessionId, std::move(state));
 	}
 
 	std::vector<AnimationPreviewAttachmentSnapshot>
 	AnimationPreviewAttachmentAuthoringService::GetSnapshots(
-		AnimationPreviewSessionId sessionId,
+		AnimationPreviewWriteToken writeToken,
 		VansGraphics::VansScene& scene,
 		const std::string& entityGuid,
 		const std::string& animationComponentGuid,
 		std::uint64_t& revision)
 	{
 		std::vector<AnimationPreviewAttachmentSnapshot> snapshots;
-		auto state = Sessions().find(sessionId);
-		if (state == Sessions().end())
+		auto state = m_Impl->sessions.find(writeToken.sessionId);
+		if (state == m_Impl->sessions.end() || !Matches(writeToken, state->second))
 			return snapshots;
 		revision = state->second.revision;
 		for (const VansScriptObject* object : scene.GetSceneObjects())
@@ -298,14 +315,16 @@ namespace Vans::EditorAPI
 
 	AnimationPreviewAttachmentEditResult
 	AnimationPreviewAttachmentAuthoringService::SetTransform(
+		AnimationPreviewWriteToken writeToken,
 		const AnimationPreviewAttachmentTransformRequest& request,
 		VansGraphics::VansScene& scene,
 		const std::string& targetEntityGuid,
 		const std::string& targetAnimationComponentGuid)
 	{
 		AnimationPreviewAttachmentEditResult result;
-		auto found = Sessions().find(request.sessionId);
-		if (found == Sessions().end())
+		auto found = m_Impl->sessions.find(request.sessionId);
+		if (found == m_Impl->sessions.end() || request.sessionId != writeToken.sessionId
+			|| !Matches(writeToken, found->second))
 		{
 			result.message = "Attachment preview session is unavailable";
 			return result;
@@ -354,14 +373,16 @@ namespace Vans::EditorAPI
 
 	AnimationPreviewAttachmentEditResult
 	AnimationPreviewAttachmentAuthoringService::SetBinding(
+		AnimationPreviewWriteToken writeToken,
 		const AnimationPreviewAttachmentBindingRequest& request,
 		VansGraphics::VansScene& scene,
 		const std::string& targetEntityGuid,
 		const std::string& targetAnimationComponentGuid)
 	{
 		AnimationPreviewAttachmentEditResult result;
-		auto found = Sessions().find(request.sessionId);
-		if (found == Sessions().end())
+		auto found = m_Impl->sessions.find(request.sessionId);
+		if (found == m_Impl->sessions.end() || request.sessionId != writeToken.sessionId
+			|| !Matches(writeToken, found->second))
 		{
 			result.message = "Attachment preview session is unavailable";
 			return result;
@@ -407,11 +428,15 @@ namespace Vans::EditorAPI
 	}
 
 	bool AnimationPreviewAttachmentAuthoringService::AdoptLocalTransforms(
-		AnimationPreviewSessionId sessionId, VansGraphics::VansScene& scene,
+		AnimationPreviewWriteToken writeToken,
+		std::uint64_t expectedRevision,
+		VansGraphics::VansScene& scene,
 		const std::vector<std::string>& entities)
 	{
-		auto found = Sessions().find(sessionId);
-		if (found == Sessions().end()) return false;
+		auto found = m_Impl->sessions.find(writeToken.sessionId);
+		if (found == m_Impl->sessions.end() || !Matches(writeToken, found->second)
+			|| found->second.revision != expectedRevision)
+			return false;
 		for (const auto& entity : entities)
 		{
 			auto original = found->second.originals.find(entity);
@@ -428,32 +453,41 @@ namespace Vans::EditorAPI
 
 	bool AnimationPreviewAttachmentAuthoringService::EndSession(
 		AnimationPreviewSessionId sessionId,
-		VansGraphics::VansScene* scene,
 		std::string& error)
 	{
 		error.clear();
-		auto found = Sessions().find(sessionId);
-		if (found == Sessions().end())
+		auto found = m_Impl->sessions.find(sessionId);
+		if (found == m_Impl->sessions.end())
+			return true;
+		m_Impl->sessions.erase(found);
+		return true;
+	}
+
+	bool AnimationPreviewAttachmentAuthoringService::EndSession(
+		AnimationPreviewSessionId sessionId,
+		VansGraphics::VansScene& scene,
+		std::string& error)
+	{
+		error.clear();
+		auto found = m_Impl->sessions.find(sessionId);
+		if (found == m_Impl->sessions.end())
 			return true;
 		bool success = true;
-		if (scene)
+		for (const auto& [entityGuid, original] : found->second.originals)
 		{
-			for (const auto& [entityGuid, original] : found->second.originals)
+			const bool parentRestored = scene.SetEntityParentReferenceByGuid(
+				entityGuid, original.hasParent ? &original.parent : nullptr,
+				VansTransformReparentMode::KeepLocal);
+			const bool localRestored = parentRestored
+				&& scene.SetEntityLocalTransformByGuid(entityGuid, original.local);
+			if (!localRestored)
 			{
-				const bool parentRestored = scene->SetEntityParentReferenceByGuid(
-					entityGuid, original.hasParent ? &original.parent : nullptr,
-					VansTransformReparentMode::KeepLocal);
-				const bool localRestored = parentRestored
-					&& scene->SetEntityLocalTransformByGuid(entityGuid, original.local);
-				if (!localRestored)
-				{
-					success = false;
-					error = "Failed to restore attachment Scene state for entity '" + entityGuid + "'";
-				}
-				ApplyPreviewVisibility(original, *scene, false);
+				success = false;
+				error = "Failed to restore attachment Scene state for entity '" + entityGuid + "'";
 			}
+			ApplyPreviewVisibility(original, scene, false);
 		}
-		Sessions().erase(found);
+		m_Impl->sessions.erase(found);
 		return success;
 	}
 }

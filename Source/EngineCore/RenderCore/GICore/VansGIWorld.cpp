@@ -9,6 +9,7 @@
 #include "VansGIVoxelSource.h"
 #include "../GeometryCore/VansMeshGeometryReadback.h"
 #include "../TerrainCore/VansTerrain.h"
+#include "../../TerrainCore/VansTerrainHeightEncoding.h"
 #include "../VulkanCore/VansVKDevice.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
 #include "../VulkanCore/VansVKCommandBuffer.h"
@@ -51,7 +52,7 @@ namespace VansGraphics
     {
         auto shader=std::make_unique<VansComputeShader>();
         VansPipelineProgramDesc desc{};desc.name="GIWorld/"+file;desc.shaderPath=m_ShaderFolder;desc.kind=VansPipelineProgramKind::Compute;desc.pushConstantSize=pushBytes;
-        shader->SetName(desc.name);shader->SetPipelineProgramDesc(desc);
+        shader->SetName(desc.name);shader->SetPipelineProgramDesc(desc);shader->SetArtifactRoot(m_ShaderArtifactRoot);
         Require(shader->InitShader(m_Device->GetLogicDevice(),m_ShaderFolder,{{VK_SHADER_STAGE_COMPUTE_BIT,file+".comp"}}),"GI world shader load failed");
         // InitShader 会重置接口；与 ShaderManager 一样，在加载成功后发布计算管线和常量范围。
         shader->SetPipelineProgramDesc(desc);shader->SetPushConstant(pushBytes);
@@ -160,6 +161,7 @@ namespace VansGraphics
         Require(settings.enabled,"Disabled GI world must not allocate resources");m_Device=&device;m_Settings=settings;m_Revision=(++WorldGeneration)<<32;
         auto* base=VansShaderManager::Get().FindComputeShader("GIPointLight");Require(base,"GI base shader is missing");
         m_ShaderFolder=(std::filesystem::path(base->GetShaderFolder()).parent_path()/"GIWorld").string();
+        m_ShaderArtifactRoot=base->GetArtifactRoot();
         m_Materials.push_back(glm::vec4(.5f,.5f,.5f,1));
         std::vector<GIVoxelSource> sources;scene.CollectGIVoxelSources(sources);
         std::vector<GIWorldInstance> instances;CaptureGeometry(sources,instances);
@@ -186,7 +188,8 @@ namespace VansGraphics
             // Height textures retain edits made while GI was disabled; read the current image at this safe point.
             uint32_t hw,hh;auto heightPixels=CaptureTexture(terrain->GetHeightMap(),hw,hh,16384);
             Require(hw==asset.width&&hh==asset.height,"GI terrain snapshot extent differs from the live heightfield");
-            for(size_t i=0;i<asset.heights.size();++i)asset.heights[i]=uint16_t(glm::clamp(heightPixels[i].r,0.f,1.f)*65535.f+.5f);
+            for(size_t i=0;i<asset.heights.size();++i)
+                asset.heights[i]=Vans::VansTerrainHeightEncoding::EncodeNormalized(heightPixels[i].r);
             std::string error;if(!m_Height.Build(asset,error))throw std::runtime_error(error);
             std::vector<glm::vec4> colors;for(const auto& layer:asset.layers)
             {
@@ -308,58 +311,58 @@ namespace VansGraphics
         barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
         command.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,{barrier});
     }
-    void VansGIWorld::AddLayoutQueries(VansSceneGeometrySnapshot& geometry) const
+    bool VansGIWorld::IsPositionValid(glm::vec3 p, float clearance) const
     {
-        geometry.additionalPositionValid=[this](glm::vec3 p,float clearance)
+        if(m_Height.width&&std::abs(p.x)<=m_Height.parameters.x*.5f&&std::abs(p.z)<=m_Height.parameters.x*.5f&&p.y<=m_Height.Sample({p.x,p.z})+clearance)return false;
+        glm::ivec3 key(glm::floor(p/32.f));auto bucket=m_LayoutIndex.find({key.x,key.y,key.z,0});if(bucket==m_LayoutIndex.end())return true;
+        for(auto index:bucket->second)
         {
-            if(m_Height.width&&std::abs(p.x)<=m_Height.parameters.x*.5f&&std::abs(p.z)<=m_Height.parameters.x*.5f&&p.y<=m_Height.Sample({p.x,p.z})+clearance)return false;
-            glm::ivec3 key(glm::floor(p/32.f));auto bucket=m_LayoutIndex.find({key.x,key.y,key.z,0});if(bucket==m_LayoutIndex.end())return true;
-            for(auto index:bucket->second)
-            {
-                const auto& i=m_Builder.Instances()[index];if(glm::any(glm::lessThan(p,i.minimum))||glm::any(glm::greaterThan(p,i.maximum)))continue;
-                glm::ivec3 c(glm::floor(glm::vec3(i.inverse*glm::vec4(p,1))/i.model->voxelSize));
-                auto voxel=i.model->cells.find({c.x,c.y,c.z,0});if(voxel!=i.model->cells.end()&&(voxel->second.optical&0x10000u))return false;
-            }
-            return true;
-        };
-        geometry.additionalSurface=[this](glm::vec3 lo,glm::vec3 hi)
-        {
-            VansGeometrySurfaceMeasure measure;
-            if(m_Height.width)
-            {
-                const float size=m_Height.parameters.x;glm::vec2 a=glm::max(glm::vec2(lo.x,lo.z),glm::vec2(-size*.5f)),b=glm::min(glm::vec2(hi.x,hi.z),glm::vec2(size*.5f));
-                if(glm::all(glm::lessThan(a,b)))
-                {
-                    uint32_t level=0;float cells=std::max((b.x-a.x)*m_Height.width/size,(b.y-a.y)*m_Height.height/size);while(level+1<m_Height.levels.size()&&float(1u<<level)<cells)++level;
-                    auto info=m_Height.levels[level];float stride=float(1u<<level);glm::vec2 dims(m_Height.width,m_Height.height);
-                    glm::uvec2 first(glm::clamp(glm::floor(((a/size+.5f)*dims+.5f)/stride),glm::vec2(0),glm::vec2(info.y-1,info.z-1)));
-                    glm::uvec2 last(glm::clamp(glm::floor(((b/size+.5f)*dims+.5f)/stride),glm::vec2(0),glm::vec2(info.y-1,info.z-1)));
-                    float minimum=FLT_MAX,maximum=-FLT_MAX;
-                    for(uint32_t z=first.y;z<=last.y;++z)for(uint32_t x=first.x;x<=last.x;++x){auto r=m_Height.ranges[info.x+z*info.y+x];minimum=std::min(minimum,r.x);maximum=std::max(maximum,r.y);}
-                    if(minimum<=hi.y&&maximum>=lo.y){measure.area=(b.x-a.x)*(b.y-a.y);measure.areaNormal={0,measure.area,0};}
-                }
-            }
-            // AABBs only select demand candidates; they never enter the occlusion query.
-            glm::ivec3 first(glm::floor(lo/32.f)),last(glm::floor(hi/32.f));std::set<uint32_t> seen;
-            for(auto bucket=m_LayoutIndex.lower_bound({first.x,INT_MIN,INT_MIN,0});bucket!=m_LayoutIndex.end()&&bucket->first.x<=last.x;++bucket)
-            {
-                auto key=bucket->first;if(key.y<first.y||key.y>last.y||key.z<first.z||key.z>last.z)continue;
-                for(auto index:bucket->second)if(seen.insert(index).second)
-                {
-                    const auto& i=m_Builder.Instances()[index];if(i.model->cells.empty())continue;
-                    glm::vec3 extent=glm::min(hi,i.maximum)-glm::max(lo,i.minimum);
-                    if(glm::all(glm::greaterThanEqual(extent,glm::vec3(0))))measure.area+=2.0*double(extent.x*extent.y+extent.x*extent.z+extent.y*extent.z);
-                }
-            }
-            return measure;
-        };
+            const auto& i=m_Builder.Instances()[index];if(glm::any(glm::lessThan(p,i.minimum))||glm::any(glm::greaterThan(p,i.maximum)))continue;
+            glm::ivec3 c(glm::floor(glm::vec3(i.inverse*glm::vec4(p,1))/i.model->voxelSize));
+            auto voxel=i.model->cells.find({c.x,c.y,c.z,0});if(voxel!=i.model->cells.end()&&(voxel->second.optical&0x10000u))return false;
+        }
+        return true;
     }
-    bool VansGIWorld::CookShaders(const std::string& shaderRoot,std::vector<Vans::VansShaderCookProgram>& programs,std::string& error)
+    VansGeometrySurfaceMeasure VansGIWorld::MeasureSurface(glm::vec3 lo,glm::vec3 hi) const
+    {
+        VansGeometrySurfaceMeasure measure;
+        if(m_Height.width)
+        {
+            const float size=m_Height.parameters.x;glm::vec2 a=glm::max(glm::vec2(lo.x,lo.z),glm::vec2(-size*.5f)),b=glm::min(glm::vec2(hi.x,hi.z),glm::vec2(size*.5f));
+            if(glm::all(glm::lessThan(a,b)))
+            {
+                uint32_t level=0;float cells=std::max((b.x-a.x)*m_Height.width/size,(b.y-a.y)*m_Height.height/size);while(level+1<m_Height.levels.size()&&float(1u<<level)<cells)++level;
+                auto info=m_Height.levels[level];float stride=float(1u<<level);glm::vec2 dims(m_Height.width,m_Height.height);
+                glm::uvec2 first(glm::clamp(glm::floor(((a/size+.5f)*dims+.5f)/stride),glm::vec2(0),glm::vec2(info.y-1,info.z-1)));
+                glm::uvec2 last(glm::clamp(glm::floor(((b/size+.5f)*dims+.5f)/stride),glm::vec2(0),glm::vec2(info.y-1,info.z-1)));
+                float minimum=FLT_MAX,maximum=-FLT_MAX;
+                for(uint32_t z=first.y;z<=last.y;++z)for(uint32_t x=first.x;x<=last.x;++x){auto r=m_Height.ranges[info.x+z*info.y+x];minimum=std::min(minimum,r.x);maximum=std::max(maximum,r.y);}
+                if(minimum<=hi.y&&maximum>=lo.y){measure.area=(b.x-a.x)*(b.y-a.y);measure.areaNormal={0,measure.area,0};}
+            }
+        }
+        // AABBs only select demand candidates; they never enter the occlusion query.
+        glm::ivec3 first(glm::floor(lo/32.f)),last(glm::floor(hi/32.f));std::set<uint32_t> seen;
+        for(auto bucket=m_LayoutIndex.lower_bound({first.x,INT_MIN,INT_MIN,0});bucket!=m_LayoutIndex.end()&&bucket->first.x<=last.x;++bucket)
+        {
+            auto key=bucket->first;if(key.y<first.y||key.y>last.y||key.z<first.z||key.z>last.z)continue;
+            for(auto index:bucket->second)if(seen.insert(index).second)
+            {
+                const auto& i=m_Builder.Instances()[index];if(i.model->cells.empty())continue;
+                glm::vec3 extent=glm::min(hi,i.maximum)-glm::max(lo,i.minimum);
+                if(glm::all(glm::greaterThanEqual(extent,glm::vec3(0))))measure.area+=2.0*double(extent.x*extent.y+extent.x*extent.z+extent.y*extent.z);
+            }
+        }
+        return measure;
+    }
+    bool VansGIWorld::CookShaders(const std::string& shaderRoot,
+        const std::filesystem::path& artifactRoot,
+        std::vector<Vans::VansShaderCookProgram>& programs,std::string& error)
     {
         for(const char* name:{"GIWorldTexture","GIWorldTrace","GIWorldLighting","GIWorldReceiverVisibility","GIWorldReceiverBias","GIWorldAtlas","GIWorldState"})
         {
             Vans::VansShaderCompileRequest request;request.programId=std::string("GIWorld/")+name;
             request.sourceFolder=std::filesystem::path(shaderRoot)/"GIWorld";request.includeRoots.push_back(shaderRoot);
+            request.artifactRoot=artifactRoot;
             request.stages.push_back({"comp",request.sourceFolder/(std::string(name)+".comp")});
             auto prepared=Vans::VansShaderArtifactCache::Get().Prepare(request,false);
             if(!prepared.success||!Vans::VansShaderArtifactCache::Get().CommitActive(prepared)){error="Failed to cook "+request.programId;return false;}

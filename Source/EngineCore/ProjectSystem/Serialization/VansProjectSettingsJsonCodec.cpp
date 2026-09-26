@@ -1,4 +1,5 @@
 #include "VansProjectSettingsJsonCodec.h"
+#include "../../RenderCore/UpscalingCore/VansUpscaleResolutionPolicy.h"
 
 #include <nlohmann/json.hpp>
 
@@ -84,20 +85,9 @@ bool VansProjectSettingsJsonCodec::DecodeRenderSettings(
 			upscaler.at("fsrSharpness").get<float>();
 		settings.upscalerSettings.fsrDebugView =
 			upscaler.at("fsrDebugView").get<bool>();
-		if (!std::isfinite(settings.upscalerSettings.fsrSharpness) ||
-			settings.upscalerSettings.fsrSharpness < 0.0f ||
-			settings.upscalerSettings.fsrSharpness > 1.0f)
-		{
-			error = "upscaler.fsrSharpness must be in [0, 1]";
+		if (!VansGraphics::VansUpscaleResolutionPolicy::ValidateConfig(
+			settings.upscalerSettings, error))
 			return false;
-		}
-		if (settings.upscalerSettings.backend == VansGraphics::VansUpscalerBackend::Off &&
-			settings.upscalerSettings.quality !=
-				VansGraphics::VansUpscaleQualityMode::NativeAA)
-		{
-			error = "Off upscaler backend requires NativeAA quality";
-			return false;
-		}
 
 		if (root.contains("outputResolution"))
 		{
@@ -111,20 +101,10 @@ bool VansProjectSettingsJsonCodec::DecodeRenderSettings(
 				outputResolution.value("width", 0u);
 			settings.renderOutputSettings.height =
 				outputResolution.value("height", 0u);
-			constexpr std::uint32_t kMinimumOutputWidth = 320u;
-			constexpr std::uint32_t kMinimumOutputHeight = 180u;
-			constexpr std::uint32_t kMaximumOutputDimension = 16384u;
-			if (!settings.renderOutputSettings.UsesWindowExtent() &&
-				(!settings.renderOutputSettings.HasExplicitExtent() ||
-				 settings.renderOutputSettings.width < kMinimumOutputWidth ||
-				 settings.renderOutputSettings.height < kMinimumOutputHeight ||
-				 settings.renderOutputSettings.width > kMaximumOutputDimension ||
-				 settings.renderOutputSettings.height > kMaximumOutputDimension))
-			{
-				error = "outputResolution must be 0x0 (follow window) or an explicit "
-					"resolution between 320x180 and 16384x16384";
+			if (!VansGraphics::VansUpscaleResolutionPolicy::ValidateOutputExtent(
+				{ settings.renderOutputSettings.width, settings.renderOutputSettings.height },
+				true, 0u, error))
 				return false;
-			}
 		}
 
 		if (root.contains("commandRecording") && root["commandRecording"].is_object())
@@ -251,6 +231,26 @@ bool VansProjectSettingsJsonCodec::DecodeRenderSettings(
 			settings.mainCameraHiZCullSettings.maxScreenCoverageForCull =
 				std::clamp(hiz.value("maxScreenCoverageForCull", 0.65f), 0.05f, 1.0f);
 		}
+
+		if (!root.contains("cameraLensLimits") || !root["cameraLensLimits"].is_object())
+		{
+			error = "Missing required object: cameraLensLimits";
+			return false;
+		}
+		const nlohmann::json& cameraLens = root.at("cameraLensLimits");
+		settings.cameraLensLimits.minimumFieldOfView =
+			cameraLens.at("minimumFieldOfView").get<float>();
+		settings.cameraLensLimits.maximumFieldOfView =
+			cameraLens.at("maximumFieldOfView").get<float>();
+		settings.cameraLensLimits.minimumNearClip =
+			cameraLens.at("minimumNearClip").get<float>();
+		settings.cameraLensLimits.minimumClipSeparation =
+			cameraLens.at("minimumClipSeparation").get<float>();
+		if (!VansValidateCameraLensLimits(settings.cameraLensLimits, error))
+		{
+			error = "cameraLensLimits: " + error;
+			return false;
+		}
 	}
 	catch (const nlohmann::json::exception& exception)
 	{
@@ -330,6 +330,12 @@ nlohmann::json VansProjectSettingsJsonCodec::EncodeRenderSettings(
 		{ "refreshCulledEveryNFrames", settings.mainCameraHiZCullSettings.refreshCulledEveryNFrames },
 		{ "maxScreenCoverageForCull", settings.mainCameraHiZCullSettings.maxScreenCoverageForCull }
 	};
+	root["cameraLensLimits"] = {
+		{ "minimumFieldOfView", settings.cameraLensLimits.minimumFieldOfView },
+		{ "maximumFieldOfView", settings.cameraLensLimits.maximumFieldOfView },
+		{ "minimumNearClip", settings.cameraLensLimits.minimumNearClip },
+		{ "minimumClipSeparation", settings.cameraLensLimits.minimumClipSeparation }
+	};
 	return root;
 }
 
@@ -341,23 +347,52 @@ bool VansProjectSettingsJsonCodec::DecodePhysicsSettings(
 	error.clear();
 	try
 	{
-		if (!root.is_object() || !root.contains("fixedTimeStep")
-			|| !root["fixedTimeStep"].is_number() || !root.contains("queryProfiles")
-			|| !root["queryProfiles"].is_object())
+		if (!root.is_object() || root.size() != 2u || !root.contains("simulation")
+			|| !root.at("simulation").is_object() || root.at("simulation").size() != 4u
+			|| !root.at("simulation").contains("fixedTimeStep")
+			|| !root.at("simulation").at("fixedTimeStep").is_number()
+			|| !root.at("simulation").contains("maximumSubsteps")
+			|| !root.at("simulation").at("maximumSubsteps").is_number_integer()
+			|| !root.at("simulation").contains("clothFrameTime")
+			|| !root.at("simulation").at("clothFrameTime").is_number()
+			|| !root.at("simulation").contains("clothSubsteps")
+			|| !root.at("simulation").at("clothSubsteps").is_number_integer()
+			|| !root.contains("queryProfiles") || !root.at("queryProfiles").is_object())
 		{
-			error = "Physics settings require numeric fixedTimeStep and object queryProfiles";
+			error = "Physics settings require simulation { fixedTimeStep, maximumSubsteps, clothFrameTime, clothSubsteps } and queryProfiles";
 			return false;
 		}
-		for (const auto& item : root.items())
-			if (item.key() != "fixedTimeStep" && item.key() != "queryProfiles")
+		const auto& simulation = root.at("simulation");
+		for (const auto& item : simulation.items())
+			if (item.key() != "fixedTimeStep" && item.key() != "maximumSubsteps" &&
+				item.key() != "clothFrameTime" && item.key() != "clothSubsteps")
 			{
-				error = "Physics settings contain unknown field '" + item.key() + "'";
+				error = "Physics simulation settings contain unknown field '" + item.key() + "'";
 				return false;
 			}
-		settings.fixedTimeStep = root.at("fixedTimeStep").get<float>();
-		if (!std::isfinite(settings.fixedTimeStep) || settings.fixedTimeStep <= 0.0f)
+		settings.timing.fixedTimeStep = simulation.at("fixedTimeStep").get<float>();
+		const std::int64_t maximumSubsteps = simulation.at("maximumSubsteps").get<std::int64_t>();
+		if (maximumSubsteps <= 0 || maximumSubsteps >
+			static_cast<std::int64_t>(VansEngine::VansPhysicsTiming::kMaximumSupportedSubsteps))
 		{
-			error = "Physics fixedTimeStep must be finite and positive";
+			error = "Physics maximumSubsteps must be in [1, "
+				+ std::to_string(VansEngine::VansPhysicsTiming::kMaximumSupportedSubsteps) + "]";
+			return false;
+		}
+		settings.timing.maximumSubsteps = static_cast<std::uint32_t>(maximumSubsteps);
+		settings.timing.clothFrameTime = simulation.at("clothFrameTime").get<float>();
+		const std::int64_t clothSubsteps = simulation.at("clothSubsteps").get<std::int64_t>();
+		if (clothSubsteps <= 0 || clothSubsteps > static_cast<std::int64_t>(
+			VansEngine::VansPhysicsTiming::kMaximumSupportedClothSubsteps))
+		{
+			error = "Physics clothSubsteps must be in [1, " + std::to_string(
+				VansEngine::VansPhysicsTiming::kMaximumSupportedClothSubsteps) + "]";
+			return false;
+		}
+		settings.timing.clothSubsteps = static_cast<std::uint32_t>(clothSubsteps);
+		if (!settings.timing.IsValid())
+		{
+			error = "Physics fixedTimeStep and clothFrameTime must be finite and positive";
 			return false;
 		}
 		settings.queryProfiles.clear();
@@ -404,10 +439,192 @@ nlohmann::json VansProjectSettingsJsonCodec::EncodePhysicsSettings(
 	const VansProjectPhysicsSettingsData& settings)
 {
 	nlohmann::json root;
-	root["fixedTimeStep"] = settings.fixedTimeStep;
+	root["simulation"] = {
+		{ "fixedTimeStep", settings.timing.fixedTimeStep },
+		{ "maximumSubsteps", settings.timing.maximumSubsteps },
+		{ "clothFrameTime", settings.timing.clothFrameTime },
+		{ "clothSubsteps", settings.timing.clothSubsteps }
+	};
 	root["queryProfiles"] = nlohmann::json::object();
 	for (const auto& [name, layers] : settings.queryProfiles)
 		root["queryProfiles"][name] = { { "collisionLayers", layers } };
 	return root;
+}
+
+bool VansProjectSettingsJsonCodec::DecodeNavigationSettings(
+	const nlohmann::json& root,
+	VansNavigationSettings& settings,
+	std::string& error)
+{
+	error.clear();
+	try
+	{
+		if (!root.is_object() || root.size() != 4u ||
+			root.value("schemaVersion", 0) != 2 ||
+			!root.contains("bake") || !root.at("bake").is_object() ||
+			!root.contains("query") || !root.at("query").is_object() ||
+			!root.contains("areas") || !root.at("areas").is_object())
+		{
+			error = "Navigation settings require schemaVersion 2, bake, query, and areas objects";
+			return false;
+		}
+		const nlohmann::json& bake = root.at("bake");
+		const nlohmann::json& query = root.at("query");
+		const nlohmann::json& areas = root.at("areas");
+		static const std::unordered_set<std::string> bakeFields = {
+			"cellSize", "cellHeight", "agentHeight", "agentRadius",
+			"agentMaxClimb", "agentMaxSlopeDegrees", "regionMinSize",
+			"regionMergeSize", "edgeMaxLength", "edgeMaxError",
+			"maximumVerticesPerPolygon", "detailSamplingEnabled",
+			"detailSampleDistance", "detailSampleMaxError"
+		};
+		static const std::unordered_set<std::string> queryFields = {
+			"maximumSearchNodes", "maximumCorridorPolygons", "maximumPathPoints"
+		};
+		if (bake.size() != bakeFields.size())
+		{
+			error = "Navigation bake settings must define every supported field exactly once";
+			return false;
+		}
+		for (const auto& item : bake.items())
+			if (bakeFields.find(item.key()) == bakeFields.end())
+			{
+				error = "Navigation bake settings contain unknown field '" + item.key() + "'";
+				return false;
+			}
+		if (query.size() != queryFields.size())
+		{
+			error = "Navigation query settings must define every supported field exactly once";
+			return false;
+		}
+		for (const auto& item : query.items())
+			if (queryFields.find(item.key()) == queryFields.end())
+			{
+				error = "Navigation query settings contain unknown field '" + item.key() + "'";
+				return false;
+			}
+		if (areas.size() != 2u || !areas.contains("default") ||
+			!areas.at("default").is_string() || !areas.contains("definitions") ||
+			!areas.at("definitions").is_array())
+		{
+			error = "Navigation areas require default and definitions fields";
+			return false;
+		}
+		for (const auto& item : areas.items())
+			if (item.key() != "default" && item.key() != "definitions")
+			{
+				error = "Navigation areas contain unknown field '" + item.key() + "'";
+				return false;
+			}
+
+		VansNavigationSettings decoded;
+		decoded.bake.cellSize = bake.at("cellSize").get<float>();
+		decoded.bake.cellHeight = bake.at("cellHeight").get<float>();
+		decoded.bake.agentHeight = bake.at("agentHeight").get<float>();
+		decoded.bake.agentRadius = bake.at("agentRadius").get<float>();
+		decoded.bake.agentMaxClimb = bake.at("agentMaxClimb").get<float>();
+		decoded.bake.agentMaxSlopeDegrees =
+			bake.at("agentMaxSlopeDegrees").get<float>();
+		decoded.bake.regionMinSize = bake.at("regionMinSize").get<float>();
+		decoded.bake.regionMergeSize = bake.at("regionMergeSize").get<float>();
+		decoded.bake.edgeMaxLength = bake.at("edgeMaxLength").get<float>();
+		decoded.bake.edgeMaxError = bake.at("edgeMaxError").get<float>();
+		decoded.bake.maximumVerticesPerPolygon =
+			bake.at("maximumVerticesPerPolygon").get<int>();
+		decoded.bake.detailSamplingEnabled =
+			bake.at("detailSamplingEnabled").get<bool>();
+		decoded.bake.detailSampleDistance =
+			bake.at("detailSampleDistance").get<float>();
+		decoded.bake.detailSampleMaxError =
+			bake.at("detailSampleMaxError").get<float>();
+		decoded.query.maximumSearchNodes =
+			query.at("maximumSearchNodes").get<int>();
+		decoded.query.maximumCorridorPolygons =
+			query.at("maximumCorridorPolygons").get<int>();
+		decoded.query.maximumPathPoints =
+			query.at("maximumPathPoints").get<int>();
+		decoded.areas.defaultArea = areas.at("default").get<std::string>();
+		decoded.areas.definitions.clear();
+		static const std::unordered_set<std::string> areaFields = {
+			"name", "id", "traversalCost", "traversable"
+		};
+		for (const nlohmann::json& area : areas.at("definitions"))
+		{
+			if (!area.is_object() || area.size() != areaFields.size())
+			{
+				error = "Each navigation area definition must contain exactly four fields";
+				return false;
+			}
+			for (const auto& item : area.items())
+				if (areaFields.find(item.key()) == areaFields.end())
+				{
+					error = "Navigation area definition contains unknown field '" +
+						item.key() + "'";
+					return false;
+				}
+			const int areaId = area.at("id").get<int>();
+			if (areaId < 0 || areaId > kMaximumNavigationAreaId)
+			{
+				error = "Navigation area id must be in [0, 62]";
+				return false;
+			}
+			decoded.areas.definitions.push_back({
+				area.at("name").get<std::string>(),
+				static_cast<std::uint8_t>(areaId),
+				area.at("traversalCost").get<float>(),
+				area.at("traversable").get<bool>()
+			});
+		}
+		if (!ValidateNavigationSettings(decoded, error))
+			return false;
+		settings = decoded;
+		return true;
+	}
+	catch (const nlohmann::json::exception& exception)
+	{
+		error = std::string("Navigation settings JSON parse error: ") + exception.what();
+		return false;
+	}
+}
+
+nlohmann::json VansProjectSettingsJsonCodec::EncodeNavigationSettings(
+	const VansNavigationSettings& settings)
+{
+	nlohmann::json definitions = nlohmann::json::array();
+	for (const VansNavigationAreaDefinition& area : settings.areas.definitions)
+		definitions.push_back({
+			{ "name", area.name },
+			{ "id", area.id },
+			{ "traversalCost", area.traversalCost },
+			{ "traversable", area.traversable }
+		});
+	return {
+		{ "schemaVersion", 2 },
+		{ "bake", {
+			{ "cellSize", settings.bake.cellSize },
+			{ "cellHeight", settings.bake.cellHeight },
+			{ "agentHeight", settings.bake.agentHeight },
+			{ "agentRadius", settings.bake.agentRadius },
+			{ "agentMaxClimb", settings.bake.agentMaxClimb },
+			{ "agentMaxSlopeDegrees", settings.bake.agentMaxSlopeDegrees },
+			{ "regionMinSize", settings.bake.regionMinSize },
+			{ "regionMergeSize", settings.bake.regionMergeSize },
+			{ "edgeMaxLength", settings.bake.edgeMaxLength },
+			{ "edgeMaxError", settings.bake.edgeMaxError },
+			{ "maximumVerticesPerPolygon", settings.bake.maximumVerticesPerPolygon },
+			{ "detailSamplingEnabled", settings.bake.detailSamplingEnabled },
+			{ "detailSampleDistance", settings.bake.detailSampleDistance },
+			{ "detailSampleMaxError", settings.bake.detailSampleMaxError }
+		} },
+		{ "query", {
+			{ "maximumSearchNodes", settings.query.maximumSearchNodes },
+			{ "maximumCorridorPolygons", settings.query.maximumCorridorPolygons },
+			{ "maximumPathPoints", settings.query.maximumPathPoints }
+		} },
+		{ "areas", {
+			{ "default", settings.areas.defaultArea },
+			{ "definitions", std::move(definitions) }
+		} }
+	};
 }
 }

@@ -6,7 +6,7 @@
 #include "../SceneCore/VansSceneImpactDecalConfig.h"
 #include "VansRenderBounds.h"
 #include "VansVertexDeformationState.h"
-#include "../ScriptCore/VansTransform.h"
+#include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "BRDFData/VansLight.h"
 #include <cstdint>
 #include <vector>
@@ -42,7 +42,6 @@ namespace VansGraphics
 	};
 
 	class VansCamera;
-	class VansAnimationNode;
 	class VansRenderNode : public VansNode
 	{
 		public:
@@ -90,13 +89,10 @@ namespace VansGraphics
 			// Vertex deformation state owns shader-facing skinning resources.
 			VansVertexDeformationState m_VertexDeformationState;
 
-			// Legacy editor/animation state retained for scene diagnostics and playback.
+			// Scene diagnostics retain only semantic flags. GPU resource identity lives
+			// in m_VertexDeformationState.
 			bool m_HasSkeletonBone = false;
 			bool m_AnimationEnabled = false;
-			VansAnimationNode* m_AnimOwner = nullptr;
-			uint32_t m_AnimSubmeshIndex = 0;
-			VansVKBuffer* m_AnimBoneIDBuffer     = nullptr;
-			VansVKBuffer* m_AnimBoneWeightBuffer  = nullptr;
 
 
 		//GPU 数据
@@ -122,7 +118,7 @@ namespace VansGraphics
 		void ShareTransform(uint32_t sharedID)
 		{
 			if (m_OwnsTransform)
-				VansTransformStore::FreeTransform(m_TransformID);
+				Vans::VansTransformStore::Release(m_TransformID);
 			m_TransformID = sharedID;
 			m_OwnsTransform = false;
 		}
@@ -251,32 +247,34 @@ namespace VansGraphics
 			m_NodeName = name;
 		}
 
-		void SetTransformData(glm::vec3 postion = glm::vec3(0, 0, 0), glm::vec3 rotation = glm::vec3(0, 0, 0), glm::vec3 scale = glm::vec3(1, 1, 1))
+		void SetTransformData(glm::vec3 position = glm::vec3(0, 0, 0), glm::vec3 rotation = glm::vec3(0, 0, 0), glm::vec3 scale = glm::vec3(1, 1, 1))
 		{
-			VansTransform& t = VansTransformStore::GetTransform(m_TransformID);
-			t.m_Position = postion;
+			Vans::VansTransform t = Vans::VansTransformStore::Read(m_TransformID);
+			t.m_Position = position;
 			t.m_Rotation = rotation;
 			t.m_Scale = scale;
+			Vans::VansTransformStore::Write(m_TransformID, t);
+			Vans::VansTransformStore::MarkDirty(m_TransformID);
 		}
 
 		glm::vec3 GetTransformPosition()
 		{
-			return VansTransformStore::GetTransform(m_TransformID).m_Position;
+			return Vans::VansTransformStore::Read(m_TransformID).m_Position;
 		}
 
 		glm::vec3 GetTransformRotation()
 		{
-			return VansTransformStore::GetTransform(m_TransformID).m_Rotation;
+			return Vans::VansTransformStore::Read(m_TransformID).m_Rotation;
 		}
 
 		glm::vec3 GetTransformScale()
 		{
-			return VansTransformStore::GetTransform(m_TransformID).m_Scale;
+			return Vans::VansTransformStore::Read(m_TransformID).m_Scale;
 		}
 
 		glm::mat4x4 GetTransformMatrix()
 		{
-			return VansTransformStore::GetTransform(m_TransformID).GetModelMatrix();
+			return Vans::VansTransformStore::Read(m_TransformID).GetModelMatrix();
 		}
 	};
 

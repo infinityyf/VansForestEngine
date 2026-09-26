@@ -8,6 +8,8 @@
 #include <cmath>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <sstream>
+#include <type_traits>
 #include <unordered_map>
 
 namespace Vans
@@ -466,6 +468,30 @@ std::size_t ApproximateSize(const VansGameplayDebugSnapshot& snapshot)
 }
 }
 
+std::string VansFormatTargetDataValue(const VansTargetDataValue& value)
+{
+	return std::visit([](const auto& target)
+	{
+		using Target = std::decay_t<decltype(target)>;
+		std::ostringstream stream;
+		if constexpr (std::is_same_v<Target, VansEntityHandle>)
+			stream << "Entity " << target.index << ':' << target.generation;
+		else if constexpr (std::is_same_v<Target, VansTargetLocation>)
+			stream << "Location " << target.value[0] << ", " << target.value[1]
+				<< ", " << target.value[2];
+		else if constexpr (std::is_same_v<Target, VansTargetRay>)
+			stream << "Ray origin " << target.origin[0] << ", " << target.origin[1] << ", "
+				<< target.origin[2] << " direction " << target.direction[0] << ", "
+				<< target.direction[1] << ", " << target.direction[2] << " length " << target.length;
+		else if constexpr (std::is_same_v<Target, VansTargetHitResult>)
+			stream << "Hit Entity " << target.entity.index << ':' << target.entity.generation
+				<< " distance " << target.distance;
+		else
+			static_assert(!sizeof(Target), "TargetData debug formatting must cover every value kind");
+		return stream.str();
+	}, value);
+}
+
 VansGameplayDebugSnapshot VansGameplayActionDebugService::Capture(
 	const VansGameplayRuntime& runtime,
 	std::uint64_t frame,
@@ -482,7 +508,7 @@ VansGameplayDebugSnapshot VansGameplayActionDebugService::Capture(
 		snapshot.owner = host->Owner();
 		snapshot.enabled = host->IsEnabled();
 		snapshot.tags = host->Tags().Snapshot();
-		snapshot.attributes = host->Attributes().Capture();
+		snapshot.attributes = host->Attributes().Snapshot();
 		snapshot.effects = host->Effects().Snapshot();
 		snapshot.activeCueCount = host->Cues().ActiveCount();
 		snapshot.grants = host->GrantedActions();

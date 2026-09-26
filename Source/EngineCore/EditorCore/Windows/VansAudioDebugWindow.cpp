@@ -1,7 +1,7 @@
 #include "VansAudioDebugWindow.h"
 
 #include "../VansEditorWindow.h"
-#include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../../EngineAPILayer/Public/IAudioEditorAPI.h"
 
 #include "imgui.h"
 
@@ -59,17 +59,18 @@ namespace VansGraphics
 {
 	void VansAudioDebugWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	{
-		if (!VansEditorWindow::m_AudioDebugWindowOpen)
+		Vans::EditorAPI::IAudioEditorAPI& audioAPI = editorAPI;
+		if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::AudioDebug))
 			return;
 
-		if (!ImGui::Begin("Audio Debug", &VansEditorWindow::m_AudioDebugWindowOpen))
+		if (!ImGui::Begin("Audio Debug", VansEditorWindow::WindowOpenState(VansEditorWindowId::AudioDebug)))
 		{
 			ImGui::End();
 			return;
 		}
 
 		const Vans::EditorAPI::AudioBusDebugSnapshot snapshot =
-			editorAPI.GetAudioBusDebugSnapshot();
+			audioAPI.GetAudioBusDebugSnapshot();
 		if (!snapshot.available)
 		{
 			ImGui::TextDisabled("Runtime scene is not available");
@@ -97,16 +98,28 @@ namespace VansGraphics
 			snapshot.spatialSourceCount,
 			snapshot.virtualizedSourceCount,
 			snapshot.hardwareVoiceActiveCount);
-		ImGui::Text("Source Pool: %d active leases, %d pooled",
+		ImGui::Text("Source Pool: %d active leases, %d pooled, %d limit",
 			snapshot.activeSourceLeaseCount,
-			snapshot.pooledSourceCount);
+			snapshot.pooledSourceCount,
+			snapshot.sourceLimit);
+		ImGui::Text("Source Allocation Failures: %d limit, %d backend",
+			snapshot.sourceLimitRejectionCount,
+			snapshot.sourceBackendFailureCount);
 		ImGui::Text("Voice Lease Events: %d suspended, %d resumed",
 			snapshot.hardwareVoiceSuspendedThisFrame,
 			snapshot.hardwareVoiceResumedThisFrame);
 		int maxActiveVoices = std::max(1, snapshot.maxActiveVoices);
 		ImGui::SetNextItemWidth(180.0f);
-		if (ImGui::SliderInt("Max Active Voices", &maxActiveVoices, 1, 128))
-			editorAPI.SetAudioMaxActiveVoices(maxActiveVoices);
+		if (ImGui::SliderInt(
+			"Max Active Voices",
+			&maxActiveVoices,
+			1,
+			std::max(1, snapshot.sourceLimit)))
+			audioAPI.SetAudioMaxActiveVoices(maxActiveVoices);
+		int sourceLimit = std::max(1, snapshot.sourceLimit);
+		ImGui::SetNextItemWidth(180.0f);
+		if (ImGui::SliderInt("Hardware Source Limit", &sourceLimit, 1, 256))
+			audioAPI.SetAudioSourceLimit(sourceLimit);
 		ImGui::Text("Reverb Zones: %d total, %d affecting listener",
 			snapshot.reverbZoneCount,
 			snapshot.affectingReverbZoneCount);
@@ -139,7 +152,7 @@ namespace VansGraphics
 				float gain = std::clamp(row.gain, 0.0f, 4.0f);
 				ImGui::SetNextItemWidth(-1.0f);
 				if (ImGui::SliderFloat("##gain", &gain, 0.0f, 4.0f, "%.2f"))
-					editorAPI.SetAudioBusGain(row.name, gain);
+					audioAPI.SetAudioBusGain(row.name, gain);
 
 				ImGui::TableSetColumnIndex(2);
 				ImGui::Text("%.2f", row.duckingGain);
@@ -153,12 +166,12 @@ namespace VansGraphics
 				ImGui::TableSetColumnIndex(5);
 				bool muted = row.muted;
 				if (ImGui::Checkbox("##mute", &muted))
-					editorAPI.SetAudioBusMuted(row.name, muted);
+					audioAPI.SetAudioBusMuted(row.name, muted);
 
 				ImGui::TableSetColumnIndex(6);
 				bool soloed = row.soloed;
 				if (ImGui::Checkbox("##solo", &soloed))
-					editorAPI.SetAudioBusSoloed(row.name, soloed);
+					audioAPI.SetAudioBusSoloed(row.name, soloed);
 
 				ImGui::PopID();
 			}
@@ -169,9 +182,9 @@ namespace VansGraphics
 		{
 			for (const Vans::EditorAPI::AudioBusDebugState& row : rows)
 			{
-				editorAPI.SetAudioBusGain(row.name, 1.0f);
-				editorAPI.SetAudioBusMuted(row.name, false);
-				editorAPI.SetAudioBusSoloed(row.name, false);
+				audioAPI.SetAudioBusGain(row.name, 1.0f);
+				audioAPI.SetAudioBusMuted(row.name, false);
+				audioAPI.SetAudioBusSoloed(row.name, false);
 			}
 		}
 
@@ -250,7 +263,7 @@ namespace VansGraphics
 				ImGui::TextUnformatted(source.playing ? "Playing" : (source.paused ? "Paused" : "Stopped"));
 				ImGui::TableSetColumnIndex(4);
 				ImGui::TextUnformatted(source.bound
-					? (source.usesInstance ? "Instance" : (source.usesPrivateNode ? "Streaming" : "Node"))
+					? source.voiceKind.c_str()
 					: "Unbound");
 				ImGui::TableSetColumnIndex(5);
 				ImGui::Text("%.1f", source.listenerDistance);

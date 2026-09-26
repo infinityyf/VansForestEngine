@@ -1,7 +1,7 @@
+#include "../../SceneRuntime/Transform/VansTransformStore.h"
 #include "VansEditorSceneQuery.h"
-#include "../../EditorCore/VansEditorSceneMath.h"
-#include "../../RenderCore/GeometryCore/VansMeshGeometryReadback.h"
-#include "../../RenderCore/GeometryCore/VansTriangleGeometryQuery.h"
+#include "../../Util/VansSceneViewMath.h"
+#include "../../RenderCore/GeometryCore/VansSceneTriangleRaycastCache.h"
 #include "../../RenderCore/VansRenderNode.h"
 #include "../../RenderCore/VansRenderSystem.h"
 #include "../../RenderCore/VulkanCore/VansMesh.h"
@@ -33,8 +33,8 @@ struct Instance
 std::vector<Instance> CollectInstances(VansRuntimeWorld& world, bool enabledOnly)
 {
     std::vector<Instance> result;
-    auto* storage = static_cast<VansComponentStorage<VansRuntimeRenderComponent>*>(
-        world.FindStorage(VansRuntimeComponentType_Render));
+    auto* storage = world.FindStorage<VansRuntimeRenderComponent>(
+        VansRuntimeComponentType_Render);
     if (!storage) return result;
     std::unordered_set<VansRenderNode*> visited;
     for (const auto& header : storage->Headers())
@@ -101,28 +101,12 @@ public:
 private:
     std::shared_ptr<GeometryReadState> m_State;
 };
-std::vector<VansGeometryTriangle> Triangles(const VansMeshGeometryData& mesh, const std::vector<glm::vec3>& positions)
-{
-    std::vector<VansGeometryTriangle> triangles;
-    triangles.reserve(mesh.indices.size() / 3);
-    for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3)
-    {
-        VansGeometryTriangle triangle;
-        triangle.a = positions[mesh.indices[i]];
-        triangle.b = positions[mesh.indices[i + 1]];
-        triangle.c = positions[mesh.indices[i + 2]];
-        triangles.push_back(triangle);
-    }
-    return triangles;
-}
 bool SkinPositions(const VansRenderNode& node, const VansMeshGeometryData& mesh,
     std::vector<glm::vec3>& positions, std::string& error)
 {
-    const auto* owner = node.m_VertexDeformationState.skinningOwner
-        ? node.m_VertexDeformationState.skinningOwner : node.m_AnimOwner;
-    const auto* source = node.m_SourceMesh;
-    const uint32_t index = node.m_VertexDeformationState.HasValidSkeletalSkinningResources()
-        ? node.m_VertexDeformationState.submeshIndex : node.m_AnimSubmeshIndex;
+	const auto* owner = node.m_VertexDeformationState.poseSource;
+	const auto* source = node.m_SourceMesh;
+	const uint32_t index = node.m_VertexDeformationState.submeshIndex;
     if (!owner || !source || index >= source->m_SubMeshBoneData.size() ||
         source->m_SubMeshBoneData[index].size() != mesh.positions.size())
     { error = "Scene picking could not resolve skeletal vertex weights."; return false; }
@@ -148,52 +132,21 @@ bool SkinPositions(const VansRenderNode& node, const VansMeshGeometryData& mesh,
 
 struct VansEditorSceneQuery::Cache
 {
-    struct Mesh
-    {
-        VkBuffer vertices = VK_NULL_HANDLE, indices = VK_NULL_HANDLE;
-        uint32_t vertexCount = 0, indexCount = 0;
-        VansMeshGeometryData geometry;
-        VansTriangleGeometryQuery query;
-    };
-    std::unordered_map<VansMesh*, Mesh> meshes;
+    VansSceneTriangleRaycastCache triangles;
 
     bool Prepare(const std::vector<Instance>& instances, const std::vector<VansMesh*>& needed,
         IVansRenderThreadTransactionExecutor* renderer, std::string& error)
     {
-        std::unordered_set<VansMesh*> alive;
-        for (const auto& instance : instances) alive.insert(instance.node->m_Mesh);
-        for (auto it = meshes.begin(); it != meshes.end();)
-            if (!alive.count(it->first)) it = meshes.erase(it); else ++it;
+        std::vector<VansMesh*> alive;
+        alive.reserve(instances.size());
+        for (const auto& instance : instances) alive.push_back(instance.node->m_Mesh);
+        const std::vector<VansMesh*> stale = triangles.FindStale(alive, needed);
+        if (stale.empty()) return true;
         auto state = std::make_shared<GeometryReadState>();
-        std::unordered_set<VansMesh*> added;
-        for (auto* mesh : needed)
-        {
-            const auto found = meshes.find(mesh);
-            if (found != meshes.end() && found->second.vertices == mesh->GetVertexBufferParameter().Buffer &&
-                found->second.indices == mesh->GetIndexBufferParameter().Buffer &&
-                found->second.vertexCount == mesh->GetMeshVertexCount() && found->second.indexCount == mesh->GetIndexCount()) continue;
-            meshes.erase(mesh);
-            if (added.insert(mesh).second) state->meshes.push_back(mesh);
-        }
-        if (state->meshes.empty()) return true;
+        state->meshes = stale;
         if (!renderer || !renderer->ExecuteRenderThreadTransaction(std::make_unique<GeometryReadTransaction>(state)))
         { error = state->error.empty() ? "Scene geometry readback transaction failed." : state->error; return false; }
-        try
-        {
-            for (size_t i = 0; i < state->meshes.size(); ++i)
-            {
-                auto* mesh = state->meshes[i];
-                Mesh cached;
-                cached.vertices = mesh->GetVertexBufferParameter().Buffer;
-                cached.indices = mesh->GetIndexBufferParameter().Buffer;
-                cached.vertexCount = mesh->GetMeshVertexCount(); cached.indexCount = mesh->GetIndexCount();
-                cached.geometry = std::move(state->geometry[i]);
-                cached.query.Build(Triangles(cached.geometry, cached.geometry.positions));
-                meshes.emplace(mesh, std::move(cached));
-            }
-        }
-        catch (const std::exception& exception) { error = exception.what(); return false; }
-        return true;
+        return triangles.Store(state->meshes, std::move(state->geometry), true, error);
     }
 };
 
@@ -214,7 +167,16 @@ EditorScenePickResult VansEditorSceneQuery::Pick(VansRuntimeWorld& runtimeWorld,
     const glm::vec3 unitDirection = direction / directionLength;
     const auto instances = CollectInstances(*world, true);
     const std::unordered_set<std::string> allowed(request.selectableEntities.begin(), request.selectableEntities.end());
-    struct Candidate { Instance instance; std::string guid; glm::vec3 origin, direction; float stretch; };
+    struct Candidate
+    {
+        Instance instance;
+        std::string guid;
+        glm::mat4 model{1.0f};
+        glm::vec3 origin{0.0f};
+        glm::vec3 direction{0.0f};
+        float stretch = 0.0f;
+        bool skinned = false;
+    };
     std::vector<Candidate> candidates;
     std::vector<VansMesh*> needed;
     for (const auto& instance : instances)
@@ -232,27 +194,48 @@ EditorScenePickResult VansEditorSceneQuery::Pick(VansRuntimeWorld& runtimeWorld,
         auto* mesh = instance.node->m_Mesh;
         // 动画的 bind-pose 包围盒不能用于排除当前姿态。
         if (!instance.node->HasValidSkeletalSkinningResources() && mesh->HasLocalBounds() &&
-            !IntersectEditorBounds(localOrigin, localDirection, mesh->GetLocalBoundsMin(), mesh->GetLocalBoundsMax(), request.maxDistance)) continue;
-        candidates.push_back({instance, guid, localOrigin, localDirection, stretch});
+            !VansSceneViewMath::IntersectBounds(
+                localOrigin, localDirection, mesh->GetLocalBoundsMin(),
+                mesh->GetLocalBoundsMax(), request.maxDistance)) continue;
+        candidates.push_back({instance, guid, model, localOrigin, localDirection, stretch,
+            instance.node->HasValidSkeletalSkinningResources()});
         needed.push_back(mesh);
     }
     if (!m_Cache->Prepare(instances, needed, renderer, result.message)) return result;
+    std::stable_sort(candidates.begin(), candidates.end(),
+        [](const Candidate& left, const Candidate& right) { return left.guid < right.guid; });
+
+    std::vector<VansSceneTriangleInstance> staticInstances;
+    staticInstances.reserve(candidates.size());
+    for (uint32_t index = 0; index < candidates.size(); ++index)
+        if (!candidates[index].skinned)
+            staticInstances.push_back({candidates[index].instance.node->m_Mesh,
+                candidates[index].model, index, index, false});
+    if (!m_Cache->triangles.BuildInstances(std::move(staticInstances), result.message)) return result;
+
     float nearest = request.maxDistance;
+    VansSceneTriangleHit staticHit;
+    VansGeometryQueryOptions pickOptions;
+    pickOptions.backfaces = VansGeometryBackfacePolicy::Report;
+    if (m_Cache->triangles.Raycast(
+        origin, unitDirection, nearest, {}, staticHit, 0.0f, pickOptions))
+    {
+        nearest = staticHit.distance;
+        result.entityGuid = candidates[staticHit.instance].guid;
+    }
     for (const auto& candidate : candidates)
     {
-        auto& mesh = m_Cache->meshes.at(candidate.instance.node->m_Mesh);
-        const VansTriangleGeometryQuery* query = &mesh.query;
+        if (!candidate.skinned) continue;
+        const auto* mesh = m_Cache->triangles.FindGeometry(candidate.instance.node->m_Mesh);
+        if (!mesh) { result.message = "Scene picking mesh geometry is unavailable."; return result; }
+        std::vector<glm::vec3> positions;
+        if (!SkinPositions(*candidate.instance.node, *mesh, positions, result.message)) return result;
         VansTriangleGeometryQuery deformed;
-        if (candidate.instance.node->HasValidSkeletalSkinningResources())
-        {
-            std::vector<glm::vec3> positions;
-            if (!SkinPositions(*candidate.instance.node, mesh.geometry, positions, result.message)) return result;
-            try { deformed.Build(Triangles(mesh.geometry, positions)); }
-            catch (const std::exception& e) { result.message = e.what(); return result; }
-            query = &deformed;
-        }
+        if (!VansSceneTriangleRaycastCache::BuildMeshQuery(
+            *mesh, positions, deformed, result.message)) return result;
         VansGeometryHit hit;
-        if (query->Raycast(candidate.origin, candidate.direction, nearest * candidate.stretch, hit, 0))
+        if (deformed.Raycast(candidate.origin, candidate.direction,
+            nearest * candidate.stretch, hit, 0))
         {
             const float distance = hit.distance / candidate.stretch;
             if (distance < nearest || (distance == nearest && (result.entityGuid.empty() || candidate.guid < result.entityGuid)))
@@ -288,10 +271,10 @@ EditorSceneBounds VansEditorSceneQuery::Bounds(VansRuntimeWorld& runtimeWorld, c
         EditorSceneBounds instanceBounds;
         if (instance.node->HasValidSkeletalSkinningResources())
         {
-            const auto cached = m_Cache->meshes.find(mesh);
-            if (cached == m_Cache->meshes.end()) continue;
+            const auto* cached = m_Cache->triangles.FindGeometry(mesh);
+            if (!cached) continue;
             std::vector<glm::vec3> positions;
-            if (!SkinPositions(*instance.node, cached->second.geometry, positions, error))
+            if (!SkinPositions(*instance.node, *cached, positions, error))
             { VANS_LOG_WARN("[SceneFocus] " << error); return {}; }
             for (const auto& p : positions) Expand(instanceBounds, glm::vec3(model * glm::vec4(p, 1)));
         }
@@ -304,9 +287,9 @@ EditorSceneBounds VansEditorSceneQuery::Bounds(VansRuntimeWorld& runtimeWorld, c
         }
         else
         {
-            const auto cached = m_Cache->meshes.find(mesh);
-            if (cached != m_Cache->meshes.end())
-                for (const auto& p : cached->second.geometry.positions)
+            const auto* cached = m_Cache->triangles.FindGeometry(mesh);
+            if (cached)
+                for (const auto& p : cached->positions)
                     Expand(instanceBounds, glm::vec3(model * glm::vec4(p, 1)));
         }
         if (!instanceBounds.available) continue;
@@ -326,11 +309,11 @@ EditorSceneBounds VansEditorSceneQuery::Bounds(VansRuntimeWorld& runtimeWorld, c
         if (framedEntities.count(guid)) continue;
         const auto entity = world->Entities().FindByGuid(guid);
         const auto component = world->FindComponentOwnedBy(entity, VansRuntimeComponentType_Transform);
-        const auto* storage = static_cast<const VansComponentStorage<VansRuntimeTransformComponent>*>(
-            world->FindStorage(VansRuntimeComponentType_Transform));
+        const auto* storage = world->FindStorage<VansRuntimeTransformComponent>(
+            VansRuntimeComponentType_Transform);
         const auto* transform = storage ? storage->Get(component) : nullptr;
-        if (transform && VansTransformStore::IsAllocated(transform->transformStoreId))
-            Expand(bounds, VansTransformStore::GetTransform(transform->transformStoreId).m_Position);
+        if (transform && Vans::VansTransformStore::IsAllocated(transform->transformStoreId))
+            Expand(bounds, Vans::VansTransformStore::Read(transform->transformStoreId).m_Position);
     }
     return bounds;
 }

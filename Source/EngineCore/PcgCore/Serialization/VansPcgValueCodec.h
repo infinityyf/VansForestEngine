@@ -10,6 +10,7 @@
 #include <initializer_list>
 #include <limits>
 #include <unordered_set>
+#include <vector>
 
 namespace Vans::PcgValue
 {
@@ -78,6 +79,24 @@ public:
 			output[i] = static_cast<float>(ReadSerializedNumber(component));
 			if (!std::isfinite(output[i])) Fail(std::string(name) + " requires finite vector components");
 		}
+	}
+	void FloatVector(const char* name, std::vector<float>& output, std::size_t minimumSize, std::size_t maximumSize)
+	{
+		const auto* field = Field(name);
+		if (!field || field->kind != VansSerializedValue::Kind::Array ||
+			field->arrayItems.size() < minimumSize || field->arrayItems.size() > maximumSize)
+		{ Fail(std::string(name) + " has an invalid element count"); return; }
+		std::vector<float> candidate;
+		candidate.reserve(field->arrayItems.size());
+		for (const auto& component : field->arrayItems)
+		{
+			if (component.kind != VansSerializedValue::Kind::Float && component.kind != VansSerializedValue::Kind::Int)
+			{ Fail(std::string(name) + " requires numeric components"); return; }
+			const float value = static_cast<float>(ReadSerializedNumber(component));
+			if (!std::isfinite(value)) { Fail(std::string(name) + " requires finite components"); return; }
+			candidate.push_back(value);
+		}
+		output = std::move(candidate);
 	}
 	void Reference(const char* name, const char* type, VansAssetGuid& output)
 	{
@@ -157,6 +176,14 @@ private:
 template <std::size_t N> VansSerializedValue Vector(const std::array<float, N>& value)
 {
 	std::vector<VansSerializedValue> items;
+	for (float component : value) items.push_back(VansSerializedValue::Float(component));
+	return VansSerializedValue::Array(std::move(items));
+}
+
+inline VansSerializedValue FloatVector(const std::vector<float>& value)
+{
+	std::vector<VansSerializedValue> items;
+	items.reserve(value.size());
 	for (float component : value) items.push_back(VansSerializedValue::Float(component));
 	return VansSerializedValue::Array(std::move(items));
 }

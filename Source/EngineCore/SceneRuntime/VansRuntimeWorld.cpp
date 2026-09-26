@@ -1,11 +1,54 @@
 #include "VansRuntimeWorld.h"
 
+#include "../RuntimeCore/VansFramePhase.h"
+#include "../RuntimeCore/VansThreadContract.h"
+
+#include <cassert>
+
 namespace Vans
 {
+bool VansRuntimeComponentTypeMatches(
+	std::uint16_t typeId,
+	const std::type_info& valueType)
+{
+	switch (typeId)
+	{
+	case VansRuntimeComponentType_Render: return valueType == typeid(VansRuntimeRenderComponent);
+	case VansRuntimeComponentType_Physics: return valueType == typeid(VansRuntimePhysicsComponent);
+	case VansRuntimeComponentType_Cloth: return valueType == typeid(VansRuntimeClothComponent);
+	case VansRuntimeComponentType_CharacterController:
+		return valueType == typeid(VansRuntimeCharacterControllerComponent);
+	case VansRuntimeComponentType_DirectionalLight:
+	case VansRuntimeComponentType_PointLight:
+	case VansRuntimeComponentType_SpotLight:
+	case VansRuntimeComponentType_RectLight:
+		return valueType == typeid(VansRuntimeLightComponent);
+	case VansRuntimeComponentType_Camera: return valueType == typeid(VansRuntimeCameraComponent);
+	case VansRuntimeComponentType_Audio: return valueType == typeid(VansRuntimeAudioComponent);
+	case VansRuntimeComponentType_AudioReverbZone:
+	case VansRuntimeComponentType_AudioVolume:
+		return valueType == typeid(VansRuntimeAudioReverbZoneComponent);
+	case VansRuntimeComponentType_Video: return valueType == typeid(VansRuntimeVideoComponent);
+	case VansRuntimeComponentType_Particle: return valueType == typeid(VansRuntimeParticleComponent);
+	case VansRuntimeComponentType_Animation: return valueType == typeid(VansRuntimeAnimationComponent);
+	case VansRuntimeComponentType_Ragdoll: return valueType == typeid(VansRuntimeRagdollComponent);
+	case VansRuntimeComponentType_Vehicle: return valueType == typeid(VansRuntimeVehicleComponent);
+	case VansRuntimeComponentType_UI: return valueType == typeid(VansRuntimeUIComponent);
+	case VansRuntimeComponentType_Script: return valueType == typeid(VansRuntimeScriptComponent);
+	case VansRuntimeComponentType_Transform: return valueType == typeid(VansRuntimeTransformComponent);
+	case VansRuntimeComponentType_Timeline: return valueType == typeid(VansRuntimeTimelineComponent);
+	case VansRuntimeComponentType_ActionHost: return valueType == typeid(VansRuntimeActionHostComponent);
+	case VansRuntimeComponentType_NavigationAgent:
+		return valueType == typeid(VansRuntimeNavigationAgentComponent);
+	case VansRuntimeComponentType_AIAgent: return valueType == typeid(VansRuntimeAIAgentComponent);
+	default: return true;
+	}
+}
+
 VansEntityHandle VansRuntimeWorld::CreateEntity(const VansEntityCreateDesc& desc)
 {
 	const VansEntityHandle entity = m_Entities.CreateEntity(desc);
-	RecomputeComponentEffectiveEnabled();
+	RequestComponentEffectiveEnabledRecompute();
 	return entity;
 }
 
@@ -18,7 +61,7 @@ bool VansRuntimeWorld::DestroyEntity(VansEntityHandle entity, VansDestroyChildre
 	{
 		for (VansEntityHandle destroyedEntity : destroyedEntities)
 			RemoveComponentsOwnedBy(destroyedEntity);
-		RecomputeComponentEffectiveEnabled();
+		RequestComponentEffectiveEnabledRecompute();
 	}
 	return destroyed;
 }
@@ -32,7 +75,7 @@ bool VansRuntimeWorld::SetEntityActive(VansEntityHandle entity, bool active)
 {
 	const bool changed = m_Entities.SetSelfActive(entity, active);
 	if (changed)
-		RecomputeComponentEffectiveEnabled();
+		RequestComponentEffectiveEnabledRecompute();
 	return changed;
 }
 
@@ -138,7 +181,7 @@ bool VansRuntimeWorld::SetParent(VansEntityHandle entity, VansEntityHandle paren
 {
 	const bool changed = m_Entities.SetParent(entity, parent);
 	if (changed)
-		RecomputeComponentEffectiveEnabled();
+		RequestComponentEffectiveEnabledRecompute();
 	return changed;
 }
 
@@ -154,197 +197,31 @@ const IVansComponentStorage* VansRuntimeWorld::FindStorage(std::uint16_t typeId)
 	return it != m_ComponentStorages.end() ? it->second.get() : nullptr;
 }
 
-void VansRuntimeWorld::FlushCommands()
+VansRuntimeCommandCommitResult VansRuntimeWorld::CommitCommands(
+	VansRuntimeCommandCommitPoint commitPoint)
 {
-	for (const VansEntityCommand& command : m_Commands.TakeCommands())
+	VANS_ASSERT_MAIN_THREAD();
+	VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
+	assert(!m_CommandCommitInProgress);
+	if (m_CommandCommitInProgress)
+		return {};
+
+	(void)commitPoint;
+	std::vector<VansEntityCommand> commands = m_Commands.TakeCommands();
+	VansRuntimeCommandCommitResult result;
+	result.consumedCommandCount = commands.size();
+	m_CommandCommitInProgress = true;
+	m_ComponentEffectiveEnabledDirty = false;
+	for (VansEntityCommand& command : commands)
+		command(*this);
+	m_CommandCommitInProgress = false;
+	result.hierarchyActivityChanged = m_ComponentEffectiveEnabledDirty;
+	if (m_ComponentEffectiveEnabledDirty)
 	{
-		switch (command.type)
-		{
-		case VansEntityCommandType::CreateEntity:
-			CreateEntity(command.createDesc);
-			break;
-		case VansEntityCommandType::DestroyEntity:
-			DestroyEntity(command.entity, command.destroyChildrenPolicy);
-			break;
-		case VansEntityCommandType::AddTransformComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Transform,
-				command.transformComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddRenderComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Render,
-				command.renderComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddPhysicsComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Physics,
-				command.physicsComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddClothComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Cloth,
-				command.clothComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddCharacterControllerComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_CharacterController,
-				command.characterControllerComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddVehicleComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Vehicle,
-				command.vehicleComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddAnimationComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Animation,
-				command.animationComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddRagdollComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Ragdoll,
-				command.ragdollComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddAudioComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Audio,
-				command.audioComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddAudioReverbZoneComponent:
-			AddComponent(
-				command.entity,
-				command.componentTypeId,
-				command.audioReverbZoneComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddUIComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_UI,
-				command.uiComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddScriptComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Script,
-				command.scriptComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddVideoComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Video,
-				command.videoComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddParticleComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Particle,
-				command.particleComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddCameraComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Camera,
-				command.cameraComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddLightComponent:
-			AddComponent(
-				command.entity,
-				command.componentTypeId,
-				command.lightComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddTimelineComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_Timeline,
-				command.timelineComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddActionHostComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_ActionHost,
-				command.actionHostComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddNavigationAgentComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_NavigationAgent,
-				command.navigationAgentComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::AddAIAgentComponent:
-			AddComponent(
-				command.entity,
-				VansRuntimeComponentType_AIAgent,
-				command.aiAgentComponent,
-				command.componentStableGuid,
-				command.boolValue);
-			break;
-		case VansEntityCommandType::SetEntityActive:
-			SetEntityActive(command.entity, command.boolValue);
-			break;
-		case VansEntityCommandType::SetEntityName:
-			SetEntityName(command.entity, command.stringValue);
-			break;
-		case VansEntityCommandType::SetComponentEnabled:
-			SetComponentEnabled(command.component, command.boolValue);
-			break;
-		case VansEntityCommandType::RemoveComponent:
-			RemoveComponent(command.component);
-			break;
-		case VansEntityCommandType::SetParent:
-			SetParent(command.entity, command.parent);
-			break;
-		default:
-			break;
-		}
+		m_ComponentEffectiveEnabledDirty = false;
+		RecomputeComponentEffectiveEnabled();
 	}
+	return result;
 }
 
 void VansRuntimeWorld::RecomputeComponentEffectiveEnabled()
@@ -359,10 +236,23 @@ void VansRuntimeWorld::RecomputeComponentEffectiveEnabled()
 	}
 }
 
+void VansRuntimeWorld::RequestComponentEffectiveEnabledRecompute()
+{
+	if (m_CommandCommitInProgress)
+	{
+		m_ComponentEffectiveEnabledDirty = true;
+		return;
+	}
+	RecomputeComponentEffectiveEnabled();
+}
+
 void VansRuntimeWorld::Clear()
 {
 	m_Commands.Clear();
-	m_ComponentStorages.clear();
+	m_CommandCommitInProgress = false;
+	m_ComponentEffectiveEnabledDirty = false;
+	for (auto& entry : m_ComponentStorages)
+		entry.second->Clear();
 	m_Entities.Clear();
 }
 

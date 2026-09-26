@@ -5,6 +5,11 @@
 
 namespace Vans
 {
+float MinimumPcgRiverTransitionWidth(float fieldTexelSize)
+{
+    return 4.0f * fieldTexelSize;
+}
+
 std::vector<VansAssetGuid> VansPcgSplineAsset::Dependencies() const
 {
     std::vector<VansAssetGuid> result;
@@ -57,7 +62,7 @@ std::vector<std::string> ValidatePcgSplineAsset(const VansPcgSplineAsset& asset,
             range(spline.waterBlendWidthMeters, 0, 1000, path + ".waterBlendWidthMeters");
             range(spline.waterBlendStartMeters, 0, 1000000, path + ".waterBlendStartMeters");
             range(spline.waterBlendEndMeters, 0, 1000000, path + ".waterBlendEndMeters");
-            range(spline.wetBankWidthMeters, 4.0f * asset.fieldTexelSize, 1000,
+            range(spline.wetBankWidthMeters, MinimumPcgRiverTransitionWidth(asset.fieldTexelSize), 1000,
                 path + ".wetBankWidthMeters");
             range(spline.wetnessStrength, 0, 1, path + ".wetnessStrength");
         }

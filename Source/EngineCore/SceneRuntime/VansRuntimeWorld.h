@@ -5,6 +5,8 @@
 #include "VansEntityRegistry.h"
 
 #include <memory>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -12,6 +14,20 @@
 
 namespace Vans
 {
+enum class VansRuntimeCommandCommitPoint : std::uint8_t
+{
+	SceneAssembly,
+	RuntimeFrame,
+	AuthoringTransaction,
+	SceneTeardown
+};
+
+struct VansRuntimeCommandCommitResult
+{
+	std::size_t consumedCommandCount = 0;
+	bool hierarchyActivityChanged = false;
+};
+
 class VansRuntimeWorld
 {
 public:
@@ -40,19 +56,35 @@ public:
 	VansEntityCommandBuffer& Commands() { return m_Commands; }
 
 	template <typename T>
-	VansComponentStorage<T>& RegisterStorage(std::uint16_t typeId)
+	VansComponentStorage<T>* RegisterStorage(std::uint16_t typeId)
 	{
+		if (typeId == VansInvalidComponentTypeId ||
+			!VansRuntimeComponentTypeMatches(typeId, typeid(T)) ||
+			FindStorage(typeId) != nullptr)
+			return nullptr;
 		auto storage = std::make_unique<VansComponentStorage<T>>(typeId);
 		VansComponentStorage<T>* raw = storage.get();
 		m_ComponentStorages[typeId] = std::move(storage);
-		return *raw;
+		return raw;
 	}
 
 	template <typename T>
-	VansComponentStorage<T>& GetOrRegisterStorage(std::uint16_t typeId)
+	VansComponentStorage<T>* FindStorage(std::uint16_t typeId)
+	{
+		return dynamic_cast<VansComponentStorage<T>*>(FindStorage(typeId));
+	}
+
+	template <typename T>
+	const VansComponentStorage<T>* FindStorage(std::uint16_t typeId) const
+	{
+		return dynamic_cast<const VansComponentStorage<T>*>(FindStorage(typeId));
+	}
+
+	template <typename T>
+	VansComponentStorage<T>* GetOrRegisterStorage(std::uint16_t typeId)
 	{
 		if (IVansComponentStorage* storage = FindStorage(typeId))
-			return static_cast<VansComponentStorage<T>&>(*storage);
+			return dynamic_cast<VansComponentStorage<T>*>(storage);
 		return RegisterStorage<T>(typeId);
 	}
 
@@ -66,8 +98,10 @@ public:
 	{
 		if (!m_Entities.IsAlive(owner))
 			return VansComponentHandle{};
-		VansComponentStorage<T>& storage = GetOrRegisterStorage<T>(typeId);
-		return storage.Add(
+		VansComponentStorage<T>* storage = GetOrRegisterStorage<T>(typeId);
+		if (!storage)
+			return VansComponentHandle{};
+		return storage->Add(
 			owner,
 			std::move(value),
 			std::move(stableGuid),
@@ -75,22 +109,25 @@ public:
 			m_Entities.IsHierarchyActive(owner));
 	}
 
-	IVansComponentStorage* FindStorage(std::uint16_t typeId);
-	const IVansComponentStorage* FindStorage(std::uint16_t typeId) const;
-
-	void FlushCommands();
+	VansRuntimeCommandCommitResult CommitCommands(VansRuntimeCommandCommitPoint commitPoint);
 	void RecomputeComponentEffectiveEnabled();
 	void Clear();
 
 private:
+	IVansComponentStorage* FindStorage(std::uint16_t typeId);
+	const IVansComponentStorage* FindStorage(std::uint16_t typeId) const;
+
 	void CollectEntitiesForDestroy(
 		VansEntityHandle entity,
 		VansDestroyChildrenPolicy childrenPolicy,
 		std::vector<VansEntityHandle>& outEntities) const;
 	void RemoveComponentsOwnedBy(VansEntityHandle entity);
+	void RequestComponentEffectiveEnabledRecompute();
 
 	VansEntityRegistry m_Entities;
 	VansEntityCommandBuffer m_Commands;
 	std::unordered_map<std::uint16_t, std::unique_ptr<IVansComponentStorage>> m_ComponentStorages;
+	bool m_CommandCommitInProgress = false;
+	bool m_ComponentEffectiveEnabledDirty = false;
 };
 }

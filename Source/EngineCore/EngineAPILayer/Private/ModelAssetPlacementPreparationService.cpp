@@ -1,7 +1,6 @@
 #include "ModelAssetPlacementPreparationService.h"
 
-#include "ScenePropertyValueBuilders.h"
-#include "../Public/IEngineEditorAPI.h"
+#include "EngineAPIImpl.h"
 #include "../../AssetCore/Importers/VansModelImportReport.h"
 #include "../../AssetCore/VansAssetDatabase.h"
 #include "../../AssetCore/VansAssetGuid.h"
@@ -92,7 +91,7 @@ GeneratedMaterialLookup BuildGeneratedMaterialLookup(const std::string& modelGui
 
 std::string ResolveGeneratedMaterialOverride(
     const GeneratedMaterialLookup& lookup,
-    const ProjectSubmeshInfo& submeshInfo,
+    const ProjectSubmeshSnapshot& submeshInfo,
     std::uint32_t submeshIndex)
 {
     const std::string textureKey = TextureFileKey(submeshInfo.diffuseTexturePath);
@@ -135,7 +134,7 @@ std::string MakeUniqueEntityName(VansGraphics::VansScene* scene, const std::stri
 
 ModelAssetPlacementPayload ModelAssetPlacementPreparationService::Prepare(
     const ModelAssetPlacementRequest& request,
-    IEngineEditorAPI& editorAPI,
+    EngineAPIImpl& editorAPI,
     RuntimeSceneHandle sceneHandle)
 {
     ModelAssetPlacementPayload payload;
@@ -169,10 +168,10 @@ ModelAssetPlacementPayload ModelAssetPlacementPreparationService::Prepare(
 
 	const std::string meshName = request.assetGuid;
 	const std::string entityBaseName = record->sourcePath.stem().string();
-    MeshLoadRequest loadRequest;
+    ProjectMeshLoadRequest loadRequest;
     loadRequest.meshName = meshName;
     loadRequest.sourcePath = record->sourcePath.string();
-	const MeshLoadResult loadResult = editorAPI.EnsureProjectMeshLoaded(loadRequest);
+	const ProjectMeshLoadResult loadResult = editorAPI.EnsureProjectMeshLoaded(loadRequest);
 	if (!loadResult.available)
 	{
 		payload.message = "Model mesh could not be uploaded on the RenderThread";
@@ -185,7 +184,7 @@ ModelAssetPlacementPayload ModelAssetPlacementPreparationService::Prepare(
 		VANS_LOG("[EngineAPI] Reusing resident model mesh for placement: "
 			<< meshName);
 
-	const ProjectMeshInfoSnapshot droppedMesh = editorAPI.GetProjectMeshInfo(meshName);
+	const ProjectMeshSnapshot droppedMesh = editorAPI.GetProjectMeshInfo(meshName);
 	const std::string uniqueName = MakeUniqueEntityName(scene, entityBaseName);
 
     Vans::SceneModelEntityFactoryResult sceneEntities;
@@ -196,7 +195,7 @@ ModelAssetPlacementPayload ModelAssetPlacementPreparationService::Prepare(
             BuildSceneRequest(uniqueName, request.assetGuid, request.worldPosition);
         for (std::uint32_t index = 0; index < droppedMesh.submeshes.size(); ++index)
         {
-            const ProjectSubmeshInfo& submesh = droppedMesh.submeshes[index];
+            const ProjectSubmeshSnapshot& submesh = droppedMesh.submeshes[index];
             if (submesh.vertexCount == 0 || submesh.indexCount == 0)
                 continue;
 
@@ -230,7 +229,7 @@ ModelAssetPlacementPayload ModelAssetPlacementPreparationService::Prepare(
 
     payload.sceneEntities.reserve(sceneEntities.entities.size());
     for (const Vans::VansSerializedValue& entity : sceneEntities.entities)
-        payload.sceneEntities.push_back(ScenePropertyValues::FromSerializedValue(entity));
+        payload.sceneEntities.push_back(entity);
     payload.prepared = !payload.sceneEntities.empty();
     if (!payload.prepared)
         payload.message = "Model asset placement produced no scene entities";

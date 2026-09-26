@@ -6,11 +6,14 @@
 #include "../Graphics/Vulkan/VansVKFunctions.h"
 #include "../EngineCore/AssetCore/VansAssetResolver.h"
 #include "../EngineCore/AssetCore/VansBuiltInAssetCatalog.h"
+#include "../EngineCore/AssetCore/VansDerivedArtifactLayout.h"
 #include "../EngineCore/AssetCore/VansMaterialAuthoringAsset.h"
 #include "../EngineCore/AssetCore/VansShaderAuthoringAsset.h"
 #include "../EngineCore/AssetCore/VansSkinProfile.h"
 #include "../EngineCore/AssetCore/VansSkeletalMeshImportSettings.h"
 #include "../EngineCore/AssetCore/Importers/VansTextureCooker.h"
+#include "../EngineCore/AssetCore/Importers/Shader/VansShaderArtifactCache.h"
+#include "../EngineCore/AssetCore/Serialization/VansAssetMetaJsonCodec.h"
 #include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../EngineCore/AssetCore/Serialization/VansSkinProfileJsonCodec.h"
@@ -28,19 +31,22 @@
 #include "../EngineCore/AudioCore/Storage/VansAudioReverbPresetAssetStorage.h"
 #include "../EngineCore/AudioCore/VansAudioReverbEnvironment.h"
 #include "../EngineCore/AudioCore/VansAudioSourceBinding.h"
+#include "../EngineCore/AudioCore/VansAudioSystem.h"
 #include "../EngineCore/AudioCore/VansAudioPreviewPlayer.h"
 #include "../EngineCore/AudioCore/VansAudioVirtualization.h"
-#include "../EngineCore/AudioCore/VansAudioWaveform.h"
+#include "../EngineCore/MediaCore/VansMediaDecodeSession.h"
 #include "../EngineCore/PhysicsCore/Storage/VansCollisionLayerStorage.h"
 #include "../EngineCore/PhysicsCore/VansCollisionLayerConfig.h"
+#include "../EngineCore/PhysicsCore/VansClothMeshPrep.h"
 #include "../EngineCore/CameraCore/VansCameraCore.h"
 #include "../EngineCore/RenderCore/VansPostProcessProfile.h"
+#include "../EngineCore/RenderCore/Serialization/VansPostProcessProfileJsonCodec.h"
+#include "../EngineCore/RenderCore/Storage/VansPostProcessProfileStorage.h"
 #include "../EngineCore/RenderCore/VansMaterial.h"
 #include "../EngineCore/RenderCore/VansDrawSubmission.h"
 #include "../EngineCore/RenderCore/VansCameraControlArbiter.h"
 #include "../EngineCore/RenderCore/Timeline/VansVirtualCameraParameterStore.h"
 #include "../EngineCore/RenderCore/GICore/VansGISettings.h"
-#include "../EngineCore/RenderCore/VulkanCore/VansVideoThumbnail.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansFrameSubmitOrchestrator.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansRenderGraphVulkanSync.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansRenderPass.h"
@@ -65,8 +71,11 @@
 #include "../EngineCore/TerrainCore/VansTerrainBrush.h"
 #include "../EngineCore/TerrainCore/Serialization/VansTerrainAssetCodec.h"
 #include "../EngineCore/TerrainCore/Serialization/VansTerrainImageCodec.h"
-#include "../EngineCore/EditorCore/Terrain/VansTerrainAuthoringSession.h"
+#include "../EngineCore/AuthoringCore/Terrain/VansTerrainAuthoringSession.h"
+#include "../EngineCore/TerrainCore/VansTerrainSurfaceQuery.h"
 #include "../EngineCore/RenderCore/AtmosphereCore/VansAtmosphereMath.h"
+#include "../EngineCore/RenderCore/SceneBuild/VansSceneProjectResourceBuilder.h"
+#include "../EngineCore/RenderCore/SceneBuild/VansSceneAssembly.h"
 #include "../EngineCore/RenderCore/SceneBuild/VansSceneResourceArtifactPrewarmer.h"
 #include "../EngineCore/RenderCore/VansTemporalProjection.h"
 #include "../EngineCore/RenderCore/ShadowCore/VansPunctualShadowManager.h"
@@ -74,10 +83,12 @@
 #include "../EngineCore/RenderCore/BRDFData/VansLight.h"
 #include "../EngineCore/RuntimeCore/VansPackageManifest.h"
 #include "../EngineCore/RuntimeCore/VansCharacterMotion.h"
+#include "../EngineCore/RuntimeCore/VansCharacterLocomotionResolver.h"
 #include "../EngineCore/RuntimeCore/VansCharacterTrajectoryGenerator.h"
 #include "../EngineCore/RuntimeCore/VansRuntimeFrameScheduler.h"
 #include "../EngineCore/RuntimeCore/VansFramePhase.h"
 #include "../EngineCore/RuntimeCore/VansThreadContract.h"
+#include "../EngineCore/EventCore/VansEventBus.h"
 #include "../EngineCore/Util/VansProfiler.h"
 #include "../EngineCore/Util/VansFileFingerprint.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
@@ -95,7 +106,6 @@
 #include "../EngineCore/SceneCore/VansAssetObjectBootstrapper.h"
 #include "../EngineCore/SceneCore/VansSceneEntityFactory.h"
 #include "../EngineCore/SceneCore/VansSceneSchema.h"
-#include "../EngineCore/SceneCore/VansSceneRuntimeComponentKey.h"
 #include "../EngineCore/SceneCore/VansSceneRenderSettingsConfigReader.h"
 #include "../EngineCore/SceneCore/VansSceneDocumentLoader.h"
 #include "../EngineCore/SceneCore/Storage/VansSceneFileStorage.h"
@@ -109,15 +119,17 @@
 #include "../EngineCore/TimelineCore/VansTimelineSerialization.h"
 #include "../EngineCore/TimelineCore/VansTimelineTrackExtensionRegistry.h"
 #include "../EngineCore/TimelineCore/VansTimelineValidator.h"
+#include "../EngineCore/Timeline/VansEngineTimelineRegistry.h"
 #include "../EngineCore/EditorCore/Timeline/VansTimelineEditService.h"
 #include "../EngineCore/EditorCore/Timeline/VansTimelineCommandMap.h"
-#include "../EngineCore/EditorCore/VansAssetDocumentRegistry.h"
+#include "../EngineCore/AuthoringCore/VansAssetDocumentRegistry.h"
 #include "../EngineCore/EditorCore/VansAssetDocumentTypeRegistry.h"
-#include "../EngineCore/EditorCore/VansAssetDocumentEditService.h"
+#include "../EngineCore/AuthoringCore/VansAssetDocumentEditService.h"
 #include "../EngineCore/EditorCore/VansSceneEditService.h"
 #include "../EngineCore/EditorCore/VansEditorRuntimePreviewProjector.h"
+#include "../EngineCore/EditorCore/VansEditorPropertyDescriptorRegistry.h"
 #include "../EngineCore/EditorCore/Animation/VansAnimationRigSaveService.h"
-#include "../EngineCore/EditorCore/Animation/VansSceneAnimationSaveService.h"
+#include "../EngineCore/EditorCore/VansEditorAssetSaveService.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValue.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../EngineCore/AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
@@ -130,6 +142,7 @@
 #include "../EngineCore/AnimationCore/VansAnimGraph.h"
 #include "../EngineCore/AnimationCore/VansAnimatorIO.h"
 #include "../EngineCore/AnimationCore/VansAnimatorRuntimeCompiler.h"
+#include "../EngineCore/AnimationCore/VansAnimatorValidator.h"
 #include "../EngineCore/AnimationCore/VansAnimationSampler.h"
 #include "../EngineCore/AnimationCore/VansPoseMath.h"
 #include "../EngineCore/AnimationCore/VansPosePayloadMixer.h"
@@ -146,6 +159,7 @@
 #include "../EngineCore/AnimationCore/MotionMatching/VansRootMotionYaw.h"
 #include "../EngineCore/AnimationCore/MotionMatching/VansTurnInPlaceWarping.h"
 #include "../EngineCore/EngineAPILayer/Private/AnimationAuthoringBridge.h"
+#include "../EngineCore/EngineAPILayer/Private/AnimationPreviewAdoptService.h"
 #include "../EngineCore/EngineAPILayer/Private/AnimationPreviewRigAuthoringService.h"
 #include "../EngineCore/EngineAPILayer/Private/AnimationPreviewParameterEditing.h"
 #include "../EngineCore/EngineAPILayer/Private/RuntimeGeneratedMaterialAssetService.h"
@@ -157,16 +171,23 @@
 #include "GAFContractTests.h"
 #include "ProceduralAnimationContractTests.h"
 #include "../EngineCore/ProjectSystem/VansProjectManager.h"
+#include "../EngineCore/ProjectSystem/VansEnginePaths.h"
 #include "../EngineCore/ProjectSystem/VansProjectSettingsData.h"
+#include "../EngineCore/ProjectSystem/Serialization/VansProjectConfigJsonCodec.h"
 #include "../EngineCore/ProjectSystem/Serialization/VansProjectSettingsJsonCodec.h"
 #include "../EngineCore/ProjectSystem/Storage/VansProjectSettingsStorage.h"
 #include "../EngineCore/GameplayActionSchema/VansGAFProjectConfiguration.h"
 #include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
 #include "../EngineCore/ProjectSystem/Storage/VansProjectConfigStorage.h"
 #include "../EngineCore/RuntimeUI/VansUIAssetResolver.h"
+#include "../EngineCore/RuntimeUI/Public/VansUIEvents.h"
+#include "../EngineCore/RuntimeUI/Public/VansUIRuntimeHandles.h"
+#include "../EngineCore/ScriptCore/VansLuaUIBridge.h"
+#include "../EngineCore/ScriptCore/VansLuaValueConverter.h"
+#include "../EngineCore/ScriptCore/VansScriptComponentReader.h"
 #include "../EngineCore/ScriptCore/VansScriptContext.h"
 #include "../EngineCore/ScriptCore/VansLuaScriptInspectorService.h"
-#include "../EngineCore/ScriptCore/VansTransform.h"
+#include "../EngineCore/SceneRuntime/Transform/VansTransformStore.h"
 
 #include <algorithm>
 #include <assimp/Importer.hpp>
@@ -194,11 +215,18 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
 #include <malloc.h>
 #endif
+
+extern "C"
+{
+#include <lauxlib.h>
+#include <lualib.h>
+}
 
 namespace
 {
@@ -1368,6 +1396,7 @@ bool TestFramePhaseThreadLocalContract()
 #ifdef _DEBUG
 	g_CurrentFramePhase = VansFramePhase::GameLogic;
 	bool workerObservedOwnPhase = false;
+	bool physicsObservedOwnRole = false;
 	std::thread worker([&workerObservedOwnPhase]
 	{
 		VANS_INIT_RENDER_THREAD();
@@ -1377,7 +1406,14 @@ bool TestFramePhaseThreadLocalContract()
 			g_CurrentFramePhase == VansFramePhase::GPURecord;
 	});
 	worker.join();
-	return workerObservedOwnPhase &&
+	std::thread physics([&physicsObservedOwnRole]
+	{
+		VANS_INIT_PHYSICS_THREAD();
+		physicsObservedOwnRole = g_CurrentThreadRole == VansThreadRole::Physics;
+		VANS_CLEAR_THREAD_ROLE();
+	});
+	physics.join();
+	return workerObservedOwnPhase && physicsObservedOwnRole &&
 		g_CurrentThreadRole == VansThreadRole::Main &&
 		g_CurrentFramePhase == VansFramePhase::GameLogic;
 #else
@@ -1646,6 +1682,12 @@ bool InstallTestGraphSet(
 
 bool TestPackageManifestRoundTrip()
 {
+	VansGraphics::VansSceneResourceArtifactPrewarmResult inconsistentPrewarm;
+	inconsistentPrewarm.errors.push_back("failure without a mirrored counter");
+	if (!Expect(!inconsistentPrewarm.Succeeded(),
+		"Scene resource prewarm ignored an explicit error when failure counters were zero"))
+		return false;
+
     TemporaryDirectory temporary;
     Vans::VansPackageManifest expected;
     expected.generatedAt = "2026-07-31T00:00:00Z";
@@ -1682,6 +1724,12 @@ bool TestPackageManifestRoundTrip()
 		return false;
     if (!Expect(loaded.manifest.copiedFileCount == expected.copiedFileCount, "Manifest file count did not round-trip"))
         return false;
+
+	Vans::VansPackageManifest missingShaderRoot = expected;
+	missingShaderRoot.shaderArtifacts.clear();
+	if (!Expect(!Vans::VansPackageManifestIO::Validate(missingShaderRoot, error),
+		"Manifest accepted a missing explicit shader artifact root"))
+		return false;
 
     Vans::VansPackageManifest invalid = expected;
     invalid.scene = "../Outside.json";
@@ -1847,7 +1895,9 @@ bool TestSkinProfileMaterialProjectionContract()
 	material.guid = materialGuid.ToString();
 	material.materialType = "skin";
 	material.parameters = Value::Object({
-		{ "skinProfile", Value::String(profileGuid.ToString()) },
+		{ "skinProfile", Value::Object({
+			{ "guid", Value::String(profileGuid.ToString()) }
+		}) },
 		{ "scatterColor", Value::Array({
 			Value::Float(0.21), Value::Float(0.19), Value::Float(0.17) }) },
 		{ "roughness", Value::Float(0.44) }
@@ -1919,8 +1969,10 @@ bool TestSkinProfileMaterialProjectionContract()
 		"Could not remove the skin profile source before runtime projection"))
 		return false;
 
-	const Value sceneRoot = Value::Object({
+	Value sceneRoot = Value::Object({
 		{ "schemaVersion", Value::Int(Vans::VansSceneSchemaVersion) },
+		{ "sceneGuid", Value::String("31313131-3131-4313-8313-313131313131") },
+		{ "name", Value::String("SkinProfileProjection") },
 		{ "settings", Value::Object({
 			{ "environment", BuildValidEnvironmentSettingsForTest() }
 		}) },
@@ -1929,11 +1981,12 @@ bool TestSkinProfileMaterialProjectionContract()
 
 	Vans::VansIOAudit::Reset();
 	Vans::VansSceneContentBuildPlan plan;
-	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
+	const bool projected = Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
 		sceneRoot,
 		temporary.path.string(),
 		plan,
-		error), error.c_str()))
+		error);
+	if (!Expect(projected, error.c_str()))
 		return false;
 	if (!Expect(plan.materials.size() == 1u,
 		"Skin profile material projection did not emit exactly one runtime material"))
@@ -2148,6 +2201,77 @@ bool TestAssetPolicies()
     TemporaryDirectory temporary;
     const fs::path assetsRoot = temporary.path / "Assets";
     const fs::path artifactRoot = temporary.path / "Library" / "Artifacts";
+	Vans::VansAssetGuid layoutGuid;
+	if (!Expect(Vans::VansAssetGuid::TryParse(
+		"10101010-2020-3030-4040-505050505050", layoutGuid),
+		"Artifact layout fixture guid is invalid"))
+		return false;
+	const Vans::VansDerivedArtifactLocation textureLayout =
+		Vans::VansDerivedArtifactLayout::ImportedRuntimeCache(
+			artifactRoot, Vans::VansAssetType::Texture, layoutGuid);
+	const Vans::VansDerivedArtifactLocation meshLayout =
+		Vans::VansDerivedArtifactLayout::ImportedRuntimeCache(
+			artifactRoot, Vans::VansAssetType::Model, layoutGuid);
+	if (!Expect(textureLayout && meshLayout &&
+		textureLayout.path == artifactRoot / "Textures" / (layoutGuid.ToString() + ".vtex") &&
+		meshLayout.path == artifactRoot / "Meshes" / (layoutGuid.ToString() + ".vmesh") &&
+		!Vans::VansDerivedArtifactLayout::ImportedRuntimeCache(
+			artifactRoot, Vans::VansAssetType::Material, layoutGuid) &&
+		!Vans::VansDerivedArtifactLayout::ImportedRuntimeCache(
+			{}, Vans::VansAssetType::Texture, layoutGuid),
+		"Imported runtime artifact layout is not a single strict policy"))
+		return false;
+	const Vans::VansDerivedArtifactLocation shaderLayout =
+		Vans::VansDerivedArtifactLayout::ProjectShaderCache(artifactRoot);
+	const Vans::VansDerivedArtifactLocation builtInLayout =
+		Vans::VansDerivedArtifactLayout::ProjectBuiltInArtifactRoot(artifactRoot);
+	const Vans::VansDerivedArtifactLocation engineShaderLayout =
+		Vans::VansDerivedArtifactLayout::EngineShaderCache(temporary.path / "Engine");
+	const Vans::VansDerivedArtifactLocation gafLayout =
+		Vans::VansDerivedArtifactLayout::ProjectGameplayCookedAsset(
+			artifactRoot, layoutGuid, "Action.vaction");
+	const Vans::VansDerivedArtifactLocation packagedSource =
+		Vans::VansDerivedArtifactLayout::PackagedSourceCache(
+			layoutGuid, "Action.vaction", false);
+	if (!Expect(builtInLayout.path == artifactRoot / "Engine" &&
+		!Vans::VansDerivedArtifactLayout::ProjectBuiltInArtifactRoot({}) &&
+		shaderLayout.path == artifactRoot / "Shaders" &&
+		engineShaderLayout.path == temporary.path / "Engine/Library/Artifacts/Shaders" &&
+		gafLayout.path == artifactRoot / "GAF" / layoutGuid.ToString() /
+			"Action.vaction.gafcooked" &&
+		packagedSource.path == fs::path("Library/Artifacts/Resources") /
+			layoutGuid.ToString() / "Action.vaction" &&
+		Vans::VansDerivedArtifactLayout::PackagedMetadata(layoutGuid).path ==
+			fs::path("Library/Artifacts/Metadata") / (layoutGuid.ToString() + ".meta") &&
+		Vans::VansDerivedArtifactLayout::PackagedShaderArtifacts().path ==
+			fs::path("Library/Artifacts/Shaders") &&
+		Vans::VansDerivedArtifactLayout::PackagedResourcePlanReport().path ==
+			fs::path("Library/Package/ResourcePlanReport.json") &&
+		!Vans::VansDerivedArtifactLayout::ProjectGameplayCookedAsset(
+			artifactRoot, layoutGuid, "../escape.vaction"),
+		"Project and packaged artifact layouts are not strict single policies"))
+		return false;
+	Vans::VansShaderCompileRequest shaderRequest;
+	shaderRequest.programId = "ArtifactPolicy";
+	shaderRequest.sourceFolder = temporary.path / "Assets/Shaders/ArtifactPolicy";
+	if (!Expect(Vans::VansShaderArtifactCache::ResolveArtifactRoot(shaderRequest).empty(),
+		"Shader cache guessed an artifact root from sourceFolder or current directory"))
+		return false;
+	shaderRequest.artifactRoot = shaderLayout.path;
+	if (!Expect(Vans::VansShaderArtifactCache::ResolveArtifactRoot(shaderRequest) ==
+			shaderLayout.path.lexically_normal(),
+		"Shader cache did not honor the explicit authoring artifact root"))
+		return false;
+	shaderRequest.artifactRoot.clear();
+	const fs::path cookedShaderRoot = temporary.path / "Package/Content/Library/Artifacts/Shaders";
+	Vans::VansShaderArtifactCache::ConfigureCookedRuntime(cookedShaderRoot);
+	const bool cookedRootResolved = Vans::VansShaderArtifactCache::IsCookedOnlyMode() &&
+		Vans::VansShaderArtifactCache::ResolveArtifactRoot(shaderRequest) ==
+			cookedShaderRoot.lexically_normal();
+	Vans::VansShaderArtifactCache::ResetRuntimeConfiguration();
+	if (!Expect(cookedRootResolved && !Vans::VansShaderArtifactCache::IsCookedOnlyMode(),
+		"Packaged shader root is not the only cooked-only mode owner"))
+		return false;
     fs::create_directories(assetsRoot);
     const fs::path texturePath = assetsRoot / "PolicyProbe.tga";
     const auto writeProbeTexture = [&](std::uint8_t red)
@@ -2230,8 +2354,11 @@ bool TestAssetPolicies()
     if (!Expect(reopened && reopenedRecord && reopenedRecord->artifactPath == firstEnsure.artifactPath,
         "Subsequent editor scan did not prefer the generated texture artifact"))
         return false;
-    if (!Expect(Vans::VansAssetDatabase::Classify("Probe.vtimeline") == Vans::VansAssetType::Timeline,
-        "Timeline asset extension is not classified canonically"))
+    const Vans::VansAssetTypeDescriptor* timelineType =
+		Vans::VansAssetDatabase::Describe(Vans::VansAssetType::Timeline);
+    if (!Expect(timelineType && timelineType->canonicalExtension == ".vtimeline" &&
+		Vans::VansAssetDatabase::Classify("Probe.vtimeline") == Vans::VansAssetType::Timeline,
+		"Timeline asset catalog and extension classification diverged"))
         return false;
 	if (!Expect(Vans::VansAssetDatabase::Classify("Hero.skinprofile") == Vans::VansAssetType::SkinProfile,
 		"Skin profile asset extension is not classified canonically"))
@@ -2297,6 +2424,7 @@ bool TestAssetTypeSerializationContract()
     constexpr Vans::VansAssetType types[] = {
         Vans::VansAssetType::Model,
         Vans::VansAssetType::Texture,
+		Vans::VansAssetType::IESProfile,
         Vans::VansAssetType::Material,
         Vans::VansAssetType::Shader,
         Vans::VansAssetType::Audio,
@@ -2309,6 +2437,8 @@ bool TestAssetTypeSerializationContract()
 		Vans::VansAssetType::RetargetProfile,
         Vans::VansAssetType::BoneMask,
         Vans::VansAssetType::Timeline,
+		Vans::VansAssetType::NavigationMesh,
+		Vans::VansAssetType::AIBehavior,
         Vans::VansAssetType::ActionDefinition,
         Vans::VansAssetType::ActionSet,
         Vans::VansAssetType::GameplayEffect,
@@ -2333,18 +2463,40 @@ bool TestAssetTypeSerializationContract()
 		Vans::VansAssetType::UIThemeTokens,
 		Vans::VansAssetType::UILocalization,
 		Vans::VansAssetType::UIXaml,
-		Vans::VansAssetType::VegetationConfig
+		Vans::VansAssetType::VegetationConfig,
+		Vans::VansAssetType::Terrain,
+		Vans::VansAssetType::PlantType,
+		Vans::VansAssetType::PcgMask,
+		Vans::VansAssetType::PcgSpline,
+		Vans::VansAssetType::DamageProfile,
+		Vans::VansAssetType::Prefab
     };
 
     for (const Vans::VansAssetType type : types)
     {
         const std::string_view name = Vans::VansAssetDatabase::SerializedTypeName(type);
+		const Vans::VansAssetTypeDescriptor* descriptor = Vans::VansAssetDatabase::Describe(type);
         if (!Expect(name != "unknown", "A registered asset type has no serialized name"))
             return false;
         if (!Expect(Vans::VansAssetDatabase::ParseSerializedType(name) == type,
             "An asset type did not round-trip through its serialized name"))
             return false;
+		if (!Expect(descriptor && descriptor->type == type && descriptor->serializedName == name &&
+			!descriptor->importer.empty(),
+			"An asset type is missing its canonical catalog descriptor"))
+			return false;
+		if (!descriptor->canonicalExtension.empty() &&
+			!Expect(Vans::VansAssetDatabase::Classify(
+				std::filesystem::path(std::string("Probe") + std::string(descriptor->canonicalExtension))) == type,
+				"An asset type canonical extension did not classify through the shared catalog"))
+			return false;
     }
+
+    if (!Expect(Vans::VansAssetDatabase::Classify(
+		std::filesystem::path(L"\u4E2D\u6587\u8D44\u4EA7.vaction")) ==
+		Vans::VansAssetType::ActionDefinition,
+		"A non-ASCII asset filename did not preserve canonical extension classification"))
+		return false;
 
     return Expect(
         Vans::VansAssetDatabase::SerializedTypeName(Vans::VansAssetType::Unknown) == "unknown" &&
@@ -2460,97 +2612,226 @@ bool TestSceneResourceArtifactPrewarmContract()
         "Editor resource prewarm did not rebuild stale mesh and texture artifacts");
 }
 
+bool TestSceneResourceFailurePropagationContract()
+{
+	static_assert(std::is_same_v<
+		decltype(VansGraphics::VansSceneProjectResourceBuilder::LoadShadersFromRegistry(
+			std::declval<VansGraphics::VansScene&>(),
+			std::declval<const std::string&>(),
+			std::declval<VkDevice&>())),
+		bool>);
+	static_assert(std::is_same_v<
+		decltype(VansGraphics::VansSceneProjectResourceBuilder::RegisterShaders(
+			std::declval<VansGraphics::VansScene&>(),
+			std::declval<const std::vector<Vans::VansSceneShaderResourceRequest>&>(),
+			std::declval<const Vans::VansSceneResourceLoadContext&>(),
+			std::declval<VkDevice&>(),
+			false)),
+		bool>);
+
+	TemporaryDirectory temporary;
+	const fs::path shaderSource = temporary.path / "SceneBuildAtomicityProbe";
+	{
+		std::ofstream file(shaderSource, std::ios::binary | std::ios::trunc);
+		file << "contract probe";
+	}
+	Vans::VansAssetRecord validRecord;
+	validRecord.guid = Vans::VansAssetGuid::FromStableName(
+		"ForestContractTests",
+		"SceneBuildShaderAtomicity");
+	validRecord.type = Vans::VansAssetType::Shader;
+	validRecord.sourcePath = shaderSource;
+	const Vans::VansSceneResourceLoadContext loadContext =
+		Vans::VansSceneResourceLoadContext::ForEditor(
+			temporary.path,
+			temporary.path,
+			{ validRecord });
+	Vans::VansSceneShaderResourceRequest valid;
+	valid.name = "SceneBuildAtomicityProbe";
+	valid.assetGuid = validRecord.guid.ToString();
+	Vans::VansSceneShaderResourceRequest unresolved;
+	unresolved.name = "UnresolvedShader";
+	unresolved.assetGuid = "00000000-0000-0000-0000-000000000001";
+
+	VansGraphics::VansScene scene;
+	VkDevice nativeDevice = VK_NULL_HANDLE;
+	return Expect(
+		!VansGraphics::VansSceneProjectResourceBuilder::RegisterShaders(
+			scene,
+			{ valid, unresolved },
+			loadContext,
+			nativeDevice,
+			false) &&
+			VansGraphics::VansShaderManager::Get().FindShaderEntry(valid.name) == nullptr,
+		"Invalid shader batch did not fail atomically before registry publication");
+}
+
+class VansRuntimeFrameTracePort final :
+	public Vans::IVansRuntimeFramePort,
+	public Vans::IVansRuntimeFramePreviewPort
+{
+  public:
+	explicit VansRuntimeFrameTracePort(std::vector<std::string>& trace)
+		: m_Trace(trace)
+	{
+	}
+
+	void SyncPhysicsTransforms(const Vans::VansRuntimeFrameContext&) override { Add("physics"); }
+	void UpdateNonCameraScripts(const Vans::VansRuntimeFrameContext&) override { Add("scripts"); }
+	void AdvanceCameraRuntime(const Vans::VansRuntimeFrameContext&) override { Add("camera-advance"); }
+	void UpdateActionsEarly(const Vans::VansRuntimeFrameContext&) override { Add("actions-early"); }
+	void UpdateAI(const Vans::VansRuntimeFrameContext&) override { Add("ai"); }
+	void PrepareCharacterLocomotion(const Vans::VansRuntimeFrameContext&) override { Add("locomotion"); }
+	void FlushCharacterControllerTransforms(const Vans::VansRuntimeFrameContext&) override { Add("cct"); }
+	void UpdateTimelinesPostScript(const Vans::VansRuntimeFrameContext&) override { Add("timeline-post"); }
+	void RunActionLateContinuation(const Vans::VansRuntimeFrameContext&) override { Add("actions-late"); }
+	void BeginCameraControlFrame(const Vans::VansRuntimeFrameContext&) override { Add("camera-begin"); }
+	void UpdateCameraScripts(const Vans::VansRuntimeFrameContext&) override { Add("camera"); }
+	void CaptureCameraControlBase(const Vans::VansRuntimeFrameContext&) override { Add("camera-base"); }
+	void UpdateTimelinesCamera(const Vans::VansRuntimeFrameContext&) override { Add("timeline-camera"); }
+	void ResolveCameraControlFrame(const Vans::VansRuntimeFrameContext&) override { Add("camera-resolve"); }
+	void UpdatePostScriptControllers(const Vans::VansRuntimeFrameContext&) override { Add("post-extra"); }
+	void UpdateCameraControllers(const Vans::VansRuntimeFrameContext&) override { Add("camera-extra"); }
+
+  private:
+	void Add(const char* stage) { m_Trace.emplace_back(stage); }
+
+	std::vector<std::string>& m_Trace;
+};
+
 bool TestGameplayFrameOrder()
 {
     std::vector<std::string> trace;
-    Vans::VansRuntimeGameplayFrame frame;
-    frame.sceneReady = true;
-    frame.simulationRunning = true;
-    frame.gameplayActive = true;
-	frame.cameraControlActive = true;
-    frame.syncPhysicsTransforms = [&] { trace.push_back("physics"); };
-	frame.updateNonCameraScripts = [&] { trace.push_back("scripts"); };
-	frame.updateActionsEarly = [&](double) { trace.push_back("actions-early"); };
-	frame.updateAI = [&](double) { trace.push_back("ai"); };
-	frame.prepareCharacterLocomotion = [&](double) { trace.push_back("locomotion"); };
-	frame.flushCharacterControllerTransforms = [&] { trace.push_back("cct"); };
-	frame.updateTimelinesPostScript = [&](double) { trace.push_back("timeline-post"); };
-	frame.updateAdditionalPostScriptControllers = [&](double) { trace.push_back("post-extra"); };
-	frame.runTimelineLateContinuation = [&] { trace.push_back("timeline-late"); };
-	frame.runActionLateContinuation = [&] { trace.push_back("actions-late"); };
-	frame.beginCameraControlFrame = [&] { trace.push_back("camera-begin"); };
-	frame.updateCameraScripts = [&] { trace.push_back("camera"); };
-	frame.captureCameraControlBase = [&] { trace.push_back("camera-base"); };
-	frame.updateTimelinesCamera = [&](double) { trace.push_back("timeline-camera"); };
-	frame.updateAdditionalCameraControllers = [&](double) { trace.push_back("camera-extra"); };
-	frame.resolveCameraControlFrame = [&] { trace.push_back("camera-resolve"); };
-	Vans::VansRuntimeFrameScheduler::RunGameplay(frame);
+	VansRuntimeFrameTracePort framePort(trace);
+	Vans::VansRuntimeFramePolicy framePolicy{ true, true, true, true };
+	const Vans::VansRuntimeFrameContext frameContext{ 1.0 / 60.0 };
+	Vans::VansRuntimeFrameScheduler::RunGameplay(
+		framePort, &framePort, framePolicy, frameContext);
 
-	const std::vector<std::string> expected{ "camera-begin", "physics", "scripts", "actions-early", "ai", "locomotion", "cct",
-		"timeline-post", "post-extra", "timeline-late", "actions-late", "camera", "camera-base", "timeline-camera",
+	const std::vector<std::string> expected{ "camera-begin", "physics", "scripts", "camera-advance", "actions-early", "ai", "locomotion", "cct",
+		"timeline-post", "post-extra", "actions-late", "camera", "camera-base", "timeline-camera",
 		"camera-extra", "camera-resolve" };
     if (!Expect(trace == expected, "Gameplay frame callback order changed"))
         return false;
 
     trace.clear();
-    frame.sceneReady = false;
-    Vans::VansRuntimeFrameScheduler::RunGameplay(frame);
-    return Expect(trace.empty(), "Gameplay callbacks ran without a ready scene");
+	framePolicy.m_IsSceneReady = false;
+	Vans::VansRuntimeFrameScheduler::RunGameplay(
+		framePort, &framePort, framePolicy, frameContext);
+	if (!Expect(trace.empty(), "Gameplay callbacks ran without a ready scene")) return false;
+
+	framePolicy = { true, false, false, true };
+	Vans::VansRuntimeFrameScheduler::RunGameplay(
+		framePort, &framePort, framePolicy, frameContext);
+	const std::vector<std::string> editExpected{
+		"camera-begin", "camera-advance", "post-extra", "actions-late",
+		"camera-base", "camera-extra", "camera-resolve" };
+	return Expect(trace == editExpected,
+		"Edit camera control frame did not advance CameraRuntime before preview resolution");
+}
+
+Vans::VansEngineTimelineCatalog TimelineCatalog()
+{
+	const Vans::VansEngineTimelineCatalog catalog = Vans::VansGetEngineTimelineCatalog();
+	if (!catalog) std::cerr << "[ForestContractTests] " << catalog.error << '\n';
+	return catalog;
 }
 
 bool TestCameraControlArbiterContract()
 {
 	using namespace VansGraphics;
 	VansCameraControlArbiter arbiter;
-	VansCameraControlPose base;
-	base.position = { 10.0f, 0.0f, 0.0f };
-	base.rotationDegrees = { 0.0f, 90.0f, 0.0f };
-	base.fieldOfView = 60.0f;
-	arbiter.CaptureBase(base);
+	VansCamera frameCamera(nullptr);
+	if (!Expect(arbiter.IsBaseCameraWriteWindowOpen(),
+		"Camera base write window was not open between frames")) return false;
+	arbiter.BeginFrame(frameCamera);
+	if (!Expect(arbiter.IsBaseCameraWriteWindowOpen(),
+		"Camera base write window closed before CaptureBase")) return false;
+	arbiter.CaptureBase(frameCamera);
+	if (!Expect(!arbiter.IsBaseCameraWriteWindowOpen(),
+		"Camera base write window remained open while contributions were resolving")) return false;
+	arbiter.Resolve(frameCamera);
+	if (!Expect(arbiter.IsBaseCameraWriteWindowOpen(),
+		"Camera base write window did not reopen after Resolve")) return false;
+	arbiter.Clear(&frameCamera);
+	Vans::VansCameraViewSnapshot base;
+	base.pose.position = { 10.0f, 0.0f, 0.0f };
+	base.pose.rotationDegrees = { 0.0f, 90.0f, 0.0f };
+	base.lens.fieldOfView = 60.0f;
+	std::string error;
+	Vans::VansCameraViewSnapshot clampedView = base;
+	clampedView.lens.fieldOfView = 0.5f;
+	clampedView.lens.nearClip = 0.01f;
+	clampedView.lens.farClip = 0.02f;
+	std::string clampDiagnostic;
+	if (!Vans::VansClampCameraView(
+		clampedView, Vans::VansCameraLensLimits{}, clampDiagnostic) ||
+		clampDiagnostic.empty() ||
+		std::abs(clampedView.lens.fieldOfView - 1.0f) > 0.001f ||
+		std::abs(clampedView.lens.nearClip - 0.1f) > 0.001f ||
+		std::abs(clampedView.lens.farClip - 0.101f) > 0.001f ||
+		!Vans::VansValidateCameraView(
+			clampedView, Vans::VansCameraLensLimits{}, error))
+	{
+		return Expect(false,
+			"Camera lens Clamp/Validate semantics did not preserve the effective defaults");
+	}
+	if (!arbiter.Runtime().SetBaseView(Vans::VansCameraRuntime::MainView(), base, error))
+		return Expect(false, error.c_str());
 	const auto timelineDomain = VansCameraControlArbiter::TimelineDomain();
-	const auto gameplayDomain = Vans::VansMakeStableId<VansCameraControlDomainTag>(
+	const auto gameplayDomain = Vans::VansMakeStableId<Vans::VansCameraContributionDomainIdTag>(
 		"CameraControl.ContractGameplay");
 	const Vans::VansGenerationHandle sameHandle{ 7, 3 };
-	VansCameraControlPose gameplayPose = base;
-	gameplayPose.fieldOfView = 50.0f;
-	if (!arbiter.Submit({ { gameplayDomain, sameHandle }, gameplayPose,
-		VansCameraControlMode::Exclusive, VansCameraControlSpace::World,
-		10, 0, 1.0f, 0x04u })) return false;
+	Vans::VansCameraContributionRequest gameplay;
+	gameplay.view = Vans::VansCameraRuntime::MainView();
+	gameplay.owner = { gameplayDomain, sameHandle };
+	gameplay.kind = Vans::VansCameraContributionKind::Lens;
+	gameplay.value = base;
+	gameplay.value.lens.fieldOfView = 50.0f;
+	gameplay.channels = Vans::VansCameraChannel_FieldOfView;
+	gameplay.order.priority = 10;
+	if (!arbiter.Submit(gameplay, error)) return Expect(false, error.c_str());
 	if (!Expect(!arbiter.IsUserLookSuppressed(),
 		"camera contributions changed gameplay look behavior without opting in")) return false;
-	VansCameraControlPose timelinePose = base;
-	timelinePose.fieldOfView = 40.0f;
-	if (!arbiter.Submit({ { timelineDomain, sameHandle }, timelinePose,
-		VansCameraControlMode::Weighted, VansCameraControlSpace::World,
-		1000, 0, 0.5f, 0x04u, true })) return false;
+	Vans::VansCameraContributionRequest timeline = gameplay;
+	timeline.owner = { timelineDomain, sameHandle };
+	timeline.value.lens.fieldOfView = 40.0f;
+	timeline.blendMode = Vans::VansCameraBlendMode::Weighted;
+	timeline.order.priority = VansCameraControlArbiter::TimelinePriority;
+	timeline.weight = 0.5f;
+	timeline.suppressUserLook = true;
+	if (!arbiter.Submit(timeline, error)) return Expect(false, error.c_str());
 	if (!Expect(arbiter.IsUserLookSuppressed(),
 		"Timeline camera contribution did not suppress gameplay look input")) return false;
-	VansCameraControlPose shake;
-	shake.position = { 0.0f, 0.0f, 1.0f };
-	if (!arbiter.Submit({ { timelineDomain, { 8, 3 } }, shake,
-		VansCameraControlMode::Additive, VansCameraControlSpace::CameraLocal,
-		1100, 0, 1.0f, 0x01u })) return false;
-	if (!Expect(!arbiter.Submit({ { gameplayDomain, { 9, 3 } }, gameplayPose,
-		VansCameraControlMode::Exclusive, VansCameraControlSpace::World,
-		VansCameraControlArbiter::TimelinePriority, 0, 1.0f, 0x04u }),
+	Vans::VansCameraContributionRequest shake;
+	shake.view = Vans::VansCameraRuntime::MainView();
+	shake.owner = { timelineDomain, { 8, 3 } };
+	shake.kind = Vans::VansCameraContributionKind::PoseOffset;
+	shake.value.pose.position = { 0.0f, 0.0f, 1.0f };
+	shake.blendMode = Vans::VansCameraBlendMode::Additive;
+	shake.space = Vans::VansCameraSpace::CameraLocal;
+	shake.order.priority = VansCameraControlArbiter::TimelinePriority + 100;
+	shake.channels = Vans::VansCameraChannel_Position;
+	if (!arbiter.Submit(shake, error)) return Expect(false, error.c_str());
+	Vans::VansCameraContributionRequest invalid = gameplay;
+	invalid.owner.writer = { 9, 3 };
+	invalid.order.priority = VansCameraControlArbiter::TimelinePriority;
+	if (!Expect(!arbiter.Submit(invalid, error) && !error.empty(),
 		"non-Timeline controller entered the reserved Timeline priority range")) return false;
-	const VansCameraControlPose resolved = arbiter.ResolvePose();
-	if (!Expect(arbiter.ContributionCount() == 3,
+	const Vans::VansResolvedCameraView resolved =
+		arbiter.Runtime().ResolveView(Vans::VansCameraRuntime::MainView());
+	if (!Expect(arbiter.Runtime().ContributionCount() == 3,
 		"camera control owner domains collided on equal generation handles")) return false;
-	if (!Expect(std::abs(resolved.fieldOfView - 45.0f) < 0.001f &&
-		glm::length(resolved.position - glm::vec3(11.0f, 0.0f, 0.0f)) < 0.001f,
+	if (!Expect(std::abs(resolved.snapshot.lens.fieldOfView - 45.0f) < 0.001f &&
+		glm::length(resolved.snapshot.pose.position - glm::vec3(11.0f, 0.0f, 0.0f)) < 0.001f,
 		"camera priority, weighting, or camera-local additive resolution is wrong")) return false;
-	VansCameraControlPose lastResolved;
-	if (!Expect(arbiter.GetLastResolvedPose(lastResolved) &&
-		glm::length(lastResolved.position - resolved.position) < 0.001f &&
-		std::abs(lastResolved.rotationDegrees.y - resolved.rotationDegrees.y) < 0.001f,
-		"camera arbiter did not retain the authoritative resolved gameplay view")) return false;
 	arbiter.ReleaseDomain(timelineDomain);
 	if (!Expect(!arbiter.IsUserLookSuppressed(),
 		"Timeline camera domain release did not restore gameplay look input")) return false;
-	const VansCameraControlPose gameplayOnly = arbiter.ResolvePose();
-	if (!Expect(arbiter.ContributionCount() == 1 &&
-		std::abs(gameplayOnly.fieldOfView - 50.0f) < 0.001f,
+	const Vans::VansResolvedCameraView gameplayOnly =
+		arbiter.Runtime().ResolveView(Vans::VansCameraRuntime::MainView());
+	if (!Expect(arbiter.Runtime().ContributionCount() == 1 &&
+		std::abs(gameplayOnly.snapshot.lens.fieldOfView - 50.0f) < 0.001f,
 		"camera control domain release removed another controller domain")) return false;
 
 	VansVirtualCameraParameterStore virtualCameras;
@@ -2561,7 +2842,7 @@ bool TestCameraControlArbiterContract()
 	if (!Expect(parameters && parameters->fieldOfView == 72.0f &&
 		parameters->nearClip == 0.03f && parameters->farClip == 2000.0f,
 		"virtual camera parameters were not recorded without a Camera component")) return false;
-	if (!Expect(virtualCameras.Remove(virtualCamera) && virtualCameras.Size() == 0,
+	if (!Expect(virtualCameras.Remove(virtualCamera) && virtualCameras.Find(virtualCamera) == nullptr,
 		"virtual camera parameter lifetime did not restore cleanly")) return false;
 
 	Vans::VansCameraRuntime cameraRuntime;
@@ -2569,12 +2850,12 @@ bool TestCameraControlArbiterContract()
 	coreBase.pose.position = { 1.0f, 2.0f, 3.0f };
 	coreBase.pose.rotationDegrees = { 0.0f, 90.0f, 0.0f };
 	coreBase.lens.fieldOfView = 60.0f;
-	std::string error;
+	error.clear();
 	if (!cameraRuntime.SetBaseView(Vans::VansCameraRuntime::MainView(), coreBase, error))
 		return Expect(false, error.c_str());
 	const auto actionDomain =
 		Vans::VansMakeStableId<Vans::VansCameraContributionDomainIdTag>("Camera.GAF.Contract");
-	Vans::VansCameraContribution firstContribution;
+	Vans::VansCameraContributionRequest firstContribution;
 	firstContribution.view = Vans::VansCameraRuntime::MainView();
 	firstContribution.owner = { actionDomain, { 1, 1 } };
 	firstContribution.kind = Vans::VansCameraContributionKind::Lens;
@@ -2586,7 +2867,7 @@ bool TestCameraControlArbiterContract()
 	firstContribution.order.priority = 4;
 	const Vans::VansCameraContributionHandle firstContributionHandle =
 		cameraRuntime.AddContribution(firstContribution, error);
-	Vans::VansCameraContribution secondContribution = firstContribution;
+	Vans::VansCameraContributionRequest secondContribution = firstContribution;
 	secondContribution.owner.writer = { 2, 1 };
 	secondContribution.value.lens.fieldOfView = 40.0f;
 	secondContribution.blendMode = Vans::VansCameraBlendMode::Weighted;
@@ -2612,6 +2893,39 @@ bool TestCameraControlArbiterContract()
 		reused.value.generation != firstContributionHandle.value.generation,
 		"CameraCore did not advance generation when reusing a contribution slot")) return false;
 
+	Vans::VansCameraShakeDefinition shakeDefinition;
+	shakeDefinition.stableName = "Camera.Shake.StateOwnershipContract";
+	shakeDefinition.id = Vans::VansMakeStableId<Vans::VansCameraShakeIdTag>(
+		shakeDefinition.stableName);
+	shakeDefinition.attackSeconds = 0.0f;
+	shakeDefinition.sustainSeconds = 1.0f;
+	shakeDefinition.releaseSeconds = 0.0f;
+	const Vans::VansCameraShakeHandle shakeHandle =
+		cameraRuntime.RegisterShake(shakeDefinition, error);
+	Vans::VansCameraContributionRequest shakeRequest;
+	shakeRequest.view = Vans::VansCameraRuntime::MainView();
+	shakeRequest.owner = { actionDomain, { 4, 1 } };
+	shakeRequest.kind = Vans::VansCameraContributionKind::Shake;
+	shakeRequest.blendMode = Vans::VansCameraBlendMode::Additive;
+	shakeRequest.channels = Vans::VansCameraChannel_Position |
+		Vans::VansCameraChannel_Rotation;
+	shakeRequest.shake = shakeHandle;
+	const Vans::VansCameraContributionHandle shakeContribution =
+		cameraRuntime.AddContribution(shakeRequest, error);
+	cameraRuntime.Advance(0.6);
+	Vans::VansCameraContributionRequest readShake;
+	if (!Expect(shakeHandle && shakeContribution &&
+		cameraRuntime.ReadContribution(shakeContribution, readShake) &&
+		readShake.order.stableSequence != 0,
+		"CameraCore did not expose the normalized author request by value")) return false;
+	readShake.weight = 0.5f;
+	if (!cameraRuntime.UpdateContribution(shakeContribution, readShake, error))
+		return Expect(false, error.c_str());
+	cameraRuntime.Advance(0.5);
+	if (!Expect(cameraRuntime.ContributionCount() == 2 &&
+		!cameraRuntime.ReadContribution(shakeContribution, readShake),
+		"CameraCore author update reset or exposed private Shake elapsed state")) return false;
+
 	Vans::VansCameraRigDefinition rig;
 	rig.stableName = "Camera.Rig.Contract";
 	rig.id = Vans::VansMakeStableId<Vans::VansCameraRigIdTag>(rig.stableName);
@@ -2629,7 +2943,7 @@ bool TestCameraControlArbiterContract()
 	solvedRig.stableName = "Camera.Rig.SolverContract";
 	solvedRig.id = Vans::VansMakeStableId<Vans::VansCameraRigIdTag>(solvedRig.stableName);
 	solvedRig.follow.enabled = true;
-	solvedRig.follow.mode = "SpringArm";
+	solvedRig.follow.mode = Vans::VansCameraFollowMode::SpringArm;
 	solvedRig.follow.targetBinding = "Avatar";
 	solvedRig.follow.localOffset = { 0.0f, 0.0f, -4.0f };
 	solvedRig.lookAt.enabled = true;
@@ -2686,7 +3000,8 @@ bool TestCameraControlArbiterContract()
 	if (!Expect(cameraRuntime.ReleaseDomain(actionDomain) == 2 &&
 		cameraRuntime.ContributionCount() == 0,
 		"CameraCore domain cleanup did not release all persistent contributions")) return false;
-	return Expect(cameraRuntime.UnregisterRig(solvedRigHandle) &&
+	return Expect(cameraRuntime.UnregisterShake(shakeHandle) &&
+		cameraRuntime.UnregisterRig(solvedRigHandle) &&
 		cameraRuntime.UnregisterRig(rigHandle) &&
 		!cameraRuntime.ResolveRig(rigHandle),
 		"CameraCore rig generation lifetime is invalid");
@@ -2710,17 +3025,11 @@ bool TestRuntimeWorldEntityLifetimeContract()
 	if (!Expect(world.Entities().FindByGuid("child-guid") == child,
 		"Runtime world guid index did not resolve child entity"))
 		return false;
-	if (!Expect(world.Entities().FindByName("Parent") == parent,
-		"Runtime world name index did not resolve parent entity"))
-		return false;
 	if (!Expect(world.SetEntityName(parent, "RenamedParent"),
 		"Runtime world failed to rename entity"))
 		return false;
-	if (!Expect(
-		world.Entities().FindByName("Parent") == Vans::VansEntityHandle{} &&
-			world.Entities().FindByName("RenamedParent") == parent &&
-			world.Entities().Get(parent)->name == "RenamedParent",
-		"Runtime world rename did not update name index and entity record"))
+	if (!Expect(world.Entities().Get(parent)->name == "RenamedParent",
+		"Runtime world rename did not update the entity record"))
 		return false;
 	if (!Expect(world.Entities().Get(parent)->children.size() == 1,
 		"Runtime world parent did not track child entity"))
@@ -2778,11 +3087,13 @@ bool TestRuntimeWorldParentEditContract()
 		"Runtime world parent edit did not update child parent handle"))
 		return false;
 
-	auto& storage = world.RegisterStorage<RuntimeWorldTestComponent>(11);
+	auto* storage = world.RegisterStorage<RuntimeWorldTestComponent>(111);
+	if (!Expect(storage != nullptr, "Runtime world failed to register test component storage"))
+		return false;
 	const Vans::VansComponentHandle parentComponent =
-		storage.Add(parent, RuntimeWorldTestComponent{ 1 }, "parent-component-guid", true, true);
+		storage->Add(parent, RuntimeWorldTestComponent{ 1 }, "parent-component-guid", true, true);
 	const Vans::VansComponentHandle childComponent =
-		storage.Add(child, RuntimeWorldTestComponent{ 2 }, "child-component-guid", true, true);
+		storage->Add(child, RuntimeWorldTestComponent{ 2 }, "child-component-guid", true, true);
 	const std::vector<Vans::VansComponentHandle> subtreeComponents =
 		world.CollectComponentsInSubtree(parent);
 	if (!Expect(
@@ -3502,16 +3813,17 @@ bool TestTransformGraphAnchorContract()
 		~TransformLease()
 		{
 			for (auto it = ids.rbegin(); it != ids.rend(); ++it)
-				VansGraphics::VansTransformStore::FreeTransform(*it);
+				Vans::VansTransformStore::Release(*it);
 		}
 		std::uint32_t Allocate(const glm::vec3& position)
 		{
-			const std::uint32_t id = VansGraphics::VansTransformStore::AllocateTransform();
+			const std::uint32_t id = Vans::VansTransformStore::Allocate();
 			ids.push_back(id);
-			auto& transform = VansGraphics::VansTransformStore::GetTransform(id);
+			Vans::VansTransform transform = Vans::VansTransformStore::Read(id);
 			transform.m_Position = position;
 			transform.m_Rotation = glm::vec3(0.0f);
 			transform.m_Scale = glm::vec3(1.0f);
+			Vans::VansTransformStore::Write(id, transform);
 			return id;
 		}
 	} transforms;
@@ -3542,6 +3854,23 @@ bool TestTransformGraphAnchorContract()
 	const std::uint32_t attachment = transforms.Allocate(glm::vec3(25.0f, 5.0f, 0.0f));
 	const std::uint32_t snappedAttachment = transforms.Allocate(glm::vec3(100.0f, 100.0f, 0.0f));
 	const std::uint32_t profiledAttachment = transforms.Allocate(glm::vec3(-50.0f));
+	Vans::VansTransformStore::ClearDirty();
+	const std::uint64_t revisionBeforeRepeatedWrite =
+		Vans::VansTransformStore::GetRevision();
+	const std::uint64_t ownerRevisionBeforeRepeatedWrite =
+		Vans::VansTransformStore::GetTransformRevision(owner);
+	Vans::VansTransformStore::MarkDirty(owner);
+	Vans::VansTransformStore::MarkDirty(owner);
+	if (!Expect(Vans::VansTransformStore::GetRevision() ==
+		revisionBeforeRepeatedWrite + 2u,
+		"Transform revision did not advance for repeated same-frame writes") ||
+		!Expect(Vans::VansTransformStore::GetTransformRevision(owner) >
+			ownerRevisionBeforeRepeatedWrite,
+			"Transform slot revision did not track its repeated same-frame writes"))
+	{
+		return false;
+	}
+	Vans::VansTransformStore::ClearDirty();
 	Vans::VansTransformGraph graph(&provider);
 	if (!Expect(graph.SetParent(child, owner, Vans::VansTransformReparentMode::KeepWorld)
 		&& graph.Resolve(),
@@ -3549,20 +3878,40 @@ bool TestTransformGraphAnchorContract()
 	{
 		return false;
 	}
-	if (!ExpectNear(VansGraphics::VansTransformStore::GetTransform(child).m_Position.x,
+	if (!ExpectNear(Vans::VansTransformStore::Read(child).m_Position.x,
 		12.0f, 0.0001f, "KeepWorld entity reparent changed child world position"))
 	{
 		return false;
 	}
-	VansGraphics::VansTransformStore::GetTransform(owner).m_Position.x = 20.0f;
+	Vans::VansTransform ownerTransform = Vans::VansTransformStore::Read(owner);
+	ownerTransform.m_Position.x = 20.0f;
+	Vans::VansTransformStore::Write(owner, ownerTransform);
 	if (!Expect(graph.Resolve(), "Transform graph failed after its entity parent moved")
-		|| !ExpectNear(VansGraphics::VansTransformStore::GetTransform(child).m_Position.x,
+		|| !ExpectNear(Vans::VansTransformStore::Read(child).m_Position.x,
 			22.0f, 0.0001f, "Entity child did not follow its parent transform"))
 	{
 		return false;
 	}
 	if (!Expect(!graph.SetParent(owner, child, Vans::VansTransformReparentMode::KeepLocal),
 		"Transform graph accepted an entity hierarchy cycle"))
+	{
+		return false;
+	}
+	const std::uint32_t releasedParent = transforms.Allocate(glm::vec3(2.0f, 0.0f, 0.0f));
+	const std::uint32_t orphanedChild = transforms.Allocate(glm::vec3(3.0f, 0.0f, 0.0f));
+	if (!Expect(graph.SetParent(orphanedChild, releasedParent,
+		Vans::VansTransformReparentMode::KeepWorld) && graph.Resolve(),
+		"Transform graph could not create the released-parent probe"))
+	{
+		return false;
+	}
+	Vans::VansTransformStore::Release(releasedParent);
+	transforms.ids.erase(std::remove(
+		transforms.ids.begin(), transforms.ids.end(), releasedParent), transforms.ids.end());
+	if (!Expect(!graph.Resolve() && !graph.HasParent(orphanedChild),
+		"Transform graph retained or dereferenced a released parent Transform") ||
+		!Expect(graph.GetLastError().find("released Transform storage") != std::string::npos,
+			"Transform graph did not expose its released-parent failure"))
 	{
 		return false;
 	}
@@ -3580,7 +3929,7 @@ bool TestTransformGraphAnchorContract()
 		return false;
 	}
 	const auto& attachedAtBind =
-		VansGraphics::VansTransformStore::GetTransform(attachment).m_Position;
+		Vans::VansTransformStore::Read(attachment).m_Position;
 	if (!ExpectNear(attachedAtBind.x, 25.0f, 0.0001f,
 		"KeepWorld bone attach changed attachment world X")
 		|| !ExpectNear(attachedAtBind.y, 5.0f, 0.0001f,
@@ -3593,7 +3942,7 @@ bool TestTransformGraphAnchorContract()
 	if (!Expect(graph.Resolve(), "Transform graph failed after its animated bone moved"))
 		return false;
 	const auto& attachedAfterPose =
-		VansGraphics::VansTransformStore::GetTransform(attachment).m_Position;
+		Vans::VansTransformStore::Read(attachment).m_Position;
 	if (!ExpectNear(attachedAfterPose.x, 25.0f, 0.0001f,
 		"Bone attachment drifted in X after pose update")
 		|| !ExpectNear(attachedAfterPose.y, 8.0f, 0.0001f,
@@ -3608,7 +3957,7 @@ bool TestTransformGraphAnchorContract()
 		return false;
 	}
 	const auto& snapped =
-		VansGraphics::VansTransformStore::GetTransform(snappedAttachment).m_Position;
+		Vans::VansTransformStore::Read(snappedAttachment).m_Position;
 	if (!ExpectNear(snapped.x, 25.0f, 0.0001f,
 		"Snap did not reset the attachment local X")
 		|| !ExpectNear(snapped.y, 8.0f, 0.0001f,
@@ -3629,7 +3978,7 @@ bool TestTransformGraphAnchorContract()
 	}
 	Vans::VansLocalTransform resolvedProfileLocal;
 	const auto& profiledWorld =
-		VansGraphics::VansTransformStore::GetTransform(profiledAttachment).m_Position;
+		Vans::VansTransformStore::Read(profiledAttachment).m_Position;
 	if (!Expect(graph.TryGetLocalTransform(profiledAttachment, resolvedProfileLocal),
 		"Transform graph did not expose the authored profile Local Transform")
 		|| !ExpectNear(glm::length(resolvedProfileLocal.position - profileLocal.position),
@@ -3651,10 +4000,10 @@ bool TestTransformGraphAnchorContract()
 	return Expect(graph.ClearParent(snappedAttachment,
 		Vans::VansTransformReparentMode::Snap),
 		"Transform graph could not clear a snapped parent")
-		&& ExpectNear(VansGraphics::VansTransformStore::GetTransform(
+		&& ExpectNear(Vans::VansTransformStore::Read(
 			snappedAttachment).m_Position.x, 0.0f, 0.0001f,
 			"Snap detach did not reset world X")
-		&& ExpectNear(VansGraphics::VansTransformStore::GetTransform(
+		&& ExpectNear(Vans::VansTransformStore::Read(
 			snappedAttachment).m_Position.y, 0.0f, 0.0001f,
 			"Snap detach did not reset world Y");
 }
@@ -3663,11 +4012,13 @@ bool TestRuntimeWorldComponentEnabledContract()
 {
 	Vans::VansRuntimeWorld world;
 	Vans::VansEntityHandle entity = world.CreateEntity({ "entity-guid", "Entity" });
-	auto& storage = world.RegisterStorage<RuntimeWorldTestComponent>(1);
+	auto* storage = world.RegisterStorage<RuntimeWorldTestComponent>(101);
+	if (!Expect(storage != nullptr, "Runtime world failed to register enabled-state test storage"))
+		return false;
 	Vans::VansComponentHandle component =
-		storage.Add(entity, RuntimeWorldTestComponent{ 7 }, "component-guid", false, true);
+		storage->Add(entity, RuntimeWorldTestComponent{ 7 }, "component-guid", false, true);
 
-	if (!Expect(storage.Contains(component), "Runtime component storage did not retain component handle"))
+	if (!Expect(storage->Contains(component), "Runtime component storage did not retain component handle"))
 		return false;
 	if (!Expect(!world.IsComponentEffectivelyEnabled(component),
 		"Disabled runtime component became effective enabled"))
@@ -3696,10 +4047,10 @@ bool TestRuntimeWorldComponentEnabledContract()
 
 	const Vans::VansComponentHandle removed = component;
 	Vans::VansComponentHandle survivor =
-		storage.Add(entity, RuntimeWorldTestComponent{ 8 }, "component-guid-survivor", true, true);
+		storage->Add(entity, RuntimeWorldTestComponent{ 8 }, "component-guid-survivor", true, true);
 	if (!Expect(world.RemoveComponent(component), "Runtime world failed to remove component"))
 		return false;
-	if (!Expect(!storage.Contains(removed),
+	if (!Expect(!storage->Contains(removed),
 		"Runtime component storage allowed stale handle after remove"))
 		return false;
 	if (!Expect(world.FindComponentByGuid("component-guid").IsValid() == false,
@@ -3710,7 +4061,7 @@ bool TestRuntimeWorldComponentEnabledContract()
 		return false;
 
 	Vans::VansComponentHandle added =
-		storage.Add(entity, RuntimeWorldTestComponent{ 9 }, "component-guid-2", true, true);
+		storage->Add(entity, RuntimeWorldTestComponent{ 9 }, "component-guid-2", true, true);
 	return Expect(added.index == removed.index && added.generation != removed.generation,
 		"Runtime component handle generation did not advance after slot reuse");
 }
@@ -3751,6 +4102,21 @@ bool TestRuntimeWorldComponentLifetimeContract()
 		if (!Expect(verifyOwners() && !storage.FindFirstOwnedBy({ 5, 2 }).IsValid(),
 			"Owner removal left stale components after dense compaction")) return false;
 	}
+	{
+		Vans::VansRuntimeWorld mismatchWorld;
+		const Vans::VansEntityHandle entity =
+			mismatchWorld.CreateEntity({ "mismatch-entity-guid", "Mismatch" });
+		const Vans::VansComponentHandle mismatched = mismatchWorld.AddComponent(
+			entity,
+			Vans::VansRuntimeComponentType_Render,
+			Vans::VansRuntimeAudioComponent{},
+			"mismatched-component-guid");
+		if (!Expect(!mismatched.IsValid() &&
+			mismatchWorld.FindStorage<Vans::VansRuntimeRenderComponent>(
+				Vans::VansRuntimeComponentType_Render) == nullptr,
+			"Runtime world accepted a C++ payload under the wrong known component type id"))
+			return false;
+	}
 	Vans::VansRuntimeWorld world;
 	Vans::VansEntityHandle parent = world.CreateEntity({ "parent-guid", "Parent" });
 	Vans::VansEntityHandle child = world.CreateEntity({ "child-guid", "Child", parent });
@@ -3772,7 +4138,7 @@ bool TestRuntimeWorldComponentLifetimeContract()
 	Vans::VansRuntimeAudioComponent childAudioComponent;
 	childAudioComponent.audioNode = childAudioNode;
 	childAudioComponent.sourceBinding = childAudioBinding;
-	childAudioComponent.sourceName = "child-audio";
+	childAudioComponent.assetGuid = "child-audio";
 	Vans::VansComponentHandle childComponent = world.AddComponent(
 		child,
 		Vans::VansRuntimeComponentType_Audio,
@@ -3780,10 +4146,10 @@ bool TestRuntimeWorldComponentLifetimeContract()
 		"child-audio-guid",
 		true);
 
-	const auto* renderStorage = static_cast<const Vans::VansComponentStorage<Vans::VansRuntimeRenderComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Render));
-	const auto* audioStorage = static_cast<const Vans::VansComponentStorage<Vans::VansRuntimeAudioComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Audio));
+	const auto* renderStorage =
+		world.FindStorage<Vans::VansRuntimeRenderComponent>(Vans::VansRuntimeComponentType_Render);
+	const auto* audioStorage =
+		world.FindStorage<Vans::VansRuntimeAudioComponent>(Vans::VansRuntimeComponentType_Audio);
 	if (!Expect(renderStorage && renderStorage->Contains(parentComponent),
 		"Runtime world did not register parent runtime component"))
 		return false;
@@ -3825,8 +4191,173 @@ bool TestRuntimeWorldComponentLifetimeContract()
 		"Runtime world left destroyed component guid indexed");
 }
 
+bool TestRuntimeWorldClearInvalidatesHandlesContract()
+{
+	Vans::VansRuntimeWorld world;
+	const Vans::VansEntityHandle oldEntity =
+		world.CreateEntity({ "old-entity-guid", "OldEntity" });
+	const Vans::VansComponentHandle oldComponent = world.AddComponent(
+		oldEntity, 101, RuntimeWorldTestComponent{ 1 }, "old-component-guid");
+	auto* storage = world.FindStorage<RuntimeWorldTestComponent>(101);
+	if (!Expect(storage && storage->Contains(oldComponent),
+		"Runtime world clear precondition did not publish the component")) return false;
+
+	world.Clear();
+	if (!Expect(!world.IsAlive(oldEntity) && !storage->Contains(oldComponent) &&
+		!world.FindComponentByGuid("old-component-guid").IsValid(),
+		"Runtime world clear retained a live entity or component handle")) return false;
+
+	const Vans::VansEntityHandle newEntity =
+		world.CreateEntity({ "new-entity-guid", "NewEntity" });
+	const Vans::VansComponentHandle newComponent = world.AddComponent(
+		newEntity, 101, RuntimeWorldTestComponent{ 2 }, "new-component-guid");
+	return Expect(newEntity.index == oldEntity.index &&
+		newEntity.generation != oldEntity.generation &&
+		newComponent.index == oldComponent.index &&
+		newComponent.generation != oldComponent.generation &&
+		!world.IsAlive(oldEntity) && !storage->Contains(oldComponent),
+		"Runtime world clear allowed a stale handle to alias the next scene");
+}
+
 bool TestRuntimeComponentKeyCanonicalizationContract()
 {
+	const auto& descriptors = Vans::VansComponentTypeCatalog::All();
+	if (!Expect(descriptors.size() == 27,
+		"Component type catalog did not retain all registered component identities"))
+		return false;
+	for (std::size_t i = 0; i < descriptors.size(); ++i)
+	{
+		if (!Expect(!descriptors[i].authoringType.empty() && !descriptors[i].runtimeKey.empty(),
+			"Component type catalog contains an empty authoring type or runtime key"))
+			return false;
+		for (std::size_t j = i + 1; j < descriptors.size(); ++j)
+		{
+			if (!Expect(descriptors[i].authoringType != descriptors[j].authoringType,
+				"Component type catalog contains duplicate authoring identities"))
+				return false;
+		}
+	}
+
+	static constexpr std::array<std::string_view, 20> expectedInspectorOrder{
+		"ModelRenderer", "LODGroup", "Physics", "Camera", "Animation",
+		"CharacterController", "DirectionalLight", "PointLight", "SpotLight", "RectLight",
+		"Audio", "AudioVolume", "AudioReverbZone", "LocalVolumetricFog", "Video", "Particle",
+		"Cloth", "Vehicle", "ActionHost", "Script"
+	};
+	std::vector<std::string_view> inspectorTypes;
+	std::size_t singletonCount = 0;
+	std::size_t defaultFactoryCount = 0;
+	for (const Vans::VansComponentTypeDescriptor& descriptor : descriptors)
+	{
+		if (descriptor.defaultDataFactory)
+			++defaultFactoryCount;
+		if (!descriptor.inspectorAddable)
+			continue;
+		if (!Expect(descriptor.defaultDataFactory != nullptr,
+			"Inspector-addable component has no catalog default-data factory"))
+			return false;
+		if (!Expect(Vans::VansComponentTypeCatalog::CreateDefaultData(descriptor.authoringType).kind ==
+			Vans::VansSerializedValue::Kind::Object,
+			"Catalog default-data factory did not return an object"))
+			return false;
+		inspectorTypes.push_back(descriptor.authoringType);
+		if (descriptor.singleton)
+			++singletonCount;
+	}
+	if (!Expect(std::equal(
+		inspectorTypes.begin(), inspectorTypes.end(),
+		expectedInspectorOrder.begin(), expectedInspectorOrder.end()),
+		"Component type catalog changed the Inspector Add Component order"))
+		return false;
+	if (!Expect(singletonCount == 4,
+		"Component type catalog did not retain the four Inspector singleton constraints"))
+		return false;
+	if (!Expect(defaultFactoryCount == expectedInspectorOrder.size(),
+		"Component type catalog does not own exactly the 20 Inspector default-data factories"))
+		return false;
+
+	std::size_t componentAssetReferenceRuleCount = 0;
+	for (const Vans::VansComponentTypeDescriptor& descriptor : descriptors)
+		componentAssetReferenceRuleCount += descriptor.assetReferenceRuleCount;
+	if (!Expect(componentAssetReferenceRuleCount == 24,
+		"Component type catalog does not own exactly the 24 component asset-reference rules"))
+		return false;
+	const auto pointIes = Vans::VansEditorPropertyDescriptorRegistry::Resolve(
+		"PointLight", "data", "ies_profile_guid");
+	const auto materialOverride = Vans::VansEditorPropertyDescriptorRegistry::Resolve(
+		"ModelRenderer", "materialOverrides", "0");
+	const auto actionReference = Vans::VansEditorPropertyDescriptorRegistry::Resolve(
+		"ActionHost", "entries", "action");
+	const auto globalShader = Vans::VansEditorPropertyDescriptorRegistry::Resolve(
+		"Material", "data", "shader");
+	const auto historicalDeadCustomTextures = Vans::VansEditorPropertyDescriptorRegistry::Resolve(
+		"Material", "customTextures", "albedo");
+	const auto unknownReference = Vans::VansEditorPropertyDescriptorRegistry::Resolve(
+		"Unknown", "data", "source");
+	if (!Expect(pointIes.IsDeclared() && pointIes.objectReferenceSlot.expectedAssetType ==
+		Vans::EditorAPI::AssetType::IESProfile && pointIes.objectReferenceSlot.storagePolicy ==
+		Vans::ObjectReferenceStoragePolicy::GuidString &&
+		materialOverride.IsDeclared() && materialOverride.objectReferenceSlot.expectedAssetType ==
+		Vans::EditorAPI::AssetType::Material &&
+		actionReference.IsDeclared() && actionReference.objectReferenceSlot.expectedAssetType ==
+		Vans::EditorAPI::AssetType::ActionDefinition &&
+		globalShader.IsDeclared() && globalShader.objectReferenceSlot.expectedAssetType ==
+		Vans::EditorAPI::AssetType::Shader &&
+		!historicalDeadCustomTextures.IsObjectReference() && !unknownReference.IsObjectReference(),
+		"Component or global asset-reference metadata changed its declared slot behavior"))
+		return false;
+
+	const Vans::VansSerializedValue modelDefaults =
+		Vans::VansComponentTypeCatalog::CreateDefaultData("ModelRenderer");
+	const Vans::VansSerializedValue* modelReference =
+		Vans::FindObjectField(modelDefaults, "model");
+	if (!Expect(modelReference &&
+		Vans::ReadSerializedStringField(*modelReference, "guid").empty() &&
+		Vans::ReadSerializedStringField(modelDefaults, "rayTracingMode") == "auto" &&
+		Vans::ReadSerializedBoolField(modelDefaults, "castShadows", false),
+		"ModelRenderer catalog defaults changed"))
+		return false;
+
+	const Vans::VansSerializedValue pointDefaults =
+		Vans::VansComponentTypeCatalog::CreateDefaultData("PointLight");
+	const Vans::VansSerializedValue spotDefaults =
+		Vans::VansComponentTypeCatalog::CreateDefaultData("SpotLight");
+	const Vans::VansSerializedValue rectDefaults =
+		Vans::VansComponentTypeCatalog::CreateDefaultData("RectLight");
+	if (!Expect(Vans::ReadSerializedStringField(pointDefaults, "shadowUpdateMode") == "EveryFrame" &&
+		Vans::ReadSerializedStringField(spotDefaults, "shadowUpdateMode") == "OnChange" &&
+		!Vans::ReadSerializedBoolField(rectDefaults, "castShadows", true),
+		"Light catalog defaults changed their per-type shadow behavior"))
+		return false;
+
+	const Vans::VansSerializedValue actionHostDefaults =
+		Vans::VansComponentTypeCatalog::CreateDefaultData("ActionHost");
+	const Vans::VansSerializedValue unknownDefaults =
+		Vans::VansComponentTypeCatalog::CreateDefaultData("UnknownComponent");
+	if (!Expect(actionHostDefaults.kind == Vans::VansSerializedValue::Kind::Object &&
+		!actionHostDefaults.objectFields.empty() &&
+		unknownDefaults.kind == Vans::VansSerializedValue::Kind::Object &&
+		unknownDefaults.objectFields.empty(),
+		"Catalog default-data fallback or ActionHost domain factory changed"))
+		return false;
+	if (!Expect(Vans::VansComponentTypeCatalog::IsSceneAuthoringType("GameplayActionHost") &&
+		!Vans::VansComponentTypeCatalog::IsSceneAuthoringType("gameplayactionhost") &&
+		!Vans::VansComponentTypeCatalog::IsSceneAuthoringType("Ragdoll") &&
+		!Vans::VansComponentTypeCatalog::IsSceneAuthoringType("render"),
+		"Component type catalog did not preserve the strict Scene authoring whitelist"))
+		return false;
+	if (!Expect(Vans::VansComponentTypeCatalog::HasTrait(
+		"DirectionalLight", Vans::VansComponentTypeTrait::Light) &&
+		Vans::VansComponentTypeCatalog::HasTrait(
+			"Audio", Vans::VansComponentTypeTrait::CameraMedia) &&
+		Vans::VansComponentTypeCatalog::HasTrait(
+			"Particle", Vans::VansComponentTypeTrait::Particle) &&
+		Vans::VansComponentTypeCatalog::HasTrait(
+			"MultiMeshRoot", Vans::VansComponentTypeTrait::MultiMeshRoot) &&
+		Vans::VansComponentTypeCatalog::HasTrait(
+			"Animation", Vans::VansComponentTypeTrait::Animation),
+		"Component type catalog did not retain Scene projection classification traits"))
+		return false;
 	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("Transform") == "transform",
 		"Transform did not canonicalize to transform runtime component key"))
 		return false;
@@ -3854,12 +4385,21 @@ bool TestRuntimeComponentKeyCanonicalizationContract()
 	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("AIAgent") == "ai_agent",
 		"AIAgent did not canonicalize to AI agent runtime component key"))
 		return false;
+	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("MultiMeshRoot") == "multimeshroot" &&
+		Vans::CanonicalRuntimeComponentKeyForName("LocalVolumetricFog") == "localvolumetricfog",
+		"Catalog changed an existing non-runtime authoring component metadata key"))
+		return false;
 	if (!Expect(Vans::VansRuntimeComponentTypeIdForKey("transform") == Vans::VansRuntimeComponentType_Transform,
 		"Transform runtime component key did not resolve to transform type id"))
 		return false;
 	if (!Expect(Vans::VansRuntimeComponentTypeIdForKey("navigation_agent") ==
 		Vans::VansRuntimeComponentType_NavigationAgent,
 		"Navigation agent runtime component key did not resolve to navigation agent type id"))
+		return false;
+	if (!Expect(Vans::VansRuntimeComponentTypeIdForKey("multimeshroot") == Vans::VansInvalidComponentTypeId &&
+		Vans::VansRuntimeComponentTypeIdForKey("localvolumetricfog") == Vans::VansInvalidComponentTypeId &&
+		Vans::VansRuntimeComponentTypeIdForKey("RENDER") == Vans::VansInvalidComponentTypeId,
+		"Runtime type-id lookup widened an intentionally unsupported or case-sensitive key"))
 		return false;
 	return Expect(Vans::VansRuntimeComponentTypeIdForKey("ai_agent") == Vans::VansRuntimeComponentType_AIAgent,
 		"AI agent runtime component key did not resolve to AI agent type id");
@@ -3869,19 +4409,25 @@ bool TestRuntimeWorldCommandBufferContract()
 {
 	Vans::VansRuntimeWorld world;
 	world.Commands().CreateEntity({ "queued-guid", "Queued" });
-	if (!Expect(world.Commands().PendingCount() == 1,
-		"Runtime world command buffer did not queue create command"))
-		return false;
 
-	world.FlushCommands();
+	const Vans::VansRuntimeCommandCommitResult createCommit =
+		world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansEntityHandle queued = world.Entities().FindByGuid("queued-guid");
-	if (!Expect(world.IsAlive(queued),
-		"Runtime world command buffer did not flush create command"))
+	if (!Expect(world.IsAlive(queued) &&
+		createCommit.consumedCommandCount == 1 &&
+		createCommit.hierarchyActivityChanged,
+		"Runtime world typed commit did not publish exactly one create command"))
+		return false;
+	const Vans::VansRuntimeCommandCommitResult emptyCommit =
+		world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
+	if (!Expect(emptyCommit.consumedCommandCount == 0 &&
+		!emptyCommit.hierarchyActivityChanged,
+		"Runtime world empty typed commit reported mutation"))
 		return false;
 
 	Vans::VansEntityHandle parent = world.CreateEntity({ "queued-parent-guid", "QueuedParent" });
 	world.Commands().SetParent(queued, parent);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	const Vans::VansEntityRecord* parentRecord = world.Entities().Get(parent);
 	const Vans::VansEntityRecord* childRecord = world.Entities().Get(queued);
 	if (!Expect(parentRecord &&
@@ -3892,7 +4438,7 @@ bool TestRuntimeWorldCommandBufferContract()
 		return false;
 
 	world.Commands().SetEntityActive(queued, false);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	if (!Expect(!world.Entities().IsHierarchyActive(queued),
 		"Runtime world command buffer did not flush active command"))
 		return false;
@@ -3902,10 +4448,9 @@ bool TestRuntimeWorldCommandBufferContract()
 		return false;
 
 	world.Commands().SetEntityName(queued, "QueuedRenamed");
-	world.FlushCommands();
-	if (!Expect(
-		world.Entities().FindByName("Queued") == Vans::VansEntityHandle{} &&
-			world.Entities().FindByName("QueuedRenamed") == queued,
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
+	if (!Expect(world.Entities().Get(queued) &&
+		world.Entities().Get(queued)->name == "QueuedRenamed",
 		"Runtime world command buffer did not flush entity name command"))
 		return false;
 
@@ -3914,12 +4459,12 @@ bool TestRuntimeWorldCommandBufferContract()
 		"queued-transform-guid",
 		42,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle component = world.FindComponentByGuid(
 		"queued-transform-guid",
 		Vans::VansRuntimeComponentType_Transform);
-	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeTransformComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Transform));
+	auto* storage = world.FindStorage<Vans::VansRuntimeTransformComponent>(
+		Vans::VansRuntimeComponentType_Transform);
 	if (!Expect(storage && world.IsComponentSelfEnabled(component),
 		"Runtime world command buffer did not flush component add command"))
 		return false;
@@ -3935,13 +4480,13 @@ bool TestRuntimeWorldCommandBufferContract()
 		return false;
 
 	world.Commands().SetComponentEnabled(component, false);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	if (!Expect(!world.IsComponentSelfEnabled(component),
 		"Runtime world command buffer did not flush component enabled command"))
 		return false;
 
 	world.Commands().RemoveComponent(component);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	if (!Expect(!storage->Contains(component),
 		"Runtime world command buffer did not flush component remove command"))
 		return false;
@@ -3957,12 +4502,12 @@ bool TestRuntimeWorldCommandBufferContract()
 		renderNode,
 		std::vector<VansGraphics::VansRenderNode*>{ renderNode },
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle renderComponent = world.FindComponentByGuid(
 		"queued-render-guid",
 		Vans::VansRuntimeComponentType_Render);
-	auto* renderStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeRenderComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Render));
+	auto* renderStorage = world.FindStorage<Vans::VansRuntimeRenderComponent>(
+		Vans::VansRuntimeComponentType_Render);
 	const Vans::VansRuntimeRenderComponent* renderComponentData =
 		renderStorage ? renderStorage->Get(renderComponent) : nullptr;
 	if (!Expect(
@@ -3980,12 +4525,12 @@ bool TestRuntimeWorldCommandBufferContract()
 		"queued-physics-guid",
 		physicsNode,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle physicsComponent = world.FindComponentByGuid(
 		"queued-physics-guid",
 		Vans::VansRuntimeComponentType_Physics);
-	auto* physicsStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimePhysicsComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Physics));
+	auto* physicsStorage = world.FindStorage<Vans::VansRuntimePhysicsComponent>(
+		Vans::VansRuntimeComponentType_Physics);
 	const Vans::VansRuntimePhysicsComponent* physicsComponentData =
 		physicsStorage ? physicsStorage->Get(physicsComponent) : nullptr;
 	if (!Expect(physicsComponentData && physicsComponentData->physicsNode == physicsNode,
@@ -4000,12 +4545,12 @@ bool TestRuntimeWorldCommandBufferContract()
 		clothNode,
 		"0467883c-ddb2-4064-9de1-ba6fae26f90f",
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle clothComponent = world.FindComponentByGuid(
 		"queued-cloth-guid",
 		Vans::VansRuntimeComponentType_Cloth);
-	auto* clothStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeClothComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Cloth));
+	auto* clothStorage = world.FindStorage<Vans::VansRuntimeClothComponent>(
+		Vans::VansRuntimeComponentType_Cloth);
 	const Vans::VansRuntimeClothComponent* clothComponentData =
 		clothStorage ? clothStorage->Get(clothComponent) : nullptr;
 	if (!Expect(
@@ -4022,13 +4567,12 @@ bool TestRuntimeWorldCommandBufferContract()
 		"queued-controller-guid",
 		controllerNode,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle controllerComponent = world.FindComponentByGuid(
 		"queued-controller-guid",
 		Vans::VansRuntimeComponentType_CharacterController);
-	auto* controllerStorage =
-		static_cast<Vans::VansComponentStorage<Vans::VansRuntimeCharacterControllerComponent>*>(
-			world.FindStorage(Vans::VansRuntimeComponentType_CharacterController));
+	auto* controllerStorage = world.FindStorage<Vans::VansRuntimeCharacterControllerComponent>(
+		Vans::VansRuntimeComponentType_CharacterController);
 	const Vans::VansRuntimeCharacterControllerComponent* controllerComponentData =
 		controllerStorage ? controllerStorage->Get(controllerComponent) : nullptr;
 	if (!Expect(controllerComponentData && controllerComponentData->controllerNode == controllerNode,
@@ -4042,12 +4586,12 @@ bool TestRuntimeWorldCommandBufferContract()
 		"queued-vehicle-guid",
 		vehicle,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle vehicleComponent = world.FindComponentByGuid(
 		"queued-vehicle-guid",
 		Vans::VansRuntimeComponentType_Vehicle);
-	auto* vehicleStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeVehicleComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Vehicle));
+	auto* vehicleStorage = world.FindStorage<Vans::VansRuntimeVehicleComponent>(
+		Vans::VansRuntimeComponentType_Vehicle);
 	const Vans::VansRuntimeVehicleComponent* vehicleComponentData =
 		vehicleStorage ? vehicleStorage->Get(vehicleComponent) : nullptr;
 	if (!Expect(vehicleComponentData && vehicleComponentData->vehicle == vehicle,
@@ -4063,12 +4607,12 @@ bool TestRuntimeWorldCommandBufferContract()
 		7,
 		3,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle animationComponent = world.FindComponentByGuid(
 		"queued-animation-guid",
 		Vans::VansRuntimeComponentType_Animation);
-	auto* animationStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAnimationComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Animation));
+	auto* animationStorage = world.FindStorage<Vans::VansRuntimeAnimationComponent>(
+		Vans::VansRuntimeComponentType_Animation);
 	const Vans::VansRuntimeAnimationComponent* animationComponentData =
 		animationStorage ? animationStorage->Get(animationComponent) : nullptr;
 	if (!Expect(animationComponentData && animationComponentData->animationNode == animationNode
@@ -4087,12 +4631,12 @@ bool TestRuntimeWorldCommandBufferContract()
 		12,
 		11,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle ragdollComponent = world.FindComponentByGuid(
 		"queued-ragdoll-guid",
 		Vans::VansRuntimeComponentType_Ragdoll);
-	auto* ragdollStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeRagdollComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Ragdoll));
+	auto* ragdollStorage = world.FindStorage<Vans::VansRuntimeRagdollComponent>(
+		Vans::VansRuntimeComponentType_Ragdoll);
 	const Vans::VansRuntimeRagdollComponent* ragdollComponentData =
 		ragdollStorage ? ragdollStorage->Get(ragdollComponent) : nullptr;
 	if (!Expect(
@@ -4137,19 +4681,19 @@ bool TestRuntimeWorldCommandBufferContract()
 		occlusionSettings,
 		occlusionState,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle audioComponent = world.FindComponentByGuid(
 		"queued-audio-guid",
 		Vans::VansRuntimeComponentType_Audio);
-	auto* audioStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAudioComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Audio));
+	auto* audioStorage = world.FindStorage<Vans::VansRuntimeAudioComponent>(
+		Vans::VansRuntimeComponentType_Audio);
 	const Vans::VansRuntimeAudioComponent* audioComponentData =
 		audioStorage ? audioStorage->Get(audioComponent) : nullptr;
 	if (!Expect(
 			audioComponentData &&
 			audioComponentData->audioNode == audioNode &&
 			audioComponentData->sourceBinding == audioBinding &&
-			audioComponentData->sourceName == "ambience" &&
+			audioComponentData->assetGuid == "ambience" &&
 			audioComponentData->coneSettings.enabled &&
 			audioComponentData->coneSettings.innerAngleDegrees == 45.0f &&
 			audioComponentData->coneSettings.outerAngleDegrees == 120.0f &&
@@ -4181,17 +4725,16 @@ bool TestRuntimeWorldCommandBufferContract()
 	reverbZone.priority = 2;
 	world.Commands().AddAudioReverbZoneComponent(
 		queued,
-		Vans::VansRuntimeComponentType_AudioReverbZone,
+		Vans::VansRuntimeAudioEnvironmentKind::ReverbZone,
 		"queued-reverb-guid",
 		reverbZone,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle reverbComponent = world.FindComponentByGuid(
 		"queued-reverb-guid",
 		Vans::VansRuntimeComponentType_AudioReverbZone);
-	auto* reverbStorage =
-		static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAudioReverbZoneComponent>*>(
-			world.FindStorage(Vans::VansRuntimeComponentType_AudioReverbZone));
+	auto* reverbStorage = world.FindStorage<Vans::VansRuntimeAudioReverbZoneComponent>(
+		Vans::VansRuntimeComponentType_AudioReverbZone);
 	const Vans::VansRuntimeAudioReverbZoneComponent* reverbComponentData =
 		reverbStorage ? reverbStorage->Get(reverbComponent) : nullptr;
 	if (!Expect(
@@ -4217,20 +4760,22 @@ bool TestRuntimeWorldCommandBufferContract()
 	world.Commands().AddVideoComponent(
 		queued,
 		"queued-video-guid",
+		"video-asset-guid",
 		videoTexture,
 		videoManager,
 		7,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle videoComponent = world.FindComponentByGuid(
 		"queued-video-guid",
 		Vans::VansRuntimeComponentType_Video);
-	auto* videoStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeVideoComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Video));
+	auto* videoStorage = world.FindStorage<Vans::VansRuntimeVideoComponent>(
+		Vans::VansRuntimeComponentType_Video);
 	const Vans::VansRuntimeVideoComponent* videoComponentData =
 		videoStorage ? videoStorage->Get(videoComponent) : nullptr;
 	if (!Expect(
 		videoComponentData &&
+			videoComponentData->assetGuid == "video-asset-guid" &&
 			videoComponentData->videoTexture == videoTexture &&
 			videoComponentData->videoManager == videoManager &&
 			videoComponentData->bindlessFirstSlot == 7,
@@ -4241,6 +4786,7 @@ bool TestRuntimeWorldCommandBufferContract()
 	world.Commands().AddParticleComponent(
 		queued,
 		"queued-particle-guid",
+		"particle-asset-guid",
 		particleRuntime,
 		true,
 		true,
@@ -4248,16 +4794,17 @@ bool TestRuntimeWorldCommandBufferContract()
 		2.5f,
 		3.5f,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle particleComponent = world.FindComponentByGuid(
 		"queued-particle-guid",
 		Vans::VansRuntimeComponentType_Particle);
-	auto* particleStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeParticleComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Particle));
+	auto* particleStorage = world.FindStorage<Vans::VansRuntimeParticleComponent>(
+		Vans::VansRuntimeComponentType_Particle);
 	const Vans::VansRuntimeParticleComponent* particleComponentData =
 		particleStorage ? particleStorage->Get(particleComponent) : nullptr;
 	if (!Expect(
 		particleComponentData &&
+			particleComponentData->assetGuid == "particle-asset-guid" &&
 			particleComponentData->instance == particleRuntime &&
 			particleComponentData->playOnAwake &&
 			particleComponentData->hasWorldPositionOverride &&
@@ -4274,12 +4821,12 @@ bool TestRuntimeWorldCommandBufferContract()
 		"queued-camera-guid",
 		camera,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle cameraComponent = world.FindComponentByGuid(
 		"queued-camera-guid",
 		Vans::VansRuntimeComponentType_Camera);
-	auto* cameraStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeCameraComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Camera));
+	auto* cameraStorage = world.FindStorage<Vans::VansRuntimeCameraComponent>(
+		Vans::VansRuntimeComponentType_Camera);
 	const Vans::VansRuntimeCameraComponent* cameraComponentData =
 		cameraStorage ? cameraStorage->Get(cameraComponent) : nullptr;
 	if (!Expect(cameraComponentData && cameraComponentData->camera == camera,
@@ -4290,18 +4837,17 @@ bool TestRuntimeWorldCommandBufferContract()
 		reinterpret_cast<VansGraphics::VansLightManager*>(static_cast<std::uintptr_t>(0x89AB));
 	world.Commands().AddLightComponent(
 		queued,
-		Vans::VansRuntimeComponentType_PointLight,
 		"queued-point-light-guid",
 		lightManager,
 		3,
 		Vans::VansRuntimeLightKind::Point,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle lightComponent = world.FindComponentByGuid(
 		"queued-point-light-guid",
 		Vans::VansRuntimeComponentType_PointLight);
-	auto* lightStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeLightComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_PointLight));
+	auto* lightStorage = world.FindStorage<Vans::VansRuntimeLightComponent>(
+		Vans::VansRuntimeComponentType_PointLight);
 	const Vans::VansRuntimeLightComponent* lightComponentData =
 		lightStorage ? lightStorage->Get(lightComponent) : nullptr;
 	if (!Expect(
@@ -4321,12 +4867,12 @@ bool TestRuntimeWorldCommandBufferContract()
 		"queued-ui-guid",
 		uiComponentData,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle uiComponent = world.FindComponentByGuid(
 		"queued-ui-guid",
 		Vans::VansRuntimeComponentType_UI);
-	auto* uiStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeUIComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_UI));
+	auto* uiStorage = world.FindStorage<Vans::VansRuntimeUIComponent>(
+		Vans::VansRuntimeComponentType_UI);
 	const Vans::VansRuntimeUIComponent* storedUIComponent =
 		uiStorage ? uiStorage->Get(uiComponent) : nullptr;
 	if (!Expect(
@@ -4356,12 +4902,12 @@ bool TestRuntimeWorldCommandBufferContract()
 		"queued-script-guid",
 		scriptComponentData,
 		true);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	Vans::VansComponentHandle componentOwnedByDestroyedEntity = world.FindComponentByGuid(
 		"queued-script-guid",
 		Vans::VansRuntimeComponentType_Script);
-	auto* scriptStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeScriptComponent>*>(
-		world.FindStorage(Vans::VansRuntimeComponentType_Script));
+	auto* scriptStorage = world.FindStorage<Vans::VansRuntimeScriptComponent>(
+		Vans::VansRuntimeComponentType_Script);
 	if (!Expect(scriptStorage && scriptStorage->Contains(componentOwnedByDestroyedEntity),
 		"Runtime world command buffer did not add destroy-owned component"))
 		return false;
@@ -4377,7 +4923,7 @@ bool TestRuntimeWorldCommandBufferContract()
 		return false;
 
 	world.Commands().DestroyEntity(queued);
-	world.FlushCommands();
+	world.CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneAssembly);
 	if (!Expect(!world.IsAlive(queued),
 		"Runtime world command buffer did not flush destroy command"))
 		return false;
@@ -4470,12 +5016,14 @@ bool TestScriptParticleRuntimeEnabledMirrorContract()
     VansScriptParticleComponent component;
     component.m_Manager = &manager;
     component.m_Instance = manager.Create(std::make_shared<VansGraphics::VansParticleAsset>());
-    component.Play(); manager.Prepare();
-    component.MirrorRuntimeEnabledState(true, false); manager.Prepare();
+    component.Play(); manager.TickMainThread(0); manager.WaitForUpdateAndSwap();
+    component.MirrorRuntimeEnabledState(true, false);
+    manager.TickMainThread(0); manager.WaitForUpdateAndSwap();
     if (!Expect(component.IsPlaying() && !component.GetRuntime()->IsEffectivelyEnabled(),
         "Effective enablement overwrote explicit playback state")) return false;
-    component.MirrorRuntimeEnabledState(true, true); manager.Prepare();
-    component.Pause(); manager.Prepare();
+    component.MirrorRuntimeEnabledState(true, true);
+    manager.TickMainThread(0); manager.WaitForUpdateAndSwap();
+    component.Pause(); manager.TickMainThread(0); manager.WaitForUpdateAndSwap();
     return Expect(!component.IsPlaying() && component.GetRuntime()->IsEffectivelyEnabled(),
         "Explicit pause overwrote component enablement");
 }
@@ -4502,8 +5050,8 @@ bool TestScriptUIRuntimeOpenScreensMirrorContract()
 
 bool TestScriptObjectOwnedTransformReleaseContract()
 {
-	const std::uint32_t transformID = VansGraphics::VansTransformStore::AllocateTransform();
-	const std::size_t queueSizeAfterAllocate = VansGraphics::VansTransformStore::FreeTransformIndices.size();
+	const std::uint32_t transformID = Vans::VansTransformStore::Allocate();
+	const std::uint32_t generation = Vans::VansTransformStore::GetGeneration(transformID);
 
 	auto* object = new VansScriptObject();
 	object->m_TransformID = transformID;
@@ -4513,22 +5061,26 @@ bool TestScriptObjectOwnedTransformReleaseContract()
 		"Script object did not release its owned transform id"))
 	{
 		delete object;
-		VansGraphics::VansTransformStore::FreeTransform(transformID);
+		Vans::VansTransformStore::Release(transformID);
 		return false;
 	}
 
 	delete object;
-	if (!Expect(VansGraphics::VansTransformStore::FreeTransformIndices.size() == queueSizeAfterAllocate,
+	if (!Expect(Vans::VansTransformStore::IsAllocated(transformID) &&
+		Vans::VansTransformStore::GetGeneration(transformID) == generation,
 		"Script object destructor freed a transform after ownership release"))
 	{
-		VansGraphics::VansTransformStore::FreeTransform(transformID);
+		Vans::VansTransformStore::Release(transformID);
 		return false;
 	}
 
-	VansGraphics::VansTransformStore::FreeTransform(transformID);
-	return Expect(
-		VansGraphics::VansTransformStore::FreeTransformIndices.size() == queueSizeAfterAllocate + 1,
-		"Released transform was not freed exactly once by the caller");
+	Vans::VansTransformStore::Release(transformID);
+	const std::uint32_t releasedGeneration = Vans::VansTransformStore::GetGeneration(transformID);
+	Vans::VansTransformStore::Release(transformID);
+	return Expect(releasedGeneration != generation &&
+		!Vans::VansTransformStore::IsAllocated(transformID) &&
+		Vans::VansTransformStore::GetGeneration(transformID) == releasedGeneration,
+		"Released transform was not recycled exactly once by the caller");
 }
 
 bool TestScriptLightIndexRebindFacadeContract()
@@ -4646,6 +5198,24 @@ bool TestCharacterTrajectoryGeneratorContract()
 		generator.RecordResolvedMotion(dt, position, velocity, velocity);
 	}
 
+	// An authored turn supplies the heading already evaluated from its curve.
+	// The generic trajectory owner must apply that heading for this frame and
+	// expose the same heading to future samples, without another half-life pass
+	// or angular-rate extrapolation.
+	intent.desiredFacingYaw = 137.0f;
+	intent.immediateFacing = true;
+	generator.Update(dt, intent, settings, position, 0.0f);
+	if (!Expect(std::abs(generator.GetPlannedFacingYaw() - 137.0f) < 0.0001f,
+		"Immediate facing intent was filtered by the trajectory generator"))
+		return false;
+	for (const auto& sample : generator.GetTrajectory().future)
+	{
+		if (!Expect(std::abs(std::remainder(sample.facingYaw - 137.0f, 360.0f)) < 0.0001f,
+			"Immediate facing intent was extrapolated in future trajectory samples"))
+			return false;
+	}
+	intent.immediateFacing = false;
+
 	// Holding Forward while the camera rotates must bend the world trajectory,
 	// but it is not a player-requested change from Forward to another input bucket.
 	glm::vec3 previousRelativeFuture =
@@ -4707,6 +5277,47 @@ bool TestCharacterTrajectoryGeneratorContract()
 	if (!Expect(glm::length(feedbackGenerator.GetPlannedVelocityWorld() - plannedBefore) <=
 		maximumExpectedCorrection,
 		"Resolved Root Motion replaced the planned velocity instead of correcting it"))
+		return false;
+
+	Vans::VansCharacterMotionSettings hybridSettings;
+	hybridSettings.driveMode = Vans::VansLocomotionDriveMode::Hybrid;
+	const Vans::VansLocomotionAuthority hybridMotionMatchingAuthority =
+		Vans::SelectLocomotionAuthority(hybridSettings, true, true, false);
+	if (!Expect(hybridMotionMatchingAuthority.mode ==
+		Vans::VansLocomotionAuthorityMode::RootMotion,
+		"Hybrid Motion Matching frame retained two locomotion authorities"))
+		return false;
+
+	Vans::VansCharacterLocomotionResolver locomotion;
+	locomotion.Clear(glm::vec3(0.0f), 0.0f);
+	Vans::VansCharacterMotionIntent jumpIntent;
+	jumpIntent.jumpRequested = true;
+	jumpIntent.jumpSpeed = 5.5f;
+	jumpIntent.gravity = 16.0f;
+	locomotion.SetIntent(jumpIntent);
+	locomotion.Prepare(0.1f, settings, glm::vec3(0.0f), 0.0f, true, false);
+	Vans::VansLocomotionAuthority capsuleAuthority;
+	const Vans::VansCharacterLocomotionResult jumpFrame = locomotion.Resolve(
+		glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), false,
+		capsuleAuthority, settings, glm::vec3(1.0f), 0.0f);
+	if (!Expect(jumpFrame.hasMove && jumpFrame.displacementWorld.y > 0.5f,
+		"Locomotion resolver did not produce the prepared jump frame"))
+		return false;
+	if (!Expect(!locomotion.Resolve(
+		glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), false,
+		capsuleAuthority, settings, glm::vec3(1.0f), 0.0f).hasMove,
+		"Locomotion resolver reused a consumed frame"))
+		return false;
+
+	locomotion.ResetMotion(glm::vec3(3.0f, 0.0f, 2.0f), 45.0f);
+	jumpIntent.jumpRequested = false;
+	locomotion.SetIntent(jumpIntent);
+	locomotion.Prepare(0.1f, settings, glm::vec3(3.0f, 0.0f, 2.0f), 45.0f, false, false);
+	const Vans::VansCharacterLocomotionResult resetFrame = locomotion.Resolve(
+		glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), false,
+		capsuleAuthority, settings, glm::vec3(1.0f), 45.0f);
+	if (!Expect(resetFrame.hasMove && resetFrame.displacementWorld.y < 0.0f,
+		"Locomotion reset retained the pre-teleport vertical velocity"))
 		return false;
 
 	return true;
@@ -5003,28 +5614,6 @@ bool TestAnimationEditorPreviewPolicyContract()
 		"Editor animation evaluation must not overwrite the authorable Scene Transform"))
 		return false;
 
-	VansScene previewScene;
-	VansAnimationNode previewNode("EditorPreviewContract");
-	previewNode.SetEnabled(false);
-	previewScene.RegisterAnimationRuntime(&previewNode, nullptr);
-	if (!Expect(previewScene.BeginEditorAnimationPreview(&previewNode)
-		&& !previewScene.BeginEditorAnimationPreview(&previewNode),
-		"A disabled Scene Animation Node must have one exclusive Editor preview driver"))
-		return false;
-	if (!Expect(!previewNode.IsEnabled() &&
-		previewScene.EvaluateEditorAnimationPreviewStep(&previewNode, 1.0f / 60.0f),
-		"Editor preview must evaluate a disabled Scene Animation Node without enabling it"))
-		return false;
-	previewScene.EndEditorAnimationPreview(&previewNode);
-	if (!Expect(!previewNode.IsEnabled() &&
-		!previewScene.EvaluateEditorAnimationPreviewStep(&previewNode, 1.0f / 60.0f),
-		"Releasing Editor preview must preserve the Scene Animation Node enable state"))
-		return false;
-	if (!Expect(previewScene.BeginEditorAnimationPreview(&previewNode),
-		"A released Scene Animation Node could not re-enter Editor preview"))
-		return false;
-	previewScene.EndEditorAnimationPreview(&previewNode);
-
 	AnimationPreviewCreateRequest sceneRequest;
 	sceneRequest.targetKind = AnimationPreviewTargetKind::SceneAnimationComponent;
 	sceneRequest.animatorAssetGuid = "00000000-0000-4000-8000-000000000001";
@@ -5178,7 +5767,12 @@ bool TestAnimationSocketAttachmentAuthoringContract()
 		Vans::VansSerializedValue::String("Saved IK Scene"))),"IK Scene edit failed"))return false;
 	rigJson["name"]="Saved IK Rig";
 	Vans::VansAssetDocumentEditService::ReplaceRoot(rigDocument->sourceDocument,Vans::DecodeSerializedValueJson(rigJson));
-	if(!Expect(Vans::VansSceneAnimationSaveService::Save(*sceneDocument.document,{rigDocument},error),error.c_str()))return false;
+	Vans::VansEditorAssetSaveOperations saveOperations;
+	saveOperations.refreshProjectAsset = [](const fs::path&, std::string& refreshError)
+	{ refreshError.clear(); return true; };
+	const auto savedSetup = Vans::VansEditorAssetSaveService::Get().SaveSceneAndAssets(
+		saveOperations, *sceneDocument.document, {rigDocument});
+	if(!Expect(bool(savedSetup),savedSetup.message.c_str()))return false;
 	auto reopened=Vans::VansSceneDocumentLoader::Load(scenePath);
 	if(!Expect(bool(reopened) && !sceneDocument.document->IsDirty() && !rigDocument->IsDirty() &&
 		Vans::ReadSerializedStringField(reopened.document->SerializedRootSnapshot(),"name")=="Saved IK Scene",
@@ -5187,7 +5781,9 @@ bool TestAnimationSocketAttachmentAuthoringContract()
 	sceneEdits.Set({Vans::DocumentPropertySpace::Scene,"/name"},Vans::VansSerializedValue::String("Rejected IK Scene"));
 	rigJson["sockets"]="invalid array";
 	Vans::VansAssetDocumentEditService::ReplaceRoot(rigDocument->sourceDocument,Vans::DecodeSerializedValueJson(rigJson));
-	if(!Expect(!Vans::VansSceneAnimationSaveService::Save(*sceneDocument.document,{rigDocument},error) &&
+	const auto rejectedSetup = Vans::VansEditorAssetSaveService::Get().SaveSceneAndAssets(
+		saveOperations, *sceneDocument.document, {rigDocument});
+	if(!Expect(!rejectedSetup &&
 		Vans::VansSceneDocumentLoader::Fingerprint(scenePath)==originalFingerprint && sceneDocument.document->IsDirty(),
 		"Invalid Rig partially published the Scene"))return false;
 
@@ -5199,6 +5795,270 @@ bool TestAnimationSocketAttachmentAuthoringContract()
 		&& previewBinding.parent.kind == RuntimeParentKind::Socket
 		&& !previewBinding.parent.anchorGuid.empty(),
 		"Temporary Scene attachment binding was not represented independently");
+}
+
+bool TestUIActionEventContract()
+{
+	std::vector<std::string> trace;
+	bool payloadMatches = false;
+	auto saveConnection = Vans::VansEventBus::Get().Subscribe<VansRuntime::VansUIActionEvent>(
+		[&](const VansRuntime::VansUIActionEvent& event)
+		{
+			if (event.name != "UI.Save")
+				return;
+			const auto value = event.params.find("slot");
+			const auto* slot = value != event.params.end()
+				? std::get_if<std::int64_t>(&value->second.value) : nullptr;
+			payloadMatches = slot && *slot == 7 && event.sourceScreen == 42 &&
+				event.sourceElement == "SaveButton";
+			trace.push_back(event.name);
+		}, Vans::VansEventLane::MainThread);
+	auto cancelConnection = Vans::VansEventBus::Get().Subscribe<VansRuntime::VansUIActionEvent>(
+		[&](const VansRuntime::VansUIActionEvent& event)
+		{
+			if (event.name == "UI.Cancel")
+				trace.push_back(event.name);
+		}, Vans::VansEventLane::MainThread);
+
+	VansRuntime::VansUIVariantMap params;
+	params.emplace("slot", VansRuntime::VansUIVariant(std::int64_t{ 7 }));
+	Vans::VansEventBus::Get().PublishNow(VansRuntime::VansUIActionEvent{
+		"UI.Save", std::move(params), 42, "SaveButton" });
+	if (!Expect(payloadMatches && trace == std::vector<std::string>{ "UI.Save" },
+		"UI action event lost its string key, owned params, source, or synchronous dispatch"))
+		return false;
+
+	saveConnection.Disconnect();
+	Vans::VansEventBus::Get().PublishNow(VansRuntime::VansUIActionEvent{
+		"UI.Save", {}, 42, "SaveButton" });
+	Vans::VansEventBus::Get().PublishNow(VansRuntime::VansUIActionEvent{
+		"UI.Cancel", {}, 42, "CancelButton" });
+	return Expect(trace == std::vector<std::string>{ "UI.Save", "UI.Cancel" },
+		"UI action event name filtering or connection lifetime changed");
+}
+
+bool TestLuaUIActionEventContract()
+{
+	lua_State* state = luaL_newstate();
+	if (!Expect(state != nullptr, "Lua UI action contract could not create a Lua state"))
+		return false;
+	luaL_openlibs(state);
+	lua_newtable(state);
+	VansRuntime::VansLuaUIBridge::Register(state);
+	lua_setglobal(state, "vans");
+
+	constexpr const char* Contract = R"(
+		assert(vans.ui.create_component == nil)
+		assert(type(vans.ui.load_component) == "function")
+		local calls = 0
+		local subscription = vans.ui.on_action("UI.Save", function(event)
+			assert(event.name == "UI.Save")
+			assert(event.params.slot == 7)
+			assert(event.source_screen == 0)
+			assert(event.source_element == "")
+			calls = calls + 1
+		end)
+		assert(subscription ~= nil)
+		vans.ui.dispatch("UI.Other", { slot = 1 })
+		vans.ui.dispatch("UI.Save", { slot = 7 })
+		assert(calls == 1)
+		subscription:unsubscribe()
+		vans.ui.dispatch("UI.Save", { slot = 7 })
+		assert(calls == 1)
+
+		shutdown_calls = 0
+		shutdown_subscription = vans.ui.on_action("UI.Shutdown", function(_)
+			shutdown_calls = shutdown_calls + 1
+		end)
+		assert(shutdown_subscription ~= nil)
+	)";
+	const bool scriptPassed = luaL_loadstring(state, Contract) == LUA_OK &&
+		lua_pcall(state, 0, 0, 0) == LUA_OK;
+	const std::string scriptError = scriptPassed || !lua_tostring(state, -1)
+		? std::string{} : lua_tostring(state, -1);
+
+	VansRuntime::VansLuaUIBridge::Shutdown(state);
+	Vans::VansEventBus::Get().PublishNow(VansRuntime::VansUIActionEvent{
+		"UI.Shutdown", {}, 0, {} });
+	lua_getglobal(state, "shutdown_calls");
+	const lua_Integer shutdownCalls = lua_tointeger(state, -1);
+	lua_pop(state, 1);
+	lua_close(state);
+
+	if (!Expect(scriptPassed, scriptError.empty()
+		? "Lua UI action contract failed" : scriptError.c_str()))
+		return false;
+	return Expect(shutdownCalls == 0,
+		"Lua UI action subscription survived bridge shutdown");
+}
+
+bool TestLuaUIValueCodecContract()
+{
+	lua_State* state = luaL_newstate();
+	if (!Expect(state != nullptr, "Lua UI codec contract could not create a Lua state"))
+		return false;
+
+	std::string error;
+	VansRuntime::VansUIVariant value;
+	lua_newtable(state);
+	lua_pushstring(state, "second");
+	lua_seti(state, -2, 2);
+	lua_pushstring(state, "first");
+	lua_seti(state, -2, 1);
+	const bool arrayDecoded = VansRuntime::VansLuaValueConverter::TryToVariant(
+		state, -1, value, error);
+	const auto* array = std::get_if<VansRuntime::VansUIVariantArray>(&value.value);
+	const bool arrayMatches = arrayDecoded && array && array->size() == 2 &&
+		std::get<std::string>((*array)[0].value) == "first" &&
+		std::get<std::string>((*array)[1].value) == "second";
+	lua_pop(state, 1);
+	if (!Expect(arrayMatches,
+		"Lua UI codec depended on lua_next iteration order for arrays"))
+	{
+		lua_close(state);
+		return false;
+	}
+
+	lua_newtable(state);
+	lua_pushvalue(state, -1);
+	lua_setfield(state, -2, "self");
+	error.clear();
+	const bool cycleRejected = !VansRuntime::VansLuaValueConverter::TryToVariant(
+		state, -1, value, error) && error.find("cycle") != std::string::npos;
+	lua_pop(state, 1);
+	if (!Expect(cycleRejected, "Lua UI codec accepted a cyclic table"))
+	{
+		lua_close(state);
+		return false;
+	}
+
+	lua_newtable(state);
+	lua_pushinteger(state, 1);
+	lua_seti(state, -2, 1);
+	lua_pushinteger(state, 2);
+	lua_setfield(state, -2, "named");
+	error.clear();
+	const bool mixedRejected = !VansRuntime::VansLuaValueConverter::TryToVariant(
+		state, -1, value, error) && error.find("mix") != std::string::npos;
+	lua_pop(state, 1);
+	if (!Expect(mixedRejected, "Lua UI codec accepted mixed array and map keys"))
+	{
+		lua_close(state);
+		return false;
+	}
+
+	VansRuntime::VansUIVariantMap nested;
+	nested.emplace("title", VansRuntime::VansUIVariant("Inventory"));
+	nested.emplace("items", VansRuntime::VansUIVariant(VansRuntime::VansUIVariantArray{
+		VansRuntime::VansUIVariant(std::int64_t{ 3 }),
+		VansRuntime::VansUIVariant(std::int64_t{ 5 }) }));
+	const int originalTop = lua_gettop(state);
+	error.clear();
+	const bool pushed = VansRuntime::VansLuaValueConverter::TryPushVariantMap(
+		state, nested, error);
+	VansRuntime::VansUIVariantMap roundTrip;
+	const bool decoded = pushed && VansRuntime::VansLuaValueConverter::TryToVariantMap(
+		state, -1, roundTrip, error);
+	if (pushed) lua_pop(state, 1);
+	const auto title = roundTrip.find("title");
+	const auto items = roundTrip.find("items");
+	const auto* roundTripItems = items == roundTrip.end()
+		? nullptr : std::get_if<VansRuntime::VansUIVariantArray>(&items->second.value);
+	const bool roundTripMatches = decoded && lua_gettop(state) == originalTop &&
+		title != roundTrip.end() && std::get<std::string>(title->second.value) == "Inventory" &&
+		roundTripItems && roundTripItems->size() == 2;
+	lua_close(state);
+	return Expect(roundTripMatches, "Lua UI value codec round trip changed the value or Lua stack");
+}
+
+bool TestLuaUIStateIsolationContract()
+{
+	const auto createState = []()
+	{
+		lua_State* state = luaL_newstate();
+		if (!state) return state;
+		luaL_openlibs(state);
+		lua_newtable(state);
+		VansRuntime::VansLuaUIBridge::Register(state);
+		lua_setglobal(state, "vans");
+		return state;
+	};
+	lua_State* first = createState();
+	lua_State* second = createState();
+	if (!Expect(first && second, "Lua UI state isolation could not create both states"))
+	{
+		if (first) lua_close(first);
+		if (second) lua_close(second);
+		return false;
+	}
+	constexpr const char* Subscribe = R"(
+		calls = 0
+		subscription = vans.ui.on_action("UI.MultiState", function(_)
+			calls = calls + 1
+		end)
+	)";
+	const bool registered =
+		luaL_dostring(first, Subscribe) == LUA_OK &&
+		luaL_dostring(second, Subscribe) == LUA_OK;
+	if (!Expect(registered, "Lua UI multi-state subscriptions could not be registered"))
+	{
+		VansRuntime::VansLuaUIBridge::Shutdown(first);
+		VansRuntime::VansLuaUIBridge::Shutdown(second);
+		lua_close(first);
+		lua_close(second);
+		return false;
+	}
+
+	VansRuntime::VansLuaUIBridge::Shutdown(first);
+	Vans::VansEventBus::Get().PublishNow(VansRuntime::VansUIActionEvent{
+		"UI.MultiState", {}, 0, {} });
+	lua_getglobal(first, "calls");
+	const lua_Integer firstCalls = lua_tointeger(first, -1);
+	lua_pop(first, 1);
+	lua_getglobal(second, "calls");
+	const lua_Integer secondCalls = lua_tointeger(second, -1);
+	lua_pop(second, 1);
+	VansRuntime::VansLuaUIBridge::Shutdown(second);
+	lua_close(first);
+	lua_close(second);
+
+	const VansRuntime::VansUIHandleId firstHandle = VansRuntime::AllocateUIHandle();
+	const VansRuntime::VansUIHandleId secondHandle = VansRuntime::AllocateUIHandle();
+	return Expect(firstCalls == 0 && secondCalls == 1 &&
+		firstHandle != VansRuntime::kInvalidUIHandle && secondHandle > firstHandle,
+		"Closing one Lua UI state invalidated another state or reused a lifecycle handle");
+}
+
+bool TestLuaScriptDeclaredAssetDependencyContract()
+{
+	using Vans::VansSerializedValue;
+	const std::string assetGuid = "11111111-2222-3333-4444-555555555555";
+	const VansSerializedValue scriptData = VansSerializedValue::Object({
+		{ "fields", VansSerializedValue::Object({
+			{ "ordinaryText", VansSerializedValue::String(assetGuid) },
+			{ "sceneTarget", Vans::MakeSerializedSceneEntityObjectReference("scene-entity") },
+			{ "texture", Vans::MakeSerializedProjectAssetObjectReference(assetGuid, "texture") }
+		}) }
+	});
+	std::vector<VansScriptSerializedObjectReference> references;
+	std::string error;
+	if (!Expect(VansScriptComponentReader::CollectProjectAssetReferences(
+			scriptData, references, error) && references.size() == 1 &&
+			references[0].guid == assetGuid && references[0].assetType == "texture",
+		"Script dependency collection guessed strings or lost declared ProjectAsset metadata"))
+		return false;
+
+	const VansSerializedValue invalid = VansSerializedValue::Object({
+		{ "fields", VansSerializedValue::Object({
+			{ "asset", VansSerializedValue::Object({
+				{ "domain", VansSerializedValue::String("ProjectAsset") },
+				{ "guid", VansSerializedValue::String(assetGuid) }
+			}) }
+		}) }
+	});
+	return Expect(!VansScriptComponentReader::CollectProjectAssetReferences(
+		invalid, references, error) && error.find("assetType") != std::string::npos,
+		"Script ProjectAsset dependency accepted a reference without assetType");
 }
 
 bool TestDemoHallMotionMatchingMovementLibraryContract()
@@ -5955,11 +6815,15 @@ bool TestRootMotionReconciliationContract()
 	constexpr float dt = 0.10f;
 	glm::vec3 translation(0.0f, 0.10f, 0.0f);
 	glm::quat rotation = glm::angleAxis(
-		glm::radians(1.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+		glm::radians(25.0f), glm::vec3(1.0f, 0.0f, 0.0f)) *
+		glm::angleAxis(glm::radians(1.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	const float sharedTargetYawRate =
+		ExtractRootMotionYawDegrees(rotation) / dt;
 	const RootMotionReconciliationResult first = reconciler.Apply(
 		dt, translation, rotation);
 	if (!Expect(first.active &&
 		std::abs(first.appliedVelocityAnimation.y - 4.0f) < 0.001f &&
+		std::abs(first.targetYawRateDegreesPerSecond - sharedTargetYawRate) < 0.01f &&
 		std::abs(first.appliedYawRateDegreesPerSecond - 90.0f) < 0.01f,
 		"Root transition did not preserve outgoing linear/angular velocity"))
 		return false;
@@ -6083,7 +6947,7 @@ bool TestAnimationStateMachineRestartSamplesStartPoseContract()
 
     auto graph = std::make_unique<VansAnimGraph>();
     const int stateMachineId = graph->AddNode(std::move(stateMachine));
-    const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+    const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
     graph->AddLink(stateMachineId, 0, outputId, 0);
 
     VansAnimationController controller;
@@ -6131,7 +6995,7 @@ bool TestAnimatorCanonicalFormatContract()
     auto clipNode = std::make_unique<AnimGraphClipNode>();
     clipNode->m_ClipName = "Idle";
     const int clipId = graph->AddNode(std::move(clipNode));
-    const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+    const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
     if (!Expect(clipId > 0 && outputId > 0 && graph->AddLink(clipId, 0, outputId, 0) > 0,
         "Failed to build canonical animator graph fixture"))
         return false;
@@ -6277,9 +7141,9 @@ bool TestAnimationGraphLinkValidationContract()
     using namespace VansGraphics;
 
     VansAnimGraph graph;
-    const int firstId = graph.AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::SpeedScale));
-    const int secondId = graph.AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::SpeedScale));
-    const int outputId = graph.AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+    const int firstId = graph.AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::SpeedScale));
+    const int secondId = graph.AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::SpeedScale));
+    const int outputId = graph.AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
     if (!Expect(firstId > 0 && secondId > 0 && outputId > 0,
         "Failed to build graph validation fixture"))
         return false;
@@ -6376,7 +7240,7 @@ bool TestAnimationGraphSharedSubgraphCacheContract()
         explicit CountingPoseNode(int& evaluations)
             : m_Evaluations(evaluations)
         {
-            m_Type = AnimGraphNodeType::Clip;
+            m_Type = VansAnimGraphNodeType::Clip;
             m_Name = "CountingPose";
         }
 
@@ -6405,7 +7269,7 @@ bool TestAnimationGraphSharedSubgraphCacheContract()
     blend->m_UseParam = false;
     blend->m_FixedAlpha = 0.5f;
     const int blendId = graph.AddNode(std::move(blend));
-    const int outputId = graph.AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+    const int outputId = graph.AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
     if (!Expect(graph.AddLink(sourceId, 0, blendId, 0) > 0
         && graph.AddLink(sourceId, 0, blendId, 1) > 0
         && graph.AddLink(blendId, 0, outputId, 0) > 0,
@@ -6420,6 +7284,69 @@ bool TestAnimationGraphSharedSubgraphCacheContract()
     instance.Evaluate({});
     return Expect(evaluations == 2,
         "Animation graph evaluation cache was not reset for the next frame");
+}
+
+bool TestCurrentProjectTimelineAssetsContract()
+{
+	fs::path workspace = fs::current_path();
+	for (int depth = 0; depth < 5 && !fs::exists(workspace / "AnimationV2Project"); ++depth)
+	{
+		if (!workspace.has_parent_path() || workspace.parent_path() == workspace)
+			break;
+		workspace = workspace.parent_path();
+	}
+	if (!fs::exists(workspace / "AnimationV2Project"))
+		return true;
+
+	const std::vector<std::string> projectNames = {
+		"AnimationV2Project", "DustV3Project", "DemoHallProject", "SponzaProject"
+	};
+	std::size_t timelineCount = 0;
+	for (const std::string& projectName : projectNames)
+	{
+		const fs::path assetsRoot = workspace / projectName / "Assets";
+		if (!fs::exists(assetsRoot))
+			continue;
+
+		std::error_code error;
+		for (fs::recursive_directory_iterator iterator(assetsRoot, error), end;
+			!error && iterator != end; iterator.increment(error))
+		{
+			if (!iterator->is_regular_file() || iterator->path().extension() != ".vtimeline")
+				continue;
+			++timelineCount;
+			Vans::VansTimelineAsset timeline;
+			std::string timelineError;
+			if (!Expect(Vans::VansTimelineSerialization::Load(
+				iterator->path(), timeline, timelineError),
+				"Current project Timeline failed canonical loading"))
+			{
+				std::cerr << "[ProjectTimeline] " << iterator->path().string()
+					<< " :: " << timelineError << std::endl;
+				return false;
+			}
+
+			Vans::VansTimelineValidationContext validation;
+			validation.requireRuntimeCapabilities = true;
+			validation.extensions = TimelineCatalog().trackExtensions;
+			const Vans::VansTimelineDiagnostics diagnostics =
+				Vans::VansTimelineValidator::Validate(timeline, validation);
+			for (const Vans::VansTimelineDiagnostic& diagnostic : diagnostics)
+			{
+				if (diagnostic.severity != Vans::VansTimelineDiagnosticSeverity::Error)
+					continue;
+				std::cerr << "[ProjectTimeline] " << iterator->path().string() << " :: "
+					<< diagnostic.objectId << "." << diagnostic.propertyPath << " :: "
+					<< diagnostic.message << std::endl;
+			}
+			if (!Expect(!Vans::VansTimelineValidator::HasErrors(diagnostics),
+				"Current project Timeline requires an unregistered track capability"))
+				return false;
+		}
+		if (!Expect(!error, "Failed while scanning current project Timeline assets"))
+			return false;
+	}
+	return Expect(timelineCount > 0, "No current project Timeline assets were validated");
 }
 
 bool TestAnimationProjectAnimatorAssetsCanonicalContract()
@@ -6546,8 +7473,8 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
                     return false;
                 }
                 Vans::VansTimelineValidationContext validation;
-                validation.runtimeValidation = false;
-				validation.extensions = &Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
+				validation.requireRuntimeCapabilities = true;
+				validation.extensions = TimelineCatalog().trackExtensions;
                 const Vans::VansTimelineDiagnostics diagnostics =
                     Vans::VansTimelineValidator::Validate(timeline, validation);
                 for (const Vans::VansTimelineDiagnostic& diagnostic : diagnostics)
@@ -6588,6 +7515,13 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
             {
                 if (layer.kind != VansAnimationLayerKind::Overlay)
                     continue;
+				if (layer.maskGuid.empty())
+				{
+					if (!Expect(layer.maskPathHint.empty(),
+						"Full-body Animator Overlay has a pathHint without a Bone Mask GUID"))
+						return false;
+					continue;
+				}
                 Vans::VansAssetGuid guid;
                 const auto dependency = Vans::VansAssetGuid::TryParse(layer.maskGuid, guid)
                     ? database.Find(guid) : std::optional<Vans::VansAssetRecord>{};
@@ -6689,7 +7623,7 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
     return true;
 }
 
-bool TestAnimationV2RetargetMotionMatchingSceneContract()
+bool TestAnimationV2RetargetSceneContract()
 {
 	using namespace VansGraphics;
 
@@ -6740,58 +7674,12 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 				continue;
 			if (!Expect(animation.contains("retarget")
 				&& animation.contains("rig")
-				&& animation.contains("motion_matching")
-				&& animation["motion_matching"].contains("motion_model")
-				&& animation["motion_matching"].contains("root_motion_steering")
-				&& animation["motion_matching"].contains("turn_in_place_warping")
-				&& animation["motion_matching"].contains("root_motion_reconciliation")
-				&& animation["motion_matching"].contains("search_groups")
-				&& animation["motion_matching"].contains("contacts")
+				&& animation.value("root_motion", false)
+				&& animation.at("retarget").value("enabled", false)
+				&& !animation.at("retarget").contains("runtime_mode")
+				&& !animation.at("retarget").contains("cache_policy")
 				&& !animation.contains("foot_placement"),
-				"AnimationV2 retargeted character is missing Motion Matching configuration blocks"))
-			{
-				return false;
-			}
-
-			const nlohmann::json& retarget = animation.at("retarget");
-			const nlohmann::json& motionMatching = animation.at("motion_matching");
-			const nlohmann::json& motionModel = motionMatching.at("motion_model");
-			const nlohmann::json& turnWarping =
-				motionMatching.at("turn_in_place_warping");
-			const nlohmann::json& contacts = motionMatching.at("contacts");
-			std::unordered_set<std::string> searchGroupNames;
-			std::size_t turnSearchGroupCount = 0;
-			for (const nlohmann::json& group : motionMatching.at("search_groups"))
-			{
-				searchGroupNames.insert(group.value("name", ""));
-				if (group.value("phase", "") == "Turn")
-					++turnSearchGroupCount;
-			}
-			if (!Expect(animation.value("root_motion", false)
-				&& retarget.value("enabled", false)
-				&& !retarget.contains("runtime_mode")
-				&& !retarget.contains("cache_policy")
-				&& motionMatching.value("enabled", false)
-				&& contacts.value("provider", "") == "locomotion"
-				&& contacts.value("channels", nlohmann::json::array()).size() == 2
-				&& motionModel.value("drive_mode", "") == "root_motion"
-				&& motionModel.value("root_rotation_weight", 0.0f) == 1.0f
-				&& motionMatching.value("non_loop_sampling_end_margin", 0.0f) > 0.0f
-				&& motionMatching.at("root_motion_steering").value("enabled", false)
-				&& turnWarping.value("enabled", false)
-				&& turnWarping.value("min_root_yaw_scale_ratio", 0.0f) == 0.75f
-				&& turnWarping.value("max_root_yaw_scale_ratio", 0.0f) == 1.25f
-				&& turnWarping.value("max_additive_correction_degrees", 0.0f) == 15.0f
-				&& turnWarping.value(
-					"max_additive_yaw_rate_degrees_per_second", 0.0f) == 240.0f
-				&& turnWarping.value("final_tolerance_degrees", 0.0f) == 1.0f
-				&& motionMatching.at("root_motion_reconciliation").value("enabled", false)
-				&& motionMatching.at("search_groups").size() >= 15
-				&& turnSearchGroupCount >= 2
-				&& searchGroupNames.count("StandWalkPivot") > 0
-				&& searchGroupNames.count("StandRunPivot") > 0
-				&& searchGroupNames.count("CrouchPivot") > 0,
-				"AnimationV2 retargeted character is missing the Root Motion Motion Matching contract"))
+				"AnimationV2 retargeted character configuration is incomplete"))
 			{
 				return false;
 			}
@@ -6799,7 +7687,7 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 		}
 	}
 	if (!Expect(validatedCharacters.size() == 3,
-		"AnimationV2 must configure TwinBlast, SWAT, and Survival for retargeted Motion Matching"))
+		"AnimationV2 must configure TwinBlast, SWAT, and Survival for retargeted root motion"))
 	{
 		return false;
 	}
@@ -7080,7 +7968,7 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
     std::string error;
     AnimatorAssetData asset, baselineAsset;
     if (!Expect(VansAnimatorIO::Load((assets / "MotionMatchDataBase/UEFN_Mannequin.vanimator").string(), asset), "Pistol Animator load failed")) return false;
-    AnimGraphJson baselineJson;
+    nlohmann::json baselineJson;
     if (!Expect(VansAnimatorIO::SerializeToJsonObject(asset, baselineJson, error), error.c_str())) return false;
     // This contract isolates the pre-existing pistol overlay path.  Survival
     // owns a separate attack layer and is validated by the GAF attack contract.
@@ -7169,12 +8057,13 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
     {
         using namespace Vans::EditorAPI;
         auto previewSource = VansAnimatorRuntimeCompiler::Compile(asset, source, clipResolver, maskResolver, options, error);
-        VansAnimationController previewTarget;
-        if (!Expect(previewSource && previewTarget.SetAnimationRig(compiledRig, {}, error), error.c_str())) return false;
-        previewTarget.ReplaceParameterDefinitions(*previewSource, false);
+        auto previewTarget = std::make_unique<VansAnimationController>();
+        if (!Expect(previewSource && previewTarget->SetAnimationRig(compiledRig, {}, error), error.c_str())) return false;
+        previewTarget->ReplaceParameterDefinitions(*previewSource, false);
+        VansAnimationController* previewTargetView = previewTarget.get();
         VansAnimationNode previewNode("PistolParameterPreviewContract");
         previewNode.SetSkeleton(target);
-        if (!Expect(previewNode.SetController(&previewTarget) && previewNode.ConfigureRetargetSource(
+        if (!Expect(previewNode.SetController(std::move(previewTarget)) && previewNode.ConfigureRetargetSource(
             source, std::move(previewSource), desc, error), error.c_str())) return false;
         previewNode.Play(VansAnimationEvaluationPurpose::EditorPreview);
         auto* motion = previewNode.GetCharacterMotionController();
@@ -7187,7 +8076,7 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
         if (!Expect(motion->GetInt("PistolPhase") == 0 && motion->GetFloat("PistolUpperBodyWeight") == 0,
             "Retarget parameter overwrite reproducer no longer matches the component contract")) return false;
         const int hand = previewNode.GetSkeleton().boneNameToIndex.at("hand_r");
-        const auto idleHand = glm::vec3(previewTarget.GetCachedGlobalTransform(hand)[3]);
+        const auto idleHand = glm::vec3(previewTargetView->GetCachedGlobalTransform(hand)[3]);
         auto setFloat = [&](const char* name, float number)
         {
             AnimationPreviewParameterValue value;
@@ -7210,9 +8099,9 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
             "Preview parameter edits were rejected")) return false;
         step(30);
         auto debug = motion->GetLayerRuntimeDebugInfo();
-        const float handTravel = glm::length(glm::vec3(previewTarget.GetCachedGlobalTransform(hand)[3]) - idleHand);
+        const float handTravel = glm::length(glm::vec3(previewTargetView->GetCachedGlobalTransform(hand)[3]) - idleHand);
         if (!Expect(debug.size()==2 && debug[1].state=="PistolAim" && debug[1].weight>0.99f && handTravel>1.0f
-            && motion->GetInt("PistolPhase")==2 && previewTarget.GetFloat("PistolGripWeight")==1.0f
+            && motion->GetInt("PistolPhase")==2 && previewTargetView->GetFloat("PistolGripWeight")==1.0f
             && motion->GetFloat("PistolGripWeight")==1.0f && !motion->GetBool("UseMotionMatching")
             && glm::length(motion->GetVector3("PistolAimDirection")-glm::vec3(0,1,0))<1.e-6f,
             "Preview parameter values did not drive the Aim state, target hand pose, or IK owner")) return false;
@@ -7223,7 +8112,7 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
         step(6);
         debug = motion->GetLayerRuntimeDebugInfo();
         if (!Expect(debug[1].state=="PistolShot" && debug[1].playbackTime>0.01f
-            && !previewTarget.IsTriggerSet("PistolActionStart"), "Shot trigger did not reach the source state machine exactly once")) return false;
+            && !previewTargetView->IsTriggerSet("PistolActionStart"), "Shot trigger did not reach the source state machine exactly once")) return false;
         step(12);
         const float completedTime = motion->GetLayerRuntimeDebugInfo()[1].playbackTime;
         if (!Expect(AnimationPreviewParameterEditing::Apply(previewNode,trigger), "Repeated shot was rejected")) return false;
@@ -7232,19 +8121,20 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
             "Repeated Shot preview did not restart playback")) return false;
         if (!Expect(setFloat("PistolGripWeight",0.25f), "Paused grip edit was rejected")) return false;
         previewNode.Update({VansAnimationEvaluationPurpose::EditorPreview,0.0f});
-        if (!Expect(previewTarget.GetFloat("PistolGripWeight")==0.25f && motion->GetFloat("PistolGripWeight")==0.25f,
+        if (!Expect(previewTargetView->GetFloat("PistolGripWeight")==0.25f && motion->GetFloat("PistolGripWeight")==0.25f,
             "Paused frame lost the edited IK weight")) return false;
         // 无重定向的组件与独立预览继续写自己的控制器。
-        VansAnimationController directController;
-        directController.AddParameter("PistolPhase",VansGraphics::AnimatorParamType::Int);
+        auto directController = std::make_unique<VansAnimationController>();
+        directController->AddParameter("PistolPhase",VansGraphics::AnimatorParamType::Int);
+        VansAnimationController* directControllerView = directController.get();
         VansAnimationNode directNode("DirectParameterPreviewContract");
-        if (!Expect(directNode.SetController(&directController), "Direct preview fixture setup failed")) return false;
+        if (!Expect(directNode.SetController(std::move(directController)), "Direct preview fixture setup failed")) return false;
         AnimationPreviewParameterValue directValue;
         directValue.name="PistolPhase"; directValue.type=AnimationPreviewParameterType::Int; directValue.intValue=2;
-        if (!Expect(AnimationPreviewParameterEditing::Apply(directNode,directValue) && directController.GetInt("PistolPhase")==2,
+        if (!Expect(AnimationPreviewParameterEditing::Apply(directNode,directValue) && directControllerView->GetInt("PistolPhase")==2,
             "Direct scene preview parameter routing changed")) return false;
         directValue.intValue=3;
-        if (!Expect(AnimationPreviewParameterEditing::Apply(directController,directValue) && directController.GetInt("PistolPhase")==3,
+        if (!Expect(AnimationPreviewParameterEditing::Apply(*directControllerView,directValue) && directControllerView->GetInt("PistolPhase")==3,
             "Isolated preview parameter routing changed")) return false;
         std::cout << "[PistolPreviewParameters] old source write overwritten; Aim/Shot/retrigger/paused IK passed; target hand travel="
             << handTravel << '\n';
@@ -7264,7 +8154,7 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
     };
     // 正式目标后处理图独立接收重定向姿态，验证肩带、头部和 MM 隔离。
     VansAnimationController aimController, aimOffController;
-    AnimGraphJson postJson;
+    nlohmann::json postJson;
     asset.FindTargetPostProcessGraph()->SerializeToJsonObject(postJson);
     for (auto* controller : { &aimController, &aimOffController })
     {
@@ -7470,7 +8360,7 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
             auto clipNode = std::make_unique<AnimGraphClipNode>();
             clipNode->m_ClipName = names[layerIndex]; clipNode->m_Loop = false;
             const int input = graph->AddNode(std::move(clipNode));
-            const int output = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+            const int output = graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
             graph->AddLink(input, 0, output, 0);
             graphs.push_back(std::move(graph));
         }
@@ -8277,16 +9167,17 @@ bool TestProjectRetargetOwnedSkeletonAndSkinningContract()
 		// 复现 Scene Builder 的真实所有权顺序：Node 复制 Target Skeleton、
 		// ConfigureRetargetSource 复制 Source Skeleton，并在内部重绑定两套 Rig。
 		VansAnimationNode targetNode(fixture.label);
-		VansAnimationController targetController;
+		auto targetController = std::make_unique<VansAnimationController>();
 		auto sourceController = std::make_unique<VansAnimationController>();
 		if (!sourceController->SetAnimationRig(std::move(compiledSourceRig), {}, error)
-			|| !targetController.SetAnimationRig(std::move(compiledTargetRig), {}, error))
+			|| !targetController->SetAnimationRig(std::move(compiledTargetRig), {}, error))
 		{
 			return Expect(false, (std::string(fixture.label)
 				+ " rejected its compiled Animation Rig: " + error).c_str());
 		}
 		targetNode.SetSkeleton(importedTargetSkeleton);
-		if (!targetNode.SetController(&targetController)
+		VansAnimationController* targetControllerView = targetController.get();
+		if (!targetNode.SetController(std::move(targetController))
 			|| !targetNode.ConfigureRetargetSource(
 				importedSourceSkeleton, std::move(sourceController), desc, error))
 		{
@@ -8297,7 +9188,7 @@ bool TestProjectRetargetOwnedSkeletonAndSkinningContract()
 		const Skeleton& targetNodeSkeleton = targetNode.GetSkeleton();
 		if (!Expect(targetNode.GetRetargetSourceController()->GetAnimationRig()->skeleton
 				== &sourceNodeSkeleton
-			&& targetController.GetAnimationRig()->skeleton == &targetNodeSkeleton,
+			&& targetControllerView->GetAnimationRig()->skeleton == &targetNodeSkeleton,
 			(std::string(fixture.label)
 				+ " controllers retained imported or temporary Skeleton pointers").c_str()))
 			return false;
@@ -8305,7 +9196,7 @@ bool TestProjectRetargetOwnedSkeletonAndSkinningContract()
 		VansRetargetProcessor processor;
 		if (!Expect(processor.Build(
 			sourceNodeSkeleton, targetNodeSkeleton,
-			*targetController.GetAnimationRig(), desc),
+			*targetControllerView->GetAnimationRig(), desc),
 			(std::string(fixture.label)
 				+ " failed Source -> Target runtime construction").c_str()))
 			return false;
@@ -8401,13 +9292,13 @@ bool TestProjectRetargetOwnedSkeletonAndSkinningContract()
 				+ " Retarget output remained in the target bind pose").c_str()))
 			return false;
 
-		if (!Expect(targetController.SubmitExternalModelPose(
+		if (!Expect(targetControllerView->SubmitExternalModelPose(
 			targetModelTransforms, targetNodeSkeleton, 1.0f / 60.0f,
 			VansExternalPoseEvaluationMode::DirectFinalPose),
 			(std::string(fixture.label) + " rejected the final target pose").c_str()))
 			return false;
 		float skinningDifference = 0.0f;
-		const BoneMatricesSSBO& skinning = targetController.GetBoneMatricesSSBO();
+		const BoneMatricesSSBO& skinning = targetControllerView->GetBoneMatricesSSBO();
 		for (std::size_t boneIndex = 0; boneIndex < targetNodeSkeleton.bones.size(); ++boneIndex)
 		{
 			const glm::mat4 bindSkinning = targetBindModels[boneIndex]
@@ -8420,7 +9311,7 @@ bool TestProjectRetargetOwnedSkeletonAndSkinningContract()
 				+ " final skinning matrices remained in A-Pose").c_str()))
 			return false;
 
-		VansCompiledAnimationRig incompatibleRig = *targetController.GetAnimationRig();
+		VansCompiledAnimationRig incompatibleRig = *targetControllerView->GetAnimationRig();
 		Skeleton incompatibleSkeleton = targetNodeSkeleton;
 		incompatibleSkeleton.bones.front().localTransform[3].x += 0.25f;
 		if (!Expect(!incompatibleRig.BindSkeleton(incompatibleSkeleton, error),
@@ -8807,6 +9698,8 @@ bool TestRetargetConfiguredLimbChainContract()
 
 bool TestAnimationAuthoringBoundaryContract()
 {
+	using namespace VansGraphics;
+
     fs::path sourceFile = fs::path(__FILE__);
     if (sourceFile.is_relative())
         sourceFile = fs::absolute(sourceFile);
@@ -8831,6 +9724,128 @@ bool TestAnimationAuthoringBoundaryContract()
     }
     if (!Expect(!scanError, "Unable to scan EditorCore animation architecture boundary"))
         return false;
+
+	AnimatorAssetData nodeCoverageAsset;
+	nodeCoverageAsset.name = "NodeTypeCoverage";
+	nodeCoverageAsset.animationRigGuid = "44444444-4444-4444-8444-444444444444";
+	nodeCoverageAsset.clipRefs.push_back(
+		{ "Base", "11111111-1111-4111-8111-111111111111", "Animation/Base.vclip" });
+	auto nodeCoverageGraph = std::make_unique<VansAnimGraph>();
+	auto baseClip = std::make_unique<AnimGraphClipNode>();
+	baseClip->m_ClipName = "Base";
+	const int baseClipId = nodeCoverageGraph->AddNode(std::move(baseClip));
+	auto savePose = std::make_unique<AnimGraphSaveCachedPoseNode>();
+	savePose->m_CacheName = "BaseCache";
+	const int savePoseId = nodeCoverageGraph->AddNode(std::move(savePose));
+	auto usePose = std::make_unique<AnimGraphUseCachedPoseNode>();
+	usePose->m_CacheName = "BaseCache";
+	const int usePoseId = nodeCoverageGraph->AddNode(std::move(usePose));
+	auto layeredBlend = std::make_unique<AnimGraphLayeredBlendPerBoneNode>();
+	layeredBlend->m_Mask.id = "upper-body";
+	layeredBlend->m_Mask.name = "Upper Body";
+	layeredBlend->m_Mask.defaultWeight = 0.25f;
+	layeredBlend->m_Mask.branchRules.push_back(
+		{ "spine", VansBoneMaskRuleMode::Include, "spine_01", true, 3,
+			0.5f, 1.0f, VansBoneMaskFalloff::SmoothStep });
+	layeredBlend->m_Mask.explicitWeights.emplace("hand_r", 0.75f);
+	layeredBlend->m_BlendMode = VansLayerBlendMode::Additive;
+	layeredBlend->m_RotationSpace = VansRotationBlendSpace::Local;
+	layeredBlend->m_WeightParameter = "UpperBodyWeight";
+	layeredBlend->m_FixedWeight = 0.8f;
+	layeredBlend->m_UseWeightParameter = true;
+	layeredBlend->m_ApplyAdditiveInput = true;
+	const int layeredBlendId = nodeCoverageGraph->AddNode(std::move(layeredBlend));
+	const int nodeCoverageOutputId = nodeCoverageGraph->AddNode(
+		VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
+	if (!Expect(baseClipId > 0 && savePoseId > 0 && usePoseId > 0
+		&& layeredBlendId > 0 && nodeCoverageOutputId > 0
+		&& nodeCoverageGraph->AddLink(baseClipId, 0, savePoseId, 0) > 0
+		&& nodeCoverageGraph->AddLink(savePoseId, 0, layeredBlendId, 0) > 0
+		&& nodeCoverageGraph->AddLink(usePoseId, 0, layeredBlendId, 1) > 0
+		&& nodeCoverageGraph->AddLink(layeredBlendId, 0, nodeCoverageOutputId, 0) > 0,
+		"Failed to build complete animation node-type authoring fixture"))
+		return false;
+	AnimatorGraphAsset nodeCoverageGraphAsset;
+	nodeCoverageGraphAsset.id = "graph-node-coverage";
+	nodeCoverageGraphAsset.name = "Node Coverage";
+	nodeCoverageGraphAsset.graph = std::move(nodeCoverageGraph);
+	nodeCoverageAsset.graphs.push_back(std::move(nodeCoverageGraphAsset));
+	VansAnimationLayerDefinition nodeCoverageLayer;
+	nodeCoverageLayer.id = "layer-base";
+	nodeCoverageLayer.name = "Base";
+	nodeCoverageLayer.kind = VansAnimationLayerKind::Base;
+	nodeCoverageAsset.layers.push_back(nodeCoverageLayer);
+	VansAnimationGraphSetDefinition nodeCoverageSet;
+	nodeCoverageSet.id = "set-default";
+	nodeCoverageSet.name = "Default";
+	nodeCoverageSet.bindings.push_back({ "layer-base", "graph-node-coverage", true });
+	nodeCoverageAsset.defaultGraphSetId = nodeCoverageSet.id;
+	nodeCoverageAsset.graphSets.push_back(std::move(nodeCoverageSet));
+	nlohmann::json nodeCoverageJson;
+	std::string nodeCoverageError;
+	if (!Expect(VansAnimatorIO::SerializeToJsonObject(
+		nodeCoverageAsset, nodeCoverageJson, nodeCoverageError), nodeCoverageError.c_str()))
+		return false;
+	auto nodeCoverageDocument = Vans::EditorAPI::AnimationAuthoringBridge::DecodeAnimator(
+		nodeCoverageJson.dump());
+	if (!Expect(nodeCoverageDocument.success && nodeCoverageDocument.document,
+		"Animation authoring DTO rejected a current runtime node type"))
+		return false;
+	const auto nodeCoverageEncoded = Vans::EditorAPI::AnimationAuthoringBridge::EncodeAnimator(
+		*nodeCoverageDocument.document);
+	if (!Expect(nodeCoverageEncoded.success
+		&& nlohmann::json::parse(nodeCoverageEncoded.canonicalJson) == nodeCoverageJson,
+		"Animation authoring DTO changed cached-pose or layered-blend node data"))
+		return false;
+
+	const VansAnimGraph& sourceGraph = *nodeCoverageAsset.graphs.front().graph;
+	auto clonedGraph = sourceGraph.Clone();
+	nlohmann::json sourceGraphJson;
+	nlohmann::json clonedGraphJson;
+	if (!Expect(clonedGraph != nullptr, "Typed animation graph clone failed"))
+		return false;
+	sourceGraph.SerializeToJsonObject(sourceGraphJson);
+	clonedGraph->SerializeToJsonObject(clonedGraphJson);
+	if (!Expect(sourceGraphJson == clonedGraphJson,
+		"Typed animation graph clone changed authored graph data"))
+		return false;
+	auto* clonedSavePose = static_cast<AnimGraphSaveCachedPoseNode*>(
+		clonedGraph->GetNode(savePoseId));
+	clonedSavePose->m_CacheName = "IndependentCloneCache";
+	if (!Expect(static_cast<const AnimGraphSaveCachedPoseNode*>(
+			sourceGraph.GetNode(savePoseId))->m_CacheName == "BaseCache",
+		"Typed animation graph clone shares mutable node definition state"))
+		return false;
+
+	auto invalidPoseGraph = sourceGraph.Clone();
+	invalidPoseGraph->AddNode(std::make_unique<AnimGraphGoalNode>());
+	std::string graphValidationError;
+	if (!Expect(!VansAnimatorValidator::ValidateGraph(
+			*invalidPoseGraph, AnimatorGraphAsset::Role::Pose,
+			"Invalid Pose", graphValidationError),
+		"Pose Graph accepted a target procedural node"))
+		return false;
+	if (!Expect(!VansAnimatorValidator::ValidateGraph(
+			sourceGraph, AnimatorGraphAsset::Role::TargetPostProcess,
+			"Invalid Target", graphValidationError),
+		"Target Post Process Graph accepted a playback graph"))
+		return false;
+
+	nlohmann::json unknownPropertyJson = nodeCoverageJson;
+	for (auto& node : unknownPropertyJson["graphs"][0]["graph"]["nodes"])
+	{
+		if (node["type"] == "Clip")
+		{
+			node["properties"]["unknownProperty"] = true;
+			break;
+		}
+	}
+	AnimatorAssetData rejectedUnknownProperty;
+	std::string strictSchemaError;
+	if (!Expect(!VansAnimatorIO::DeserializeFromJsonObject(
+			unknownPropertyJson, rejectedUnknownProperty, strictSchemaError),
+		"Animation graph node silently accepted an unknown property"))
+		return false;
 
     fs::path workspace = engineRoot.parent_path().parent_path();
     const fs::path animatorPath = workspace / "AnimationV2Project" / "Assets"
@@ -8918,6 +9933,38 @@ bool TestAnimationAuthoringBoundaryContract()
         return Expect(false, "Animator DTO bridge changed canonical authoring data during round trip");
     }
 
+	std::size_t currentProjectAnimatorCount = 0;
+	for (const char* projectName : {
+		"AnimationV2Project", "DustV3Project", "DemoHallProject", "SponzaProject" })
+	{
+		const fs::path assetsRoot = workspace / projectName / "Assets";
+		if (!fs::exists(assetsRoot))
+			continue;
+		std::error_code assetScanError;
+		for (fs::recursive_directory_iterator iterator(assetsRoot, assetScanError), end;
+			!assetScanError && iterator != end; iterator.increment(assetScanError))
+		{
+			if (!iterator->is_regular_file() || iterator->path().extension() != ".vanimator")
+				continue;
+			++currentProjectAnimatorCount;
+			AnimatorAssetData currentAsset;
+			std::string currentError;
+			const nlohmann::json currentJson = nlohmann::json::parse(readText(iterator->path()));
+			if (!Expect(VansAnimatorIO::DeserializeFromJsonObject(
+					currentJson, currentAsset, currentError), currentError.c_str()))
+				return false;
+			nlohmann::json currentCanonical;
+			if (!Expect(VansAnimatorIO::SerializeToJsonObject(
+					currentAsset, currentCanonical, currentError), currentError.c_str()))
+				return false;
+		}
+		if (!Expect(!assetScanError, "Unable to scan current project Animator assets"))
+			return false;
+	}
+	if (!Expect(currentProjectAnimatorCount > 0,
+		"Current project Animator asset audit found no source assets"))
+		return false;
+
     const std::string maskText = readText(maskPath);
     auto mask = Vans::EditorAPI::AnimationAuthoringBridge::DecodeBoneMask(maskText);
     if (!Expect(mask.success, "Public Bone Mask authoring DTO failed to decode the AnimationV2 fixture"))
@@ -8957,7 +10004,7 @@ bool TestAnimationGraphAdvancesOnlyActiveNodesContract()
     const int activeId = graph.AddNode(std::move(activeClip));
     const int inactiveId = graph.AddNode(std::move(inactiveClip));
     const int conditionId = graph.AddNode(std::move(condition));
-    const int outputId = graph.AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+    const int outputId = graph.AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
     if (!Expect(graph.AddLink(activeId, 0, conditionId, 0) > 0
         && graph.AddLink(inactiveId, 0, conditionId, 1) > 0
         && graph.AddLink(conditionId, 0, outputId, 0) > 0,
@@ -8980,14 +10027,16 @@ bool TestAnimationGraphAdvancesOnlyActiveNodesContract()
     context.parameters = &parameters;
 
     VansAnimGraphInstance instance(graph);
-    instance.AdvanceTime(0.25f, context);
-    instance.Evaluate(context);
-    instance.AdvanceTime(0.25f, context);
-    if (!ExpectNear(instance.GetClipTime(activeId), 0.25f, 0.0001f,
+	context.deltaTime = 0.25f;
+	instance.EvaluateFrame(context);
+	instance.EvaluateFrame(context);
+	if (!Expect(instance.GetPrimaryClipName() == "Active",
+		"Animation graph selected the inactive branch"))
+		return false;
+	if (!ExpectNear(instance.GetPrimaryPlaybackTime(), 0.25f, 0.0001f,
         "Active animation graph node did not advance"))
         return false;
-    return ExpectNear(instance.GetClipTime(inactiveId), 0.0f, 0.0001f,
-        "Inactive animation graph node advanced unexpectedly");
+	return true;
 }
 
 bool TestAnimationGraphDefinitionInstanceIsolationContract()
@@ -9000,7 +10049,7 @@ bool TestAnimationGraphDefinitionInstanceIsolationContract()
     VansAnimGraph definition;
     const int clipId = definition.AddNode(std::move(clip));
     const int outputId = definition.AddNode(
-        VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+        VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
     if (!Expect(unusedBeforeAdd < 0 && clipId > 0 && outputId > 0
         && definition.AddLink(clipId, 0, outputId, 0) > 0,
         "Failed to build Definition/Instance isolation fixture"))
@@ -9031,22 +10080,24 @@ bool TestAnimationGraphDefinitionInstanceIsolationContract()
     if (!Expect(first.IsCompiled() && second.IsCompiled(),
         "Two instances could not compile the same graph definition"))
         return false;
-    first.Evaluate(context);
-    second.Evaluate(context);
-    first.AdvanceTime(0.25f, context);
-    second.AdvanceTime(0.75f, context);
-    if (!ExpectNear(first.GetClipTime(clipId), 0.25f, 0.0001f,
+	first.Evaluate(context);
+	second.Evaluate(context);
+	context.deltaTime = 0.25f;
+	first.EvaluateFrame(context);
+	context.deltaTime = 0.75f;
+	second.EvaluateFrame(context);
+	if (!ExpectNear(first.GetPrimaryPlaybackTime(), 0.25f, 0.0001f,
         "First animation graph instance lost its independent time"))
         return false;
-    if (!ExpectNear(second.GetClipTime(clipId), 0.75f, 0.0001f,
+	if (!ExpectNear(second.GetPrimaryPlaybackTime(), 0.75f, 0.0001f,
         "Second animation graph instance was contaminated by the first"))
         return false;
 
     first.Reset();
-    if (!ExpectNear(first.GetClipTime(clipId), 0.0f, 0.0001f,
+	if (!ExpectNear(first.GetPrimaryPlaybackTime(), 0.0f, 0.0001f,
         "Reset did not clear only the target graph instance"))
         return false;
-    return ExpectNear(second.GetClipTime(clipId), 0.75f, 0.0001f,
+	return ExpectNear(second.GetPrimaryPlaybackTime(), 0.75f, 0.0001f,
         "Reset of one graph instance changed another instance");
 }
 
@@ -9215,7 +10266,7 @@ bool TestAnimationSpeedScaleContract()
     VansAnimGraph graph;
     const int clipId = graph.AddNode(std::move(clipNode));
     const int speedId = graph.AddNode(std::move(speedNode));
-    const int outputId = graph.AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+    const int outputId = graph.AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
     if (!Expect(graph.AddLink(clipId, 0, speedId, 0) > 0
         && graph.AddLink(speedId, 0, outputId, 0) > 0,
         "Failed to build SpeedScale graph fixture"))
@@ -9236,9 +10287,10 @@ bool TestAnimationSpeedScaleContract()
     VansAnimGraphInstance instance(graph);
     if (!Expect(instance.IsCompiled(), "Valid SpeedScale graph did not compile"))
         return false;
-    instance.Evaluate(context);
-    instance.AdvanceTime(0.25f, context);
-    if (!ExpectNear(instance.GetClipTime(clipId), 0.5f, 0.0001f,
+	instance.Evaluate(context);
+	context.deltaTime = 0.25f;
+	instance.EvaluateFrame(context);
+	if (!ExpectNear(instance.GetPrimaryPlaybackTime(), 0.5f, 0.0001f,
         "SpeedScale did not propagate to the active clip clock"))
         return false;
 
@@ -9252,7 +10304,7 @@ bool TestAnimationSpeedScaleContract()
     const int conflictingSpeedId = conflicting.AddNode(std::move(conflictingSpeed));
     const int blendId = conflicting.AddNode(std::move(blend));
     const int conflictingOutputId = conflicting.AddNode(
-        VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+        VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
     if (!Expect(conflicting.AddLink(sharedClipId, 0, conflictingSpeedId, 0) > 0
         && conflicting.AddLink(conflictingSpeedId, 0, blendId, 0) > 0
         && conflicting.AddLink(sharedClipId, 0, blendId, 1) > 0
@@ -9411,17 +10463,19 @@ bool TestAnimationPreviewRigSessionContract(
 	auto& project = Vans::VansProjectManager::Get();
 	project.CloseProject();
 	constexpr AnimationPreviewSessionId sessionId = 91001;
+	AnimationPreviewRigAuthoringService rigAuthoring;
 	struct SessionGuard
 	{
+		AnimationPreviewRigAuthoringService& authoring;
 		VansAnimationController& controller;
 		~SessionGuard()
 		{
 			std::string ignored;
-			AnimationPreviewRigAuthoringService::EndSession(91001, &controller, ignored);
+			authoring.EndSession(91001, controller, ignored);
 			Vans::VansAssetDocumentRegistry::Get().Clear();
 			Vans::VansProjectManager::Get().CloseProject();
 		}
-	} guard{ controller };
+	} guard{ rigAuthoring, controller };
 	std::string error;
 	Vans::VansAssetRecord record;
 	if (!Expect(Vans::VansAssetGuid::TryParse(controller.GetAnimationRigAssetGuid(), record.guid),
@@ -9442,20 +10496,20 @@ bool TestAnimationPreviewRigSessionContract(
 		return false;
 
 	AnimationPreviewRigContext context;
-	context.sessionId = sessionId;
-	context.controller = &controller;
-	context.skeleton = &skeleton;
+	const AnimationPreviewWriteToken writeToken{ sessionId, 0 };
+	context.writeToken = writeToken;
 	context.retargetEnabled = retargetTarget;
 	Vans::VansIOAudit::Reset();
-	if (!Expect(AnimationPreviewRigAuthoringService::BeginSession(sessionId, controller, error),
+	if (!Expect(rigAuthoring.BeginSession(writeToken, controller, error),
 		error.c_str()))
 		return false;
-	auto snapshot = AnimationPreviewRigAuthoringService::GetSnapshot(context);
+	auto snapshot = rigAuthoring.GetSnapshot(
+		context, controller, skeleton);
 	std::string workingJson;
 	if (!Expect(snapshot.available && snapshot.rigAssetGuid == record.guid.ToString()
 		&& fs::path(snapshot.rigAssetPath) == rigPath.lexically_normal()
 		&& snapshot.retargetEnabled == retargetTarget && snapshot.sockets.size() == 1
-		&& AnimationPreviewRigAuthoringService::GetWorkingCanonicalJson(sessionId, workingJson, error)
+		&& rigAuthoring.GetWorkingCanonicalJson(sessionId, workingJson, error)
 		&& nlohmann::json::parse(workingJson).at("name") == memoryRig.name,
 		"Preview did not resolve the target Rig document from its GUID and memory object"))
 		return false;
@@ -9466,9 +10520,10 @@ bool TestAnimationPreviewRigSessionContract(
 	edit.space = RuntimeTransformSpace::Local;
 	edit.transform = snapshot.sockets.front().localTransform;
 	edit.transform.position.x += 2.0f;
-	const auto edited = AnimationPreviewRigAuthoringService::SetSocketTransform(context, edit);
+	const auto edited = rigAuthoring.SetSocketTransform(
+		context, controller, skeleton, edit);
 	if (!Expect(edited.success
-		&& AnimationPreviewRigAuthoringService::EndSession(sessionId, &controller, error)
+		&& rigAuthoring.EndSession(sessionId, controller, error)
 		&& Vans::VansIOAudit::Snapshot().empty()
 		&& std::abs(controller.GetAnimationRig()->sockets.front().localTransform[3].x
 			- rig.sockets.front().positionLocal.x) < 1.0e-6f,
@@ -9476,11 +10531,12 @@ bool TestAnimationPreviewRigSessionContract(
 		return false;
 
 	// 通过预览返回的文档路径走实际保存服务，保存后结束会话须保留已采用的修改。
-	if (!Expect(AnimationPreviewRigAuthoringService::BeginSession(sessionId, controller, error),
+	if (!Expect(rigAuthoring.BeginSession(writeToken, controller, error),
 		error.c_str()))
 		return false;
-	const auto savedEdit = AnimationPreviewRigAuthoringService::SetSocketTransform(context, edit);
-	if (!Expect(savedEdit.success && AnimationPreviewRigAuthoringService::GetWorkingCanonicalJson(
+	const auto savedEdit = rigAuthoring.SetSocketTransform(
+		context, controller, skeleton, edit);
+	if (!Expect(savedEdit.success && rigAuthoring.GetWorkingCanonicalJson(
 		sessionId, workingJson, error), error.c_str()))
 		return false;
 	auto document = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(snapshot.rigAssetPath);
@@ -9498,8 +10554,10 @@ bool TestAnimationPreviewRigSessionContract(
 		&& VansAnimationRigStorage::Load(rigPath, diskRig, error)
 		&& diskRig.name == memoryRig.name && diskRig.sockets.size() == 1
 		&& std::abs(diskRig.sockets.front().positionLocal.x - edit.transform.position.x) < 1.0e-6f
-		&& AnimationPreviewRigAuthoringService::Adopt({ sessionId, savedEdit.acceptedRevision }, controller).success
-		&& AnimationPreviewRigAuthoringService::EndSession(sessionId, &controller, error)
+		&& AnimationPreviewAdoptService::AdoptRig(
+			rigAuthoring,
+			writeToken, { sessionId, savedEdit.acceptedRevision }, controller).success
+		&& rigAuthoring.EndSession(sessionId, controller, error)
 		&& std::abs(controller.GetAnimationRig()->sockets.front().localTransform[3].x
 			- edit.transform.position.x) < 1.0e-6f,
 		"Preview Rig save/adopt/stop did not preserve the authored target Socket"))
@@ -9507,27 +10565,41 @@ bool TestAnimationPreviewRigSessionContract(
 
 	// 通用 Rig 定义编辑同样受编译与 revision 保护，取消时恢复已保存的基线。
 	Vans::VansIOAudit::Reset();
-	if (!Expect(AnimationPreviewRigAuthoringService::BeginSession(sessionId, controller, error), error.c_str())) return false;
+	if (!Expect(rigAuthoring.BeginSession(writeToken, controller, error), error.c_str())) return false;
 	auto candidate = nlohmann::json::parse(workingJson);
 	candidate["sockets"][0]["boneGuid"] = "00000000-0000-4000-8000-000000000099";
-	if (!Expect(!AnimationPreviewRigAuthoringService::SetDefinition(context, 0, candidate.dump()).success,
+	if (!Expect(!rigAuthoring.SetDefinition(
+		context, controller, skeleton, 0, candidate.dump()).success,
 		"Invalid Rig definition replaced the last good Rig")) return false;
 	candidate = nlohmann::json::parse(workingJson);
 	candidate["name"] = "Edited Rig definition";
-	const auto definitionEdit = AnimationPreviewRigAuthoringService::SetDefinition(context, 0, candidate.dump());
+	const auto definitionEdit = rigAuthoring.SetDefinition(
+		context, controller, skeleton, 0, candidate.dump());
 	if (!Expect(definitionEdit.success && definitionEdit.acceptedRevision == 1
-		&& !AnimationPreviewRigAuthoringService::SetDefinition(context, 0, candidate.dump()).success
-		&& AnimationPreviewRigAuthoringService::EndSession(sessionId, &controller, error)
+		&& !rigAuthoring.SetDefinition(
+			context, controller, skeleton, 0, candidate.dump()).success
+		&& rigAuthoring.EndSession(sessionId, controller, error)
 		&& Vans::VansIOAudit::Snapshot().empty()
 		&& std::abs(controller.GetAnimationRig()->sockets.front().localTransform[3].x - edit.transform.position.x) < 1.0e-6f,
 		"Rig definition revision, rollback, or memory-only authoring contract failed")) return false;
 
+	// 每个 EngineAPI owner 必须拥有独立作者会话；相同 session id 不得跨实例互相删除。
+	AnimationPreviewRigAuthoringService isolatedAuthoring;
+	if (!Expect(rigAuthoring.BeginSession(writeToken, controller, error)
+		&& isolatedAuthoring.BeginSession(writeToken, controller, error)
+		&& isolatedAuthoring.EndSession(sessionId, error)
+		&& rigAuthoring.GetWorkingCanonicalJson(sessionId, workingJson, error)
+		&& rigAuthoring.EndSession(sessionId, controller, error),
+		"Animation preview Rig authoring instances shared session state"))
+		return false;
+
 	record.sourcePath.clear();
 	record.authoringPath.clear();
 	project.SetPackagedAssetRecords({ record });
-	if (!Expect(!AnimationPreviewRigAuthoringService::BeginSession(sessionId, controller, error)
+	if (!Expect(!rigAuthoring.BeginSession(writeToken, controller, error)
 		&& error.find("authoring document") != std::string::npos
-		&& !AnimationPreviewRigAuthoringService::GetSnapshot(context).available,
+		&& !rigAuthoring.GetSnapshot(
+			context, controller, skeleton).available,
 		"Preview accepted a cooked artifact as an authoring document or retained a failed session"))
 		return false;
 	std::cout << "[ForestContractTests] Animation preview Rig "
@@ -9627,7 +10699,7 @@ bool TestAnimatorRuntimeCompilerContract()
             graph->AddLink(clipNodeId, 0, slotNodeId, 0);
             outputSourceId = slotNodeId;
         }
-        const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+        const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
         graph->AddLink(outputSourceId, 0, outputId, 0);
         return graph;
     };
@@ -9816,7 +10888,7 @@ bool TestAnimationLayerStackRuntimeContract()
         auto clip = std::make_unique<AnimGraphClipNode>();
         clip->m_ClipName = clipName;
         const int clipId = graph->AddNode(std::move(clip));
-        const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+        const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
         graph->AddLink(clipId, 0, outputId, 0);
         return graph;
     };
@@ -9983,7 +11055,7 @@ bool TestAnimationLayerRootReferenceFrameContract()
         auto clip = std::make_unique<AnimGraphClipNode>();
         clip->m_ClipName = clipName;
         const int input = graph->AddNode(std::move(clip));
-        const int output = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+        const int output = graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
         graph->AddLink(input, 0, output, 0);
         return graph;
     };
@@ -10135,7 +11207,7 @@ bool TestAnimationGraphSetSwitchRuntimeContract()
 		clip->m_ClipName = clipName;
 		const int clipId = graph->AddNode(std::move(clip));
 		const int outputId = graph->AddNode(
-			VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+			VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
 		graph->AddLink(clipId, 0, outputId, 0);
 		return graph;
 	};
@@ -10261,10 +11333,10 @@ bool TestAnimationGraphSetSwitchRuntimeContract()
 		return clip;
 	};
 
-	VansAnimationController characterMotionController;
-	characterMotionController.AddClip(
+	auto characterMotionController = std::make_unique<VansAnimationController>();
+	characterMotionController->AddClip(
 		"RootAttack", makeRootMotionClip("RootAttack", 100.0f));
-	characterMotionController.AddClip(
+	characterMotionController->AddClip(
 		"Idle", makeRootMotionClip("Idle", 0.0f));
 	VansAnimationLayerSetup motionBase;
 	motionBase.definition.id = "layer-base";
@@ -10282,20 +11354,21 @@ bool TestAnimationGraphSetSwitchRuntimeContract()
 	rootTransition.curve = VansGraphSetBlendCurve::Linear;
 	rootTransition.phase = VansGraphSetPhasePolicy::MatchNormalizedTime;
 	rootTransition.rootMotion = VansGraphSetRootMotionPolicy::IncomingOnly;
-	if (!Expect(characterMotionController.SetAnimationGraphSets(
+	if (!Expect(characterMotionController->SetAnimationGraphSets(
 		std::move(motionLayers), std::move(motionGraphSets), "root-attack",
 		rootTransition, {}, error), error.c_str()))
 		return false;
-	characterMotionController.EnableRootMotion(true);
+	characterMotionController->EnableRootMotion(true);
+	VansAnimationController* characterMotionControllerView = characterMotionController.get();
 	VansAnimationNode characterMotionNode("CharacterMotionContract");
 	characterMotionNode.SetSkeleton(skeleton);
-	if (!Expect(characterMotionNode.SetController(&characterMotionController),
+	if (!Expect(characterMotionNode.SetController(std::move(characterMotionController)),
 		"Character motion fixture could not bind its controller"))
 		return false;
 	characterMotionNode.Play(VansAnimationEvaluationPurpose::Gameplay);
 	Vans::VansCharacterTrajectory stationaryTrajectory;
 	characterMotionNode.PrepareCharacterMotionFrame(0.25f, stationaryTrajectory);
-	if (!Expect(!characterMotionController.IsMotionMatchingConfigured() &&
+	if (!Expect(!characterMotionControllerView->IsMotionMatchingConfigured() &&
 		characterMotionNode.HasRootMotionDelta() &&
 		std::abs(characterMotionNode.GetRootMotionDelta().x - 12.5f) < 0.001f,
 		"Non-Motion-Matching Graph did not publish Root Motion for CCT submission"))
@@ -10349,7 +11422,7 @@ bool TestAnimationSlotRuntimeContract()
         auto clip = std::make_unique<AnimGraphClipNode>();
         clip->m_ClipName = "Base";
         const int clipId = graph->AddNode(std::move(clip));
-        const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+        const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
         graph->AddLink(clipId, 0, outputId, 0);
         return graph;
     };
@@ -10358,7 +11431,7 @@ bool TestAnimationSlotRuntimeContract()
     slotNode->m_SlotId = "slot-upper";
     slotNode->m_EnableFallbackInput = false;
     const int slotNodeId = slotGraph->AddNode(std::move(slotNode));
-    const int slotOutputId = slotGraph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+    const int slotOutputId = slotGraph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
     slotGraph->AddLink(slotNodeId, 0, slotOutputId, 0);
 
     VansBoneMaskAsset mask;
@@ -10519,7 +11592,7 @@ bool TestAnimationHotReloadStateTransferContract()
         stateMachine->m_States = { idle, action };
         stateMachine->m_DefaultStateName = "Idle";
         const int stateMachineId = baseGraph->AddNode(std::move(stateMachine));
-        const int baseOutput = baseGraph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+        const int baseOutput = baseGraph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
         baseGraph->AddLink(stateMachineId, 0, baseOutput, 0);
 
         auto slotGraph = std::make_unique<VansAnimGraph>();
@@ -10527,7 +11600,7 @@ bool TestAnimationHotReloadStateTransferContract()
         slotNode->m_SlotId = "slot-upper";
         slotNode->m_EnableFallbackInput = false;
         const int slotNodeId = slotGraph->AddNode(std::move(slotNode));
-        const int slotOutput = slotGraph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+        const int slotOutput = slotGraph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
         slotGraph->AddLink(slotNodeId, 0, slotOutput, 0);
 
 		VansAnimationLayerSetup base;
@@ -10673,7 +11746,7 @@ bool TestAnimationMarkerSyncLayerContract()
         auto clip = std::make_unique<AnimGraphClipNode>();
         clip->m_ClipName = clipName;
         const int clipId = graph->AddNode(std::move(clip));
-        const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+        const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
         graph->AddLink(clipId, 0, outputId, 0);
         return graph;
     };
@@ -10750,7 +11823,7 @@ bool TestAnimationTargetPostProcessContract()
     {
         auto graph = std::make_unique<VansAnimGraph>();
         const int inputId = graph->AddNode(
-            VansAnimGraph::CreateNodeByType(AnimGraphNodeType::TargetPoseInput));
+            VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::TargetPoseInput));
         auto aim = std::make_unique<AnimGraphAimConstraintNode>();
 		aim->m_ChainId = "upperAim";
 		aim->m_Target.goalId = "aim";
@@ -10761,7 +11834,7 @@ bool TestAnimationTargetPostProcessContract()
 		aim->m_Settings.maxAngularSpeedDegrees = 100000.0f;
         const int aimId = graph->AddNode(std::move(aim));
         const int outputId = graph->AddNode(
-            VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+            VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
         graph->AddLink(inputId, 0, aimId, 0);
         graph->AddLink(aimId, 0, outputId, 0);
         return graph;
@@ -10868,7 +11941,7 @@ bool TestAnimationTargetPostProcessContract()
     clipNode->m_ClipName = "Base";
     const int clipId = baseGraph->AddNode(std::move(clipNode));
     const int outputId = baseGraph->AddNode(
-        VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+        VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
     baseGraph->AddLink(clipId, 0, outputId, 0);
 
     VansAnimationController layeredController;
@@ -10957,7 +12030,7 @@ bool TestAnimationSyncedGraphStateContract()
         auto graph = std::make_unique<VansAnimGraph>();
         const int stateMachineId = graph->AddNode(std::move(stateMachine));
         const int outputId = graph->AddNode(
-            VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+            VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
         graph->AddLink(stateMachineId, 0, outputId, 0);
         return graph;
     };
@@ -11050,6 +12123,9 @@ bool TestAudioBusContract()
     if (!Expect(NormalizeAudioBusName("") == "SFX",
         "Empty audio bus name should default to SFX"))
         return false;
+    if (!Expect(NormalizeAudioBusName(" FootSteps ") == "footsteps",
+        "Custom audio bus names should use one lowercase identity"))
+        return false;
 
     AudioBusState master;
     master.gain = 0.5f;
@@ -11103,6 +12179,13 @@ bool TestAudioBusContract()
     manager.SetBusGain("Master", 0.75f);
     manager.SetBusGain("Music", 0.5f);
     manager.SetBusMuted("SFX", true);
+    manager.SetBusLowpassHighFrequencyGain("Master", 0.8f);
+    manager.SetBusLowpassHighFrequencyGain("Music", 0.5f);
+    if (!ExpectNear(manager.GetEffectiveBusLowpassHighFrequencyGain("music"), 0.4f, 0.0001f,
+        "Audio bus lowpass composition or name normalization changed") ||
+        !ExpectNear(manager.GetEffectiveBusLowpassHighFrequencyGain("Master"), 0.8f, 0.0001f,
+            "Master bus lowpass was applied twice"))
+        return false;
     AudioBusSnapshot duckingSnapshot;
     duckingSnapshot.fadeSeconds = 0.3f;
     duckingSnapshot.buses.push_back(AudioBusSnapshotEntry{ "Music", 0.25f });
@@ -11171,6 +12254,12 @@ bool TestAudioMixConfigContract()
     std::ofstream mixFile(mixPath, std::ios::binary);
     mixFile << R"json({
         "displayName": "Contract Mix",
+        "device": {
+            "hrtf": "disabled",
+            "outputDevice": "Contract Device",
+            "masterGain": 0.75,
+            "sourceLimit": 64
+        },
         "defaultSnapshot": "Gameplay",
         "buses": {
             "Master": { "gain": 0.9, "lowpassHighFrequencyGain": 1.0 },
@@ -11180,9 +12269,9 @@ bool TestAudioMixConfigContract()
         "snapshots": {
             "Gameplay": {
                 "fadeSeconds": 0.0,
-                "buses": {
-                    "Ambient": { "gain": 0.4, "lowpassHighFrequencyGain": 0.3 }
-                }
+                "buses": [
+                    { "bus": "Ambient", "gain": 0.4, "lowpassHighFrequencyGain": 0.3 }
+                ]
             },
             "UIFocus": {
                 "fadeSeconds": 0.0,
@@ -11203,11 +12292,19 @@ bool TestAudioMixConfigContract()
     })json";
     mixFile.close();
 
-    AudioMixConfig config;
+    VansAudioMixConfig config;
     std::string error;
     if (!Expect(VansAudioMixConfigStorage::Load(mixPath, config, error), error.c_str()))
         return false;
     if (!Expect(config.displayName == "Contract Mix", "Audio mix display name did not read"))
+        return false;
+    if (!Expect(config.device.m_HrtfMode == VansAudioHrtfMode::Disabled &&
+        config.device.m_OutputDevice == "Contract Device" &&
+        config.device.m_SourceLimit == 64,
+        "Audio device configuration did not read"))
+        return false;
+    if (!ExpectNear(config.device.m_MasterGain, 0.75f, 0.0001f,
+        "Audio device master gain did not read"))
         return false;
     if (!Expect(config.buses.size() == 3, "Audio mix bus list did not read"))
         return false;
@@ -11367,7 +12464,7 @@ bool TestAudioComponentOcclusionReadContract()
             });
     if (!Expect(config.has_value(), "Audio component with occlusion settings was not read"))
         return false;
-    if (!Expect(config->sourceName == "DoorLoop", "Audio component source did not read"))
+    if (!Expect(config->assetGuid == "DoorLoop", "Audio component source did not read"))
         return false;
     if (!Expect(config->occlusionEnabled, "Audio component occlusion enabled did not read"))
         return false;
@@ -11387,36 +12484,6 @@ bool TestAudioComponentOcclusionReadContract()
         return false;
     return Expect(config->dopplerEnabled,
         "Audio component doppler enabled did not read");
-}
-
-bool TestAudioSourceBindingNullObjectContract()
-{
-    VansEngine::VansAudioSourceBinding binding;
-    binding.Play();
-    binding.Pause();
-    binding.Stop();
-    binding.Resume();
-    binding.SetVolume(0.5f);
-    binding.SetPitch(1.2f);
-    binding.SetLoop(true);
-    binding.SetSpatial(true);
-    binding.SetPosition(1.0f, 2.0f, 3.0f);
-    binding.UpdateDistanceGain(0.0f, 0.0f, 0.0f);
-    binding.SetBusName("Music");
-    binding.SetReverbSend(0.5f);
-    binding.SetOcclusion(0.5f, 0.25f);
-    binding.SetVelocity(1.0f, 0.0f, 0.0f);
-    binding.SetDirection(0.0f, 0.0f, 1.0f);
-    binding.SetCone(VansEngine::AudioConeSettings{});
-
-    if (!Expect(!binding.IsBound(), "Unbound audio source binding reported itself as bound"))
-        return false;
-    if (!Expect(!binding.IsPlaying() && !binding.IsPaused(),
-        "Unbound audio source binding reported playback state"))
-        return false;
-    if (!Expect(binding.GetBusName().empty(), "Unbound audio source binding should expose an empty bus"))
-        return false;
-    return Expect(binding.GetFilePath().empty(), "Unbound audio source binding should expose an empty file path");
 }
 
 bool TestAudioPreviewSettingsContract()
@@ -11467,6 +12534,143 @@ bool TestAudioVoiceVirtualizationContract()
         return false;
     return Expect(selection.virtualizedCount == 1,
         "Audio voice virtualization count changed");
+}
+
+bool TestMediaDecodeSessionContract()
+{
+    namespace fs = std::filesystem;
+    using namespace VansEngine;
+
+    fs::path imagePath;
+    for (fs::path cursor = fs::current_path(); !cursor.empty() && imagePath.empty();
+         cursor = cursor.parent_path())
+    {
+        const fs::path candidates[] = {
+            cursor / "EngineAssets" / "Textures" / "Default" / "defaultSkinMask.png",
+            cursor / "ForestEngine" / "EngineAssets" / "Textures" / "Default" /
+                "defaultSkinMask.png"
+        };
+        for (const fs::path& candidate : candidates)
+        {
+            if (fs::exists(candidate))
+            {
+                imagePath = candidate;
+                break;
+            }
+        }
+        if (cursor == cursor.parent_path())
+            break;
+    }
+    if (!Expect(!imagePath.empty(), "Media decode contract source image is missing"))
+        return false;
+
+    VansMediaDecodeSession session;
+    std::string error;
+    if (!Expect(session.OpenVideo(imagePath.string(), error), error.c_str()))
+        return false;
+    if (!Expect(session.GetWidth() > 0 && session.GetHeight() > 0,
+        "Media decode session did not expose video dimensions"))
+        return false;
+
+    std::vector<std::uint8_t> firstPixels;
+    double firstTime = 0.0;
+    if (!Expect(session.DecodeVideoFrame(firstPixels, firstTime,
+        VansMediaEndPolicy::DrainDecoder, error) == VansMediaDecodeStatus::FrameReady,
+        error.c_str()))
+        return false;
+    const std::size_t expectedSize = static_cast<std::size_t>(session.GetWidth()) *
+        static_cast<std::size_t>(session.GetHeight()) * 4u;
+    if (!Expect(firstPixels.size() == expectedSize,
+        "Media decode session did not return one complete RGBA frame"))
+        return false;
+
+    if (!Expect(session.Reset(error), error.c_str()))
+        return false;
+    std::vector<std::uint8_t> resetPixels;
+    double resetTime = 0.0;
+    if (!Expect(session.DecodeVideoFrame(resetPixels, resetTime,
+        VansMediaEndPolicy::DrainDecoder, error) == VansMediaDecodeStatus::FrameReady,
+        error.c_str()))
+        return false;
+    return Expect(resetPixels == firstPixels && resetTime == firstTime,
+        "Media decode session reset changed the first decoded frame");
+}
+
+bool TestAudioSourcePoolContract()
+{
+    using namespace VansEngine;
+
+    VansAudioSystem& system = VansAudioSystem::GetInstance();
+    if (system.IsInitialized())
+        system.Shutdown();
+
+    const VansAudioDeviceConfig originalConfig = system.GetDeviceConfig();
+    VansAudioDeviceConfig testConfig = originalConfig;
+    testConfig.m_MasterGain = 0.75f;
+    testConfig.m_SourceLimit = 2;
+    if (!Expect(system.Initialize(testConfig), "Audio source pool could not initialize OpenAL"))
+    {
+        system.SetSourceLimit(originalConfig.m_SourceLimit);
+        system.SetMasterVolume(originalConfig.m_MasterGain);
+        return false;
+    }
+    if (!Expect(system.GetDeviceConfig().m_SourceLimit == 2 &&
+        std::abs(system.GetDeviceConfig().m_MasterGain - 0.75f) < 0.0001f,
+        "Audio system did not apply device configuration"))
+    {
+        system.Shutdown();
+        system.SetSourceLimit(originalConfig.m_SourceLimit);
+        system.SetMasterVolume(originalConfig.m_MasterGain);
+        return false;
+    }
+
+    std::uint32_t first = 0;
+    std::uint32_t second = 0;
+    std::uint32_t rejected = 0;
+    const auto firstStatus = system.TryAcquireSource(first);
+    const auto secondStatus = system.TryAcquireSource(second);
+    const auto rejectedStatus = system.TryAcquireSource(rejected);
+    bool passed = true;
+    passed = Expect(firstStatus == VansAudioSourceAcquireStatus::Acquired && first != 0,
+        "Audio source pool did not acquire its first source") && passed;
+    passed = Expect(secondStatus == VansAudioSourceAcquireStatus::Acquired && second != 0,
+        "Audio source pool did not acquire up to its limit") && passed;
+    passed = Expect(rejectedStatus == VansAudioSourceAcquireStatus::LimitReached && rejected == 0,
+        "Audio source pool did not report its hard limit") && passed;
+    passed = Expect(system.GetActiveSourceLeaseCount() == 2 &&
+        system.GetSourceLimitRejectionCount() == 1,
+        "Audio source pool diagnostics did not track active and rejected leases") && passed;
+
+    const std::uint32_t pooledSource = first;
+    system.ReleaseSource(first);
+    passed = Expect(first == 0 && system.GetActiveSourceLeaseCount() == 1 &&
+        system.GetPooledSourceCount() == 1,
+        "Audio source release did not move the source into the pool") && passed;
+
+    const auto reusedStatus = system.TryAcquireSource(rejected);
+    passed = Expect(reusedStatus == VansAudioSourceAcquireStatus::Acquired &&
+        rejected == pooledSource && system.GetPooledSourceCount() == 0,
+        "Audio source pool did not reuse a released source") && passed;
+
+    system.ReleaseSource(second);
+    system.ReleaseSource(rejected);
+    system.SetSourceLimit(1);
+    passed = Expect(system.GetActiveSourceLeaseCount() == 0 &&
+        system.GetPooledSourceCount() == 1,
+        "Audio source pool did not trim pooled sources after lowering its limit") && passed;
+
+    std::uint32_t activeAtShutdown = 0;
+    const auto shutdownAcquireStatus = system.TryAcquireSource(activeAtShutdown);
+    passed = Expect(shutdownAcquireStatus == VansAudioSourceAcquireStatus::Acquired &&
+        activeAtShutdown != 0 && system.GetActiveSourceLeaseCount() == 1,
+        "Audio source pool could not establish the active shutdown case") && passed;
+    system.Shutdown();
+    passed = Expect(!system.IsInitialized() &&
+        system.GetActiveSourceLeaseCount() == 0 && system.GetPooledSourceCount() == 0,
+        "Audio source pool did not reclaim active and pooled sources during shutdown") && passed;
+    system.SetSourceLimit(originalConfig.m_SourceLimit);
+    system.SetMasterVolume(originalConfig.m_MasterGain);
+    return passed;
 }
 
 bool TestAudioReverbEnvironmentContract()
@@ -11633,8 +12837,8 @@ bool TestAudioBusSnapshotAssetContract()
     if (!Expect(Vans::VansAssetDatabase::Classify("DialogueDuck.vaudiosnapshot") == Vans::VansAssetType::AudioBusSnapshot,
         "Audio bus snapshot asset extension was not classified"))
         return false;
-    if (!Expect(Vans::VansAssetDatabase::Classify("Legacy.vbusnapshot") == Vans::VansAssetType::AudioBusSnapshot,
-        "Audio bus snapshot alias extension was not classified"))
+    if (!Expect(Vans::VansAssetDatabase::Classify("Legacy.vbusnapshot") == Vans::VansAssetType::Unknown,
+        "Removed audio bus snapshot extension must not remain classified"))
         return false;
     if (!Expect(Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::AudioBusSnapshot) ==
         "AudioBusSnapshotImporter",
@@ -11652,7 +12856,7 @@ bool TestAudioBusSnapshotAssetContract()
                 { "muted", Value::Bool(false) }
             }),
             Value::Object({
-                { "name", Value::String("SFX") },
+                { "bus", Value::String("SFX") },
                 { "gain", Value::Float(9.0) }
             })
         }) }
@@ -11713,17 +12917,17 @@ bool TestAudioDuckingRulesAssetContract()
         { "displayName", Value::String("Dialogue Ducking") },
         { "rules", Value::Array({
             Value::Object({
-                { "trigger", Value::String("voice") },
-                { "target", Value::String("music") },
-                { "gain", Value::Float(-1.0) },
-                { "attack", Value::Float(0.08) },
-                { "release", Value::Float(99.0) },
+                { "triggerBus", Value::String("voice") },
+                { "targetBus", Value::String("music") },
+                { "targetGain", Value::Float(-1.0) },
+                { "attackSeconds", Value::Float(0.08) },
+                { "releaseSeconds", Value::Float(99.0) },
                 { "enabled", Value::Bool(true) }
             }),
             Value::Object({
-                { "trigger_bus", Value::String("SFX") },
-                { "target_bus", Value::String("Ambient") },
-                { "target_gain", Value::Float(0.6) }
+                { "triggerBus", Value::String("SFX") },
+                { "targetBus", Value::String("Ambient") },
+                { "targetGain", Value::Float(0.6) }
             })
         }) }
     });
@@ -11746,7 +12950,7 @@ bool TestAudioDuckingRulesAssetContract()
         "Audio ducking rule release time did not clamp"))
         return false;
     if (!ExpectNear(asset.rules[1].targetGain, 0.6f, 0.0001f,
-        "Audio ducking rule target_gain alias did not read"))
+        "Audio ducking rule target gain did not read"))
         return false;
 
     const Value written = Vans::WriteAudioDuckingRulesAssetRoot(asset);
@@ -11875,19 +13079,22 @@ bool TestMediaComponentGuidProjection()
 	using Value = Vans::VansSerializedValue;
 	const std::string audioGuid = "0ad3dc29-20bb-4b43-87a5-8e63c6b25dda";
 	const std::string videoGuid = "a1d4b131-8512-4f23-8bdb-445f4b4dc825";
-	const Value sceneRoot = Value::Object({
+	Value sceneRoot = Value::Object({
 		{ "schemaVersion", Value::Int(Vans::VansSceneSchemaVersion) },
+		{ "sceneGuid", Value::String("d89a5167-195a-4e37-93b3-a08f9cbcaf15") },
 		{ "settings", Value::Object({
 			{ "environment", BuildValidEnvironmentSettingsForTest() }
 		}) },
 		{ "entities", Value::Array({
 			Value::Object({
-				{ "id", Value::String("media-entity") },
+				{ "id", Value::String("1ed05d94-4d0f-4dc3-933c-b124284f17a0") },
 				{ "name", Value::String("Media") },
+				{ "parent", Value::Null() },
 				{ "components", Value::Array({
 					Value::Object({
-						{ "id", Value::String("transform-component") },
+						{ "id", Value::String("d7af1600-5ec1-49ca-b0ca-b8b34c53db74") },
 						{ "type", Value::String("Transform") },
+						{ "version", Value::Int(1) },
 						{ "enabled", Value::Bool(true) },
 						{ "data", Value::Object({
 							{ "position", Value::Array({ Value::Float(0.0), Value::Float(0.0), Value::Float(0.0) }) },
@@ -11896,8 +13103,9 @@ bool TestMediaComponentGuidProjection()
 						}) }
 					}),
 					Value::Object({
-						{ "id", Value::String("audio-component") },
+						{ "id", Value::String("69ceab05-4636-41ec-a6bb-feea180f3f83") },
 						{ "type", Value::String("Audio") },
+						{ "version", Value::Int(1) },
 						{ "enabled", Value::Bool(true) },
 						{ "data", Value::Object({
 							{ "source", Value::Object({
@@ -11906,8 +13114,9 @@ bool TestMediaComponentGuidProjection()
 						}) }
 					}),
 					Value::Object({
-						{ "id", Value::String("video-component") },
+						{ "id", Value::String("845064a5-03a1-4769-ae4a-e10e7c15bc27") },
 						{ "type", Value::String("Video") },
+						{ "version", Value::Int(1) },
 						{ "enabled", Value::Bool(true) },
 						{ "data", Value::Object({
 							{ "source", Value::Object({
@@ -11933,27 +13142,296 @@ bool TestMediaComponentGuidProjection()
 		return false;
 	const Vans::VansSceneCameraMediaComponentConfig& media =
 		plan.objects.objects.front().cameraMediaComponents;
-	return Expect(media.audio && media.audio->sourceName == audioGuid &&
-		media.video && media.video->sourceName == videoGuid,
-		"Audio/video asset references were converted from GUIDs to runtime aliases");
+	if (!Expect(media.audio && media.audio->assetGuid == audioGuid &&
+		media.video && media.video->assetGuid == videoGuid,
+		"Audio/video asset references were converted from GUIDs to runtime aliases"))
+		return false;
+
+	Value* entities = Vans::FindObjectField(sceneRoot, "entities");
+	Value invalidMediaEntity = entities && entities->kind == Value::Kind::Array &&
+		!entities->arrayItems.empty() ? entities->arrayItems.front() : Value::Null();
+	Value* components = Vans::FindObjectField(invalidMediaEntity, "components");
+	Value* audioData = components && components->kind == Value::Kind::Array &&
+		components->arrayItems.size() > 1
+		? Vans::FindObjectField(components->arrayItems[1], "data") : nullptr;
+	if (!Expect(audioData != nullptr,
+		"Media GUID strict-admission fixture is missing Audio data"))
+		return false;
+	Vans::SetSerializedObjectField(*audioData, "source", Value::String(audioGuid));
+	plan = {};
+	error.clear();
+	return Expect(!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+		Value::Array({ invalidMediaEntity }), {}, plan, error) &&
+		error.find("Audio.source") != std::string::npos &&
+		plan.objects.objects.empty(),
+		"Audio bare-string GUID bypassed exact Scene asset-reference admission");
+}
+
+bool TestSceneProjectionStrictAdmission()
+{
+	using Value = Vans::VansSerializedValue;
+	const Value disabledSpecial = Value::Object({
+		{ "id", Value::String("51b1e5dc-7ce2-461a-b50b-61fb2bf34687") },
+		{ "name", Value::String("Disabled special render node") },
+		{ "parent", Value::Null() },
+		{ "components", Value::Array({
+			Value::Object({
+				{ "id", Value::String("399ba764-bb1c-4321-8a3b-e3a268ce23fe") },
+				{ "type", Value::String("Transform") },
+				{ "version", Value::Int(1) },
+				{ "enabled", Value::Bool(true) },
+				{ "data", Value::Object({}) }
+			}),
+			Value::Object({
+				{ "id", Value::String("bf25c1ab-82c5-42ad-a176-3eec38d17d77") },
+				{ "type", Value::String("ModelRenderer") },
+				{ "version", Value::Int(1) },
+				{ "enabled", Value::Bool(false) },
+				{ "data", Value::Object({
+					{ "model", Value::Object({
+						{ "guid", Value::String("52d8afaa-822c-4986-b623-fcc4e8c37036") }
+					}) },
+					{ "renderRole", Value::String("Environment") }
+				}) }
+			})
+		}) }
+	});
+	Vans::VansSceneContentBuildPlan plan;
+	std::string error;
+	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+		Value::Array({ disabledSpecial }), {}, plan, error) &&
+		plan.renderNodes.empty() && plan.objects.objects.empty(),
+		"Disabled special render node entered the runtime build plan"))
+		return false;
+
+	const std::string parentEntityGuid = "2e956def-ed8e-4d29-a7ee-ea2921cbb6ea";
+	const std::string childEntityGuid = "2aec441f-c13d-474a-a22c-0cb22fcf5ff0";
+	const Value parentEntity = Value::Object({
+		{ "id", Value::String(parentEntityGuid) },
+		{ "name", Value::String("Submesh parent") },
+		{ "parent", Value::Null() },
+		{ "components", Value::Array({
+			Value::Object({
+				{ "id", Value::String("a715ad11-1498-47f5-8dbb-a3e20d98e1fe") },
+				{ "type", Value::String("Transform") },
+				{ "version", Value::Int(1) },
+				{ "enabled", Value::Bool(true) },
+				{ "data", Value::Object({}) }
+			})
+		}) }
+	});
+	const Value submeshChild = Value::Object({
+		{ "id", Value::String(childEntityGuid) },
+		{ "name", Value::String("Submesh child") },
+		{ "parent", Vans::WriteEntityParentReference(parentEntityGuid) },
+		{ "components", Value::Array({
+			Value::Object({
+				{ "id", Value::String("58381062-a222-4458-83ff-4939c67bf176") },
+				{ "type", Value::String("Transform") },
+				{ "version", Value::Int(1) },
+				{ "enabled", Value::Bool(true) },
+				{ "data", Value::Object({}) }
+			}),
+			Value::Object({
+				{ "id", Value::String("45df3d80-cf58-411b-a0d7-da9f2c7a42d7") },
+				{ "type", Value::String("ModelRenderer") },
+				{ "version", Value::Int(1) },
+				{ "enabled", Value::Bool(true) },
+				{ "data", Value::Object({
+					{ "model", Value::Object({
+						{ "guid", Value::String("765a8d93-bc3c-417f-a17c-954126b74f57") }
+					}) },
+					{ "submesh", Value::Object({
+						{ "index", Value::Int(3) },
+						{ "sourceNode", Value::String("ImportedMeshNode") },
+						{ "sourceMaterial", Value::String("ImportedMaterial") },
+						{ "slotName", Value::String("body") }
+					}) }
+				}) }
+			})
+		}) }
+	});
+	plan = {};
+	error.clear();
+	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+		Value::Array({ parentEntity, submeshChild }), {}, plan, error),
+		"Submesh source metadata fixture did not project"))
+		return false;
+	const auto childObject = std::find_if(plan.objects.objects.begin(),
+		plan.objects.objects.end(), [&](const Vans::VansSceneObjectBuildConfig& object)
+		{
+			return object.entityGuid == childEntityGuid;
+		});
+	if (!Expect(plan.renderNodes.empty() && childObject != plan.objects.objects.end()
+		&& childObject->parent && childObject->parent->IsEntity()
+		&& childObject->parent->entityGuid.ToString() == parentEntityGuid
+		&& childObject->render && childObject->render->submesh == 3u
+		&& childObject->render->submeshSlotName == "body",
+		"ModelRenderer sourceNode metadata was conflated with transform parenting"))
+		return false;
+
+	const Value invalidTimeline = Value::Object({
+		{ "id", Value::String("60cd2a74-78c6-4fac-874a-f30550bac7cd") },
+		{ "name", Value::String("Invalid timeline enum") },
+		{ "parent", Value::Null() },
+		{ "components", Value::Array({
+			Value::Object({
+				{ "id", Value::String("d2d952d3-5f86-4556-a3c3-6095e3b2a29a") },
+				{ "type", Value::String("Transform") },
+				{ "version", Value::Int(1) },
+				{ "enabled", Value::Bool(true) },
+				{ "data", Value::Object({}) }
+			}),
+			Value::Object({
+				{ "id", Value::String("a07d9e70-c3ab-4870-9951-8dc2a2e5de23") },
+				{ "type", Value::String("Timeline") },
+				{ "version", Value::Int(1) },
+				{ "enabled", Value::Bool(true) },
+				{ "data", Value::Object({
+					{ "timeline", Value::Object({
+						{ "guid", Value::String("12df962c-4ab3-47f1-af78-1e4e6d77afc6") }
+					}) },
+					{ "playOn", Value::String("Awake ") },
+					{ "bindingRootMode", Value::String("OwnerRelative") },
+					{ "loopMode", Value::String("None") }
+				}) }
+			})
+		}) }
+	});
+	auto RejectsInvalidTimelineEnum = [&](const Value& entity,
+		const char* expectedError, const char* message)
+	{
+		plan = {};
+		error.clear();
+		return Expect(!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+			Value::Array({ entity }), {}, plan, error) &&
+			error.find(expectedError) != std::string::npos &&
+			plan.renderNodes.empty() && plan.objects.objects.empty(), message);
+	};
+	if (!RejectsInvalidTimelineEnum(invalidTimeline, "Timeline.playOn",
+		"Invalid Timeline playOn silently projected with a default value"))
+		return false;
+
+	Value invalidBindingRoot = invalidTimeline;
+	Value* invalidBindingComponents = Vans::FindObjectField(invalidBindingRoot, "components");
+	Value* invalidBindingData = invalidBindingComponents &&
+		invalidBindingComponents->kind == Value::Kind::Array &&
+		invalidBindingComponents->arrayItems.size() > 1
+		? Vans::FindObjectField(invalidBindingComponents->arrayItems[1], "data") : nullptr;
+	if (!Expect(invalidBindingData != nullptr,
+		"Timeline strict-admission fixture is missing component data"))
+		return false;
+	Vans::SetSerializedObjectField(*invalidBindingData, "playOn", Value::String("Manual"));
+	Vans::SetSerializedObjectField(*invalidBindingData, "bindingRootMode", Value::String("owner"));
+	if (!RejectsInvalidTimelineEnum(invalidBindingRoot, "Timeline.bindingRootMode",
+		"Invalid Timeline bindingRootMode silently projected with a default value"))
+		return false;
+
+	Value invalidLoopMode = invalidBindingRoot;
+	Value* invalidLoopComponents = Vans::FindObjectField(invalidLoopMode, "components");
+	Value* invalidLoopData = invalidLoopComponents &&
+		invalidLoopComponents->kind == Value::Kind::Array &&
+		invalidLoopComponents->arrayItems.size() > 1
+		? Vans::FindObjectField(invalidLoopComponents->arrayItems[1], "data") : nullptr;
+	if (!Expect(invalidLoopData != nullptr,
+		"Timeline strict-admission loop fixture is missing component data"))
+		return false;
+	Vans::SetSerializedObjectField(*invalidLoopData,
+		"bindingRootMode", Value::String("OwnerRelative"));
+	Vans::SetSerializedObjectField(*invalidLoopData, "loopMode", Value::String("loop"));
+	if (!RejectsInvalidTimelineEnum(invalidLoopMode, "Timeline.loopMode",
+		"Invalid Timeline loopMode silently projected with a default value"))
+		return false;
+
+	Value invalidTimelineReference = invalidLoopMode;
+	Value* invalidReferenceComponents = Vans::FindObjectField(
+		invalidTimelineReference, "components");
+	Value* invalidReferenceData = invalidReferenceComponents &&
+		invalidReferenceComponents->kind == Value::Kind::Array &&
+		invalidReferenceComponents->arrayItems.size() > 1
+		? Vans::FindObjectField(invalidReferenceComponents->arrayItems[1], "data") : nullptr;
+	if (!Expect(invalidReferenceData != nullptr,
+		"Timeline reference strict-admission fixture is missing component data"))
+		return false;
+	Vans::SetSerializedObjectField(*invalidReferenceData, "loopMode", Value::String("None"));
+	Vans::SetSerializedObjectField(*invalidReferenceData, "timeline",
+		Value::String("12df962c-4ab3-47f1-af78-1e4e6d77afc6"));
+	if (!RejectsInvalidTimelineEnum(invalidTimelineReference, "Timeline.timeline",
+		"Timeline bare-string GUID bypassed exact Scene asset-reference admission"))
+		return false;
+
+	Value unresolvedTimelineReference = invalidTimelineReference;
+	Value* unresolvedComponents = Vans::FindObjectField(
+		unresolvedTimelineReference, "components");
+	Value* unresolvedData = unresolvedComponents &&
+		unresolvedComponents->kind == Value::Kind::Array &&
+		unresolvedComponents->arrayItems.size() > 1
+		? Vans::FindObjectField(unresolvedComponents->arrayItems[1], "data") : nullptr;
+	if (!Expect(unresolvedData != nullptr,
+		"Timeline resolution strict-admission fixture is missing component data"))
+		return false;
+	Vans::SetSerializedObjectField(*unresolvedData, "timeline", Value::Object({
+		{ "guid", Value::String("12df962c-4ab3-47f1-af78-1e4e6d77afc6") }
+	}));
+	if (!RejectsInvalidTimelineEnum(unresolvedTimelineReference, "not indexed",
+		"Unindexed Timeline GUID was published as its raw path token"))
+		return false;
+
+	Value obsoleteOverrideType = invalidLoopMode;
+	Value* obsoleteComponents = Vans::FindObjectField(obsoleteOverrideType, "components");
+	Value* obsoleteData = obsoleteComponents && obsoleteComponents->kind == Value::Kind::Array &&
+		obsoleteComponents->arrayItems.size() > 1
+		? Vans::FindObjectField(obsoleteComponents->arrayItems[1], "data") : nullptr;
+	if (!Expect(obsoleteData != nullptr,
+		"Timeline integer component-type fixture is missing component data"))
+		return false;
+	Vans::SetSerializedObjectField(*obsoleteData, "loopMode", Value::String("None"));
+	Vans::SetSerializedObjectField(*obsoleteData, "bindingOverrides", Value::Array({ Value::Object({
+		{ "bindingId", Value::String("camera") },
+		{ "targetComponent", Value::String("camera-component") },
+		{ "targetComponentTypeId", Value::Int(Vans::VansRuntimeComponentType_Camera) }
+	}) }));
+	if (!RejectsInvalidTimelineEnum(obsoleteOverrideType, "obsolete integer targetComponentTypeId",
+		"Timeline component override accepted an integer type ID from disk"))
+		return false;
+
+	Value unknownOverrideType = obsoleteOverrideType;
+	Value* unknownComponents = Vans::FindObjectField(unknownOverrideType, "components");
+	Value* unknownData = unknownComponents && unknownComponents->kind == Value::Kind::Array &&
+		unknownComponents->arrayItems.size() > 1
+		? Vans::FindObjectField(unknownComponents->arrayItems[1], "data") : nullptr;
+	if (!Expect(unknownData != nullptr,
+		"Timeline named component-type fixture is missing component data"))
+		return false;
+	Vans::SetSerializedObjectField(*unknownData, "bindingOverrides", Value::Array({ Value::Object({
+		{ "bindingId", Value::String("camera") },
+		{ "targetComponent", Value::String("camera-component") },
+		{ "targetComponentType", Value::String("missing_component_type") }
+	}) }));
+	return RejectsInvalidTimelineEnum(unknownOverrideType, "unknown targetComponentType",
+		"Timeline component override silently accepted an unknown stable type name");
 }
 
 bool TestAudioReverbZoneRuntimeProjection()
 {
     using Value = Vans::VansSerializedValue;
-    const Value sceneRoot = Value::Object({
+    Value sceneRoot = Value::Object({
         { "schemaVersion", Value::Int(Vans::VansSceneSchemaVersion) },
+        { "sceneGuid", Value::String("34055de6-8c36-4bd0-8d27-1391550c213a") },
+        { "name", Value::String("Audio Reverb Projection Contract") },
         { "settings", Value::Object({
             { "environment", BuildValidEnvironmentSettingsForTest() }
         }) },
         { "entities", Value::Array({
             Value::Object({
-                { "id", Value::String("zone-entity") },
+                { "id", Value::String("e4e33afc-a470-4cd8-8a87-3d537a11d1b2") },
                 { "name", Value::String("Reverb Zone") },
+                { "parent", Value::Null() },
                 { "components", Value::Array({
                     Value::Object({
-                        { "id", Value::String("transform-id") },
+                        { "id", Value::String("27e6a32a-4461-4e48-8f31-cacdb14a1554") },
                         { "type", Value::String("Transform") },
+                        { "version", Value::Int(1) },
                         { "enabled", Value::Bool(true) },
                         { "data", Value::Object({
                             { "position", Value::Array({ Value::Float(1.0), Value::Float(2.0), Value::Float(3.0) }) },
@@ -11962,8 +13440,9 @@ bool TestAudioReverbZoneRuntimeProjection()
                         }) }
                     }),
                     Value::Object({
-                        { "id", Value::String("zone-component") },
+                        { "id", Value::String("ae30bc4d-7a2d-4946-8402-3cb07f021a2f") },
                         { "type", Value::String("AudioReverbZone") },
+                        { "version", Value::Int(1) },
                         { "enabled", Value::Bool(true) },
                         { "data", Value::Object({
                             { "shape", Value::String("box") },
@@ -11978,12 +13457,14 @@ bool TestAudioReverbZoneRuntimeProjection()
                 }) }
             }),
             Value::Object({
-                { "id", Value::String("volume-entity") },
+                { "id", Value::String("df20ac20-1962-4753-85b3-daa0b8371796") },
                 { "name", Value::String("Audio Volume") },
+                { "parent", Value::Null() },
                 { "components", Value::Array({
                     Value::Object({
-                        { "id", Value::String("volume-transform") },
+                        { "id", Value::String("5d7ffef6-42f4-4f1d-ac80-74a9ca384b75") },
                         { "type", Value::String("Transform") },
+                        { "version", Value::Int(1) },
                         { "enabled", Value::Bool(true) },
                         { "data", Value::Object({
                             { "position", Value::Array({ Value::Float(0.0), Value::Float(0.0), Value::Float(0.0) }) },
@@ -11992,8 +13473,9 @@ bool TestAudioReverbZoneRuntimeProjection()
                         }) }
                     }),
                     Value::Object({
-                        { "id", Value::String("volume-component") },
+                        { "id", Value::String("df9c92b9-6c2a-4a98-a485-d8b3d0744563") },
                         { "type", Value::String("AudioVolume") },
+                        { "version", Value::Int(1) },
                         { "enabled", Value::Bool(true) },
                         { "data", Value::Object({
                             { "shape", Value::String("sphere") },
@@ -12082,8 +13564,29 @@ bool TestAudioReverbZoneRuntimeProjection()
     if (!ExpectNear(volumeObject.audioReverbZone->presetParameters.decayTime, 6.5f, 0.0001f,
         "AudioVolume custom reverb decay time did not project"))
         return false;
-    return ExpectNear(volumeObject.audioReverbZone->presetParameters.gainHF, 0.2f, 0.0001f,
-        "AudioVolume custom reverb gainHF did not project");
+    if (!ExpectNear(volumeObject.audioReverbZone->presetParameters.gainHF, 0.2f, 0.0001f,
+        "AudioVolume custom reverb gainHF did not project"))
+        return false;
+
+    Value* entities = Vans::FindObjectField(sceneRoot, "entities");
+    Value invalidZoneEntity = entities && entities->kind == Value::Kind::Array &&
+        !entities->arrayItems.empty() ? entities->arrayItems.front() : Value::Null();
+    Value* components = Vans::FindObjectField(invalidZoneEntity, "components");
+    Value* zoneData = components && components->kind == Value::Kind::Array &&
+        components->arrayItems.size() > 1
+        ? Vans::FindObjectField(components->arrayItems[1], "data") : nullptr;
+    if (!Expect(zoneData != nullptr,
+        "Reverb preset GUID strict-admission fixture is missing component data"))
+        return false;
+    Vans::SetSerializedObjectField(*zoneData, "presetAsset",
+        Value::String("0a0d81aa-63cb-4186-9586-da9d03e7c980"));
+    plan = {};
+    error.clear();
+    return Expect(!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+        Value::Array({ invalidZoneEntity }), {}, plan, error) &&
+        error.find("AudioReverbZone.presetAsset") != std::string::npos &&
+        plan.objects.objects.empty(),
+        "Audio Reverb bare-string preset GUID bypassed exact Scene asset-reference admission");
 }
 
 bool TestExposureParameterContract()
@@ -12898,6 +14401,8 @@ bool TestAsyncComputeSubmitGraphContract()
 		|| encodedSettings["upscaler"].value("quality", "") != "Quality"
 		|| encodedSettings["outputResolution"].value("width", 0u) != 3840u
 		|| encodedSettings["outputResolution"].value("height", 0u) != 2160u
+		|| !encodedSettings.contains("cameraLensLimits")
+		|| encodedSettings["cameraLensLimits"].value("minimumNearClip", 0.0f) != 0.1f
 		|| !encodedSettings["commandRecording"].value("asyncComputeEnabled", false)
 		|| encodedSettings["commandRecording"].contains("asyncComputeMode")
 		|| encodedSettings["commandRecording"].contains("asyncGIEnabled"))
@@ -12966,6 +14471,13 @@ bool TestAsyncComputeSubmitGraphContract()
 	invalidUpscalerSettings["upscaler"]["backend"] = "UnknownBackend";
 	if (Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
 		invalidUpscalerSettings, migratedSettings, warnings, codecError))
+	{
+		return false;
+	}
+	nlohmann::json invalidCameraLensSettings = encodedSettings;
+	invalidCameraLensSettings["cameraLensLimits"]["minimumNearClip"] = 0.0f;
+	if (Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
+		invalidCameraLensSettings, migratedSettings, warnings, codecError))
 	{
 		return false;
 	}
@@ -13139,7 +14651,8 @@ bool TestUnifiedUpscalerHistoryContract()
 		VansUpscalerBackend::FSR,
 		VansUpscaleQualityMode::Quality);
 	history.OnTemporalDispatchSucceeded();
-	if (!Expect(!history.IsResetPending(),
+	if (!Expect(!history.IsResetPending() &&
+		contains(history.GetLastConsumedResetReasons(), VansUpscalerResetReason::FirstFrame),
 		"Successful temporal dispatch must consume pending reset"))
 	{
 		return false;
@@ -13174,6 +14687,23 @@ bool TestUnifiedUpscalerHistoryContract()
 bool TestUnifiedUpscalerResolutionContract()
 {
 	using namespace VansGraphics;
+	std::string validationError;
+	if (!Expect(
+		VansUpscaleResolutionPolicy::ValidateOutputExtent(
+			{ 0u, 0u }, true, 0u, validationError) &&
+		!VansUpscaleResolutionPolicy::ValidateOutputExtent(
+			{ 0u, 1080u }, true, 0u, validationError) &&
+		VansUpscaleResolutionPolicy::ValidateOutputExtent(
+			{ 320u, 180u }, false, 0u, validationError) &&
+		VansUpscaleResolutionPolicy::ValidateOutputExtent(
+			{ 16384u, 8192u }, false, 0u, validationError) &&
+		!VansUpscaleResolutionPolicy::ValidateOutputExtent(
+			{ 8193u, 4320u }, false, 8192u, validationError),
+		"Upscaler output extent policy did not enforce window, engine, and device budgets"))
+	{
+		return false;
+	}
+
 	VansUpscalerConfig config;
 	config.backend = VansUpscalerBackend::FSR;
 	config.quality = VansUpscaleQualityMode::Quality;
@@ -13286,7 +14816,32 @@ bool TestUnifiedUpscalerManagerContract()
 		return false;
 	}
 
+	capabilities.dlss.unavailableReasonCode =
+		VansUpscalerFallbackReason::MissingRuntimeBinary;
+	const VansUpscalerSelectionChange missingRuntime =
+		manager.RequestConfig(manager.GetDesiredConfig(), capabilities);
+	if (!Expect(
+		missingRuntime.accepted && missingRuntime.fallbackActive &&
+		manager.GetFallbackReason() == VansUpscalerFallbackReason::MissingRuntimeBinary,
+		"Typed DLSS runtime failures must preserve MissingRuntimeBinary through fallback"))
+	{
+		return false;
+	}
+
 	capabilities.dlss.runtimeAvailable = true;
+	capabilities.dlss.unavailableReasonCode =
+		VansUpscalerFallbackReason::DriverOutOfDate;
+	const VansUpscalerSelectionChange oldDriver =
+		manager.RequestConfig(manager.GetDesiredConfig(), capabilities);
+	if (!Expect(
+		oldDriver.accepted && oldDriver.fallbackActive &&
+		manager.GetFallbackReason() == VansUpscalerFallbackReason::DriverOutOfDate,
+		"Typed DLSS device failures must preserve DriverOutOfDate through fallback"))
+	{
+		return false;
+	}
+
+	capabilities.dlss.unavailableReasonCode = VansUpscalerFallbackReason::None;
 	const VansUpscalerSelectionChange unsupportedDevice =
 		manager.RequestConfig(manager.GetDesiredConfig(), capabilities);
 	if (!Expect(
@@ -13298,6 +14853,19 @@ bool TestUnifiedUpscalerManagerContract()
 	}
 
 	capabilities.dlss.deviceSupported = true;
+	capabilities.dlss.supportedQualityMask =
+		qualityBit(VansUpscaleQualityMode::Quality);
+	const VansUpscalerSelectionChange unsupportedQuality =
+		manager.RequestConfig(manager.GetDesiredConfig(), capabilities);
+	if (!Expect(
+		unsupportedQuality.accepted && unsupportedQuality.fallbackActive &&
+		manager.GetEffectiveConfig().backend == VansUpscalerBackend::FSR &&
+		manager.GetFallbackReason() == VansUpscalerFallbackReason::UnsupportedQuality,
+		"Unsupported DLSS quality must select the supported FSR mode and report its exact cause"))
+	{
+		return false;
+	}
+
 	capabilities.dlss.supportedQualityMask = capabilities.fsr.supportedQualityMask;
 	capabilities.dlss.unavailableReason.clear();
 	VansUpscalerManager directManager;
@@ -13334,6 +14902,15 @@ bool TestUnifiedUpscalerManagerContract()
 		!manager.RequestConfig(invalid, capabilities).accepted &&
 		manager.GetDesiredConfig() == beforeInvalid,
 		"Rejected upscaler configuration must not mutate manager state"))
+	{
+		return false;
+	}
+	invalid = beforeInvalid;
+	invalid.backend = static_cast<VansUpscalerBackend>(255u);
+	if (!Expect(
+		!manager.RequestConfig(invalid, capabilities).accepted &&
+		manager.GetDesiredConfig() == beforeInvalid,
+		"Unknown upscaler enum must fail before capability-mask evaluation"))
 	{
 		return false;
 	}
@@ -14752,12 +16329,15 @@ bool TestProjectSettingsExplicitSaveContract()
 			settings.BuildRenderSettingsData(), error) &&
 		Vans::VansProjectSettingsStorage::SavePhysicsSettings(
 			(projectRoot / config.physicsSettings).string(),
-			settings.BuildPhysicsSettingsData(), error),
+			settings.BuildPhysicsSettingsData(), error) &&
+		Vans::VansProjectSettingsStorage::SaveNavigationSettings(
+			(projectRoot / config.navigationSettings).string(),
+			settings.GetNavigationSettings(), error),
 		"Could not create the project settings fixtures"))
 		return false;
 	VansEngine::VansCollisionLayerConfig collisionLayers;
 	collisionLayers.ResetToDefaults();
-	VansEngine::AudioMixConfig audioMix;
+	VansEngine::VansAudioMixConfig audioMix;
 	audioMix.displayName = "ProjectDocumentContract Default Audio Mix";
 	if (!Expect(
 		VansEngine::VansCollisionLayerStorage::SaveAtomic(
@@ -14789,12 +16369,13 @@ bool TestProjectSettingsExplicitSaveContract()
 		Vans::VansProjectManager& manager;
 		~CloseProjectGuard() { manager.CloseProject(); }
 	} closeGuard{ manager };
-	Vans::VansProjectOpenOptions openOptions;
-	openOptions.updateRecentProjects = false;
-	openOptions.scanAssets = false;
-	if (!Expect(openOptions.assetPolicy.meta == Vans::VansAssetMetaPolicy::RequireExisting,
+	Vans::VansProjectOpenRequest openRequest;
+	openRequest.m_ProjectRootPath = projectRoot.string();
+	openRequest.m_Options.m_UpdateRecentProjects = false;
+	openRequest.m_Options.m_ScanAssets = false;
+	if (!Expect(openRequest.m_Options.m_AssetPolicy.meta == Vans::VansAssetMetaPolicy::RequireExisting,
 		"Default project-open asset policy is not read-only") ||
-		!Expect(manager.OpenProject(projectRoot.string(), openOptions),
+		!Expect(manager.OpenProject(openRequest).m_Opened,
 			"Could not open the project document fixture") ||
 		!Expect(!manager.HasDirtyProjectDocuments(),
 			"Freshly loaded project documents are dirty"))
@@ -14802,7 +16383,11 @@ bool TestProjectSettingsExplicitSaveContract()
 
 	error.clear();
 	Vans::VansIOAudit::Reset();
-	if (!Expect(manager.SetProjectPhysicsFixedTimeStep(1.0f / 120.0f, error),
+	VansEngine::VansPhysicsTiming editedPhysicsTiming =
+		manager.GetProjectSettings().GetPhysicsTiming();
+	editedPhysicsTiming.fixedTimeStep = 1.0f / 120.0f;
+	editedPhysicsTiming.maximumSubsteps = 6;
+	if (!Expect(manager.SetProjectPhysicsTiming(editedPhysicsTiming, error),
 		"Could not apply the physics setting to memory") ||
 		!Expect(manager.HasDirtyProjectDocuments(),
 			"In-memory project settings edit did not become dirty"))
@@ -14909,12 +16494,13 @@ bool TestProjectSettingsExplicitSaveContract()
 		"Explicit GAF save did not persist the in-memory configuration"))
 		return false;
 
-	if (!Expect(manager.SetProjectPhysicsFixedTimeStep(1.0f / 90.0f, error),
+	editedPhysicsTiming.fixedTimeStep = 1.0f / 90.0f;
+	if (!Expect(manager.SetProjectPhysicsTiming(editedPhysicsTiming, error),
 		"Could not create a second in-memory physics edit"))
 		return false;
 	Vans::VansProjectPhysicsSettingsData externalPhysics =
 		manager.GetProjectSettings().BuildPhysicsSettingsData();
-	externalPhysics.fixedTimeStep = 1.0f / 30.0f;
+	externalPhysics.timing.fixedTimeStep = 1.0f / 30.0f;
 	if (!Expect(Vans::VansProjectSettingsStorage::SavePhysicsSettings(
 		physicsPath.string(), externalPhysics, error),
 		"Could not create an external project-settings conflict"))
@@ -14944,16 +16530,21 @@ bool TestGAFParticleDependencyClosure()
     const std::string graphGuid = "9b1d5a11-bdef-4567-8000-000000000001";
     const std::string particleGuid = "9b1d5a11-bdef-4567-8000-000000000002";
     const std::string textureGuid = "9b1d5a11-bdef-4567-8000-000000000003";
-    const nlohmann::json graph = {{"effect",particleGuid}};
+    const std::string decoyModelGuid = "9b1d5a11-bdef-4567-8000-000000000004";
+    const nlohmann::json graph = {
+        {"authoringGuid",decoyModelGuid},
+        {"effect",particleGuid}};
     const nlohmann::json particle = {{"name","DependencySmoke"},{"global",nlohmann::json::object()},
         {"emitters",nlohmann::json::array({{{"renderer",{{"type","Ribbon"},{"textureGuid",textureGuid}}}}})}};
     std::ofstream(assets/"Shot.vactiongraph") << graph.dump();
     std::ofstream(assets/"Smoke.particle") << particle.dump();
     std::ofstream(assets/"Smoke.png") << "texture plan fixture";
+    std::ofstream(assets/"Decoy.obj") << "o Decoy\n";
     for (const auto& item : std::vector<std::tuple<std::string,std::string,std::string>>{
         {"Shot.vactiongraph",graphGuid,Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::ActionGraph)},
         {"Smoke.particle",particleGuid,Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Particle)},
-        {"Smoke.png",textureGuid,Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Texture)}})
+        {"Smoke.png",textureGuid,Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Texture)},
+        {"Decoy.obj",decoyModelGuid,Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Model)}})
     {
         const nlohmann::json meta={{"guid",std::get<1>(item)},{"importer",std::get<2>(item)},
             {"version",1},{"settings",nlohmann::json::object()},{"subAssets",nlohmann::json::object()}};
@@ -14961,17 +16552,50 @@ bool TestGAFParticleDependencyClosure()
     }
     Vans::VansAssetDatabase database(assets,temporary.path/"Artifacts");
     const auto scan = database.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
-    if (!Expect(scan.errors.empty() && scan.registered == 3,"Particle closure fixture did not scan")) return false;
+    if (!Expect(scan.errors.empty() && scan.registered == 4,"Particle closure fixture did not scan")) return false;
     Vans::VansAssetObjectRepository repository;
     const auto bootstrap = Vans::VansAssetObjectBootstrapper::Publish(database.All(),repository);
     if (!Expect(static_cast<bool>(bootstrap),bootstrap.errors.empty() ? "Particle closure bootstrap failed" : bootstrap.errors.front().c_str())) return false;
+    Vans::VansAssetGuid parsedGraphGuid;
+    Vans::VansAssetGuid parsedParticleGuid;
+    Vans::VansAssetObjectSnapshotInfo graphInfo;
+    if (!Expect(
+        Vans::VansAssetGuid::TryParse(graphGuid, parsedGraphGuid) &&
+        Vans::VansAssetGuid::TryParse(particleGuid, parsedParticleGuid) &&
+        repository.FindInfo(parsedGraphGuid, graphInfo) &&
+        graphInfo.dependencies.size() == 1 &&
+        graphInfo.dependencies.front() == parsedParticleGuid,
+        "Gameplay memory snapshot treated authoring provenance as an asset dependency"))
+        return false;
     Vans::VansSceneData scene;
     auto sceneJson = Vans::VansSceneSchema::SerializeSceneJson(scene);
-    sceneJson["requiredGraph"] = graphGuid;
+    sceneJson["nonSchemaAssetToken"] = decoyModelGuid;
+    sceneJson["entities"] = nlohmann::json::array({{
+        {"id", "9b1d5a11-bdef-4567-8000-000000000010"},
+        {"name", "Script dependency owner"},
+        {"parent", nullptr},
+        {"components", nlohmann::json::array({{
+            {"id", "9b1d5a11-bdef-4567-8000-000000000011"},
+            {"type", "Script"},
+            {"version", 1},
+            {"enabled", true},
+            {"data", {
+                {"path", "Scripts/dependency_fixture.lua"},
+                {"language", "lua"},
+                {"entry", "DependencyFixture"},
+                {"fields", {{"requiredGraph", {
+                    {"domain", "ProjectAsset"},
+                    {"assetType", "ActionGraph"},
+                    {"guid", graphGuid}
+                }}}}
+            }}
+        }})}
+    }});
     const auto root = Vans::DecodeSerializedValueJson(sceneJson);
     const auto result = Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
         database,root,temporary.path/"Scenes"/"Empty.json",{},repository);
     if (!Expect(result.success && result.requiredAssets.count(particleGuid) == 1 &&
+        result.requiredAssets.count(decoyModelGuid) == 0 &&
         result.requiredTextures.count(textureGuid) == 1 && result.resourcePlan.textures.size() == 1 &&
         result.resourcePlan.textures.front().assetGuid == textureGuid,
         "A GAF-only particle texture did not enter the GPU resource plan on first load")) return false;
@@ -14979,9 +16603,117 @@ bool TestGAFParticleDependencyClosure()
     return true;
 }
 
+bool TestProjectMaterialDependencyClosure()
+{
+	TemporaryDirectory temporary;
+	const fs::path assets = temporary.path / "Assets";
+	fs::create_directories(assets);
+	const std::string materialGuid = "9b1d5a11-bdef-4567-8000-000000000101";
+	const std::string textureGuid = "9b1d5a11-bdef-4567-8000-000000000102";
+	const nlohmann::json material = {
+		{ "schemaVersion", 1 },
+		{ "guid", materialGuid },
+		{ "materialType", "pbr" },
+		{ "parameters", {
+			{ "albedo", nlohmann::json::array({ 1.0, 1.0, 1.0 }) },
+			{ "metallic", 0.0 }, { "roughness", 1.0 }, { "ao", 1.0 } } },
+		{ "textures", {
+			{ "basecolor", { { "guid", textureGuid } } } } }
+	};
+	std::ofstream(assets / "GlobalMaterial.mat") << material.dump();
+	std::ofstream(assets / "GlobalTexture.png") << "project material texture fixture";
+	for (const auto& item : std::vector<std::tuple<std::string, std::string, std::string>>{
+		{ "GlobalMaterial.mat", materialGuid,
+			Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Material) },
+		{ "GlobalTexture.png", textureGuid,
+			Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Texture) } })
+	{
+		const nlohmann::json meta = {
+			{ "guid", std::get<1>(item) }, { "importer", std::get<2>(item) },
+			{ "version", 1 }, { "settings", nlohmann::json::object() },
+			{ "subAssets", nlohmann::json::object() } };
+		std::ofstream(assets / (std::get<0>(item) + ".meta")) << meta.dump();
+	}
+
+	Vans::VansAssetDatabase database(assets, temporary.path / "Artifacts");
+	const auto scan = database.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
+	if (!Expect(scan.errors.empty() && scan.registered == 2,
+		"Project material closure fixture did not scan"))
+		return false;
+	Vans::VansAssetObjectRepository repository;
+	const auto bootstrap = Vans::VansAssetObjectBootstrapper::Publish(
+		database.All(), repository);
+	if (!Expect(static_cast<bool>(bootstrap), bootstrap.errors.empty()
+		? "Project material closure bootstrap failed" : bootstrap.errors.front().c_str()))
+		return false;
+
+	Vans::VansSceneData scene;
+	const auto root = Vans::DecodeSerializedValueJson(
+		Vans::VansSceneSchema::SerializeSceneJson(scene));
+	const auto result = Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
+		database, root, temporary.path / "Scenes" / "Empty.json", {}, repository);
+	return Expect(result.success && result.requiredMaterials.count(materialGuid) == 1 &&
+		result.requiredTextures.count(textureGuid) == 1 &&
+		result.resourcePlan.textures.size() == 1 &&
+		result.resourcePlan.textures.front().assetGuid == textureGuid,
+		"Project-global material texture did not enter the packaged GPU resource closure");
+}
+
+bool TestClothVertexPayloadMatchesRenderMeshAbi()
+{
+	const std::vector<float> positionsAndNormals = {
+		0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+		1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+		0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f };
+	const std::vector<float> texCoords = {
+		0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f };
+	const std::vector<int> triangleIndices = { 0, 1, 2 };
+
+	for (const std::uint32_t vertexStrideBytes : {
+		8u * static_cast<std::uint32_t>(sizeof(std::uint16_t)),
+		12u * static_cast<std::uint32_t>(sizeof(std::uint16_t)) })
+	{
+		VansEngine::VansClothMeshSource source;
+		source.positionsAndNormals = &positionsAndNormals;
+		source.texCoords = &texCoords;
+		source.triangleIndices = &triangleIndices;
+		source.vertexCount = 3;
+		source.vertexStrideBytes = vertexStrideBytes;
+		VansEngine::VansClothMeshData mesh;
+		std::string error;
+		if (!Expect(VansEngine::VansClothMeshPrep::Build(
+			source, 0.001f, 0.001f, 0.0f, {}, mesh, error),
+			error.empty() ? "Cloth mesh ABI fixture failed" : error.c_str()))
+			return false;
+		const std::size_t payloadBytes = static_cast<std::size_t>(mesh.vertexCount) *
+			static_cast<std::size_t>(mesh.packedVertexStride) * sizeof(std::uint16_t);
+		if (!Expect(payloadBytes ==
+			static_cast<std::size_t>(mesh.vertexCount) * vertexStrideBytes,
+			"Cloth render payload size diverged from the target mesh vertex ABI"))
+			return false;
+	}
+	return true;
+}
+
 bool TestSceneMemoryDependencyPlanContract()
 {
-    if (!TestGAFParticleDependencyClosure()) return false;
+	static_assert(std::is_same_v<
+		decltype(VansGraphics::VansSceneAssembly::BuildObjects(
+			std::declval<VansGraphics::VansScene&>(),
+			std::declval<VkDevice&>(),
+			std::declval<const Vans::VansSceneObjectBuildPlan&>(),
+			std::declval<const std::string&>())),
+		VansGraphics::VansSceneObjectBuildResult>);
+	static_assert(std::is_same_v<
+		decltype(VansGraphics::VansSceneAssembly::CreateEntityBatch(
+			std::declval<VansGraphics::VansScene&>(),
+			std::declval<VkDevice&>(),
+			std::declval<const Vans::VansSceneObjectBuildPlan&>(),
+			std::declval<const std::string&>())),
+		Vans::VansSceneEntityBatchResult>);
+	if (!TestGAFParticleDependencyClosure() || !TestProjectMaterialDependencyClosure() ||
+		!TestClothVertexPayloadMatchesRenderMeshAbi())
+		return false;
 	TemporaryDirectory temporary;
 	const fs::path assetsRoot = temporary.path / "Assets";
 	const fs::path sceneSourcePath = temporary.path / "Scenes" / "MemoryScene.json";
@@ -15069,6 +16801,234 @@ bool TestSceneMemoryDependencyPlanContract()
 bool TestAuthoringCodecContract()
 {
 	std::string error;
+	Vans::VansProjectConfig projectConfig;
+	projectConfig.SetDefaults("Project Codec Contract");
+	const nlohmann::json projectConfigEncoded =
+		Vans::VansProjectConfigJsonCodec::EncodeProjectConfig(projectConfig);
+	Vans::VansProjectConfig projectConfigRoundTrip;
+	if (!Expect(
+		!projectConfigEncoded.at("assetDatabase").contains("metaExtension") &&
+		Vans::VansProjectConfigJsonCodec::DecodeProjectConfig(
+			projectConfigEncoded, projectConfigRoundTrip, error) &&
+		projectConfigRoundTrip.projectName == projectConfig.projectName,
+		"Project configuration still serializes a configurable meta extension"))
+		return false;
+	nlohmann::json removedProjectConfig = projectConfigEncoded;
+	removedProjectConfig["assetDatabase"]["metaExtension"] = ".legacy";
+	if (!Expect(
+		!Vans::VansProjectConfigJsonCodec::DecodeProjectConfig(
+			removedProjectConfig, projectConfigRoundTrip, error),
+		"Project configuration accepted the removed metaExtension field"))
+		return false;
+
+	Vans::VansAssetMeta assetMeta;
+	if (!Expect(Vans::VansAssetGuid::TryParse(
+		"10000000-0000-4000-8000-000000000001", assetMeta.guid),
+		"Could not create the asset-meta Codec fixture GUID"))
+		return false;
+	assetMeta.importer = "TextureImporter";
+	assetMeta.SetSerializedSettings(Vans::VansSerializedValue::Object({
+		{ "linear", Vans::VansSerializedValue::Bool(true) },
+		{ "needMip", Vans::VansSerializedValue::Bool(false) }
+	}));
+	Vans::VansSerializedValue assetMetaEncoded;
+	Vans::VansAssetMeta assetMetaRoundTrip;
+	if (!Expect(
+		Vans::VansAssetMetaJsonCodec::Encode(assetMeta, assetMetaEncoded, error) &&
+		Vans::VansAssetMetaJsonCodec::Decode(
+			assetMetaEncoded, "Texture.png.meta", assetMetaRoundTrip, error) &&
+		assetMetaRoundTrip.guid == assetMeta.guid &&
+		assetMetaRoundTrip.importer == assetMeta.importer &&
+		assetMetaRoundTrip.ReadBoolSetting("linear", false) &&
+		!assetMetaRoundTrip.ReadBoolSetting("needMip", true),
+		"Asset metadata VansSerializedValue Codec did not round-trip"))
+		return false;
+	Vans::VansSerializedValue invalidAssetMeta = assetMetaEncoded;
+	Vans::SetSerializedObjectField(
+		invalidAssetMeta, "guid", Vans::VansSerializedValue::String("invalid"));
+	if (!Expect(
+		!Vans::VansAssetMetaJsonCodec::Decode(
+			invalidAssetMeta, "Texture.png.meta", assetMetaRoundTrip, error),
+		"Asset metadata Codec accepted an invalid GUID"))
+		return false;
+	Vans::VansSerializedValue removedSettingAssetMeta = assetMetaEncoded;
+	if (Vans::VansSerializedValue* settings =
+		Vans::FindObjectField(removedSettingAssetMeta, "settings"))
+	{
+		Vans::SetSerializedObjectField(
+			*settings, "generateMip", Vans::VansSerializedValue::Bool(true));
+	}
+	if (!Expect(
+		!Vans::VansAssetMetaJsonCodec::Decode(
+			removedSettingAssetMeta, "Texture.png.meta", assetMetaRoundTrip, error),
+		"Asset metadata Codec accepted a removed settings key"))
+		return false;
+	TemporaryDirectory assetMetaTemporary;
+	const fs::path assetMetaPath = assetMetaTemporary.path / "Texture.png.meta";
+	Vans::VansAssetMeta assetMetaStorageRoundTrip;
+	if (!Expect(
+		Vans::VansAssetMetaStorage::SaveAtomic(assetMetaPath, assetMeta, error) &&
+		Vans::VansAssetMetaStorage::Load(
+			assetMetaPath, assetMetaStorageRoundTrip, error) &&
+		assetMetaStorageRoundTrip.guid == assetMeta.guid &&
+		assetMetaStorageRoundTrip.importer == assetMeta.importer &&
+		assetMetaStorageRoundTrip.ReadBoolSetting("linear", false),
+		"Asset metadata JSON storage boundary did not round-trip"))
+		return false;
+
+	const Vans::VansSerializedValue materialRoot = Vans::VansSerializedValue::Object({
+		{ "guid", Vans::VansSerializedValue::String(
+			"20000000-0000-4000-8000-000000000001") },
+		{ "materialType", Vans::VansSerializedValue::String("pbr") },
+		{ "parameters", Vans::CreatePbrMaterialAuthoringParameters(
+			1.0f, 1.0f, 1.0f, 0.0f, 0.5f, 1.0f) },
+		{ "textures", Vans::VansSerializedValue::Object({
+			{ "basecolor", Vans::VansSerializedValue::Object({
+				{ "guid", Vans::VansSerializedValue::String(
+					"30000000-0000-4000-8000-000000000001") }
+			}) }
+		}) }
+	});
+	Vans::VansMaterialAuthoringAsset materialAsset;
+	if (!Expect(Vans::ReadMaterialAuthoringAsset(materialRoot, materialAsset, error),
+		"Material Codec rejected a current GUID texture reference"))
+		return false;
+	Vans::VansSerializedValue invalidMaterial = materialRoot;
+	if (Vans::VansSerializedValue* textures =
+		Vans::FindObjectField(invalidMaterial, "textures"))
+	{
+		Vans::SetSerializedObjectField(
+			*textures, "basecolor", Vans::VansSerializedValue::String("Albedo.png"));
+	}
+	if (!Expect(!Vans::ReadMaterialAuthoringAsset(
+		invalidMaterial, materialAsset, error),
+		"Material Codec still accepts a filename texture alias"))
+		return false;
+
+	Vans::VansSerializedValue currentMaterialReferences = materialRoot;
+	const Vans::VansSerializedValue shaderReference = Vans::VansSerializedValue::Object({
+		{ "guid", Vans::VansSerializedValue::String(
+			"40000000-0000-4000-8000-000000000001") }
+	});
+	Vans::SetSerializedObjectField(currentMaterialReferences, "shader", shaderReference);
+	Vans::SetSerializedObjectField(
+		currentMaterialReferences,
+		"shaderPasses",
+		Vans::VansSerializedValue::Object({ { "gbuffer", shaderReference } }));
+	Vans::SetSerializedObjectField(
+		currentMaterialReferences,
+		"customTextures",
+		Vans::VansSerializedValue::Object({
+			{ "detail", Vans::VansSerializedValue::Object({
+				{ "guid", Vans::VansSerializedValue::String(
+					"30000000-0000-4000-8000-000000000002") }
+			}) }
+		}));
+	if (Vans::VansSerializedValue* parameters =
+		Vans::FindObjectField(currentMaterialReferences, "parameters"))
+	{
+		Vans::SetSerializedObjectField(
+			*parameters,
+			"skinProfile",
+			Vans::VansSerializedValue::Object({
+				{ "guid", Vans::VansSerializedValue::String(
+					"50000000-0000-4000-8000-000000000001") }
+			}));
+	}
+	if (!Expect(Vans::ReadMaterialAuthoringAsset(
+		currentMaterialReferences, materialAsset, error),
+		"Material Codec rejected current GUID shader/profile/custom texture references"))
+		return false;
+
+	Vans::VansSerializedValue filenameShaderMaterial = currentMaterialReferences;
+	Vans::SetSerializedObjectField(
+		filenameShaderMaterial, "shader", Vans::VansSerializedValue::String("CustomShader"));
+	if (!Expect(!Vans::ReadMaterialAuthoringAsset(
+		filenameShaderMaterial, materialAsset, error),
+		"Material Codec still accepts a runtime shader-name alias"))
+		return false;
+
+	Vans::VansSerializedValue stringProfileMaterial = currentMaterialReferences;
+	if (Vans::VansSerializedValue* parameters =
+		Vans::FindObjectField(stringProfileMaterial, "parameters"))
+	{
+		Vans::SetSerializedObjectField(
+			*parameters,
+			"skinProfile",
+			Vans::VansSerializedValue::String(
+				"50000000-0000-4000-8000-000000000001"));
+	}
+	if (!Expect(!Vans::ReadMaterialAuthoringAsset(
+		stringProfileMaterial, materialAsset, error),
+		"Material Codec still accepts a bare skin-profile GUID"))
+		return false;
+
+	Vans::VansSerializedValue presetProfileMaterial = materialRoot;
+	if (Vans::VansSerializedValue* parameters =
+		Vans::FindObjectField(presetProfileMaterial, "parameters"))
+	{
+		Vans::SetSerializedObjectField(
+			*parameters,
+			"skinProfilePreset",
+			Vans::VansSerializedValue::String("fair"));
+	}
+	if (!Expect(Vans::ReadMaterialAuthoringAsset(
+		presetProfileMaterial, materialAsset, error),
+		"Material Codec rejected the separate built-in skin-profile preset field"))
+		return false;
+
+	static_assert(std::is_same_v<
+		decltype(VansGraphics::VansPostProcessProfileJsonCodec::Encode(
+			std::declval<const VansGraphics::VansPostProcessProfile&>())),
+		Vans::VansSerializedValue>);
+
+	VansGraphics::VansPostProcessProfile postProcess;
+	postProcess.m_EnableAutoExposure = true;
+	postProcess.m_ExposureCompensation = 1.25f;
+	postProcess.m_BloomIntensity = 0.8f;
+	postProcess.m_FStop = 4.0f;
+	postProcess.m_MotionBlurSamples = 7;
+	const Vans::VansSerializedValue postProcessEncoded =
+		VansGraphics::VansPostProcessProfileJsonCodec::Encode(postProcess);
+	VansGraphics::VansPostProcessProfile postProcessRoundTrip;
+	if (!Expect(
+		VansGraphics::VansPostProcessProfileJsonCodec::Decode(
+			postProcessEncoded, "PostProcessContract.vpostprocess", postProcessRoundTrip, error) &&
+		postProcessRoundTrip.m_EnableAutoExposure &&
+		postProcessRoundTrip.m_ExposureCompensation == 1.25f &&
+		postProcessRoundTrip.m_BloomIntensity == 0.8f &&
+		postProcessRoundTrip.m_FStop == 4.0f &&
+		postProcessRoundTrip.m_MotionBlurSamples == 7,
+		"Post-process profile VansSerializedValue Codec did not round-trip"))
+		return false;
+	TemporaryDirectory postProcessTemporary;
+	const fs::path postProcessPath =
+		postProcessTemporary.path / "PostProcessContract.vpostprocess";
+	VansGraphics::VansPostProcessProfile postProcessStorageRoundTrip;
+	if (!Expect(
+		VansGraphics::VansPostProcessProfileStorage::SaveAtomic(
+			postProcessPath, postProcess, error) &&
+		VansGraphics::VansPostProcessProfileStorage::Load(
+			postProcessPath, postProcessStorageRoundTrip, error) &&
+		postProcessStorageRoundTrip.m_EnableAutoExposure &&
+		postProcessStorageRoundTrip.m_ExposureCompensation == 1.25f &&
+		postProcessStorageRoundTrip.m_BloomIntensity == 0.8f &&
+		postProcessStorageRoundTrip.m_FStop == 4.0f &&
+		postProcessStorageRoundTrip.m_MotionBlurSamples == 7,
+		"Post-process profile JSON storage boundary did not round-trip"))
+		return false;
+	Vans::VansSerializedValue invalidPostProcess = postProcessEncoded;
+	if (Vans::VansSerializedValue* bloom =
+		Vans::FindObjectField(invalidPostProcess, "bloom"))
+	{
+		Vans::SetSerializedObjectField(
+			*bloom, "threshold", Vans::VansSerializedValue::String("invalid"));
+	}
+	if (!Expect(
+		!VansGraphics::VansPostProcessProfileJsonCodec::Decode(
+			invalidPostProcess, "PostProcessContract.vpostprocess", postProcessRoundTrip, error),
+		"Post-process profile Codec accepted a non-numeric threshold"))
+		return false;
 
 	const nlohmann::json retargetRoot = {
 		{ "assetKind", "retargetProfile" },
@@ -15107,9 +17067,26 @@ bool TestAuthoringCodecContract()
 	const nlohmann::json aiRoot = {
 		{ "magic", "VAI_BEHAVIOR" },
 		{ "name", "WhisperTest" },
-		{ "blackboard", nlohmann::json::array({ {
-			{ "name", "HasTarget" }, { "type", "bool" }, { "default", false }
-		} }) },
+		{ "blackboard", nlohmann::json::array({
+			{
+				{ "name", "Activated" }, { "type", "bool" }, { "default", false }
+			},
+			{
+				{ "name", "Released" }, { "type", "bool" }, { "default", false }
+			},
+			{
+				{ "name", "HasTarget" }, { "type", "bool" }, { "default", false }
+			},
+			{
+				{ "name", "Target" }, { "type", "entity" }, { "default", nullptr }
+			}
+		}) },
+		{ "bindings", {
+			{ "activationRequested", "Activated" },
+			{ "gameplayReleased", "Released" },
+			{ "target", "Target" }
+		} },
+		{ "maxTransitionsPerUpdate", 4 },
 		{ "initialState", "Idle" },
 		{ "states", nlohmann::json::array({
 			{
@@ -15136,8 +17113,31 @@ bool TestAuthoringCodecContract()
 		Vans::VansAIBehaviorJsonCodec::Encode(ai, aiEncoded, error) &&
 		Vans::VansAIBehaviorJsonCodec::Decode(aiEncoded, aiRoundTrip, error) &&
 		aiRoundTrip.name == ai.name && aiRoundTrip.states.size() == 2 &&
-		aiRoundTrip.blackboard.size() == 1,
+		aiRoundTrip.blackboard.size() == 4 &&
+		aiRoundTrip.bindings.activationRequested == "Activated" &&
+		aiRoundTrip.maxTransitionsPerUpdate == 4,
 		"AI Behavior pure Codec did not round-trip the current schema"))
+		return false;
+	nlohmann::json invalidAi = aiRoot;
+	invalidAi["bindings"]["target"] = "HasTarget";
+	if (!Expect(!Vans::VansAIBehaviorJsonCodec::Decode(
+		invalidAi, aiRoundTrip, error),
+		"AI Behavior Codec accepted a binding with the wrong Blackboard type"))
+		return false;
+	invalidAi = aiRoot;
+	invalidAi["maxTransitionsPerUpdate"] = 0;
+	if (!Expect(!Vans::VansAIBehaviorJsonCodec::Decode(
+		invalidAi, aiRoundTrip, error),
+		"AI Behavior Codec accepted a zero transition limit"))
+		return false;
+	invalidAi = aiRoot;
+	invalidAi["states"][1]["task"] = "Patrol";
+	invalidAi["states"][1]["taskConfig"] = {
+		{ "radius", 0.0 }, { "waitSeconds", 0.0 }
+	};
+	if (!Expect(!Vans::VansAIBehaviorJsonCodec::Decode(
+		invalidAi, aiRoundTrip, error),
+		"AI Behavior Codec accepted a non-positive Patrol radius"))
 		return false;
 
 	const nlohmann::json ragdollRoot = {
@@ -15637,14 +17637,16 @@ bool TestAnimationClipMemoryAssetContract()
 		"Runtime model animation extraction read or wrote serialized Animation Clip assets");
 }
 
-bool TestProjectAssetMemoryBootstrapContract()
+bool TestProjectAssetMemoryBootstrapContract(
+	bool requireFreshDerivedResources = true,
+	const char* projectFilter = nullptr)
 {
 	fs::path workspaceRoot;
 	for (fs::path cursor = fs::current_path(); !cursor.empty(); cursor = cursor.parent_path())
 	{
 		if (fs::is_regular_file(cursor / "AnimationV2Project/ForestProject.json") &&
 			fs::is_regular_file(cursor / "DemoHallProject/ForestProject.json") &&
-			fs::is_regular_file(cursor / "DustV2Project/ForestProject.json") &&
+			fs::is_regular_file(cursor / "DustV3Project/ForestProject.json") &&
 			fs::is_regular_file(cursor / "SponzaProject/ForestProject.json") &&
 			fs::is_regular_file(cursor / "TestV2Project/ForestProject.json"))
 		{
@@ -15661,7 +17663,7 @@ bool TestProjectAssetMemoryBootstrapContract()
 	const char* projectNames[] = {
 		"AnimationV2Project",
 		"DemoHallProject",
-		"DustV2Project",
+		"DustV3Project",
 		"SponzaProject",
 		"TestV2Project"
 	};
@@ -15677,6 +17679,8 @@ bool TestProjectAssetMemoryBootstrapContract()
 	} projectManagerCloseGuard{ projectManager };
 	for (const char* projectName : projectNames)
 	{
+		if (projectFilter && std::string(projectName) != projectFilter)
+			continue;
 		const fs::path projectRoot = workspaceRoot / projectName;
 		Vans::VansProjectConfig projectConfig;
 		if (!Expect(projectConfig.LoadFromFile(
@@ -15810,13 +17814,18 @@ bool TestProjectAssetMemoryBootstrapContract()
 						(event.operation == Vans::VansIOOperation::Read ||
 							event.operation == Vans::VansIOOperation::StageWrite);
 				});
-			if (!Expect(dependencyResult.success && projected &&
-				!touchedAuthoringStorage,
+			if (!Expect(projected && !touchedAuthoringStorage,
 				(runtimeError.empty()
 					? std::string(projectName) +
 						" scene runtime planning touched authoring storage: " +
 						scenePath.filename().string()
 					: runtimeError).c_str()))
+				return false;
+			if (requireFreshDerivedResources &&
+				!Expect(dependencyResult.success,
+					(std::string(projectName) +
+						" scene dependency plan rejected stale derived resources: " +
+						scenePath.filename().string()).c_str()))
 				return false;
 			++validatedSceneCount;
 		}
@@ -15825,8 +17834,11 @@ bool TestProjectAssetMemoryBootstrapContract()
 			return false;
 		projectManager.CloseProject();
 	}
-	return Expect(validatedSceneCount == 6,
-		"Workspace scene memory-runtime contract did not cover all six scenes");
+	return projectFilter
+		? Expect(validatedSceneCount != 0,
+			"Filtered scene memory-runtime contract covered no scenes")
+		: Expect(validatedSceneCount == 6,
+			"Workspace scene memory-runtime contract did not cover all six scenes");
 }
 
 bool TestVegetationMemoryAssetContract()
@@ -15872,6 +17884,8 @@ bool TestVegetationMemoryAssetContract()
 	using Value = Vans::VansSerializedValue;
 	const Value sceneRoot = Value::Object({
 		{ "schemaVersion", Value::Int(Vans::VansSceneSchemaVersion) },
+		{ "sceneGuid", Value::String("4e89a312-9a1e-4dc3-8e04-4e06f33077a1") },
+		{ "name", Value::String("VegetationMemoryAsset") },
 		{ "settings", Value::Object({
 			{ "environment", BuildValidEnvironmentSettingsForTest() },
 			{ "vegetation", Value::Object({
@@ -15920,8 +17934,9 @@ bool TestVegetationMemoryAssetContract()
 
 	Vans::VansIOAudit::Reset();
 	Vans::VansSceneContentBuildPlan plan;
-	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
-		sceneRoot, temporary.path.string(), plan, error), error.c_str()))
+	const bool projected = Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
+		sceneRoot, temporary.path.string(), plan, error);
+	if (!Expect(projected, error.c_str()))
 		return false;
 	const auto projectionIOEvents = Vans::VansIOAudit::Snapshot();
 	return Expect(
@@ -15944,9 +17959,11 @@ bool TestUIAssetMemoryBootstrapContract()
 	const fs::path xamlPath = temporary.path / "MemoryScreen.xaml";
 	Vans::VansAssetGuid screenGuid;
 	Vans::VansAssetGuid xamlGuid;
+	Vans::VansAssetGuid decoyGuid;
 	if (!Expect(
 		Vans::VansAssetGuid::TryParse("10000000-0000-4000-8000-000000000001", screenGuid) &&
-		Vans::VansAssetGuid::TryParse("10000000-0000-4000-8000-000000000002", xamlGuid),
+		Vans::VansAssetGuid::TryParse("10000000-0000-4000-8000-000000000002", xamlGuid) &&
+		Vans::VansAssetGuid::TryParse("10000000-0000-4000-8000-000000000003", decoyGuid),
 		"UI memory contract GUID constants are invalid"))
 		return false;
 
@@ -15955,6 +17972,7 @@ bool TestUIAssetMemoryBootstrapContract()
 		"  \"schemaVersion\": 1,\n"
 		"  \"guid\": \"memory.screen\",\n"
 		"  \"name\": \"MemoryScreen\",\n"
+		"  \"diagnosticCorrelationId\": \"" + decoyGuid.ToString() + "\",\n"
 		"  \"xaml\": { \"guid\": \"" + xamlGuid.ToString() + "\" },\n"
 		"  \"themes\": [], \"tokens\": [], \"localization\": []\n"
 		"}\n";
@@ -15979,6 +17997,12 @@ bool TestUIAssetMemoryBootstrapContract()
 	xamlRecord.state = Vans::VansAssetState::CpuReady;
 	xamlRecord.sourcePath = xamlPath;
 	xamlRecord.sourceHash = 0x1002u;
+	Vans::VansAssetRecord decoyRecord;
+	decoyRecord.guid = decoyGuid;
+	decoyRecord.type = Vans::VansAssetType::Model;
+	decoyRecord.state = Vans::VansAssetState::CpuReady;
+	decoyRecord.sourcePath = temporary.path / "IndexedDecoy.obj";
+	decoyRecord.sourceHash = 0x1003u;
 
 	auto& projectManager = Vans::VansProjectManager::Get();
 	projectManager.CloseProject();
@@ -15993,7 +18017,8 @@ bool TestUIAssetMemoryBootstrapContract()
 	} scopedAssets;
 	const Vans::VansAssetObjectBootstrapResult bootstrap =
 		Vans::VansAssetObjectBootstrapper::Publish(
-			{ screenRecord, xamlRecord }, projectManager.GetAssetObjectRepository());
+			{ screenRecord, xamlRecord }, projectManager.GetAssetObjectRepository(),
+			{ decoyRecord });
 	if (!Expect(static_cast<bool>(bootstrap),
 		bootstrap.errors.empty() ? "UI memory bootstrap failed" : bootstrap.errors.front().c_str()))
 		return false;
@@ -16001,8 +18026,10 @@ bool TestUIAssetMemoryBootstrapContract()
 	Vans::VansAssetObjectSnapshotInfo screenInfo;
 	if (!Expect(
 		projectManager.GetAssetObjectRepository().FindInfo(screenGuid, screenInfo) &&
-		screenInfo.dependencies.size() == 1 && screenInfo.dependencies.front() == xamlGuid,
-		"UI screen memory snapshot did not retain its XAML GUID dependency"))
+		screenInfo.dependencies.size() == 1 && screenInfo.dependencies.front() == xamlGuid &&
+		std::find(screenInfo.dependencies.begin(), screenInfo.dependencies.end(), decoyGuid) ==
+			screenInfo.dependencies.end(),
+		"UI memory snapshot did not isolate declared references from diagnostic GUID data"))
 		return false;
 
 	std::error_code removeError;
@@ -16035,8 +18062,66 @@ bool TestUIAssetMemoryBootstrapContract()
 		"Runtime UI asset resolution performed disk I/O after memory bootstrap");
 }
 
+bool TestSerializedDependencySchemaContract()
+{
+	Vans::VansAssetGuid owner;
+	Vans::VansAssetGuid texture;
+	Vans::VansAssetGuid shader;
+	Vans::VansAssetGuid skin;
+	Vans::VansAssetGuid decoy;
+	if (!Expect(
+		Vans::VansAssetGuid::TryParse("30000000-0000-4000-8000-000000000001", owner) &&
+		Vans::VansAssetGuid::TryParse("30000000-0000-4000-8000-000000000002", texture) &&
+		Vans::VansAssetGuid::TryParse("30000000-0000-4000-8000-000000000003", shader) &&
+		Vans::VansAssetGuid::TryParse("30000000-0000-4000-8000-000000000004", skin) &&
+		Vans::VansAssetGuid::TryParse("30000000-0000-4000-8000-000000000005", decoy),
+		"Serialized dependency schema GUID constants are invalid"))
+		return false;
+
+	Vans::VansAssetRecord record;
+	record.guid = owner;
+	record.type = Vans::VansAssetType::Material;
+	record.state = Vans::VansAssetState::CpuReady;
+	record.sourcePath = "MemoryMaterial.mat";
+	record.authoringPath = record.sourcePath;
+	const Vans::VansSerializedValue root = Vans::VansSerializedValue::Object({
+		{ "schemaVersion", Vans::VansSerializedValue::Int(1) },
+		{ "guid", Vans::VansSerializedValue::String(owner.ToString()) },
+		{ "materialType", Vans::VansSerializedValue::String("customShader") },
+		{ "importSource", Vans::VansSerializedValue::Object({
+			{ "model", Vans::VansSerializedValue::String(decoy.ToString()) },
+			{ "sourceMaterial", Vans::VansSerializedValue::String(decoy.ToString()) } }) },
+		{ "shader", Vans::VansSerializedValue::Object({
+			{ "guid", Vans::VansSerializedValue::String(shader.ToString()) } }) },
+		{ "textures", Vans::VansSerializedValue::Object({
+			{ "basecolor", Vans::VansSerializedValue::Object({
+				{ "guid", Vans::VansSerializedValue::String(texture.ToString()) } }) } }) },
+		{ "parameters", Vans::VansSerializedValue::Object({
+			{ "skinProfile", Vans::VansSerializedValue::Object({
+				{ "guid", Vans::VansSerializedValue::String(skin.ToString()) } }) } }) }
+	});
+	Vans::VansAssetObjectRepository repository;
+	std::string error;
+	if (!Expect(Vans::VansAssetObjectBootstrapper::PublishSerialized(
+		record, root, 0x3001u, repository, error), error.c_str()))
+		return false;
+	Vans::VansAssetObjectSnapshotInfo info;
+	if (!Expect(repository.FindInfo(owner, info),
+		"Serialized material dependency snapshot is missing"))
+		return false;
+	const auto contains = [&](Vans::VansAssetGuid guid)
+	{
+		return std::find(info.dependencies.begin(), info.dependencies.end(), guid) !=
+			info.dependencies.end();
+	};
+	return Expect(info.dependencies.size() == 3 && contains(texture) && contains(shader) &&
+		contains(skin) && !contains(owner) && !contains(decoy),
+		"Material dependency snapshot mixed provenance GUIDs with declared asset references");
+}
+
 bool TestAssetWorkingCopyMemoryPublicationContract()
 {
+	if (!TestSerializedDependencySchemaContract()) return false;
 	TemporaryDirectory temporary;
 	const fs::path sourcePath = temporary.path / "WorkingSnapshot.vaudiosnapshot";
 	const fs::path metaPath = Vans::VansAssetMeta::MetaPathFor(sourcePath);
@@ -16318,6 +18403,28 @@ bool TestGeneratedMaterialMemoryBoundaryContract()
 
 bool TestRuntimeConfigurationMemoryBoundaryContract()
 {
+	TemporaryDirectory temporaryDirectory;
+	const fs::path syntheticEngineRoot = temporaryDirectory.path / "Engine";
+	const fs::path syntheticExecutableDirectory = syntheticEngineRoot / "bin" / "Debug";
+	fs::create_directories(syntheticEngineRoot / "EngineAssets");
+	fs::create_directories(syntheticExecutableDirectory);
+	std::string discoveredRoot;
+	std::string pathError;
+	if (!Expect(
+		Vans::VansEnginePaths::FindEngineRoot(
+			syntheticExecutableDirectory / "ForestContractTests.exe", discoveredRoot, pathError) &&
+		fs::weakly_canonical(fs::path(discoveredRoot)) == fs::weakly_canonical(syntheticEngineRoot),
+		pathError.empty() ? "Engine-root discovery did not select the nearest EngineAssets owner"
+			: pathError.c_str()))
+		return false;
+	std::string rejectedRoot;
+	if (!Expect(
+		!Vans::VansEnginePaths::NormalizeEngineRoot(
+			temporaryDirectory.path / "MissingEngineAssets", rejectedRoot, pathError) &&
+		!pathError.empty(),
+		"Engine-root validation accepted a directory without EngineAssets"))
+		return false;
+
 	fs::path sourceFile = fs::path(__FILE__);
 	if (sourceFile.is_relative()) sourceFile = fs::absolute(sourceFile);
 	const fs::path engineRoot = sourceFile.parent_path().parent_path().parent_path();
@@ -16351,7 +18458,6 @@ bool TestRuntimeConfigurationMemoryBoundaryContract()
 		coreRoot / "TimelineRuntime"
 	};
 	const std::vector<std::string> forbiddenCalls = {
-		"Storage::Load(",
 		"IO::Load(",
 		"VansJsonFileStorage::Read",
 		"VansFileStorage::ReadAllBytes",
@@ -16359,7 +18465,6 @@ bool TestRuntimeConfigurationMemoryBoundaryContract()
 		"VansUIDocumentLoader::Load(",
 		"VansTimelineSerialization::Load(",
 		"std::ifstream",
-		"Storage::Save(",
 		"IO::Save(",
 		"SaveAtomic(",
 		"VansJsonFileStorage::Write",
@@ -16471,32 +18576,45 @@ bool TestVolumetricParticleInjectionContract()
 {
 	using VansGraphics::VansParticleAsset;
 	using VansGraphics::VansParticleAssetJsonCodec;
-	Vans::ParticleJson surfaceDefinition = {
+	using ParticleTestJson = nlohmann::json;
+	const auto decodeParticle = [](const ParticleTestJson& root,
+		const std::filesystem::path& path, VansParticleAsset& asset, std::string& error)
+	{
+		return VansParticleAssetJsonCodec::Decode(
+			Vans::DecodeSerializedValueJson(root), path, asset, error);
+	};
+	const auto encodeParticle = [](const VansParticleAsset& asset)
+	{
+		return Vans::EncodeSerializedValueJson<ParticleTestJson>(
+			VansParticleAssetJsonCodec::Encode(asset));
+	};
+	ParticleTestJson surfaceDefinition = {
 		{ "name", "SurfaceParticle" },
 		{ "global", {
 			{ "duration", 5.0 }, { "loop", true }, { "prewarm", false },
 			{ "emissionFrame", "World" } } },
-		{ "emitters", Vans::ParticleJson::array({ {
+		{ "emitters", ParticleTestJson::array({ {
 			{ "name", "Emitter" }, { "enabled", true }, { "maxParticles", 16 },
 			{ "spawn", { { "type", "RateOverTime" }, { "rate", 10.0 } } },
-			{ "initialize", Vans::ParticleJson::array({
+			{ "initialize", ParticleTestJson::array({
 				{ { "module", "InitLifetime" },
 				  { "lifetime", { { "mode", "Constant" }, { "value", 2.0 } } } },
 				{ { "module", "InitSize" },
 				  { "size", { { "mode", "Constant" }, { "value", 2.0 } } } },
 				{ { "module", "InitColor" },
-				  { "color", Vans::ParticleJson::array({ 1.0, 1.0, 1.0, 1.0 }) } }
+				  { "color", ParticleTestJson::array({ 1.0, 1.0, 1.0, 1.0 }) } }
 			}) },
-			{ "update", Vans::ParticleJson::array() },
+			{ "update", ParticleTestJson::array() },
 			{ "renderer", {
-				{ "type", "Billboard" }, { "sortMode", "None" } } }
+				{ "type", "Billboard" }, { "simulationOrder", "Stable" },
+				{ "renderSortMode", "None" } } }
 		} }) }
 	};
 
 	std::string error;
 	auto surfaceAssetOwner = std::make_shared<VansParticleAsset>();
 	auto& surfaceAsset = *surfaceAssetOwner;
-	if (!Expect(VansParticleAssetJsonCodec::Decode(
+	if (!Expect(decodeParticle(
 		surfaceDefinition, "surfaceDefinition.particle", surfaceAsset, error),
 		"A surfaceDefinition particle asset without renderer.volumetric was rejected") ||
 		!Expect(surfaceAsset.m_Emitters.size() == 1u &&
@@ -16514,7 +18632,7 @@ bool TestVolumetricParticleInjectionContract()
 		"The disabled volumetric option changed the surfaceDefinition surface-particle path"))
 		return false;
 
-	Vans::ParticleJson volumetric = surfaceDefinition;
+	ParticleTestJson volumetric = surfaceDefinition;
 	volumetric["name"] = "VolumetricParticle";
 	volumetric["emitters"][0]["renderer"]["type"] = "None";
 	volumetric["emitters"][0]["renderer"]["volumetric"] = {
@@ -16530,7 +18648,7 @@ bool TestVolumetricParticleInjectionContract()
 	auto volumetricAssetOwner = std::make_shared<VansParticleAsset>();
 	auto& volumetricAsset = *volumetricAssetOwner;
 	error.clear();
-	if (!Expect(VansParticleAssetJsonCodec::Decode(
+	if (!Expect(decodeParticle(
 		volumetric, "volumetric.particle", volumetricAsset, error),
 		("A valid volumetric particle asset was rejected: " + error).c_str()))
 		return false;
@@ -16542,15 +18660,14 @@ bool TestVolumetricParticleInjectionContract()
 	if (!Expect(volumetricRuntime.GetRenderBuffer().empty() &&
 		!volumetricRuntime.GetVolumetricRenderBuffer().empty() &&
 		volumetricRuntime.HasVolumetricInjectionEnabled() &&
-		volumetricRuntime.m_AliveInstanceCount.load() > 0u,
+		volumetricRuntime.AliveInstanceCount() > 0u,
 		"A volume-only emitter did not suppress only its surface instances") ||
 		!Expect(volumetricRuntime.GetVolumetricRenderBuffer()[0].m_Metadata.w == 201u &&
 			std::abs(volumetricRuntime.GetVolumetricRenderBuffer()[0].
 				m_DistanceAndPadding.x - 80.0f) < 1.0e-5f,
 			"Volumetric particle candidate parameters were not baked into frame data"))
 		return false;
-	const Vans::ParticleJson encoded =
-		VansParticleAssetJsonCodec::Encode(volumetricAsset);
+	const ParticleTestJson encoded = encodeParticle(volumetricAsset);
 	if (!Expect(encoded["emitters"][0]["renderer"].contains("volumetric") &&
 		encoded["emitters"][0]["renderer"]["volumetric"]["enabled"].get<bool>() &&
 		encoded["emitters"][0]["renderer"]["volumetric"]["injectionPriority"].get<unsigned>() == 201u,
@@ -16560,9 +18677,9 @@ bool TestVolumetricParticleInjectionContract()
     disabledJson["emitters"][0]["renderer"]["volumetric"]["enabled"] = false;
     disabledJson["emitters"][0]["renderer"]["volumetric"]["extinctionPerMeter"] = 2.25f;
     VansParticleAsset disabledAsset;
-    if (!Expect(VansParticleAssetJsonCodec::Decode(disabledJson, "disabled.particle", disabledAsset, error),
+    if (!Expect(decodeParticle(disabledJson, "disabled.particle", disabledAsset, error),
         "Disabled particle definition failed to decode")) return false;
-    const auto disabledTuningEncoded = VansParticleAssetJsonCodec::Encode(disabledAsset);
+    const auto disabledTuningEncoded = encodeParticle(disabledAsset);
 	if (!Expect(
 		disabledTuningEncoded["emitters"][0]["renderer"].contains("volumetric") &&
 		!disabledTuningEncoded["emitters"][0]["renderer"]["volumetric"]["enabled"].get<bool>() &&
@@ -16570,20 +18687,20 @@ bool TestVolumetricParticleInjectionContract()
 			["extinctionPerMeter"].get<float>() - 2.25f) < 1.0e-5f,
 		"Disabled volumetric tuning was discarded before the artist opted in"))
 		return false;
-	Vans::ParticleJson invalid = volumetric;
+	ParticleTestJson invalid = volumetric;
 	invalid["emitters"][0]["renderer"]["volumetric"]["anisotropy"] = 1.0;
 	VansParticleAsset invalidAsset;
 	error.clear();
-	if (!Expect(!VansParticleAssetJsonCodec::Decode(
+	if (!Expect(!decodeParticle(
 		invalid, "invalid.particle", invalidAsset, error),
 		"An invalid volumetric-particle anisotropy value was accepted"))
 		return false;
 
-	Vans::ParticleJson lifecycle = volumetric;
+	ParticleTestJson lifecycle = volumetric;
 	lifecycle["name"] = "LifecycleDrivenParticle";
 	lifecycle["emitters"][0]["maxParticles"] = 1u;
 	lifecycle["emitters"][0]["spawn"]["rate"] = 10.0;
-	lifecycle["emitters"][0]["initialize"] = Vans::ParticleJson::array({
+	lifecycle["emitters"][0]["initialize"] = ParticleTestJson::array({
 		{ { "module", "InitLifetime" }, { "enabled", true },
 		  { "lifetime", { { "mode", "Constant" }, { "value", 2.0 } } } },
 		{ { "module", "InitVelocity" }, { "enabled", true },
@@ -16591,13 +18708,13 @@ bool TestVolumetricParticleInjectionContract()
 		{ { "module", "InitSize" }, { "enabled", true },
 		  { "size", { { "mode", "Constant" }, { "value", 2.0 } } } }
 	});
-	lifecycle["emitters"][0]["update"] = Vans::ParticleJson::array({
+	lifecycle["emitters"][0]["update"] = ParticleTestJson::array({
 		{ { "module", "UpdateSizeOverLifetime" }, { "enabled", true },
-		  { "curve", Vans::ParticleJson::array({
+		  { "curve", ParticleTestJson::array({
 			  { { "t", 0.0 }, { "value", 2.0 } },
 			  { { "t", 1.0 }, { "value", 2.0 } } }) } },
 		{ { "module", "UpdateColorOverLifetime" }, { "enabled", true },
-		  { "gradient", { { "stops", Vans::ParticleJson::array({
+		  { "gradient", { { "stops", ParticleTestJson::array({
 			  { { "t", 0.0 }, { "color", { 1.0, 1.0, 1.0, 1.0 } } },
 			  { { "t", 0.5 }, { "color", { 1.0, 1.0, 1.0, 1.0 } } },
 			  { { "t", 1.0 }, { "color", { 1.0, 1.0, 1.0, 0.0 } } }
@@ -16605,35 +18722,35 @@ bool TestVolumetricParticleInjectionContract()
 	});
 	VansParticleAsset lifecycleAsset;
 	error.clear();
-	if (!Expect(VansParticleAssetJsonCodec::Decode(
+	if (!Expect(decodeParticle(
 		lifecycle, "lifecycle.particle", lifecycleAsset, error),
 		("A valid lifecycle-module particle was rejected: " + error).c_str()))
 		return false;
 	VansGraphics::VansParticleEmitterRuntime lifecycleEmitter(*lifecycleAsset.m_Emitters[0]);
 	lifecycleEmitter.Update(0.11f, glm::mat4(1.0f));
 	lifecycleEmitter.Update(0.11f, glm::mat4(1.0f));
-	if (!Expect(lifecycleEmitter.m_ParticlePool.m_AliveCount == 1u &&
-		std::abs(lifecycleEmitter.m_ParticlePool.m_Size[0] - 4.0f) < 1.0e-5f,
+	const auto& lifecyclePool = lifecycleEmitter.ParticlePool();
+	if (!Expect(lifecyclePool.m_AliveCount == 1u &&
+		std::abs(lifecyclePool.m_Size[0] - 4.0f) < 1.0e-5f,
 		"Size Over Lifetime compounded the previous frame instead of the initial size") ||
-		!Expect(std::abs(lifecycleEmitter.m_ParticlePool.m_Position[0].y - 0.12f) < 1.0e-5f,
+		!Expect(std::abs(lifecyclePool.m_Position[0].y - 0.12f) < 1.0e-5f,
 			"Initial velocity must integrate only the 0.12 seconds since the scheduled birth at 0.1 seconds"))
 		return false;
 	lifecycleEmitter.Update(1.4f, glm::mat4(1.0f));
 	lifecycleEmitter.Update(0.1f, glm::mat4(1.0f));
-	if (!Expect(lifecycleEmitter.m_ParticlePool.m_Color[0].a > 0.0f &&
-		lifecycleEmitter.m_ParticlePool.m_Color[0].a < 0.5f,
+	if (!Expect(lifecyclePool.m_Color[0].a > 0.0f &&
+		lifecyclePool.m_Color[0].a < 0.5f,
 		"Color Over Lifetime did not fade near the end of normalized lifetime"))
 		return false;
-	const Vans::ParticleJson lifecycleEncoded =
-		VansParticleAssetJsonCodec::Encode(lifecycleAsset);
+	const ParticleTestJson lifecycleEncoded = encodeParticle(lifecycleAsset);
 	if (!Expect(lifecycleEncoded["emitters"][0]["update"][0]
 		.value("enabled", false),
 		"Particle module enabled state did not round-trip"))
 		return false;
-	Vans::ParticleJson invalidCurve = lifecycle;
+	ParticleTestJson invalidCurve = lifecycle;
 	invalidCurve["emitters"][0]["update"][0]["curve"][1]["t"] = 0.0;
 	error.clear();
-	if (!Expect(!VansParticleAssetJsonCodec::Decode(
+	if (!Expect(!decodeParticle(
 		invalidCurve, "invalid_curve.particle", invalidAsset, error),
 		"An unordered normalized lifetime curve was accepted"))
 		return false;
@@ -16681,10 +18798,15 @@ bool TestVolumetricParticleInjectionContract()
 	const std::string particleBuilder = readText(sourceRoot / "Source" /
 		"EngineCore" / "RenderCore" / "SceneBuild" /
 		"VansSceneParticleComponentBuilder.cpp");
+	const std::string sceneSource = readText(sourceRoot / "Source" / "EngineCore" /
+		"RenderCore" / "VansScene.cpp");
 	const std::string inspector = readText(sourceRoot / "Source" / "EngineCore" /
 		"EditorCore" / "Windows" / "VansInspectorWindow.cpp");
 	const std::size_t prewarmTransform = particleBuilder.find("SetOwnerWorldTransform(");
 	const std::size_t playOnAwake = particleBuilder.find("component->Play()");
+	const std::size_t particleSignal = sceneSource.find("Particle::SignalUpdate");
+	const std::size_t materialCapture = sceneSource.find("Material::CaptureFrameData", particleSignal);
+	const std::size_t particleWait = sceneSource.find("Particle::WaitForUpdate", materialCapture);
 	if (!Expect(
 		nearMedia.find("if (!featureRequested)") != std::string::npos &&
 		nearMedia.find("CreateVolumetricParticleResources()") != std::string::npos &&
@@ -16724,6 +18846,9 @@ bool TestVolumetricParticleInjectionContract()
 		!fs::exists(shaderRoot / "VolumetricParticleInjection.comp") &&
 		prewarmTransform != std::string::npos && playOnAwake != std::string::npos &&
 		prewarmTransform < playOnAwake &&
+		particleSignal != std::string::npos && materialCapture != std::string::npos &&
+		particleWait != std::string::npos && particleSignal < materialCapture &&
+		materialCapture < particleWait &&
 		nearMedia.find("m_VolumetricParticlePassSets[target], 5") == std::string::npos &&
 		nearMedia.find("m_VolumetricParticlePassSets[target], 6") == std::string::npos &&
 		temporal.find("VANS_NEAR_MEDIA_WITH_PARTICLE_REACTIVE_HISTORY 1") !=
@@ -16752,7 +18877,7 @@ bool TestVolumetricParticleInjectionContract()
 	auto decodedDemoAssetOwner = std::make_shared<VansParticleAsset>();
 	auto& decodedDemoAsset = *decodedDemoAssetOwner;
 	error.clear();
-	if (!Expect(VansParticleAssetJsonCodec::Decode(
+	if (!Expect(decodeParticle(
 		demoAssetJson, demoAsset.string(), decodedDemoAsset, error),
 		("DemoHall volumetric-particle asset failed runtime decoding: " + error).c_str()))
 		return false;
@@ -16763,16 +18888,29 @@ bool TestVolumetricParticleInjectionContract()
 	// actual grenade asset intentionally waits for its post-spawn emission delay.
 	decodedDemoAsset.m_Prewarm = true;
 	decodedDemoAsset.m_StartDelay = 0.0f;
-	VansGraphics::VansParticleRuntime demoRuntime;
-	demoRuntime.SetAsset(decodedDemoAssetOwner);
-	demoRuntime.m_LocalToWorld = glm::mat4(1.0f);
-	demoRuntime.m_LocalToWorld[3] = glm::vec4(-3.0f, 1.0f, 0.0f, 1.0f);
-	demoRuntime.Play();
-	if (!Expect(!demoRuntime.GetVolumetricRenderBuffer().empty(),
+	VansGraphics::VansParticleManager demoManager;
+	const auto demoHandle = demoManager.Create(decodedDemoAssetOwner);
+	glm::mat4 demoTransform(1.0f);
+	demoTransform[3] = glm::vec4(-3.0f, 1.0f, 0.0f, 1.0f);
+	demoManager.SetOwnerWorldTransform(demoHandle,demoTransform);
+	const auto* demoRuntime = demoManager.Resolve(demoHandle);
+	demoManager.Queue(demoHandle, VansGraphics::VansParticleControl::Play);
+	demoManager.TickMainThread(0); demoManager.WaitForUpdateAndSwap();
+	if (!Expect(demoManager.ResimulationSteps() > 0 &&
+		demoManager.ResimulationSteps() <= VansGraphics::VansParticleManager::MaxResimulationStepsPerTick &&
+		demoManager.PendingResimulations() == 1,
+		"Particle prewarm did not remain inside the worker resimulation budget"))
+		return false;
+	for (int tick = 0; tick < 32 && demoManager.PendingResimulations() != 0; ++tick)
+	{
+		demoManager.TickMainThread(0); demoManager.WaitForUpdateAndSwap();
+	}
+	if (!Expect(demoManager.PendingResimulations() == 0 &&
+		!demoRuntime->GetVolumetricRenderBuffer().empty(),
 		"DemoHall prewarmed test asset produced no immediately previewable volume instances") ||
-		!Expect(std::abs(demoRuntime.GetVolumetricRenderBuffer()[0].
+		!Expect(std::abs(demoRuntime->GetVolumetricRenderBuffer()[0].
 			m_WorldPositionRadius.x + 3.0f) < 2.5f &&
-			std::abs(demoRuntime.GetVolumetricRenderBuffer()[0].
+			std::abs(demoRuntime->GetVolumetricRenderBuffer()[0].
 				m_WorldPositionRadius.z) < 2.5f,
 			"Prewarmed volumetric particles were simulated before the object transform"))
 		return false;
@@ -16782,7 +18920,7 @@ bool TestVolumetricParticleInjectionContract()
 	float maximumHeight = -1000000.0f;
 	float minimumExtinction = 1000000.0f;
 	float maximumExtinction = 0.0f;
-	for (const auto& instance : demoRuntime.GetVolumetricRenderBuffer())
+	for (const auto& instance : demoRuntime->GetVolumetricRenderBuffer())
 	{
 		minimumRadius = std::min(minimumRadius, instance.m_WorldPositionRadius.w);
 		maximumRadius = std::max(maximumRadius, instance.m_WorldPositionRadius.w);
@@ -16793,7 +18931,7 @@ bool TestVolumetricParticleInjectionContract()
 		maximumExtinction = std::max(
 			maximumExtinction, instance.m_ScatteringAlbedoExtinction.a);
 	}
-	if (!Expect(demoRuntime.GetVolumetricRenderBuffer().size() > 180u &&
+	if (!Expect(demoRuntime->GetVolumetricRenderBuffer().size() > 180u &&
 		maximumHeight - minimumHeight > 1.5f,
 		"DemoHall smoke does not form a dense, continuous rising column") ||
 		!Expect(maximumRadius > minimumRadius * 2.0f,
@@ -16801,20 +18939,25 @@ bool TestVolumetricParticleInjectionContract()
 		!Expect(minimumExtinction < maximumExtinction * 0.6f,
 			"DemoHall smoke does not fade through volumetric extinction"))
 		return false;
-	demoRuntime.SwapBuffers();
-	if (!Expect(!demoRuntime.GetVolumetricRenderBuffer().empty(),
+	demoManager.TickMainThread(0); demoManager.WaitForUpdateAndSwap();
+	if (!Expect(!demoRuntime->GetVolumetricRenderBuffer().empty(),
 		"DemoHall prewarmed volume instances did not survive the first frame swap"))
 		return false;
 	VansScriptParticleComponent facadeComponent;
 	VansGraphics::VansParticleManager facadeManager;
     facadeComponent.m_Manager = &facadeManager;
     facadeComponent.m_Instance = facadeManager.Create(decodedDemoAssetOwner);
-	facadeComponent.Play(); facadeManager.Prepare();
+	facadeComponent.Play();
+	for (int tick = 0; tick < 32; ++tick)
+	{
+		facadeManager.TickMainThread(0); facadeManager.WaitForUpdateAndSwap();
+		if (facadeManager.PendingResimulations() == 0) break;
+	}
 	if (!Expect(facadeComponent.IsPlaying() &&
 		!facadeComponent.GetRuntime()->GetVolumetricRenderBuffer().empty(),
 		"Particle component Play bypassed runtime prewarm"))
 		return false;
-	facadeComponent.Stop(); facadeManager.Prepare();
+	facadeComponent.Stop(); facadeManager.TickMainThread(0); facadeManager.WaitForUpdateAndSwap();
 	if (!Expect(!facadeComponent.IsPlaying() &&
 		facadeComponent.GetRuntime()->GetRenderBuffer().empty() &&
 		facadeComponent.GetRuntime()->GetVolumetricRenderBuffer().empty(),
@@ -17222,6 +19365,33 @@ bool TestTerrainAuthoringContract()
 		record, std::make_shared<const VansTerrainAsset>(terrain), imagePaths, repository, error);
 	if (!Expect(session != nullptr, error.c_str()))
 		return false;
+	const std::array<float, 3> rayOrigin{ 6.25f, 100.0f, -7.75f };
+	const std::array<float, 3> rayDirection{ 0.0f, -2.0f, 0.0f };
+	VansTerrainSurfaceRayHit sharedHit;
+	std::array<float, 3> authoringHit{};
+	float authoringPixelX = 0.0f;
+	float authoringPixelY = 0.0f;
+	if (!Expect(VansTerrainSurfaceQuery::Raycast(
+			session->WorkingAsset(), rayOrigin, rayDirection, 1000.0f, sharedHit) &&
+		session->Raycast(rayOrigin, rayDirection, authoringHit, authoringPixelX, authoringPixelY) &&
+		std::abs(authoringHit[0] - sharedHit.position[0]) < 1.0e-5f &&
+		std::abs(authoringHit[1] - sharedHit.position[1]) < 1.0e-5f &&
+		std::abs(authoringHit[2] - sharedHit.position[2]) < 1.0e-5f &&
+		std::abs(authoringPixelX - sharedHit.pixelX) < 1.0e-5f &&
+		std::abs(authoringPixelY - sharedHit.pixelY) < 1.0e-5f,
+		"Terrain authoring raycast diverged from the shared pixel-center surface query"))
+		return false;
+	if (!Expect(VansTerrainAuthoringSession::Open(
+		record, std::make_shared<const VansTerrainAsset>(terrain), imagePaths, repository, error) == session,
+		"Reopening terrain did not reuse its document companion"))
+		return false;
+	auto conflictingImagePaths = imagePaths;
+	conflictingImagePaths[0] += ".other";
+	if (!Expect(!VansTerrainAuthoringSession::Open(
+		record, std::make_shared<const VansTerrainAsset>(terrain), conflictingImagePaths, repository, error) &&
+		!error.empty(), "Terrain document accepted a second pixel editing target"))
+		return false;
+	error.clear();
 	const std::vector<std::uint16_t> strokeBaseline = session->WorkingAsset().heights;
 	const bool strokeBegan = session->BeginStroke(VansTerrainBrushOperation::Raise, error);
 	const VansTerrainBrushResult strokeDab = session->ApplyDab(raise);
@@ -17552,6 +19722,14 @@ void RunPrefabContractTests();
 
 int main(int argc, char** argv)
 {
+	std::string engineRoot;
+	std::string engineRootError;
+	if (!Vans::VansEnginePaths::DiscoverEngineRoot(engineRoot, engineRootError) ||
+		!Vans::VansProjectManager::Get().ConfigureEngineRoot(engineRoot, engineRootError))
+	{
+		std::cerr << "ENGINE_ROOT_CONFIGURATION_FAIL " << engineRootError << '\n';
+		return 211;
+	}
     if (argc == 2 && std::string(argv[1]) == "--prefab")
     {
         VANS_INIT_MAIN_THREAD();
@@ -17569,6 +19747,8 @@ int main(int argc, char** argv)
     if (argc == 2 && std::string(argv[1]) == "--particle-core")
         return TestParticleCoreContract() ? 0 : 170;
 	VANS_INIT_MAIN_THREAD();
+	if (argc == 2 && std::string(argv[1]) == "--gameplay-frame-order")
+		return TestGameplayFrameOrder() ? 0 : 3;
     if (argc == 2 && std::string(argv[1]) == "--recent-projects") return TestRecentProjectsPruningContract() ? 0 : 1;
     if (argc == 2 && std::string(argv[1]) == "--cursor") return RunCursorContractTests() ? 0 : 1;
     if (argc == 2 && std::string(argv[1]) == "--cursor-projects") return RunCursorProjectContractTests() ? 0 : 1;
@@ -17641,19 +19821,32 @@ int main(int argc, char** argv)
 		return TestImpactDecalRuntimeContract() ? 0 : 180;
 	if (argc == 2 && std::string(argv[1]) == "--decal-gpu")
 		return TestDecalGpuContract() ? 0 : 181;
+	if (argc == 2 && std::string(argv[1]) == "--package-manifest")
+		return TestPackageManifestRoundTrip() ? 0 : 1;
 	if (argc == 2 && std::string(argv[1]) == "--packaged-resource-plan")
 		return TestPackagedAudioResourcePlanRoundTrip() &&
-			TestMediaComponentGuidProjection() ? 0 : 168;
+			TestMediaComponentGuidProjection() &&
+			TestSceneProjectionStrictAdmission() ? 0 : 168;
 	if (argc == 2 && std::string(argv[1]) == "--animation-clip-memory-asset")
 		return TestAnimationClipMemoryAssetContract() ? 0 : 165;
 	if (argc == 2 && std::string(argv[1]) == "--project-asset-memory-bootstrap")
 		return TestProjectAssetMemoryBootstrapContract() ? 0 : 166;
+	if (argc == 2 && std::string(argv[1]) == "--demohall-scene-projection")
+		return TestProjectAssetMemoryBootstrapContract(
+			false, "DemoHallProject") ? 0 : 216;
 	if (argc == 2 && std::string(argv[1]) == "--runtime-config-memory-boundary")
 		return TestRuntimeConfigurationMemoryBoundaryContract() ? 0 : 167;
 	if (argc == 2 && std::string(argv[1]) == "--vegetation-memory-asset")
 		return TestVegetationMemoryAssetContract() ? 0 : 160;
 	if (argc == 2 && std::string(argv[1]) == "--ui-memory-assets")
 		return TestUIAssetMemoryBootstrapContract() ? 0 : 162;
+	if (argc == 2 && std::string(argv[1]) == "--ui-action-event")
+		return TestUIActionEventContract() && TestLuaUIActionEventContract() ? 0 : 210;
+	if (argc == 2 && std::string(argv[1]) == "--lua-runtime-ui")
+		return TestLuaUIActionEventContract() &&
+			TestLuaUIValueCodecContract() &&
+			TestLuaUIStateIsolationContract() &&
+			TestLuaScriptDeclaredAssetDependencyContract() ? 0 : 211;
 	if (argc == 2 && std::string(argv[1]) == "--asset-working-copy-memory")
 		return TestAssetWorkingCopyMemoryPublicationContract() ? 0 : 163;
 	if (argc == 2 && std::string(argv[1]) == "--generated-material-memory")
@@ -17665,10 +19858,12 @@ int main(int argc, char** argv)
 	if (argc == 2 && std::string(argv[1]) == "--project-settings-explicit-save")
 		return TestProjectSettingsExplicitSaveContract() ? 0 : 155;
 	if (argc == 2 && std::string(argv[1]) == "--scene-memory-load")
-		return TestSceneMemoryDependencyPlanContract() ? 0 : 156;
+		return TestSceneMemoryDependencyPlanContract() &&
+			TestSceneResourceFailurePropagationContract() ? 0 : 156;
 	if (argc == 2 && std::string(argv[1]) == "--runtime-world-components")
 		return TestRuntimeWorldComponentEnabledContract() &&
 			TestRuntimeWorldComponentLifetimeContract() &&
+			TestRuntimeWorldClearInvalidatesHandlesContract() &&
 			TestRuntimeComponentKeyCanonicalizationContract() &&
 			TestRuntimeWorldCommandBufferContract() ? 0 : 161;
 	if (argc == 2 && std::string(argv[1]) == "--atmosphere")
@@ -17704,21 +19899,40 @@ int main(int argc, char** argv)
 			TestDrawSubmissionContract() &&
 			TestGIProbeUpdateScheduleContract() &&
 			TestFramePhaseThreadLocalContract() ? 0 : 139;
+	if (argc == 2 && std::string(argv[1]) == "--upscaler")
+		return TestUnifiedUpscalerHistoryContract() &&
+			TestUnifiedUpscalerResolutionContract() &&
+			TestUnifiedUpscalerManagerContract() &&
+			TestUnifiedUpscalerJitterContract() &&
+			TestFSRTemporalProjectionContract() &&
+			TestVulkanDeviceDepthRangeContract() ? 0 : 219;
 	if (argc == 2 && std::string(argv[1]) == "--frame-submit")
 		return TestAsyncComputeSubmitGraphContract() && TestFrameSubmitRetirementContract() ? 0 : 139;
 	if (argc == 2 && std::string(argv[1]) == "--audio-environment")
-		return TestAudioReverbEnvironmentContract() && TestAudioReverbZoneRuntimeProjection()
+		return TestMediaDecodeSessionContract() && TestAudioDistanceAttenuationContract() &&
+			TestAudioBusContract() && TestAudioMixConfigContract() &&
+			TestAudioOcclusionContract() && TestAudioDirectionalityContract() &&
+			TestAudioComponentOcclusionReadContract() && TestAudioPreviewSettingsContract() &&
+			TestAudioVoiceVirtualizationContract() &&
+			TestAudioReverbEnvironmentContract() && TestAudioReverbZoneRuntimeProjection()
 			&& TestAudioReverbPresetAssetContract() && TestAudioBusSnapshotAssetContract()
-			&& TestAudioDuckingRulesAssetContract() && TestScriptLightIndexRebindFacadeContract() ? 0 : 139;
+			&& TestAudioDuckingRulesAssetContract() && TestScriptLightIndexRebindFacadeContract()
+			&& TestAudioSourcePoolContract() ? 0 : 139;
 	if (argc == 2 && std::string(argv[1]) == "--profiler")
 		return TestProfilerSnapshotContract() && TestProfilerStableCaptureContract()
             && TestProfilerOutOfOrderCompletionContract() ? 0 : 140;
+	if (argc == 2 && std::string(argv[1]) == "--asset-policies")
+		return TestAssetPolicies() ? 0 : 2;
 	if (argc == 2 && std::string(argv[1]) == "--asset-type-serialization")
 		return TestAssetTypeSerializationContract() ? 0 : 136;
 	if (argc == 2 && std::string(argv[1]) == "--navigation-ai")
 		return RunNavigationAIContractTests() ? 0 : 148;
 	if (argc == 2 && std::string(argv[1]) == "--animation-project-assets")
 		return TestAnimationProjectAnimatorAssetsCanonicalContract() ? 0 : 137;
+	if (argc == 2 && std::string(argv[1]) == "--current-project-timelines")
+		return TestCurrentProjectTimelineAssetsContract() ? 0 : 217;
+	if (argc == 2 && std::string(argv[1]) == "--camera-control")
+		return TestCameraControlArbiterContract() ? 0 : 218;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-pistol-poses")
 		return TestSurvivalPistolPoseContract("DemoHallProject", "Assets") ? 0 : 139;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-pistol-overlay")
@@ -17744,6 +19958,12 @@ int main(int argc, char** argv)
 		return TestTransformGraphAnchorContract() ? 0 : 135;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-packaging")
 		return TestGAFPackagingContract() ? 0 : 103;
+	if (argc == 2 && std::string(argv[1]) == "--gaf-asset-schema")
+	{
+		if (!TestGAFGameplayTagsContract()) return 94;
+		if (!TestGAFTargetingContract()) return 97;
+		return TestGAFAssetSchemaAndCookContract() ? 0 : 102;
+	}
 	if (argc == 2 && std::string(argv[1]) == "--gaf-core")
 	{
 		if (!TestGAFDefinitionAndServiceContract())
@@ -17768,8 +19988,19 @@ int main(int argc, char** argv)
 		}
 		return 0;
 	}
-	if (argc == 2 && std::string(argv[1]) == "--timeline-demohall")
-		return TestTimelineDemoHallAssetContract() ? 0 : 84;
+	if (argc == 2 && std::string(argv[1]) == "--timeline-registry")
+		return TestTimelineRegistryContract() && TestTimelineSerializationContract() &&
+			TestTimelinePropertyTransformContract() &&
+			TestTimelineCompileEvaluateContract() ? 0 : 58;
+	if (argc == 2 && std::string(argv[1]) == "--timeline-runtime")
+		return TestTimelinePointAndRangeContract() && TestTimelineSessionContract() &&
+			TestTimelineSessionFailureTransactionContract() &&
+			TestTimelineStationaryContinuousContract() && TestTimelineSubTimelineContract() &&
+			TestTimelinePreAnimatedStackContract() ? 0 : 219;
+	if (argc == 2 && std::string(argv[1]) == "--timeline-event")
+		return TestTimelineEventContract() ? 0 : 155;
+	if (argc == 2 && std::string(argv[1]) == "--event-dispatch-mutation")
+		return TestEventDispatchMutationContract() ? 0 : 156;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-window-break")
 		return TestGAFDemoHallWindowBreakContract() ? 0 : 108;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-player-attack")
@@ -17815,7 +20046,7 @@ int main(int argc, char** argv)
 		return RunProceduralAnimationContractTests() ? 0 : 129;
 	if (argc == 2 && std::string(argv[1]) == "--procedural-animation-integration")
 		return TestAnimationTargetPostProcessContract()
-			&& TestAnimationV2RetargetMotionMatchingSceneContract()
+			&& TestAnimationV2RetargetSceneContract()
 			&& TestProjectRetargetOwnedSkeletonAndSkinningContract()
 			&& TestRetargetUnmappedTargetBoneInheritanceContract()
 			&& TestRetargetConfiguredLimbChainContract()
@@ -17832,6 +20063,8 @@ int main(int argc, char** argv)
 		return TestAnimationGraphSetSwitchRuntimeContract() ? 0 : 132;
 	if (argc == 2 && std::string(argv[1]) == "--animation-layer-root-frame")
 		return TestAnimationLayerRootReferenceFrameContract() ? 0 : 139;
+	if (argc == 2 && std::string(argv[1]) == "--animation-authoring-boundary")
+		return TestAnimationAuthoringBoundaryContract() ? 0 : 191;
 	if (argc == 2 && std::string(argv[1]) == "--animation-graph-sets-integration")
 		return TestAnimatorCanonicalFormatContract()
 			&& TestAnimationProjectAnimatorAssetsCanonicalContract()
@@ -17846,7 +20079,7 @@ int main(int argc, char** argv)
 			&& TestAnimationTargetPostProcessContract()
 			&& TestAnimationSyncedGraphStateContract() ? 0 : 133;
 	if (argc == 2 && std::string(argv[1]) == "--animation-v2-scene")
-		return TestAnimationV2RetargetMotionMatchingSceneContract() ? 0 : 115;
+		return TestAnimationV2RetargetSceneContract() ? 0 : 115;
 	if (argc == 2 && std::string(argv[1]) == "--point-shadow-atlas-policy")
 		return TestPointShadowAtlasUpdatePolicy() ? 0 : 128;
 	if (!TestProjectSettingsExplicitSaveContract())
@@ -17928,7 +20161,7 @@ int main(int argc, char** argv)
 		return 114;
 	if (!TestMotionMatchingPivotDirectionContract())
 		return 113;
-	if (!TestAnimationV2RetargetMotionMatchingSceneContract())
+	if (!TestAnimationV2RetargetSceneContract())
 		return 115;
 	if (!TestDemoHallSurvivalBackAxeSceneContract())
 		return 138;
@@ -18004,12 +20237,12 @@ int main(int argc, char** argv)
         return 3;
 	if (!TestTimelineRegistryContract())
 		return 58;
+	if (!TestTimelinePropertyTransformContract())
+		return 157;
 	if (!TestTimelineSerializationContract())
 		return 59;
 	if (!TestTimelineEditorInteractionContract())
 		return 76;
-	if (!TestTimelineDemoHallAssetContract())
-		return 84;
 	if (!TestTimelineCompileEvaluateContract())
 		return 72;
 	if (!TestTimelineGenericExtensionContract())
@@ -18052,6 +20285,8 @@ int main(int argc, char** argv)
         return 24;
     if (!TestRuntimeWorldComponentLifetimeContract())
         return 29;
+	if (!TestRuntimeWorldClearInvalidatesHandlesContract())
+		return 31;
     if (!TestRuntimeComponentKeyCanonicalizationContract())
         return 30;
     if (!TestRuntimeWorldCommandBufferContract())
@@ -18066,6 +20301,10 @@ int main(int argc, char** argv)
         return 36;
     if (!TestScriptUIRuntimeOpenScreensMirrorContract())
         return 37;
+	if (!TestUIActionEventContract())
+		return 210;
+	if (!TestLuaUIActionEventContract())
+		return 210;
     if (!TestScriptObjectOwnedTransformReleaseContract())
         return 33;
     if (!TestScriptLightIndexRebindFacadeContract())
@@ -18132,7 +20371,9 @@ int main(int argc, char** argv)
 		!TestRenderWorldContract() ||
 		!TestFramePhaseThreadLocalContract())
 		return 139;
-	if (!TestAudioDistanceAttenuationContract())
+    if (!TestMediaDecodeSessionContract())
+        return 139;
+    if (!TestAudioDistanceAttenuationContract())
         return 4;
     if (!TestAudioBusContract())
         return 5;
@@ -18144,12 +20385,10 @@ int main(int argc, char** argv)
         return 8;
     if (!TestAudioComponentOcclusionReadContract())
         return 9;
-    if (!TestAudioSourceBindingNullObjectContract())
-        return 10;
     if (!TestAudioPreviewSettingsContract())
-        return 11;
+        return 10;
     if (!TestAudioVoiceVirtualizationContract())
-        return 12;
+        return 11;
     if (!TestAudioReverbEnvironmentContract())
         return 13;
     if (!TestAudioReverbPresetAssetContract())

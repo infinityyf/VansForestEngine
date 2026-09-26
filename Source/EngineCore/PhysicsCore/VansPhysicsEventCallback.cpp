@@ -23,8 +23,6 @@ namespace VansEngine
 		const PxContactPairHeader& pairHeader,
 		const PxContactPair* pairs, PxU32 nbPairs)
 	{
-		VANS_LOG("[PhysX Callback] onContact called, nbPairs=" << nbPairs);
-
 		// 跳过已被删除的 actor
 		if (pairHeader.flags & PxContactPairHeaderFlag::eREMOVED_ACTOR_0 ||
 			pairHeader.flags & PxContactPairHeaderFlag::eREMOVED_ACTOR_1)
@@ -39,14 +37,6 @@ namespace VansEngine
 
 			VansPhysicsNode* nodeA = GetPhysicsNode(pairHeader.actors[0]);
 			VansPhysicsNode* nodeB = GetPhysicsNode(pairHeader.actors[1]);
-			VANS_LOG("[PhysX Callback] onContact pair " << i
-			         << ": actorA=" << pairHeader.actors[0]
-			         << " nodeA=" << nodeA
-			         << (nodeA ? (" name='" + nodeA->GetName() + "'") : "")
-			         << " actorB=" << pairHeader.actors[1]
-			         << " nodeB=" << nodeB
-			         << (nodeB ? (" name='" + nodeB->GetName() + "'") : "")
-			         << " events=0x" << std::hex << cp.events.operator unsigned int() << std::dec);
 			if (!nodeA || !nodeB) continue;
 
 			VansPhysicsContactEvent event;
@@ -76,13 +66,11 @@ namespace VansEngine
 			{
 				event.type = VansPhysicsContactEventType::CollisionEnter;
 				EnqueuePhysicsContactEvent(event);
-				VANS_LOG("[PhysX Callback] CollisionEnter: '" << event.nameA << "' <-> '" << event.nameB << "'");
 			}
 			if (cp.events & PxPairFlag::eNOTIFY_TOUCH_LOST)
 			{
 				event.type = VansPhysicsContactEventType::CollisionExit;
 				EnqueuePhysicsContactEvent(event);
-				VANS_LOG("[PhysX Callback] CollisionExit: '" << event.nameA << "' <-> '" << event.nameB << "'");
 			}
 		}
 	}
@@ -93,8 +81,6 @@ namespace VansEngine
 
 	void VansPhysicsEventCallback::onTrigger(PxTriggerPair* pairs, PxU32 count)
 	{
-		VANS_LOG("[PhysX Callback] onTrigger called, count=" << count);
-
 		for (PxU32 i = 0; i < count; ++i)
 		{
 			const PxTriggerPair& tp = pairs[i];
@@ -109,14 +95,6 @@ namespace VansEngine
 
 			VansPhysicsNode* triggerNode = GetPhysicsNode(tp.triggerActor);
 			VansPhysicsNode* otherNode   = GetPhysicsNode(tp.otherActor);
-			VANS_LOG("[PhysX Callback] onTrigger pair " << i
-			         << ": triggerActor=" << tp.triggerActor
-			         << " triggerNode=" << triggerNode
-			         << (triggerNode ? (" name='" + triggerNode->GetName() + "'") : "")
-			         << " otherActor=" << tp.otherActor
-			         << " otherNode=" << otherNode
-			         << (otherNode ? (" name='" + otherNode->GetName() + "'") : "")
-			         << " status=0x" << std::hex << static_cast<PxU32>(tp.status) << std::dec);
 			if (!triggerNode || !otherNode) continue;
 
 			VansPhysicsContactEvent event;
@@ -129,13 +107,11 @@ namespace VansEngine
 			{
 				event.type = VansPhysicsContactEventType::TriggerEnter;
 				EnqueuePhysicsContactEvent(event);
-				VANS_LOG("[PhysX Callback] TriggerEnter: trigger='" << event.nameA << "' other='" << event.nameB << "'");
 			}
 			else if (tp.status == PxPairFlag::eNOTIFY_TOUCH_LOST)
 			{
 				event.type = VansPhysicsContactEventType::TriggerExit;
 				EnqueuePhysicsContactEvent(event);
-				VANS_LOG("[PhysX Callback] TriggerExit: trigger='" << event.nameA << "' other='" << event.nameB << "'");
 			}
 		}
 	}

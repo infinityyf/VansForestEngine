@@ -1,15 +1,14 @@
-﻿#pragma once
+#pragma once
 #include "../VansNode.h"
+#include "../CameraCore/VansCameraCore.h"
 #include "../ScriptCore/VansCommonUtils.h"
-#include "../ScriptCore/VansTransform.h"
+#include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "VansGraphicsDevice.h"
 #include "VansRenderFrame.h"
-#include "../SceneCore/VansSceneCameraSettingsConfig.h"
 #include <climits>
 using namespace VansGraphics;
 namespace VansGraphics
 {
-	struct VansCameraControlPose;
 	class VansCamera : public VansNode
 	{
     private:
@@ -33,9 +32,10 @@ namespace VansGraphics
         void HandleKeyboardMovement(float forwardAxis, float rightAxis, float upAxis, float deltaTime);
 
         glm::vec4 GetPosition() { return glm::vec4(m_Position,1); }
-		VansCameraControlPose CaptureControlPose() const;
-		void ApplyControlPose(const VansCameraControlPose& pose);
-		void ApplyControlPoseChannels(const VansCameraControlPose& pose, std::uint32_t channels);
+		Vans::VansCameraViewSnapshot CaptureView() const;
+		void ApplyView(const Vans::VansCameraViewSnapshot& view);
+		bool SetLensLimits(Vans::VansCameraLensLimits limits, std::string& error);
+		const Vans::VansCameraLensLimits& LensLimits() const { return m_LensLimits; }
 
         glm::vec4 GetForward();
 
@@ -51,9 +51,9 @@ namespace VansGraphics
         float GetFarClip()  const { return m_FarClip; }
         float GetAspectRatio() const { return m_AspectRatio; }
 
-        void SetFov(float fov)       { m_Fov      = fov; }
-        void SetNearClip(float val);
-        void SetFarClip(float val);
+		void SetFov(float fov);
+		void SetNearClip(float val);
+		void SetFarClip(float val);
 
         // ── Transform 绑定与同步 ─────────────────────────────────────────────
         // 绑定 camera object 的 transformID，之后 input 与渲染均通过 Transform 驱动
@@ -78,11 +78,9 @@ namespace VansGraphics
         // 返回 false 表示点位于相机后方或视锥之外。
         bool ProjectWorldToViewport(const glm::vec3& worldPosition, glm::vec3& viewportPosition);
 
-        void ApplyCameraSettings(const Vans::VansSceneCameraSettingsConfig& cameraSettings);
-
-        void ResetToDefaults();
-
     private:
+		bool ApplyLens(Vans::VansCameraLens lens, const char* source);
+
         glm::vec3 m_Position;
         
         glm::vec3 m_Rotation; // pitch, yaw, roll
@@ -92,6 +90,7 @@ namespace VansGraphics
         float m_AspectRatio = 1.0f;
         float m_NearClip = 0.1f;
         float m_FarClip = 10000.0f;
+		Vans::VansCameraLensLimits m_LensLimits;
     public:
 
         VansCamera(VansGraphicsDevice* device);

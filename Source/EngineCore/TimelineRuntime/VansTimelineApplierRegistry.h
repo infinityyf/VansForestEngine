@@ -82,6 +82,8 @@ public:
 		const VansTimelineApplyContext& context,
 		const VansResolvedTimelineTarget& target,
 		VansTimelineOutputPayloadView payload) = 0;
+	// 恢复自有状态后返回 true；无可恢复状态的 Applier 同样返回 true。
+	// false 只表示无效自有 token 等真实恢复失败。
 	virtual bool Restore(VansTimelineRestoreToken token) = 0;
 	// Called as soon as a restoring writer becomes inactive, even when its restore
 	// token must wait below a higher-priority writer on the same resource.
@@ -94,8 +96,12 @@ class VansTimelineApplierRegistry
 {
 public:
 	bool Register(std::shared_ptr<IVansTimelineOutputApplier> applier, std::string& error);
-	bool Seal(std::string& error);
+	bool Seal(bool allowEmpty, std::string& error);
 	bool IsSealed() const { return m_Sealed; }
+	bool Empty() const { return m_Appliers.empty(); }
+	std::uint64_t ManifestHash() const;
+	std::vector<VansTimelineOutputTypeId> OutputTypes() const;
+	const IVansTimelineOutputApplier* Resolve(VansTimelineOutputTypeId type) const;
 	VansTimelineApplierSlot SlotOf(VansTimelineOutputTypeId type) const;
 	IVansTimelineOutputApplier* At(VansTimelineApplierSlot slot) const;
 	void Apply(

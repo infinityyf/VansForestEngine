@@ -1,159 +1,122 @@
 #include "VansCameraControlArbiter.h"
 
 #include "VansCamera.h"
+#include "../Util/VansLog.h"
 
 #include <algorithm>
+#include <cassert>
+#include <utility>
 
 namespace VansGraphics
 {
-namespace
+Vans::VansCameraContributionDomainId VansCameraControlArbiter::TimelineDomain()
 {
-Vans::VansCameraContributionDomainId CoreDomain(VansCameraControlDomainId domain)
-{
-	return { domain.value };
-}
-
-Vans::VansCameraContributionOwner CoreOwner(VansCameraControlOwner owner)
-{
-	return { CoreDomain(owner.domain), owner.handle };
-}
-
-Vans::VansCameraViewSnapshot CorePose(const VansCameraControlPose& pose)
-{
-	Vans::VansCameraViewSnapshot result;
-	result.pose.position = pose.position;
-	result.pose.rotationDegrees = pose.rotationDegrees;
-	result.lens.fieldOfView = pose.fieldOfView;
-	result.lens.nearClip = pose.nearClip;
-	result.lens.farClip = pose.farClip;
-	return result;
-}
-
-VansCameraControlPose GraphicsPose(const Vans::VansCameraViewSnapshot& snapshot)
-{
-	VansCameraControlPose result;
-	result.position = snapshot.pose.position;
-	result.rotationDegrees = snapshot.pose.rotationDegrees;
-	result.fieldOfView = snapshot.lens.fieldOfView;
-	result.nearClip = snapshot.lens.nearClip;
-	result.farClip = snapshot.lens.farClip;
-	return result;
-}
-}
-
-VansCameraControlDomainId VansCameraControlArbiter::TimelineDomain()
-{
-	return Vans::VansMakeStableId<VansCameraControlDomainTag>("CameraControl.Timeline");
+	return Vans::VansMakeStableId<Vans::VansCameraContributionDomainIdTag>(
+		"CameraControl.Timeline");
 }
 
 void VansCameraControlArbiter::BeginFrame(VansCamera& camera)
 {
-	if (m_AppliedControl) camera.ApplyControlPose(m_BasePose);
+	assert(m_FrameStage != FrameStage::BaseCaptured);
+	if (m_AppliedControl) camera.ApplyView(m_BaseView);
 	m_AppliedControl = false;
-	for (VansCameraControlOwner owner : m_TransientOwners)
-		m_Runtime.ReleaseOwner(CoreOwner(owner));
+	for (Vans::VansCameraContributionOwner owner : m_TransientOwners)
+		m_Runtime.ReleaseOwner(owner);
 	m_TransientOwners.clear();
+	m_FrameStage = FrameStage::AwaitingBaseCapture;
 }
+
 void VansCameraControlArbiter::CaptureBase(VansCamera& camera)
 {
+	assert(m_FrameStage == FrameStage::AwaitingBaseCapture);
 	camera.SyncFromTransform();
-	CaptureBase(camera.CaptureControlPose());
-}
-void VansCameraControlArbiter::CaptureBase(VansCameraControlPose pose)
-{
-	m_BasePose = pose;
-	std::string ignored;
-	m_Runtime.SetBaseView(Vans::VansCameraRuntime::MainView(), CorePose(pose), ignored);
-}
-bool VansCameraControlArbiter::Submit(VansCameraControlContribution contribution)
-{
-	if (!contribution.owner.IsValid()) return false;
-	if (contribution.owner.domain != TimelineDomain() &&
-		contribution.priority >= TimelinePriority) return false;
-	contribution.weight = std::clamp(contribution.weight, 0.0f, 1.0f);
-	Vans::VansCameraContribution core;
-	core.view = Vans::VansCameraRuntime::MainView();
-	core.owner = CoreOwner(contribution.owner);
-	core.kind = contribution.mode == VansCameraControlMode::Additive
-		? Vans::VansCameraContributionKind::PoseOffset
-		: Vans::VansCameraContributionKind::Shot;
-	core.value = CorePose(contribution.pose);
-	core.blendMode = contribution.mode == VansCameraControlMode::Exclusive
-		? Vans::VansCameraBlendMode::Exclusive
-		: contribution.mode == VansCameraControlMode::Weighted
-			? Vans::VansCameraBlendMode::Weighted
-			: Vans::VansCameraBlendMode::Additive;
-	core.space = contribution.space == VansCameraControlSpace::World
-		? Vans::VansCameraSpace::World : Vans::VansCameraSpace::CameraLocal;
-	core.order.priority = contribution.priority;
-	core.order.stableSequence = contribution.sequence;
-	core.weight = contribution.weight;
-	core.channels = contribution.channels;
-	core.suppressUserLook = contribution.suppressUserLook;
+	m_BaseView = camera.CaptureView();
 	std::string error;
-	if (!m_Runtime.UpsertContribution(std::move(core), error)) return false;
-	if (contribution.suppressUserLook) m_UserLookSuppressed = true;
-	const auto found = std::find_if(m_TransientOwners.begin(), m_TransientOwners.end(),
-		[&](const VansCameraControlOwner& owner)
-		{
-			return owner.domain == contribution.owner.domain &&
-				owner.handle == contribution.owner.handle;
-		});
-	if (found == m_TransientOwners.end()) m_TransientOwners.push_back(contribution.owner);
+	if (!m_Runtime.SetBaseView(Vans::VansCameraRuntime::MainView(), m_BaseView, error))
+		VANS_LOG_ERROR("[Camera] Failed to capture base view: " << error);
+	m_FrameStage = FrameStage::BaseCaptured;
+}
+
+bool VansCameraControlArbiter::Submit(
+	Vans::VansCameraContributionRequest contribution,
+	std::string& error)
+{
+	error.clear();
+	if (!contribution.owner.IsValid())
+	{
+		error = "Camera contribution owner is invalid";
+		return false;
+	}
+	if (contribution.owner.domain != TimelineDomain() &&
+		contribution.order.priority >= TimelinePriority)
+	{
+		error = "Non-Timeline camera contribution entered the reserved Timeline priority range";
+		return false;
+	}
+	const Vans::VansCameraContributionOwner owner = contribution.owner;
+	if (!m_Runtime.UpsertContribution(std::move(contribution), error)) return false;
+	m_UserLookSuppressed = m_Runtime.IsUserLookSuppressed();
+	const auto found = std::find(m_TransientOwners.begin(), m_TransientOwners.end(), owner);
+	if (found == m_TransientOwners.end()) m_TransientOwners.push_back(owner);
 	return true;
 }
-void VansCameraControlArbiter::Release(VansCameraControlOwner owner)
+
+void VansCameraControlArbiter::Release(Vans::VansCameraContributionOwner owner)
 {
-	m_Runtime.ReleaseOwner(CoreOwner(owner));
+	m_Runtime.ReleaseOwner(owner);
 	m_UserLookSuppressed = m_Runtime.IsUserLookSuppressed();
-	m_TransientOwners.erase(std::remove_if(m_TransientOwners.begin(), m_TransientOwners.end(),
-		[&](const VansCameraControlOwner& candidate)
-		{
-			return candidate.domain == owner.domain && candidate.handle == owner.handle;
-		}), m_TransientOwners.end());
+	m_TransientOwners.erase(std::remove(
+		m_TransientOwners.begin(), m_TransientOwners.end(), owner), m_TransientOwners.end());
 }
-void VansCameraControlArbiter::ReleaseDomain(VansCameraControlDomainId domain)
+
+void VansCameraControlArbiter::ReleaseDomain(
+	Vans::VansCameraContributionDomainId domain)
 {
-	m_Runtime.ReleaseDomain(CoreDomain(domain));
+	m_Runtime.ReleaseDomain(domain);
 	m_UserLookSuppressed = m_Runtime.IsUserLookSuppressed();
 	m_TransientOwners.erase(std::remove_if(m_TransientOwners.begin(), m_TransientOwners.end(),
-		[domain](const VansCameraControlOwner& owner) { return owner.domain == domain; }),
+		[domain](const Vans::VansCameraContributionOwner& owner)
+		{ return owner.domain == domain; }),
 		m_TransientOwners.end());
 }
 
-VansCameraControlPose VansCameraControlArbiter::ResolvePose()
+bool VansCameraControlArbiter::GetLastResolvedView(
+	Vans::VansCameraViewSnapshot& outView) const
 {
-	m_LastResolvedPose = GraphicsPose(
-		m_Runtime.ResolveView(Vans::VansCameraRuntime::MainView()).snapshot);
-	m_HasLastResolvedPose = true;
-	return m_LastResolvedPose;
-}
-
-bool VansCameraControlArbiter::GetLastResolvedPose(VansCameraControlPose& outPose) const
-{
-	if (!m_HasLastResolvedPose) return false;
-	outPose = m_LastResolvedPose;
+	if (!m_HasLastResolvedView) return false;
+	outView = m_LastResolvedView;
 	return true;
 }
 
 void VansCameraControlArbiter::Resolve(VansCamera& camera)
 {
+	assert(m_FrameStage == FrameStage::BaseCaptured);
 	m_UserLookSuppressed = m_Runtime.IsUserLookSuppressed();
 	const bool hadContributions = m_Runtime.ContributionCount() != 0;
-	m_LastResolvedPose = GraphicsPose(m_Runtime.ResolveAndConsumeView(
-		Vans::VansCameraRuntime::MainView()).snapshot);
-	m_HasLastResolvedPose = true;
-	if (!hadContributions) return;
-	camera.ApplyControlPose(m_LastResolvedPose);
-	m_AppliedControl = true;
+	m_LastResolvedView = m_Runtime.ResolveAndConsumeView(
+		Vans::VansCameraRuntime::MainView()).snapshot;
+	m_HasLastResolvedView = true;
+	if (hadContributions)
+	{
+		camera.ApplyView(m_LastResolvedView);
+		m_AppliedControl = true;
+	}
+	m_FrameStage = FrameStage::BetweenFrames;
 }
+
 void VansCameraControlArbiter::Clear(VansCamera* camera)
 {
-	if (camera && m_AppliedControl) camera->ApplyControlPose(m_BasePose);
-	m_Runtime.ClearContributions();
+	if (camera && m_AppliedControl) camera->ApplyView(m_BaseView);
+	m_Runtime.Clear();
 	m_TransientOwners.clear();
 	m_AppliedControl = false;
-	m_HasLastResolvedPose = false;
+	m_HasLastResolvedView = false;
 	m_UserLookSuppressed = false;
+	m_FrameStage = FrameStage::BetweenFrames;
+}
+
+bool VansCameraControlArbiter::IsBaseCameraWriteWindowOpen() const
+{
+	return m_FrameStage != FrameStage::BaseCaptured;
 }
 }

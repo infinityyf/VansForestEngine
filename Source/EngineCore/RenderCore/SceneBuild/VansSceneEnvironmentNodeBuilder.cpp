@@ -8,9 +8,8 @@
 #include "../VegetationCore/VansVegetationSystem.h"
 #include "../WaterCore/VansWaterMaterial.h"
 #include "../WaterCore/VansWaterSystem.h"
-#include "../VansGraphicsDevice.h"
-#include "../../Configration/VansConfigration.h"
 #include "../../PhysicsCore/VansPhysics.h"
+#include "../../PhysicsCore/VansCollisionLayerManager.h"
 #include "../../PhysicsCore/VansTerrainPhysicsNode.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../Util/VansLog.h"
@@ -18,28 +17,37 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <memory>
+#include <optional>
 #include <random>
 
 namespace VansGraphics
 {
 
-void VansSceneEnvironmentNodeBuilder::AddTerrainNode(
+bool VansSceneEnvironmentNodeBuilder::BuildTerrainNode(
     VansScene& scene,
-    VansVKDevice* device,
-    const Vans::VansSceneTerrainNodeConfig& terrainData)
+    VansVKDevice& device,
+    const Vans::VansSceneTerrainNodeConfig& terrainData,
+    std::string& error)
 {
     if (!terrainData.valid || !terrainData.asset)
-        throw std::invalid_argument("Terrain scene node requires a resolved terrain asset snapshot.");
+    {
+        error = "Terrain node requires a resolved terrain asset snapshot";
+        return false;
+    }
 
     TerrainConfig config;
-    Vans::VansAssetGuid::TryParse(terrainData.assetGuid, config.assetGuid);
+    if (!Vans::VansAssetGuid::TryParse(terrainData.assetGuid, config.assetGuid))
+    {
+        error = "Terrain node has an invalid asset GUID '" + terrainData.assetGuid + "'";
+        return false;
+    }
     config.asset = terrainData.asset;
-    const auto resolveLoadedTexture = [&scene](Vans::VansAssetGuid guid)
+    const auto resolveLoadedTexture = [&scene, &error](Vans::VansAssetGuid guid)
     {
         auto* texture = static_cast<VansTexture*>(scene.GetTextureAsset(guid.ToString()));
         if (!texture)
-            throw std::invalid_argument(
-                "Terrain layer texture was not preloaded: " + guid.ToString());
+            error = "Terrain layer texture was not preloaded: " + guid.ToString();
         return texture;
     };
     config.layers.reserve(terrainData.asset->layers.size());
@@ -47,62 +55,80 @@ void VansSceneEnvironmentNodeBuilder::AddTerrainNode(
     {
         TerrainLayerConfig layer;
         layer.albedo = resolveLoadedTexture(layerAsset.albedo);
+        if (!layer.albedo) return false;
         layer.normal = resolveLoadedTexture(layerAsset.normal);
+        if (!layer.normal) return false;
         layer.roughness = resolveLoadedTexture(layerAsset.roughness);
+        if (!layer.roughness) return false;
         layer.tiling = layerAsset.tiling;
         config.layers.push_back(std::move(layer));
     }
 
-    RenderNodeType type = RenderNodeType::TERRAIN_NODE;
-    VansRenderNode* renderNode = new VansTerrainRenderNode(device, config, type);
-
-    // Read optional name
-    std::string name = terrainData.name.value_or("TerrainNode");
-    renderNode->SetName(name);
-    scene.RegistRenderNode(renderNode, type);
-
-    // Terrain 物理碰撞是可选项，只由 terrain.collision.enabled 控制。
-    if (terrainData.collision)
+    std::optional<VansEngine::TerrainPhysicsProperties> terrainPhysics;
+    if (terrainData.collision && terrainData.collision->enabled.value_or(false))
     {
         const Vans::VansSceneTerrainCollisionConfig& collision = *terrainData.collision;
-        VansEngine::TerrainPhysicsProperties terrainPhysicsProps;
-        terrainPhysicsProps.enabled = collision.enabled.value_or(false);
-        terrainPhysicsProps.surface = terrainData.asset;
-        terrainPhysicsProps.terrainSize = terrainData.asset->settings.terrainSize;
-        terrainPhysicsProps.maxHeight = terrainData.asset->settings.maxHeight;
-        terrainPhysicsProps.heightOffset = terrainData.asset->settings.heightOffset;
-        if (collision.layer) terrainPhysicsProps.layerName = *collision.layer;
-        if (collision.material.staticFriction)
-            terrainPhysicsProps.material.staticFriction = *collision.material.staticFriction;
-        if (collision.material.dynamicFriction)
-            terrainPhysicsProps.material.dynamicFriction = *collision.material.dynamicFriction;
-        if (collision.material.restitution)
-            terrainPhysicsProps.material.restitution = *collision.material.restitution;
-
-        if (terrainPhysicsProps.enabled)
+        if (!collision.layer || collision.layer->empty())
         {
-            auto& physicsSystem = VansEngine::VansPhysicsSystem::GetInstance();
-            std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
+            error = "Enabled terrain collision requires an explicit layer";
+            return false;
+        }
+        int layerIndex = -1;
+        if (!VansEngine::VansCollisionLayerManager::Get().TryGetLayerIndex(
+            *collision.layer, layerIndex))
+        {
+            error = "Terrain collision references unknown layer '" + *collision.layer + "'";
+            return false;
+        }
 
-            scene.SetTerrainPhysicsNode(nullptr);
-            auto* terrainPhysicsNode = new VansEngine::VansTerrainPhysicsNode();
-            if (!terrainPhysicsNode->Initialize(terrainPhysicsProps))
-            {
-                delete terrainPhysicsNode;
-                VANS_LOG_WARN("[VansScene] Terrain collision initialization failed.");
-            }
-            else
-            {
-                scene.SetTerrainPhysicsNode(terrainPhysicsNode);
-            }
+        terrainPhysics.emplace();
+        terrainPhysics->enabled = true;
+        terrainPhysics->surface = terrainData.asset;
+        terrainPhysics->layerName = *collision.layer;
+        if (collision.material.staticFriction)
+            terrainPhysics->material.staticFriction = *collision.material.staticFriction;
+        if (collision.material.dynamicFriction)
+            terrainPhysics->material.dynamicFriction = *collision.material.dynamicFriction;
+        if (collision.material.restitution)
+            terrainPhysics->material.restitution = *collision.material.restitution;
+    }
+
+    RenderNodeType type = RenderNodeType::TERRAIN_NODE;
+    auto renderNode = std::make_unique<VansTerrainRenderNode>(&device, config, type);
+    std::unique_ptr<VansEngine::VansTerrainPhysicsNode> terrainPhysicsNode;
+
+    // Terrain 物理碰撞是可选项，只由 terrain.collision.enabled 控制。
+    // 所有可失败步骤先在局部 owner 中完成，再发布 Render/Physics 节点。
+    if (terrainPhysics)
+    {
+        auto& physicsSystem = VansEngine::VansPhysicsSystem::GetInstance();
+        std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
+
+        terrainPhysicsNode = std::make_unique<VansEngine::VansTerrainPhysicsNode>();
+        if (!terrainPhysicsNode->Initialize(*terrainPhysics))
+        {
+            error = "Terrain collision initialization failed";
+            return false;
         }
     }
+
+    renderNode->SetName(terrainData.name.value_or("TerrainNode"));
+    scene.RegistRenderNode(renderNode.release(), type);
+    if (terrainPhysicsNode)
+    {
+        auto& physicsSystem = VansEngine::VansPhysicsSystem::GetInstance();
+        std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
+        scene.SetTerrainPhysicsNode(terrainPhysicsNode.release());
+    }
+    return true;
 }
 
-void VansSceneEnvironmentNodeBuilder::AddWaterNode(
+bool VansSceneEnvironmentNodeBuilder::BuildWaterNode(
     VansScene& scene,
-    VkDevice& device,
-    const Vans::VansSceneWaterNodeConfig& waterData)
+    VansVKDevice& device,
+    const Vans::VansSceneWaterNodeConfig& waterData,
+    std::shared_ptr<const Vans::VansTerrainAsset> effectiveTerrain,
+    std::string& error)
 {
     auto toVec2 = [](const Vans::VansSceneFloat2& value) {
         return glm::vec2(value[0], value[1]);
@@ -122,8 +148,8 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
 
     if (!waterData.valid)
     {
-        VANS_LOG_ERROR("[AddWaterNode] Water configuration was rejected by the current scene schema.");
-        return;
+        error = "Water configuration was rejected by the current scene schema";
+        return false;
     }
 
     VansWaterConfig config;
@@ -187,18 +213,18 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
     if (refraction.enabled) config.m_Refraction.m_Enabled = *refraction.enabled;
     if (refraction.distortionStrength) config.m_Refraction.m_DistortionStrength = *refraction.distortionStrength;
 
-    const Vans::VansSceneWaterDetailNormalConfig& detailNormal = waterData.detailNormal;
-    if (detailNormal.enabled) config.m_DetailNormal.m_Enabled = *detailNormal.enabled;
-    if (detailNormal.decodeMode)
+    const Vans::VansSceneWaterDetailNormalConfig& detailNormalConfig = waterData.detailNormal;
+    if (detailNormalConfig.enabled) config.m_DetailNormal.m_Enabled = *detailNormalConfig.enabled;
+    if (detailNormalConfig.decodeMode)
         config.m_DetailNormal.m_DecodeMode = VansWaterNormalDecodeMode::RGReconstructZ;
-    if (detailNormal.flipGreen) config.m_DetailNormal.m_FlipGreen = *detailNormal.flipGreen;
-    if (detailNormal.globalStrength) config.m_DetailNormal.m_GlobalStrength = *detailNormal.globalStrength;
-    if (detailNormal.maxSlope) config.m_DetailNormal.m_MaxSlope = *detailNormal.maxSlope;
-    if (detailNormal.mipBias) config.m_DetailNormal.m_MipBias = *detailNormal.mipBias;
-    if (detailNormal.anisotropy) config.m_DetailNormal.m_Anisotropy = *detailNormal.anisotropy;
-    for (std::size_t layerIndex = 0; layerIndex < detailNormal.layers.size(); ++layerIndex)
+    if (detailNormalConfig.flipGreen) config.m_DetailNormal.m_FlipGreen = *detailNormalConfig.flipGreen;
+    if (detailNormalConfig.globalStrength) config.m_DetailNormal.m_GlobalStrength = *detailNormalConfig.globalStrength;
+    if (detailNormalConfig.maxSlope) config.m_DetailNormal.m_MaxSlope = *detailNormalConfig.maxSlope;
+    if (detailNormalConfig.mipBias) config.m_DetailNormal.m_MipBias = *detailNormalConfig.mipBias;
+    if (detailNormalConfig.anisotropy) config.m_DetailNormal.m_Anisotropy = *detailNormalConfig.anisotropy;
+    for (std::size_t layerIndex = 0; layerIndex < detailNormalConfig.layers.size(); ++layerIndex)
     {
-        const Vans::VansSceneWaterDetailNormalLayerConfig& source = detailNormal.layers[layerIndex];
+        const Vans::VansSceneWaterDetailNormalLayerConfig& source = detailNormalConfig.layers[layerIndex];
         VansWaterDetailNormalLayerConfig& destination = config.m_DetailNormal.m_Layers[layerIndex];
         if (source.enabled) destination.m_Enabled = *source.enabled;
         if (source.tileSizeMeters) destination.m_TileSizeMeters = *source.tileSizeMeters;
@@ -286,7 +312,19 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
     if (geometry.morphStartRatio) config.m_Geometry.m_MorphStartRatio = *geometry.morphStartRatio;
 
     config.Validate();
-    // ── 创建只持有单一 V2 配置的 WaterMaterial ─────────────────────────────
+
+    VansMesh* planeMesh = static_cast<VansMesh*>(scene.FindMeshAsset("plane"));
+    VansTexture* detailNormalTexture = static_cast<VansTexture*>(
+        scene.GetTextureAsset("waterDetailWaveNormal"));
+    VansTexture* neutralNormalTexture = static_cast<VansTexture*>(
+        scene.GetTextureAsset("defaultNormal"));
+    if (!detailNormalTexture && !neutralNormalTexture)
+    {
+        error = "Neither 'waterDetailWaveNormal' nor 'defaultNormal' texture is available";
+        return false;
+    }
+
+    // 创建只持有当前配置模型的 WaterMaterial。
     VansWaterMaterial* mat = new VansWaterMaterial();
     mat->m_MaterialType = VansMaterialType::VAN_WATER;
     mat->m_Config       = config;
@@ -299,21 +337,24 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
     scene.SetWaterRuntimeConfig(config, mat);
 
     // ── 创建 VansWaterRenderNode，使用引擎内置 "plane" 网格作为水面几何体 ──
+    // 该节点保留现有兼容路径；当前 Water GBuffer 由 WaterSystem geometry clipmap 绘制。
     {
-        // "plane" is an engine runtime binding for the unit plane mesh.
-        VansMesh* planeMesh = static_cast<VansMesh*>(scene.FindMeshAsset("plane"));
-        if (planeMesh == nullptr)
+        if (!planeMesh)
         {
-            VANS_LOG_WARN("[AddWaterNode] 网格 'plane' 未找到，水面渲染节点将不可见。");
+            VANS_LOG_WARN("[BuildWaterNode] Built-in mesh 'plane' is unavailable; "
+                "the compatibility render node was skipped");
         }
         else
         {
-            VansWaterRenderNode* waterNode = new VansWaterRenderNode(device, WATER_NODE);
+            VkDevice& nativeDevice = device.GetLogicDevice();
+            VansWaterRenderNode* waterNode = new VansWaterRenderNode(nativeDevice, WATER_NODE);
             waterNode->m_Mesh     = planeMesh;
             waterNode->m_Material = mat;
 
-            // 水面铺满整个地形范围（与 terrain.terrainSize 一致，使用 config.m_WaterLevel 为 Y 高度）
-            const float terrainHalfSize = 512.0f; // 默认 1024×1024 地形的半径
+            // 有地形时覆盖范围只来自同次 SceneBuild 的有效 Terrain；无地形水场保留既有兼容平面默认。
+            const float terrainHalfSize = effectiveTerrain
+                ? effectiveTerrain->settings.terrainSize * 0.5f
+                : DefaultWaterCompatibilityPlaneHalfExtent;
             waterNode->SetTransformData(
                 glm::vec3(0.0f, config.m_WaterLevel, 0.0f),  // 位置（Y = water level）
                 glm::vec3(-90.0f, 0.0f, 0.0f),               // 旋转（plane 默认朝 Z，绕 X 旋转 -90° 使其水平）
@@ -326,7 +367,7 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
         }
     }
 
-    VANS_LOG("[AddWaterNode] Water V2 loaded: level=" << config.m_WaterLevel
+    VANS_LOG("[BuildWaterNode] Water loaded: level=" << config.m_WaterLevel
         << " geometryLod=" << config.m_Geometry.m_LodCount
         << " spectrumCascades=" << config.m_Spectrum.m_CascadeCount
         << " ssr=" << (config.m_SSR.m_Enabled ? "on" : "off"));
@@ -335,37 +376,24 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
     // VansWaterSystem 管理 Water GBuffer 纹理、波形仿真、Pre-Water Compute 和 Composite pass。
     // 通过 m_Scene->GetWaterSystem() 供 VansVKRenderer 在渲染循环中调度。
     {
-        VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-        if (vkDevice)
-        {
-            VansWaterSystem* waterSystem = new VansWaterSystem();
-            waterSystem->SetWaterLevel(config.m_WaterLevel);
-            waterSystem->SetWaterMaterial(mat);
-            VansTexture* detailNormal = static_cast<VansTexture*>(
-                scene.GetTextureAsset("waterDetailWaveNormal"));
-            VansTexture* neutralNormal = static_cast<VansTexture*>(
-                scene.GetTextureAsset("defaultNormal"));
-            if (detailNormal == nullptr)
-                VANS_LOG_ERROR("[AddWaterNode] Required built-in texture 'waterDetailWaveNormal' is missing");
-            waterSystem->SetDetailNormalTextures(detailNormal, neutralNormal);
-            waterSystem->Initialize(vkDevice,
-                static_cast<uint32_t>(vkDevice->GetRenderWidth()),
-                static_cast<uint32_t>(vkDevice->GetRenderHeight()));
+        VansWaterSystem* waterSystem = new VansWaterSystem();
+        waterSystem->SetWaterLevel(config.m_WaterLevel);
+        waterSystem->SetWaterMaterial(mat);
+        waterSystem->SetDetailNormalTextures(detailNormalTexture, neutralNormalTexture);
+        waterSystem->Initialize(&device,
+            static_cast<uint32_t>(device.GetRenderWidth()),
+            static_cast<uint32_t>(device.GetRenderHeight()));
 
-            // SetupDescriptors：绑定 WaterGBuf 纹理到合成集（在 SetupVansWaterGBufferPass 之后调用）
-            auto* rp = VansRenderPassManager::GetInstance();
-            waterSystem->SetupDescriptors(
-                rp,
-                scene.GetGlobalDescriptorSetLayout(),
-                scene.GetGlobalDescriptorSet());
+        // SetupDescriptors：绑定 WaterGBuf 纹理到合成集（在 SetupVansWaterGBufferPass 之后调用）
+        auto* rp = VansRenderPassManager::GetInstance();
+        waterSystem->SetupDescriptors(
+            rp,
+            scene.GetGlobalDescriptorSetLayout(),
+            scene.GetGlobalDescriptorSet());
 
-            scene.SetWaterSystem(waterSystem);
-        }
-        else
-        {
-            VANS_LOG_WARN("[AddWaterNode] 无法获取 VansVKDevice，VansWaterSystem 未初始化。");
-        }
+        scene.SetWaterSystem(waterSystem);
     }
+    return true;
 }
 
 }

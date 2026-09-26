@@ -1,9 +1,10 @@
 #pragma once
 
 #include "../AssetCore/Serialization/VansSerializedValue.h"
+#include "../AuthoringCore/VansAuthoringHistory.h"
 #include "../EngineAPILayer/Public/EngineDTOs.h"
 #include "../SceneCore/VansSceneParentReference.h"
-#include "VansEditorObjectReference.h"
+#include "../AuthoringCore/VansEditorObjectReference.h"
 
 #include <cstdint>
 #include <functional>
@@ -75,17 +76,25 @@ public:
     SceneEditResult Redo();
     void ClearHistory();
     void SetPrefabPreviewRefresh(std::function<bool()> callback) { m_PrefabPreviewRefresh = std::move(callback); }
-    bool CanUndo() const { return !m_Undo.empty(); }
-    bool CanRedo() const { return !m_Redo.empty(); }
+    bool CanUndo() const;
+    bool CanRedo() const;
+	VansAuthoringHistorySnapshot HistorySnapshot() const;
 
 private:
+	struct HistoryEntry
+	{
+		std::unique_ptr<VansSceneEditCommand> command;
+		VansHistorySequence sequence = 0;
+	};
+	void DiscardStaleRedo() const;
     SceneEditResult Execute(std::unique_ptr<VansSceneEditCommand> command);
     SceneEditResult Set(const std::string& propertyPointer, VansSerializedValue value);
     SceneEditResult Remove(const std::string& propertyPointer, SceneEditLifecycleHooks hooks = {});
 
     VansSceneDocument& m_Document;
     std::function<bool()> m_PrefabPreviewRefresh;
-    std::vector<std::unique_ptr<VansSceneEditCommand>> m_Undo;
-    std::vector<std::unique_ptr<VansSceneEditCommand>> m_Redo;
+    std::vector<HistoryEntry> m_Undo;
+    mutable std::vector<HistoryEntry> m_Redo;
+	mutable VansHistorySequence m_RedoRevision = 0;
 };
 }

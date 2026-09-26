@@ -15,14 +15,14 @@ namespace Vans
 namespace VansGraphics
 {
     // ===========================================================================
-    // VansVideoManager — 管理场景内所有视频纹理的生命周期
+    // VansVideoManager — 管理项目内所有视频纹理的生命周期
     //
     // 设计原则：
     //   - 每条视频纹理以 name 为键唯一标识，name 来自 typed video resource batch。
-    //   - 视频纹理由 unique_ptr 持有，生命周期与当前场景绑定。
+    //   - 视频纹理由 unique_ptr 持有，生命周期与当前项目绑定。
     //   - VansScene 内嵌一个 VansVideoManager 成员，无需 new/delete。
     //   - TickAll() 每帧调用，推进所有视频的播放并上传就绪帧到 GPU。
-    //   - Clear() 在 UnLoadScene() 中调用，停止所有线程并释放资源。
+    //   - UnloadScene() 只暂停播放；Clear() 在项目卸载时释放资源。
     // ===========================================================================
     class VansVideoManager
     {
@@ -69,7 +69,7 @@ namespace VansGraphics
         // ── 场景切换时暂停 ────────────────────────────────────────────────
         // 暂停所有视频播放，但保留 GPU 纹理资源（VkImage/VkImageView 仍然有效）。
         // 视频是项目级资源，生命周期与 mesh/texture 相同，不随场景卸载而销毁。
-        // 在 UnLoadScene() 中调用，替代原来错误的 Clear()。
+        // 在 UnloadScene() 中调用，替代原来错误的 Clear()。
         void PauseAll();
 
         // 恢复所有视频播放（场景加载完成后调用）

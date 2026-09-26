@@ -1,24 +1,11 @@
 #include "VansScene.h"
 
-#include "Timeline/VansCameraTimelineIntegration.h"
-#include "Timeline/VansPostProcessTimelineIntegration.h"
-#include "Timeline/VansRenderPropertyTimelineIntegration.h"
 #include "Timeline/VansVirtualCameraParameterStore.h"
 #include "VansCameraControlArbiter.h"
 #include "../AssetCore/VansAssetObjectRepository.h"
-#include "../AssetCore/VansAssetResolver.h"
-#include "../AudioCore/Timeline/VansAudioTimelineIntegration.h"
 #include "../ProjectSystem/VansProjectManager.h"
-#include "../SceneRuntime/Timeline/VansTransformTimelineIntegration.h"
-#include "../SceneRuntime/Timeline/VansTransformTimelineAccess.h"
-#include "../SceneRuntime/Timeline/VansActivationTimelineIntegration.h"
-#include "../SceneRuntime/Timeline/VansPropertyTimelineIntegration.h"
-#include "../ParticleCore/Timeline/VansParticleTimelineIntegration.h"
-#include "../RuntimeUI/Timeline/VansUITimelineIntegration.h"
-#include "../AnimationCore/Timeline/VansAnimationTimelineIntegration.h"
-#include "../GameplayActionTimeline/VansGameplayActionTimelineIntegration.h"
-#include "Timeline/VansMediaTimelineIntegration.h"
 #include "../SceneRuntime/VansRuntimeComponentTypes.h"
+#include "../Timeline/VansEngineTimelineRegistry.h"
 #include "../TimelineCore/VansTimelineCompiler.h"
 #include "../TimelineCore/VansTimelineSerialization.h"
 #include "../TimelineCore/VansTimelineTrackExtensionRegistry.h"
@@ -30,7 +17,6 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <sstream>
-#include <unordered_map>
 
 namespace
 {
@@ -48,161 +34,14 @@ std::string TimelineDiagnosticsText(const Vans::VansTimelineDiagnostics& diagnos
 	return stream.str();
 }
 
-std::shared_ptr<Vans::VansTimelineApplierRegistry> BuildTimelineAppliers(
-	VansGraphics::VansScene& scene,
-	Vans::VansRuntimeWorld& world,
-	std::string& error)
-{
-	auto registry = std::make_shared<Vans::VansTimelineApplierRegistry>();
-	if (!Vans::VansRegisterTransformTimelineIntegration(
-		world, VansCreateTimelineTransformAccess(scene, world), *registry, error)) return {};
-	if (!Vans::VansRegisterActivationTimelineIntegration(world, *registry, error)) return {};
-	if (!Vans::VansRegisterPropertyTimelineIntegration(world,
-		Vans::VansTimelinePropertyAccessRegistry::BuiltIns(), *registry, error)) return {};
-	if (!Vans::VansRegisterAudioTimelineIntegration(world, *scene.GetAudioManager(), *registry, error)) return {};
-	if (!Vans::VansRegisterParticleTimelineIntegration(world, scene.GetParticleManager(), *registry, error)) return {};
-	if (!Vans::VansRegisterUITimelineIntegration(*registry, error)) return {};
-	if (!Vans::VansRegisterAnimationTimelineIntegration(
-		world, Vans::VansProjectManager::Get().GetAssetObjectRepository(),
-		*registry, error)) return {};
-	if (!VansGraphics::VansRegisterMediaTimelineIntegration(world, *scene.GetVideoManager(), *registry, error)) return {};
-	if (!VansGraphics::VansRegisterRenderPropertyTimelineIntegration(scene, world, *registry, error)) return {};
-	if (!VansGraphics::VansRegisterPostProcessTimelineIntegration(
-		scene.GetMaterialManager()->m_PostProcessProfile,
-		Vans::VansProjectManager::Get().GetAssetObjectRepository(), *registry, error)) return {};
-	if (!scene.GetGameplayRuntime())
-	{
-		error = "Timeline Gameplay Action integration requires the scene GameplayRuntime";
-		return {};
-	}
-	if (!Vans::VansRegisterGameplayActionTimelineIntegration(
-		*scene.GetGameplayRuntime(), *registry, error)) return {};
-	if (!scene.GetCamera()) { error = "Timeline camera integration requires the scene camera"; return {}; }
-	// Camera control is a scene-owned service because it arbitrates Timeline with camera scripts.
-	// It is constructed before the registry so appliers never capture an ephemeral adapter object.
-	return registry;
-}
-}
-
-void VansGraphics::VansScene::ConfigureTimelineRuntime()
-{
-	if (!m_RuntimeWorld) return;
-	if (!m_TimelineRuntime) m_TimelineRuntime = std::make_unique<Vans::VansTimelineRuntimeSystem>();
-	if (!m_CameraControlArbiter) m_CameraControlArbiter = std::make_unique<VansCameraControlArbiter>();
-	if (!m_VirtualCameraParameters) m_VirtualCameraParameters = std::make_unique<VansVirtualCameraParameterStore>();
-	std::string integrationError;
-	auto appliers = BuildTimelineAppliers(*this, *m_RuntimeWorld, integrationError);
-	if (!appliers)
-	{
-		VANS_LOG_ERROR("[Timeline] " << integrationError);
-		return;
-	}
-	if (!VansRegisterCameraTimelineIntegration(
-		*m_RuntimeWorld, *m_Camera, *m_CameraControlArbiter, *m_VirtualCameraParameters,
-		*appliers, integrationError) ||
-		!appliers->Seal(integrationError))
-	{
-		VANS_LOG_ERROR("[Timeline] " << integrationError);
-		return;
-	}
-	VANS_LOG("[Timeline] Runtime integration configured: loadMode=" <<
-		(m_LoadMode == VansSceneLoadMode::Runtime ? "Runtime" : "Editor"));
-	m_TimelineRuntime->RegisterWorld(m_RuntimeWorld.get());
-	m_TimelineRuntime->SetApplierRegistry(std::move(appliers));
-	auto payloads = std::make_shared<Vans::VansPayloadSchemaRegistry>();
-	std::string payloadError;
-	if (!payloads->Seal(payloadError))
-	{
-		VANS_LOG_ERROR("[Timeline] " << payloadError);
-		return;
-	}
-	m_TimelineRuntime->SetPayloadSchemaRegistry(std::move(payloads));
-
-	using CacheEntry = std::pair<std::uint64_t, std::weak_ptr<const Vans::VansCompiledTimeline>>;
-	auto cache = std::make_shared<std::unordered_map<std::string, CacheEntry>>();
-	auto resolveTimeline = [](const std::string& guidText, std::uint64_t* generation,
-		std::string& error) -> std::shared_ptr<const Vans::VansTimelineAsset>
-	{
-		Vans::VansAssetGuid guid;
-		if (!Vans::VansAssetGuid::TryParse(guidText, guid))
-		{
-			error = "Timeline asset GUID is invalid: " + guidText;
-			return {};
-		}
-		Vans::VansAssetObjectSnapshotInfo info;
-		const auto& repository = Vans::VansProjectManager::Get().GetAssetObjectRepository();
-		if (!repository.FindInfo(guid, info) || info.assetType != Vans::VansAssetType::Timeline)
-		{
-			error = "Timeline asset is not loaded in the object repository: " + guidText;
-			return {};
-		}
-		if (generation)
-			*generation = info.generation;
-		auto asset = repository.ResolveLatest<Vans::VansTimelineAsset>(guid);
-		if (!asset)
-			error = "Timeline repository entry has the wrong decoded object type: " + guidText;
-		return asset;
-	};
-	m_TimelineRuntime->SetAssetGenerationQuery([resolveTimeline](const std::string& guid, std::uint64_t& generation)
-	{
-		std::string error;
-		return resolveTimeline(guid, &generation, error) != nullptr;
-	});
-	Vans::VansTimelineRuntimeSystem* timelineRuntime = m_TimelineRuntime.get();
-	m_TimelineRuntime->SetAssetLoader([resolveTimeline, cache, timelineRuntime](
-		const Vans::VansRuntimeTimelineComponent& component,
-		std::shared_ptr<const Vans::VansCompiledTimeline>& timeline,
-		std::string& error)
-	{
-		std::uint64_t generation = 0;
-		const auto asset = resolveTimeline(component.assetGuid, &generation, error);
-		if (!asset) return false;
-		if (const auto found = cache->find(component.assetGuid); found != cache->end() && found->second.first == generation)
-			if (timeline = found->second.second.lock()) return true;
-		Vans::VansTimelineCompileOptions options;
-		options.extensions = &Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
-		options.validation.runtimeValidation = true;
-		options.validation.hasOutputApplier = [timelineRuntime](Vans::VansTimelineOutputTypeId type)
-		{ return timelineRuntime->HasOutputApplier(type); };
-		options.validation.hasPayloadSchema = [timelineRuntime](Vans::VansTimelinePayloadTypeId type)
-		{ return timelineRuntime->HasPayloadSchema(type); };
-		options.validation.validatePayload = [timelineRuntime](Vans::VansTimelinePayloadTypeId type,
-			const Vans::VansSerializedValue& payload, std::string& payloadError)
-		{ return timelineRuntime->ValidatePayload(type, payload, payloadError); };
-		options.dependencyLoader = [resolveTimeline](const Vans::VansTimelineDependency& dependency,
-			Vans::VansTimelineAsset& nested, std::string& identity, std::string& nestedError)
-		{
-			if (dependency.stableType != "Timeline") return true;
-			if (dependency.guid.empty())
-			{
-				nestedError = "SubTimeline dependencies require indexed asset GUIDs";
-				return false;
-			}
-			const auto child = resolveTimeline(dependency.guid, nullptr, nestedError);
-			if (!child) return false;
-			identity = dependency.guid;
-			nested = *child;
-			return true;
-		};
-		Vans::VansTimelineCompileResult result = Vans::VansTimelineCompiler::Compile(*asset, options);
-		if (!result)
-		{
-			error = TimelineDiagnosticsText(result.diagnostics);
-			if (error.empty()) error = "Timeline compilation failed";
-			return false;
-		}
-		timeline = result.timeline;
-		(*cache)[component.assetGuid] = { generation, timeline };
-		return true;
-	});
-	if (m_LoadMode == VansSceneLoadMode::Runtime) m_TimelineRuntime->SyncTimelineComponents();
 }
 
 void VansGraphics::VansScene::UpdateTimelinesPostScript(double deltaSeconds)
 {
 	if (!m_TimelineRuntime) return;
 	m_TimelineRuntime->UpdateRuntimePostScript(deltaSeconds);
-	if (m_RuntimeWorld) m_RuntimeWorld->FlushCommands();
+	if (m_RuntimeWorld)
+		m_RuntimeWorld->CommitCommands(Vans::VansRuntimeCommandCommitPoint::RuntimeFrame);
 }
 
 void VansGraphics::VansScene::BeginCameraControlFrame()
@@ -212,6 +51,10 @@ void VansGraphics::VansScene::BeginCameraControlFrame()
 
 void VansGraphics::VansScene::CaptureCameraControlBase()
 {
+	// Editor viewport navigation, camera scripts, and editor state restore write the
+	// base camera only outside the contribution window.  CaptureBase closes that
+	// window until Resolve, making the scheduler order an asserted contract rather
+	// than an implicit dependency of those direct base-view writes.
 	if (m_Camera && m_CameraControlArbiter) m_CameraControlArbiter->CaptureBase(*m_Camera);
 }
 
@@ -240,7 +83,8 @@ void VansGraphics::VansScene::UpdateTimelinePreviewsPostScript(double deltaSecon
 {
 	if (!m_TimelineRuntime) return;
 	m_TimelineRuntime->UpdatePreviewsPostScript(deltaSeconds);
-	if (m_RuntimeWorld) m_RuntimeWorld->FlushCommands();
+	if (m_RuntimeWorld)
+		m_RuntimeWorld->CommitCommands(Vans::VansRuntimeCommandCommitPoint::RuntimeFrame);
 }
 
 void VansGraphics::VansScene::UpdateTimelinePreviewsCamera(double deltaSeconds)
@@ -305,8 +149,8 @@ bool VansGraphics::VansScene::GetRuntimeTimelineState(
 std::string VansGraphics::VansScene::FindTimelineInstanceOwnerGuid(const std::string& assetGuid) const
 {
 	if (!m_RuntimeWorld || assetGuid.empty()) return {};
-	const auto* storage = static_cast<const Vans::VansComponentStorage<Vans::VansRuntimeTimelineComponent>*>(
-		m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Timeline));
+	const auto* storage = m_RuntimeWorld->FindStorage<Vans::VansRuntimeTimelineComponent>(
+		Vans::VansRuntimeComponentType_Timeline);
 	if (!storage) return {};
 	for (std::size_t index = 0; index < storage->DenseData().size(); ++index)
 	{
@@ -329,9 +173,12 @@ bool VansGraphics::VansScene::StartTimelinePreview(
 			Vans::VansTimelineSerialization::Json::parse(canonicalJson), asset, error)) return false;
 	}
 	catch (const std::exception& exception) { error = exception.what(); return false; }
+	const Vans::VansEngineTimelineCatalog catalog = Vans::VansGetEngineTimelineCatalog();
+	if (!catalog) { error = std::string(catalog.error); return false; }
 	Vans::VansTimelineCompileOptions options;
-	options.extensions = &Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
-	options.validation.runtimeValidation = false;
+	options.extensions = catalog.trackExtensions;
+	options.runtimeRegistryManifestHash = m_TimelineRuntime->RuntimeRegistryManifestHash();
+	options.validation.requireRuntimeCapabilities = true;
 	options.validation.preview = true;
 	options.validation.hasOutputApplier = [this](Vans::VansTimelineOutputTypeId type)
 	{ return m_TimelineRuntime->HasOutputApplier(type); };

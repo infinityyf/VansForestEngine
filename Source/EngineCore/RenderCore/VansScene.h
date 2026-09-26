@@ -1,3 +1,4 @@
+#include "../SceneRuntime/Transform/VansTransform.h"
 #include "Particles/VansSceneParticleDiagnostics.h"
 #pragma once
 #include <array>
@@ -19,17 +20,19 @@
 #include "VansMainCameraVisibility.h"
 #include "../SceneRuntime/VansRuntimeWorld.h"
 #include "../SceneRuntime/Transform/VansTransformGraph.h"
+#include "../CameraCore/VansCameraCore.h"
 #include "../SceneCore/VansSceneParentReference.h"
 #include "../SceneCore/VansSceneRenderSettingsConfig.h"
 #include "../AnimationCore/Procedural/VansProceduralTypes.h"
 #include "../AnimationCore/Runtime/VansSkeletonAnchorRegistry.h"
 
-namespace Vans { struct VansProjectileSpawnRequest; struct VansProjectileSceneBackend; }
+namespace Vans { struct VansProjectileSpawnRequest; struct VansProjectileSceneBackend; class VansSceneGameplayComposition; }
 namespace Vans { struct VansDecalSceneBackend; }
 namespace Vans { struct VansCombatSceneBackend; }
 namespace Vans { struct VansVFXSceneBackend; }
 namespace VansGraphics { class VansSceneSurfaceQuery; }
 namespace VansGraphics { class VansImpactDecalSystem; }
+namespace VansGraphics { class VansSceneAssembly; }
 
 #include "WaterCore/VansWaterConfig.h"
 
@@ -50,9 +53,10 @@ namespace VansGraphics { struct VansAtmosphereQualityConfig; }
 namespace VansGraphics { class VansMesh; }
 
 namespace VansGraphics { class VansTexture; }
+namespace VansGraphics { struct VansRenderNodeBuildResult; }
 
 namespace Vans { struct VansSceneAudioResourceRequest; struct VansSceneVideoResourceRequest; }
-namespace Vans { struct VansSceneObjectBuildPlan; }
+namespace Vans { struct VansSceneEntityBatchResult; struct VansSceneObjectBuildPlan; }
 namespace Vans { struct VansPackagedResourcePlan; }
 namespace Vans { struct VansSerializedValue; }
 namespace Vans { class VansTimelineRuntimeSystem; }
@@ -63,7 +67,7 @@ namespace VansGraphics { class VansVirtualCameraParameterStore; }
 
 namespace VansGraphics { class VansCamera; }
 
-namespace VansGraphics { class VansAnimationNode; }
+namespace VansGraphics { class VansAnimationGpuBinding; class VansAnimationNode; }
 
 namespace VansGraphics { class VansAnimationController; }
 
@@ -81,8 +85,6 @@ class VansScriptParticleComponent;
 #include "BRDFData/VansLight.h"
 
 #include "BRDFData/VansIESProfile.h"
-
-#include "../PhysicsCore/VansPhysicsVehicle.h"
 
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 
@@ -116,6 +118,10 @@ namespace VansEngine
 {
 
 	class VansTerrainPhysicsNode;
+	class VansPhysicsSystem;
+	class VansPhysicsVehicle;
+	struct VansVehicleTuning;
+	struct VansVehicleVisualBinding;
 
 }
 
@@ -172,6 +178,51 @@ namespace VansGraphics
 
         Runtime   // Runtime mode.
 
+	};
+
+	enum class VansSceneLoadFailure
+	{
+		None,
+		InvalidSourcePath,
+		MissingDevice,
+		ProjectResourcesUnavailable,
+		PreviousSceneDrainFailed,
+		RendererRebuildFailed,
+		ContentBuildFailed,
+		RenderPreparationFailed
+	};
+
+	struct VansSceneLoadResult
+	{
+		bool m_Loaded = false;
+		VansSceneLoadFailure m_Failure = VansSceneLoadFailure::None;
+		std::string m_Error;
+	};
+
+	enum class VansSceneObjectBuildFailure
+	{
+		None,
+		GameplaySetupFailed,
+		DependencyResolutionFailed,
+		ComponentBuildFailed,
+		EntityPublishFailed,
+		VehicleBuildFailed,
+		VehiclePublishFailed,
+		MultiMeshPreparationFailed,
+		EntityParentFailed,
+		AnimationBuildFailed,
+		AnimationPublishFailed,
+		AnchorParentFailed,
+		ClothBindingFailed,
+		TimelineSetupFailed,
+		AIInitializationFailed
+	};
+
+	struct VansSceneObjectBuildResult
+	{
+		bool m_Built = false;
+		VansSceneObjectBuildFailure m_Failure = VansSceneObjectBuildFailure::None;
+		std::string m_Error;
 	};
 
 
@@ -256,6 +307,7 @@ namespace VansGraphics
 
 
 		VansCamera* m_Camera = nullptr;
+		Vans::VansCameraLensLimits m_CameraLensLimits;
 
 
 
@@ -436,8 +488,9 @@ namespace VansGraphics
 		bool UpdateSplineRoadRenderNodes(const Vans::VansPcgSplineFieldSnapshot& field, std::string& error);
 		std::vector<std::shared_ptr<const Vans::VansPcgBatchUpdate>> m_PendingVegetationUpdates;
 		std::vector<VansAnimationNode*> m_AnimationNodes;
-		std::unordered_set<VansAnimationNode*> m_EditorPreviewDrivenAnimationNodes;
-		std::vector<VansAnimationController*> m_AnimationControllers;
+		std::unordered_map<VansAnimationNode*, std::unique_ptr<VansAnimationGpuBinding>>
+			m_AnimationGpuBindings;
+		std::unordered_set<VansAnimationNode*> m_ExternallyDrivenAnimationNodes;
 		// 场景级查询批次跨帧复用容量，避免每帧为 Grounding 临时分配。
 		std::vector<VansWorldQueryRequest> m_AnimationWorldQueryRequests;
 		std::vector<VansWorldQueryResult> m_AnimationWorldQueryResults;
@@ -449,9 +502,14 @@ namespace VansGraphics
 		VansVKBuffer m_DummyWeightBuffer;
 		std::vector<VansEngine::VansPhysicsNode*> m_PhysicsNodes;
 		VansEngine::VansTerrainPhysicsNode* m_TerrainPhysicsNode = nullptr;
-		std::vector<VansEngine::VansClothNode*> m_ClothNodes;
+		struct VansSceneClothRuntime
+		{
+			VansEngine::VansClothNode* node = nullptr;
+			VansRenderNode* renderNode = nullptr;
+			VansVKBuffer stagingBuffer;
+		};
+		std::vector<std::unique_ptr<VansSceneClothRuntime>> m_ClothRuntimes;
 		std::vector<VansEngine::VansCharacterControllerNode*> m_CharControllerNodes;
-		std::vector<VansVKBuffer> m_ClothStagingBuffers;
 		VansEngine::VansPhysicsVehicle* m_Vehicle = nullptr;
 		std::vector<VansScriptObject*> m_SceneObjects;
 		// 仅在实体集合结构发生变化时递增，供上层空间注册表按需重建。
@@ -466,7 +524,8 @@ namespace VansGraphics
 		std::unique_ptr<Vans::VansTimelineRuntimeSystem> m_TimelineRuntime;
 		std::unique_ptr<VansCameraControlArbiter> m_CameraControlArbiter;
 		std::unique_ptr<VansVirtualCameraParameterStore> m_VirtualCameraParameters;
-		void ConfigureTimelineRuntime();
+		friend class Vans::VansSceneGameplayComposition;
+		friend class VansSceneAssembly;
 
 
 	public:
@@ -541,6 +600,10 @@ namespace VansGraphics
 		{
 			return m_SkeletonAnchorRegistry.RegisterInstance(animationNode);
 		}
+		bool UnregisterSkeletonInstance(VansSkeletonInstanceHandle handle)
+		{
+			return m_SkeletonAnchorRegistry.UnregisterInstance(handle);
+		}
 		bool ApplyRuntimeComponentEnabled(
 			Vans::VansComponentHandle component,
 			bool effectiveEnabled);
@@ -565,7 +628,6 @@ namespace VansGraphics
 		uint32_t GetParentTransformID(uint32_t childTransformID) const { return m_TransformGraph.GetParent(childTransformID); }
 		void MarkTransformOffsetDirty(uint32_t childTransformID) { m_TransformGraph.MarkWorldDirty(childTransformID); }
 
-		void SetTransformParentID(uint32_t childTransformID, uint32_t parentTransformID) { m_TransformGraph.SetParent(childTransformID, parentTransformID, Vans::VansTransformReparentMode::KeepLocal); }
 
 		void ClearTransformParentID(uint32_t childTransformID) { m_TransformGraph.ClearParent(childTransformID); }
 		bool SetTransformAnchorReference(
@@ -602,30 +664,9 @@ namespace VansGraphics
 		std::vector<VansAnimationNode*> GetAnimationTargetDependencies(const VansAnimationNode& node) const;
 		std::uint32_t FindAnimationTargetTransform(const std::string& entityGuid) const;
 		bool EvaluateAnimationBatch(const std::vector<VansAnimationNode*>& nodes, float deltaTime, bool gameplay);
+		void ApplyRagdollPose(VansAnimationNode& node);
 		bool SetEntityNameByGuid(const std::string& entityGuid, const std::string& name);
 		bool SetEntityActiveByGuid(const std::string& entityGuid, bool active);
-
-
-
-		// Initialize the vehicle in the scene from JSON-specified parameters.
-
-		// Object transform bindings are preferred; render node names are kept as a legacy fallback.
-
-		void InitVehicle(VansEngine::VansPhysicsSystem* physicsSystem, const glm::vec3& position,
-
-			const std::string& bodyRenderNodeName, const std::vector<std::string>& tireRenderNodeNames,
-
-			uint32_t bodyTransformID = UINT32_MAX,
-
-			const std::vector<uint32_t>& tireTransformIDs = std::vector<uint32_t>(),
-
-			const VansEngine::VansVehicleTuning& tuning = VansEngine::VansVehicleTuning(),
-
-			const std::vector<std::vector<VansEngine::VansVehicleVisualBinding>>& wheelVisualBindings =
-
-				std::vector<std::vector<VansEngine::VansVehicleVisualBinding>>());
-
-
 
 
 
@@ -807,25 +848,18 @@ namespace VansGraphics
 
 		void RegisterPhysicsNode(VansEngine::VansPhysicsNode* physicsNode);
 
-		void RegisterClothNode(VansEngine::VansClothNode* clothNode, VansRenderNode* renderNodeForStaging);
+		bool RegisterClothNode(
+			VansEngine::VansClothNode* clothNode,
+			VansRenderNode* renderNodeForStaging,
+			std::string& error);
 
 		void RegisterCharacterControllerNode(VansEngine::VansCharacterControllerNode* controllerNode);
 
 		const std::vector<VansEngine::VansPhysicsNode*>& GetPhysicsNodes() const { return m_PhysicsNodes; }
 
-		void RegisterAnimationRuntime(VansAnimationNode* animNode, VansAnimationController* controller)
-
-		{
-
-			if (animNode)
-
-				m_AnimationNodes.push_back(animNode);
-
-			if (controller)
-
-				m_AnimationControllers.push_back(controller);
-
-		}
+		bool RegisterAnimationRuntime(
+			VansAnimationNode* animNode,
+			std::unique_ptr<VansAnimationGpuBinding> gpuBinding);
 
 		VansEngine::VansPhysicsVehicle* BuildVehicleRuntime(
 
@@ -837,25 +871,15 @@ namespace VansGraphics
 
 			const std::vector<std::string>& tireRenderNodeNames,
 
-			uint32_t bodyTransformID = UINT32_MAX,
+			uint32_t bodyTransformID,
 
-			const std::vector<uint32_t>& tireTransformIDs = std::vector<uint32_t>(),
+			const std::vector<uint32_t>& tireTransformIDs,
 
-			const VansEngine::VansVehicleTuning& tuning = VansEngine::VansVehicleTuning(),
+			const VansEngine::VansVehicleTuning& tuning,
 
-			const std::vector<std::vector<VansEngine::VansVehicleVisualBinding>>& wheelVisualBindings =
+			const std::vector<std::vector<VansEngine::VansVehicleVisualBinding>>& wheelVisualBindings,
 
-				std::vector<std::vector<VansEngine::VansVehicleVisualBinding>>())
-
-		{
-
-			InitVehicle(physicsSystem, position, bodyRenderNodeName, tireRenderNodeNames,
-
-				bodyTransformID, tireTransformIDs, tuning, wheelVisualBindings);
-
-			return m_Vehicle;
-
-		}
+			std::string& error);
 
 
 
@@ -915,7 +939,7 @@ namespace VansGraphics
 
 		/// will unload the previous scene first.
 
-		bool LoadSceneForRendering(
+		VansSceneLoadResult LoadSceneForRendering(
 
 			const Vans::VansSerializedValue& sceneDocument,
 
@@ -924,18 +948,6 @@ namespace VansGraphics
 			VansVKDevice* device,
 
 			VansSceneLoadMode mode = VansSceneLoadMode::Editor);
-
-
-
-
-
-		// Creates VansScriptObjects from a typed scene object build plan.
-        // 在主线程和渲染同步点调用；资源须由场景依赖计划预加载。
-        bool CreateSceneEntityBatch(VkDevice& device, const Vans::VansSerializedValue& entities,
-            const std::string& projectRoot, std::vector<std::string>& created, std::string& error);
-        bool InstantiatePrefab(VkDevice& device, const std::string& assetGuid,
-            const Vans::VansSerializedValue& placement, std::string& rootEntity, std::string& error);
-		bool LoadSceneObjects(VkDevice& device, const Vans::VansSceneObjectBuildPlan& objectBuildPlan, const std::string& projectRoot);
 
 
 
@@ -959,6 +971,9 @@ namespace VansGraphics
 
 
 		void RegistRenderNode(VansRenderNode* renderNode, RenderNodeType type);
+
+		// 丢弃尚未随 Entity 发布的节点批次；只用于 SceneBuild 失败回滚。
+		void DiscardRenderNodeBuild(VansRenderNodeBuildResult& build);
 
 
 
@@ -1010,7 +1025,7 @@ namespace VansGraphics
 
 
 
-		void UnLoadScene();
+		void UnloadScene(VansVKDevice* device);
 
 
 
@@ -1042,7 +1057,7 @@ namespace VansGraphics
 
 		// spatial=true ? AudioComponent ????? OpenAL source?
 
-		void SyncAudioSourcePositions(float deltaTime);
+		void UpdateAudioComponents(float deltaTime);
 
 		void ReleaseAudioSourceBindings();
 
@@ -1053,11 +1068,12 @@ namespace VansGraphics
 		// Per-frame skeletal animation CPU update + GPU bone matrix upload.
 
 		void EvaluateAnimations(float deltaTime);
-		bool BeginEditorAnimationPreview(VansAnimationNode* animationNode);
-		void EndEditorAnimationPreview(VansAnimationNode* animationNode);
-		bool EvaluateEditorAnimationPreviewStep(
+		bool BeginExternalAnimationEvaluation(VansAnimationNode* animationNode);
+		void EndExternalAnimationEvaluation(VansAnimationNode* animationNode);
+		bool EvaluateExternalAnimationStep(
 			VansAnimationNode* animationNode, float deltaTime);
 		void UploadAnimationRenderData(const VansRenderSceneFrameSnapshot& snapshot);
+		void AdvanceCameraRuntime(double deltaSeconds);
 		void UpdateActionsEarly(double deltaSeconds);
 		void UpdateAI(double deltaSeconds);
 		bool RunActionLateContinuation();
@@ -1105,6 +1121,10 @@ namespace VansGraphics
 
 		void SetMainCameraHiZCullSettings(const VansMainCameraHiZCullSettings& settings);
 		const VansMainCameraHiZCullSettings& GetMainCameraHiZCullSettings() const { return m_MainCameraHiZCullSettings; }
+		bool SetCameraLensLimits(
+			const Vans::VansCameraLensLimits& limits,
+			std::string& error);
+		const Vans::VansCameraLensLimits& GetCameraLensLimits() const { return m_CameraLensLimits; }
 		void SetEnvironmentSettings(const Vans::VansSceneEnvironmentSettingsConfig& settings)
 		{
 			m_EnvironmentSettings = settings;
@@ -1154,7 +1174,7 @@ namespace VansGraphics
 
 		// Cloth simulation: CPU advance + write results to staging buffers
 
-		void UpdateClothSimulation(float dt);
+		void UpdateClothSimulation(float dt, std::uint32_t substeps);
 
 		void WriteClothResultsToStagingBuffers(const VansRenderSceneFrameSnapshot& snapshot);
 
@@ -1196,6 +1216,7 @@ namespace VansGraphics
 
 	private:
 
+		bool RemoveLightByIndex(int index, VansLightType type);
 
 
 		// Helper: loads or reuses a texture by its absolute file path.
@@ -1383,10 +1404,8 @@ namespace VansGraphics
 
 		const VansEngine::AudioVoiceBudgetSettings& GetAudioVoiceBudgetSettings() const { return m_AudioVoiceBudgetSettings; }
 
-		void SetAudioMaxActiveVoices(std::size_t maxActiveVoices)
-		{
-			m_AudioVoiceBudgetSettings.maxActiveVoices = std::max<std::size_t>(1, maxActiveVoices);
-		}
+		void SetAudioMaxActiveVoices(std::size_t maxActiveVoices);
+		void SetAudioSourceLimit(std::size_t sourceLimit);
 
 
 

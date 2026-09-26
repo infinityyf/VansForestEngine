@@ -5,6 +5,13 @@
 
 namespace Vans
 {
+bool VansAttributeDefinition::IsValueInRange(double value) const
+{
+	return std::isfinite(value) &&
+		(!hasMinimum || value >= minimum) &&
+		(!hasMaximum || value <= maximum);
+}
+
 bool VansAttributeRegistry::Register(VansAttributeDefinition definition, std::string& error)
 {
 	if (m_Sealed)
@@ -29,7 +36,7 @@ bool VansAttributeRegistry::Register(VansAttributeDefinition definition, std::st
 	}
 	if ((definition.hasMinimum && !std::isfinite(definition.minimum)) ||
 		(definition.hasMaximum && !std::isfinite(definition.maximum)) ||
-		!std::isfinite(definition.defaultValue) ||
+		!definition.IsValueInRange(definition.defaultValue) ||
 		(definition.hasMinimum && definition.hasMaximum && definition.minimum > definition.maximum))
 	{
 		error = "invalid Attribute range: " + definition.name;
@@ -61,6 +68,7 @@ void VansAttributeService::SetRegistry(const VansAttributeRegistry* registry)
 	m_States.clear();
 	m_Modifiers.Clear();
 	m_Dirty.clear();
+	m_NextModifierOrder = 1;
 }
 
 bool VansAttributeService::InitializeDefaults(std::string& error)
@@ -80,20 +88,42 @@ bool VansAttributeService::InitializeDefaults(std::string& error)
 	return true;
 }
 
-bool VansAttributeService::SetBase(VansAttributeId attribute, double value)
+VansAttributeBaseResult VansAttributeService::ApplyBase(
+	VansAttributeId attribute,
+	VansAttributeBaseOperation operation,
+	double operand,
+	VansAttributeBoundsPolicy bounds)
 {
-	if (!HasAttribute(attribute) || !std::isfinite(value)) return false;
-	m_States[attribute].baseValue = value;
+	const auto state = m_States.find(attribute);
+	const VansAttributeDefinition* definition =
+		m_Registry ? m_Registry->Resolve(attribute) : nullptr;
+	if (state == m_States.end() || !definition || !std::isfinite(operand) ||
+		(bounds != VansAttributeBoundsPolicy::Clamp &&
+			bounds != VansAttributeBoundsPolicy::Reject)) return {};
+	double value = state->second.baseValue;
+	switch (operation)
+	{
+	case VansAttributeBaseOperation::Add:
+		value += operand;
+		break;
+	case VansAttributeBaseOperation::Multiply:
+		value *= operand;
+		break;
+	case VansAttributeBaseOperation::Set:
+		value = operand;
+		break;
+	default:
+		return {};
+	}
+	if (!std::isfinite(value)) return {};
+	if (bounds == VansAttributeBoundsPolicy::Reject && !definition->IsValueInRange(value))
+		return {};
+	const double resolvedValue = value;
+	if (definition->hasMinimum) value = std::max(value, definition->minimum);
+	if (definition->hasMaximum) value = std::min(value, definition->maximum);
+	state->second.baseValue = value;
 	MarkDirty(attribute);
-	return true;
-}
-
-bool VansAttributeService::AddBase(VansAttributeId attribute, double delta)
-{
-	if (!HasAttribute(attribute) || !std::isfinite(delta)) return false;
-	m_States[attribute].baseValue += delta;
-	MarkDirty(attribute);
-	return true;
+	return { true, value != resolvedValue };
 }
 
 double VansAttributeService::Base(VansAttributeId attribute) const
@@ -110,8 +140,10 @@ double VansAttributeService::Current(VansAttributeId attribute) const
 
 VansAttributeModifierHandle VansAttributeService::AddModifier(const VansAttributeModifierDesc& desc)
 {
-	if (!HasAttribute(desc.attribute) || !std::isfinite(desc.magnitude)) return {};
-	const VansGenerationHandle handle = m_Modifiers.Emplace(ModifierState{ desc });
+	if (!HasAttribute(desc.attribute) || !std::isfinite(desc.magnitude) ||
+		m_NextModifierOrder == 0) return {};
+	const VansGenerationHandle handle =
+		m_Modifiers.Emplace(ModifierState{ desc, m_NextModifierOrder++ });
 	MarkDirty(desc.attribute);
 	return { handle };
 }
@@ -141,20 +173,7 @@ bool VansAttributeService::RemoveModifier(VansAttributeModifierHandle handle)
 	return true;
 }
 
-std::size_t VansAttributeService::RemoveModifiersFromSource(std::uint64_t source)
-{
-	std::vector<VansAttributeModifierHandle> removals;
-	m_Modifiers.ForEach([&](VansGenerationHandle handle, const ModifierState& state)
-	{
-		if (state.desc.source == source) removals.push_back({ handle });
-	});
-	BeginBatch();
-	for (VansAttributeModifierHandle handle : removals) RemoveModifier(handle);
-	EndBatch();
-	return removals.size();
-}
-
-std::vector<VansAttributeSnapshot> VansAttributeService::Capture() const
+std::vector<VansAttributeSnapshot> VansAttributeService::Snapshot() const
 {
 	std::vector<VansAttributeSnapshot> result;
 	result.reserve(m_States.size());
@@ -167,17 +186,40 @@ std::vector<VansAttributeSnapshot> VansAttributeService::Capture() const
 	return result;
 }
 
-void VansAttributeService::Restore(const std::vector<VansAttributeSnapshot>& snapshot)
+std::vector<VansAttributeBaseState> VansAttributeService::CaptureBases() const
 {
+	std::vector<VansAttributeBaseState> result;
+	result.reserve(m_States.size());
+	for (const auto& entry : m_States)
+		result.push_back({ entry.first, entry.second.baseValue });
+	std::sort(result.begin(), result.end(), [](const VansAttributeBaseState& left,
+		const VansAttributeBaseState& right)
+	{
+		return left.attribute < right.attribute;
+	});
+	return result;
+}
+
+bool VansAttributeService::RestoreBases(const std::vector<VansAttributeBaseState>& state)
+{
+	std::unordered_set<VansAttributeId> restored;
+	for (const VansAttributeBaseState& item : state)
+	{
+		const VansAttributeDefinition* definition =
+			m_Registry ? m_Registry->Resolve(item.attribute) : nullptr;
+		if (!definition || !HasAttribute(item.attribute) ||
+			!definition->IsValueInRange(item.value) ||
+			!restored.insert(item.attribute).second) return false;
+	}
 	BeginBatch();
-	for (const VansAttributeSnapshot& item : snapshot)
+	for (const VansAttributeBaseState& item : state)
 	{
 		const auto found = m_States.find(item.attribute);
-		if (found == m_States.end()) continue;
-		found->second.baseValue = item.baseValue;
+		found->second.baseValue = item.value;
 		MarkDirty(item.attribute);
 	}
 	EndBatch();
+	return true;
 }
 
 void VansAttributeService::BeginBatch()
@@ -201,24 +243,31 @@ double VansAttributeService::Evaluate(VansAttributeId attribute) const
 {
 	const auto state = m_States.find(attribute);
 	if (state == m_States.end()) return 0.0;
-	std::vector<VansAttributeModifierDesc> modifiers;
+	std::vector<ModifierState> modifiers;
 	m_Modifiers.ForEach([&](VansGenerationHandle, const ModifierState& modifier)
 	{
-		if (modifier.desc.attribute == attribute) modifiers.push_back(modifier.desc);
+		if (modifier.desc.attribute == attribute) modifiers.push_back(modifier);
 	});
 	std::sort(modifiers.begin(), modifiers.end(), [](const auto& left, const auto& right)
 	{
-		if (left.priority != right.priority) return left.priority < right.priority;
-		if (left.sourceOrder != right.sourceOrder) return left.sourceOrder < right.sourceOrder;
-		return left.source < right.source;
+		if (left.desc.priority != right.desc.priority)
+			return left.desc.priority < right.desc.priority;
+		if (left.desc.sourceOrder != right.desc.sourceOrder)
+			return left.desc.sourceOrder < right.desc.sourceOrder;
+		if (left.desc.source != right.desc.source)
+			return left.desc.source < right.desc.source;
+		return left.order < right.order;
 	});
 	double value = state->second.baseValue;
 	for (const auto& modifier : modifiers)
-		if (modifier.operation == VansAttributeModifierOperation::Additive) value += modifier.magnitude;
+		if (modifier.desc.operation == VansAttributeModifierOperation::Additive)
+			value += modifier.desc.magnitude;
 	for (const auto& modifier : modifiers)
-		if (modifier.operation == VansAttributeModifierOperation::Multiplicative) value *= modifier.magnitude;
+		if (modifier.desc.operation == VansAttributeModifierOperation::Multiplicative)
+			value *= modifier.desc.magnitude;
 	for (const auto& modifier : modifiers)
-		if (modifier.operation == VansAttributeModifierOperation::Override) value = modifier.magnitude;
+		if (modifier.desc.operation == VansAttributeModifierOperation::Override)
+			value = modifier.desc.magnitude;
 	if (const VansAttributeDefinition* definition = m_Registry ? m_Registry->Resolve(attribute) : nullptr)
 	{
 		if (definition->hasMinimum) value = std::max(value, definition->minimum);
@@ -243,10 +292,7 @@ void VansAttributeService::FlushDirty()
 	{
 		const auto found = m_States.find(attribute);
 		if (found == m_States.end()) continue;
-		const double previous = found->second.currentValue;
-		const double current = Evaluate(attribute);
-		found->second.currentValue = current;
-		if (m_Changed && previous != current) m_Changed(attribute, previous, current);
+		found->second.currentValue = Evaluate(attribute);
 	}
 }
 }

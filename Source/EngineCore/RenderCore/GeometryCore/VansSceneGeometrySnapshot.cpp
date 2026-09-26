@@ -30,8 +30,8 @@ namespace VansGraphics
         auto collectMoving = [&](const std::vector<VansRenderNode*>& nodes)
         {
             for (const auto* node : nodes)
-                if (node && (node->m_AnimationEnabled || node->m_AnimOwner
-                    || node->m_VertexDeformationState.BuildFeatureMask() != 0))
+				if (node && (node->m_AnimationEnabled
+					|| node->m_VertexDeformationState.BuildFeatureMask() != 0))
                     movingTransforms.insert(node->m_TransformID);
         };
         collectMoving(scene.GetOpaqueRenderNodes());
@@ -68,7 +68,6 @@ namespace VansGraphics
                 const glm::mat4 model = node->GetTransformMatrix();
                 if (moving)
                 {
-                    ++pending.dynamicInstanceCount;
                     if (node->m_Mesh->HasLocalBounds())
                     {
                         const auto bounds = MakeRenderBoundsFromLocalAABB(node->m_Mesh->GetLocalBoundsMin(), node->m_Mesh->GetLocalBoundsMax(), model);
@@ -115,11 +114,10 @@ namespace VansGraphics
                 }
                 ++pending.staticInstanceCount;
             }
-            pending.meshCount = static_cast<uint32_t>(meshes.size());
-            pending.opaque.Build(std::move(opaque));
+            if (!pending.opaque.Build(std::move(opaque), error)) return false;
             // 透射物体只是接收表面，不能参与实体内部或遮挡判定。
             VansTriangleGeometryQuery transmission;
-            transmission.Build(std::move(pending.transmissionReceivers));
+            if (!transmission.Build(std::move(pending.transmissionReceivers), error)) return false;
             pending.transmissionReceivers = transmission.GetTriangles();
             output = std::move(pending);
             return true;

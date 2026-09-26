@@ -24,6 +24,7 @@ namespace Vans::EditorAPI
 	{
 		struct RigSessionState
 		{
+			AnimationPreviewWriteToken writeToken;
 			VansGraphics::VansAnimationRigAsset workingAsset;
 			std::optional<VansGraphics::VansCompiledAnimationRig> originalCompiledRig;
 			std::string rigAssetGuid;
@@ -32,10 +33,12 @@ namespace Vans::EditorAPI
 			bool overrideActive = false;
 		};
 
-		std::unordered_map<AnimationPreviewSessionId, RigSessionState>& Sessions()
+		bool Matches(
+			AnimationPreviewWriteToken writeToken,
+			const RigSessionState& state)
 		{
-			static std::unordered_map<AnimationPreviewSessionId, RigSessionState> sessions;
-			return sessions;
+			return writeToken.sessionId == state.writeToken.sessionId
+				&& writeToken.sceneContentRevision == state.writeToken.sceneContentRevision;
 		}
 
 		Vec3 ToDTO(const glm::vec3& value)
@@ -117,8 +120,20 @@ namespace Vans::EditorAPI
 		}
 	}
 
+	struct AnimationPreviewRigAuthoringService::Impl
+	{
+		std::unordered_map<AnimationPreviewSessionId, RigSessionState> sessions;
+	};
+
+	AnimationPreviewRigAuthoringService::AnimationPreviewRigAuthoringService()
+		: m_Impl(std::make_unique<Impl>())
+	{
+	}
+
+	AnimationPreviewRigAuthoringService::~AnimationPreviewRigAuthoringService() = default;
+
 	bool AnimationPreviewRigAuthoringService::BeginSession(
-		AnimationPreviewSessionId sessionId,
+		AnimationPreviewWriteToken writeToken,
 		VansGraphics::VansAnimationController& controller,
 		std::string& error)
 	{
@@ -174,46 +189,48 @@ namespace Vans::EditorAPI
 			authoringPath = std::filesystem::path(project.GetProjectRootPath()) / authoringPath;
 		}
 		RigSessionState state;
+		state.writeToken = writeToken;
 		state.workingAsset = *rigAsset;
 		state.originalCompiledRig = *compiledRig;
 		state.rigAssetGuid = controller.GetAnimationRigAssetGuid();
 		state.rigAssetPath = authoringPath.lexically_normal().string();
-		Sessions().insert_or_assign(sessionId, std::move(state));
+		m_Impl->sessions.insert_or_assign(writeToken.sessionId, std::move(state));
 		return true;
 	}
 
 	AnimationPreviewRigSnapshot AnimationPreviewRigAuthoringService::GetSnapshot(
-		const AnimationPreviewRigContext& context)
+		const AnimationPreviewRigContext& context,
+		const VansGraphics::VansAnimationController& controller,
+		const VansGraphics::Skeleton& skeleton)
 	{
 		AnimationPreviewRigSnapshot snapshot;
-		snapshot.sessionId = context.sessionId;
-		snapshot.sceneContentRevision = context.sceneContentRevision;
+		snapshot.sessionId = context.writeToken.sessionId;
+		snapshot.sceneContentRevision = context.writeToken.sceneContentRevision;
 		snapshot.entityGuid = context.entityGuid;
 		snapshot.animationComponentGuid = context.animationComponentGuid;
-		auto found = Sessions().find(context.sessionId);
-		if (found == Sessions().end())
+		auto found = m_Impl->sessions.find(context.writeToken.sessionId);
+		if (found == m_Impl->sessions.end() || !Matches(context.writeToken, found->second))
 		{
 			snapshot.diagnostic = "Animation preview Rig session is unavailable";
 			return snapshot;
 		}
 		const RigSessionState& state = found->second;
 		snapshot.rigRevision = state.revision;
-		if (!context.controller || !context.skeleton || context.skeleton->bones.empty()
-			|| !context.controller->GetAnimationRig())
+		if (skeleton.bones.empty() || !controller.GetAnimationRig())
 		{
 			snapshot.diagnostic = "Animation preview Rig target is unavailable";
 			return snapshot;
 		}
 		snapshot.available = true;
-		snapshot.targetSkeletonGuid = context.skeleton->sourceSkeletonGuid;
+		snapshot.targetSkeletonGuid = skeleton.sourceSkeletonGuid;
 		snapshot.rigAssetGuid = state.rigAssetGuid;
 		snapshot.rigAssetPath = state.rigAssetPath;
 		snapshot.retargetEnabled = context.retargetEnabled;
 		snapshot.retargetProfilePath = context.retargetProfilePath;
 		snapshot.retargetSourceModelPath = context.retargetSourceModelPath;
 		snapshot.retargetSourceAnimatorPath = context.retargetSourceAnimatorPath;
-		const auto globals = ResolveGlobals(*context.skeleton, *context.controller);
-		const auto* compiledRig = context.controller->GetAnimationRig();
+		const auto globals = ResolveGlobals(skeleton, controller);
+		const auto* compiledRig = controller.GetAnimationRig();
 		snapshot.sockets.reserve(state.workingAsset.sockets.size());
 		for (const auto& definition : state.workingAsset.sockets)
 		{
@@ -262,8 +279,8 @@ namespace Vans::EditorAPI
 	{
 		canonicalJson.clear();
 		error.clear();
-		auto found = Sessions().find(sessionId);
-		if (found == Sessions().end())
+		auto found = m_Impl->sessions.find(sessionId);
+		if (found == m_Impl->sessions.end())
 		{
 			error = "Animation preview Rig session is unavailable";
 			return false;
@@ -277,13 +294,16 @@ namespace Vans::EditorAPI
 	}
 
 	AnimationPreviewRigEditResult AnimationPreviewRigAuthoringService::SetDefinition(
-		const AnimationPreviewRigContext& context, std::uint64_t expectedRevision,
+		const AnimationPreviewRigContext& context,
+		VansGraphics::VansAnimationController& controller,
+		const VansGraphics::Skeleton& skeleton,
+		std::uint64_t expectedRevision,
 		const std::string& canonicalJson)
 	{
 		AnimationPreviewRigEditResult result;
-		auto found = Sessions().find(context.sessionId);
-		if (found == Sessions().end() || !context.controller || !context.skeleton ||
-			found->second.revision != expectedRevision)
+		auto found = m_Impl->sessions.find(context.writeToken.sessionId);
+		if (found == m_Impl->sessions.end() || !Matches(context.writeToken, found->second)
+			|| found->second.revision != expectedRevision)
 		{ result.message = "Animation Rig context or revision expired"; return result; }
 		VansGraphics::VansAnimationRigAsset candidate;
 		try
@@ -293,8 +313,8 @@ namespace Vans::EditorAPI
 		}
 		catch (const std::exception& exception) {result.message=exception.what();return result;}
 		VansGraphics::VansCompiledAnimationRig compiled;
-		if (!VansGraphics::VansAnimationRigCompiler::Compile(candidate,*context.skeleton,compiled,result.message)
-			|| !context.controller->ReplaceAnimationRig(std::move(compiled),result.message))
+		if (!VansGraphics::VansAnimationRigCompiler::Compile(candidate,skeleton,compiled,result.message)
+			|| !controller.ReplaceAnimationRig(std::move(compiled),result.message))
 		{result.usingLastGoodRig=true;return result;}
 		found->second.workingAsset=std::move(candidate);
 		found->second.overrideActive=true;
@@ -306,11 +326,13 @@ namespace Vans::EditorAPI
 
 	AnimationPreviewRigEditResult AnimationPreviewRigAuthoringService::SetSocketTransform(
 		const AnimationPreviewRigContext& context,
+		VansGraphics::VansAnimationController& controller,
+		const VansGraphics::Skeleton& skeleton,
 		const AnimationPreviewRigSocketTransformRequest& request)
 	{
 		AnimationPreviewRigEditResult result;
-		auto found = Sessions().find(context.sessionId);
-		if (found == Sessions().end())
+		auto found = m_Impl->sessions.find(context.writeToken.sessionId);
+		if (found == m_Impl->sessions.end() || !Matches(context.writeToken, found->second))
 		{
 			result.message = "Animation preview Rig session is unavailable";
 			return result;
@@ -323,11 +345,6 @@ namespace Vans::EditorAPI
 			result.usingLastGoodRig = state.overrideActive;
 			return result;
 		}
-		if (!context.controller || !context.skeleton)
-		{
-			result.message = "Animation preview Rig target is unavailable";
-			return result;
-		}
 		auto definition = std::find_if(
 			state.workingAsset.sockets.begin(), state.workingAsset.sockets.end(),
 			[&](const auto& socket) { return socket.guid == request.socketGuid; });
@@ -336,8 +353,8 @@ namespace Vans::EditorAPI
 			result.message = "Animation Rig socket does not exist";
 			return result;
 		}
-		const auto bone = context.skeleton->boneGuidToIndex.find(definition->boneGuid);
-		if (bone == context.skeleton->boneGuidToIndex.end())
+		const auto bone = skeleton.boneGuidToIndex.find(definition->boneGuid);
+		if (bone == skeleton.boneGuidToIndex.end())
 		{
 			result.message = "Animation Rig socket parent bone is not in the target Skeleton";
 			return result;
@@ -345,7 +362,7 @@ namespace Vans::EditorAPI
 		glm::mat4 desired;
 		if (!MakeMatrix(request.transform, desired, result.message))
 			return result;
-		const auto globals = ResolveGlobals(*context.skeleton, *context.controller);
+		const auto globals = ResolveGlobals(skeleton, controller);
 		glm::mat4 parent = globals[static_cast<std::size_t>(bone->second)];
 		if (request.space == RuntimeTransformSpace::World)
 			parent = context.ownerWorld * parent;
@@ -367,8 +384,8 @@ namespace Vans::EditorAPI
 		candidate->scaleLocal = local.scale;
 		VansGraphics::VansCompiledAnimationRig candidateRig;
 		if (!VansGraphics::VansAnimationRigCompiler::Compile(
-			candidateAsset, *context.skeleton, candidateRig, result.message)
-			|| !context.controller->ReplaceAnimationRig(std::move(candidateRig), result.message))
+			candidateAsset, skeleton, candidateRig, result.message)
+			|| !controller.ReplaceAnimationRig(std::move(candidateRig), result.message))
 		{
 			result.usingLastGoodRig = true;
 			return result;
@@ -384,11 +401,13 @@ namespace Vans::EditorAPI
 
 	AnimationPreviewRigEditResult AnimationPreviewRigAuthoringService::SetAttachmentProfile(
 		const AnimationPreviewRigContext& context,
+		VansGraphics::VansAnimationController& controller,
+		const VansGraphics::Skeleton& skeleton,
 		const AnimationPreviewRigAttachmentProfileRequest& request)
 	{
 		AnimationPreviewRigEditResult result;
-		auto found = Sessions().find(context.sessionId);
-		if (found == Sessions().end())
+		auto found = m_Impl->sessions.find(context.writeToken.sessionId);
+		if (found == m_Impl->sessions.end() || !Matches(context.writeToken, found->second))
 		{
 			result.message = "Animation preview Rig session is unavailable";
 			return result;
@@ -401,11 +420,6 @@ namespace Vans::EditorAPI
 			result.usingLastGoodRig = state.overrideActive;
 			return result;
 		}
-		if (!context.controller || !context.skeleton)
-		{
-			result.message = "Animation preview Rig target is unavailable";
-			return result;
-		}
 		if (request.modelGuid.empty() || request.anchorGuid.empty()
 			|| (request.parentKind != RuntimeParentKind::Bone
 				&& request.parentKind != RuntimeParentKind::Socket))
@@ -414,8 +428,8 @@ namespace Vans::EditorAPI
 			return result;
 		}
 		const bool anchorExists = request.parentKind == RuntimeParentKind::Bone
-			? context.skeleton->boneGuidToIndex.find(request.anchorGuid)
-				!= context.skeleton->boneGuidToIndex.end()
+			? skeleton.boneGuidToIndex.find(request.anchorGuid)
+				!= skeleton.boneGuidToIndex.end()
 			: std::any_of(state.workingAsset.sockets.begin(), state.workingAsset.sockets.end(),
 				[&](const auto& socket) { return socket.guid == request.anchorGuid; });
 		if (!anchorExists)
@@ -477,8 +491,8 @@ namespace Vans::EditorAPI
 		}
 		VansGraphics::VansCompiledAnimationRig candidateRig;
 		if (!VansGraphics::VansAnimationRigCompiler::Compile(
-			candidateAsset, *context.skeleton, candidateRig, result.message)
-			|| !context.controller->ReplaceAnimationRig(std::move(candidateRig), result.message))
+			candidateAsset, skeleton, candidateRig, result.message)
+			|| !controller.ReplaceAnimationRig(std::move(candidateRig), result.message))
 		{
 			result.usingLastGoodRig = state.overrideActive;
 			return result;
@@ -495,12 +509,14 @@ namespace Vans::EditorAPI
 	}
 
 	AnimationPreviewRigEditResult AnimationPreviewRigAuthoringService::Adopt(
+		AnimationPreviewWriteToken writeToken,
 		const AnimationPreviewRigAdoptRequest& request,
 		VansGraphics::VansAnimationController& controller)
 	{
 		AnimationPreviewRigEditResult result;
-		auto found = Sessions().find(request.sessionId);
-		if (found == Sessions().end())
+		auto found = m_Impl->sessions.find(request.sessionId);
+		if (found == m_Impl->sessions.end() || request.sessionId != writeToken.sessionId
+			|| !Matches(writeToken, found->second))
 		{
 			result.message = "Animation preview Rig session is unavailable";
 			return result;
@@ -528,21 +544,30 @@ namespace Vans::EditorAPI
 
 	bool AnimationPreviewRigAuthoringService::EndSession(
 		AnimationPreviewSessionId sessionId,
-		VansGraphics::VansAnimationController* controller,
 		std::string& error)
 	{
 		error.clear();
-		auto found = Sessions().find(sessionId);
-		if (found == Sessions().end())
+		auto found = m_Impl->sessions.find(sessionId);
+		if (found == m_Impl->sessions.end())
+			return true;
+		m_Impl->sessions.erase(found);
+		return true;
+	}
+
+	bool AnimationPreviewRigAuthoringService::EndSession(
+		AnimationPreviewSessionId sessionId,
+		VansGraphics::VansAnimationController& controller,
+		std::string& error)
+	{
+		error.clear();
+		auto found = m_Impl->sessions.find(sessionId);
+		if (found == m_Impl->sessions.end())
 			return true;
 		bool success = true;
-		if (controller && found->second.overrideActive
-			&& found->second.originalCompiledRig)
-		{
-			success = controller->ReplaceAnimationRig(
+		if (found->second.overrideActive && found->second.originalCompiledRig)
+			success = controller.ReplaceAnimationRig(
 				*found->second.originalCompiledRig, error);
-		}
-		Sessions().erase(found);
+		m_Impl->sessions.erase(found);
 		return success;
 	}
 }

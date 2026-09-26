@@ -47,6 +47,7 @@ namespace VansEngine
         }
     };
 
+    // 距离衰减的唯一计算入口；OpenAL 固定使用 AL_NONE，只负责空间声像。
     inline float ComputeDistanceGain(float distance, AudioAttenuationSettings settings)
     {
         settings.Normalize();

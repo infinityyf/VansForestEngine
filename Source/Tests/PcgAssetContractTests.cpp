@@ -6,12 +6,13 @@
 #include "../EngineCore/PcgCore/Serialization/VansPcgRecipeCodec.h"
 #include "../EngineCore/PcgCore/VansPcgExecutor.h"
 #include "../EngineCore/PcgCore/VansPcgBatchPlan.h"
+#include "../EngineCore/PcgCore/VansPcgUpdatePlanner.h"
 #include "../EngineCore/PcgCore/VansPcgResourcePlan.h"
 #include "../EngineCore/PcgCore/VansPcgTerrainSurface.h"
 #include "../EngineCore/PcgCore/Storage/VansPcgSplineFieldStorage.h"
 #include "../EngineCore/TerrainCore/VansTerrainAsset.h"
 #include "../EngineCore/PcgCore/Storage/VansPcgMaskAssetStorage.h"
-#include "../EngineCore/EditorCore/Pcg/VansPcgMaskAuthoringSession.h"
+#include "../EngineCore/AuthoringCore/Pcg/VansPcgMaskAuthoringSession.h"
 #include "../EngineCore/AssetCore/Serialization/VansDataPngEncoder.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../EngineCore/AssetCore/Storage/VansJsonFileStorage.h"
@@ -21,7 +22,7 @@
 #include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
 #include "../EngineCore/AssetCore/VansAssetDocument.h"
 #include "../EngineCore/AssetCore/VansAssetObjectRepository.h"
-#include "../EngineCore/EditorCore/VansAssetDocumentEditService.h"
+#include "../EngineCore/AuthoringCore/VansAssetDocumentEditService.h"
 #include "../EngineCore/EditorCore/VansAssetDocumentTypeRegistry.h"
 #include "../EngineCore/SceneCore/VansAssetObjectBootstrapper.h"
 #include "../EngineCore/SceneCore/VansPackagedResourcePlan.h"
@@ -71,6 +72,22 @@ VansPlantTypeAsset TreeFixture()
 	variant.weight = 1;
 	variant.parts = { { "surface", VansPlantPartKind::Surface, Guid("mesh-b"), -1, Guid("bark") } };
 	asset.variants.push_back(variant);
+	for (auto& treeVariant : asset.variants)
+	{
+		treeVariant.lod.buildKey = "fixture-" + treeVariant.id;
+		treeVariant.lod.centerRadius = { 0, 1, 0, treeVariant.cullingRadius };
+		for (std::size_t level = 0; level < treeVariant.lodSettings.ratios.size(); ++level)
+		{
+			VansModelLodLevel lodLevel;
+			for (std::size_t sourcePart = 0; sourcePart < treeVariant.parts.size(); ++sourcePart)
+			{
+				const auto& part = treeVariant.parts[sourcePart];
+				lodLevel.parts.push_back({ part.mesh, part.material, std::max(part.submesh, 0),
+					static_cast<std::uint32_t>(sourcePart), 1, 0 });
+			}
+			treeVariant.lod.levels.push_back(std::move(lodLevel));
+		}
+	}
 	return asset;
 }
 
@@ -91,6 +108,34 @@ bool TestPlantSchema()
 		decoded.variants[0].parts[0].material == Guid("bark") && decoded.variants[0].parts[1].material == Guid("leaves") &&
 		decoded.variants[1].parts[0].material == Guid("bark"),
 		"Plant round trip lost distinct model/part/material choices: " + error)) return false;
+	auto oneLevelTree = tree;
+	oneLevelTree.render.lodDistances = { 75 };
+	for (auto& variant : oneLevelTree.variants)
+	{
+		variant.lodSettings.ratios = { .35f };
+		variant.lod.levels.resize(1);
+	}
+	if (!Check(ValidatePlantTypeAsset(oneLevelTree, true).empty() &&
+		VansPlantTypeAssetCodec::Encode(oneLevelTree, root, error) &&
+		VansPlantTypeAssetCodec::Decode(root, decoded, error) &&
+		decoded.render.lodDistances == oneLevelTree.render.lodDistances &&
+		decoded.variants[0].lodSettings.ratios == oneLevelTree.variants[0].lodSettings.ratios &&
+		decoded.variants[0].lod.levels.size() == 1,
+		"One-level Tree LOD settings did not validate and round trip")) return false;
+	auto mismatchedLevels = oneLevelTree;
+	mismatchedLevels.variants[0].lodSettings.ratios = { .5f, .18f };
+	if (!Check(!ValidatePlantTypeAsset(mismatchedLevels, true).empty(),
+		"Per-variant LOD ratios escaped the shared distance count")) return false;
+	auto unbakedTree = tree;
+	for (auto& variant : unbakedTree.variants) variant.lod = {};
+	VansPlantTreeRuntimeBounds runtimeBounds;
+	if (!Check(!ResolvePlantTreeRuntimeBounds(unbakedTree.variants[0], runtimeBounds, error) &&
+		unbakedTree.variants[0].cullingRadius > 0 &&
+		ResolvePlantTreeRuntimeBounds(tree.variants[0], runtimeBounds, error) &&
+		runtimeBounds.center == std::array<float, 3>{ 0, 1, 0 } && runtimeBounds.radius == 10 &&
+		ValidatePlantTypeAsset(unbakedTree, false).empty() &&
+		!ValidatePlantTypeAsset(unbakedTree, true).empty(),
+		"Tree runtime bounds used cullingRadius fallback or rejected baked LOD bounds")) return false;
 
 	// 错误文档不能局部覆盖现有工作副本，也不能静默接收旧字段。
 	const auto reject = [&](Value malformed, const char* label) {
@@ -195,9 +240,10 @@ bool TestPlantAuthoringLifecycle()
 	if (!Check(descriptor && VansPlantTypeAssetCodec::Encode(plant, root, error) &&
 		descriptor->validateBeforeSave(plantPath, root).empty() && descriptor->collectDependencies(plantPath, root).size() == 4,
 		"Plant document registration failed")) return false;
-	VansAssetDocument document;
-	if (!Check(document.Load(plantPath, error), error)) return false;
-	struct HistoryGuard { VansAssetDocument& doc; ~HistoryGuard() { VansAssetDocumentEditService::ClearHistory(doc); } } history{ document };
+	auto openDocument = VansAssetDocumentRegistry::Get().GetOrOpen(plantPath);
+	if (!Check(openDocument && openDocument->sourceDocument.IsLoaded(),
+		"Plant authoring document did not open")) return false;
+	VansAssetDocument& document = openDocument->sourceDocument;
 	const auto fingerprint = VansAssetDocument::Fingerprint(plantPath, error);
 	plant.name = "Edited plant";
 	plant.variants[0].parts[1].material = Guid("edited-leaves");
@@ -215,6 +261,22 @@ bool TestPlantAuthoringLifecycle()
 		"Memory edits must preserve disk bytes and previously acquired snapshots")) return false;
 	if (!Check(VansAssetDocumentEditService::Undo(document).success && !document.IsDirty() &&
 		VansAssetDocumentEditService::Redo(document).success && document.IsDirty(), "Plant authoring undo/redo failed")) return false;
+	if (!Check(VansAssetDocumentEditService::Undo(document).success &&
+		VansAssetDocumentEditService::CanRedo(document),
+		"Plant redo branch was not created")) return false;
+	const auto branchPath = assetsRoot / "Plants" / "Branch.vplant";
+	if (!Check(VansFileStorage::WriteAtomicBytes(branchPath, "{\"name\":\"branch\"}", error), error)) return false;
+	auto branchDocument = VansAssetDocumentRegistry::Get().GetOrOpen(branchPath);
+	if (!Check(branchDocument && branchDocument->sourceDocument.IsLoaded() &&
+		VansAssetDocumentEditService::ReplaceRoot(
+			branchDocument->sourceDocument,
+			Value::Object({ { "name", Value::String("new branch") } })),
+		"Second asset edit did not create a new global history branch")) return false;
+	if (!Check(!VansAssetDocumentEditService::CanRedo(document) &&
+		!VansAssetDocumentEditService::Redo(document),
+		"New edit in another history source retained stale redo commands")) return false;
+	if (!Check(VansAssetDocumentEditService::ReplaceRoot(document, root).success,
+		"Plant edit could not continue after cross-source redo invalidation")) return false;
 	Value malformed = root;
 	malformed.objectFields.emplace_back("instanceCount", Value::Int(100));
 	if (!Check(!VansAssetObjectBootstrapper::PublishSerialized(*record, malformed, info.contentHash ^ 2u, repository, error) &&
@@ -226,6 +288,21 @@ bool TestPlantAuthoringLifecycle()
 	VansPlantTypeAsset reopened;
 	if (!Check(VansPlantTypeAssetStorage::Load(plantPath, reopened, error) && reopened.name == "Edited plant" &&
 		reopened.variants[0].parts[1].material == Guid("edited-leaves"), "Explicit save did not persist the current plant")) return false;
+	VansAssetDocument unregisteredDocument;
+	if (!Check(unregisteredDocument.Load(plantPath, error), error)) return false;
+	const auto unregisteredRoot = unregisteredDocument.SerializedRootSnapshot();
+	if (!Check(!VansAssetDocumentEditService::ReplaceRoot(unregisteredDocument, Value::Object({})) &&
+		SerializedValuesEqual(unregisteredDocument.SerializedRootSnapshot(), unregisteredRoot) &&
+		!unregisteredDocument.IsDirty(),
+		"Unregistered asset edit was not rejected and rolled back")) return false;
+	VansAssetDocumentRegistry::Get().Clear();
+	if (!Check(!VansAssetDocumentEditService::CanUndo(document),
+		"Closed asset document retained reachable edit history")) return false;
+	openDocument.reset();
+	auto reopenedDocument = VansAssetDocumentRegistry::Get().GetOrOpen(plantPath);
+	if (!Check(reopenedDocument && !VansAssetDocumentEditService::CanUndo(reopenedDocument->sourceDocument),
+		"Reopened asset document inherited history from its previous lifetime")) return false;
+	VansAssetDocumentRegistry::Get().Clear();
 	// 运行使用已发布对象，删除作者文件也不能触发隐式读取或失效。
 	fs::remove(plantPath);
 	VansIOAudit::Reset();
@@ -241,9 +318,6 @@ VansPcgMaskAsset MaskFixture(const char* maskName, const char* layerName, const 
 	std::string error;
 	VansPcgMask::CreateBlank({ "user-region", layerName, Guid(maskName).ToString() },
 		{ { -8, -4 }, { 8, 4 } }, 32, 16, asset.mask, error);
-	asset.brush.radius = 2;
-	asset.brush.strength = 0.7f;
-	asset.brush.hardness = 0.5f;
 	return asset;
 }
 
@@ -257,7 +331,7 @@ bool TestMaskImageAndSchema()
 	if (!Check(VansPcgMaskAssetCodec::EncodeDefinition(mask, root, error) &&
 		VansPcgMaskAssetCodec::DecodeDefinition(root, decoded, error) && decoded.mask.pixels.empty() &&
 		VansPcgMaskAssetCodec::EncodePixels(mask, bytes, error) && VansPcgMaskAssetCodec::DecodePixels(bytes, decoded, error) &&
-		decoded.mask.ContentHash() == mask.mask.ContentHash() && decoded.brush.strength == mask.brush.strength,
+		decoded.mask.ContentHash() == mask.mask.ContentHash() && !FindObjectField(root, "brush"),
 		"Mask definition/pixels round trip changed precision or identity: " + error)) return false;
 	const auto unchangedHash = decoded.mask.ContentHash();
 	if (!Check(!VansPcgMaskAssetCodec::DecodePixels(bytes.substr(0, 20), decoded, error) && decoded.mask.ContentHash() == unchangedHash,
@@ -275,9 +349,33 @@ bool TestMaskImageAndSchema()
 		VansPcgMaskAssetCodec::ImportPixels(bytes, 0, decoded, error) && decoded.mask.pixels[0] == 128 * 257 &&
 		VansPcgMaskAssetCodec::ImportPixels(bytes, 1, decoded, error) && decoded.mask.pixels[0] == 64 * 257,
 		"Explicit image import must choose raw linear channel without color conversion")) return false;
+	std::vector<std::uint8_t> resizedRgba(8 * 4 * 4, 0);
+	for (std::size_t i = 0; i < resizedRgba.size() / 4; ++i)
+	{
+		resizedRgba[i * 4] = 17;
+		resizedRgba[i * 4 + 1] = 93;
+		resizedRgba[i * 4 + 2] = 211;
+		resizedRgba[i * 4 + 3] = 255;
+	}
+	std::string resizedBytes;
+	if (!Check(VansDataPngEncoder::EncodeRGBA8(8, 4, resizedRgba, resizedBytes, error), error)) return false;
+	const auto beforeResizeFailure = decoded.mask.ContentHash();
+	if (!Check(!VansPcgMaskAssetCodec::DecodePixels(resizedBytes, decoded, error) &&
+		decoded.mask.ContentHash() == beforeResizeFailure && decoded.mask.width == mask.mask.width &&
+		decoded.mask.height == mask.mask.height,
+		"Canonical Mask decode accepted a different resolution or partially overwrote the asset")) return false;
+	if (!Check(VansPcgMaskAssetCodec::ImportPixels(resizedBytes, 2, decoded, error) &&
+		decoded.mask.width == 8 && decoded.mask.height == 4 && decoded.mask.pixels.size() == 32 &&
+		decoded.mask.pixels.front() == 211 * 257,
+		"Explicit image import did not atomically adopt the source resolution")) return false;
 	const auto importedHash = decoded.mask.ContentHash();
 	if (!Check(!VansPcgMaskAssetCodec::ImportPixels(bytes, 4, decoded, error) && decoded.mask.ContentHash() == importedHash,
 		"Missing image channel silently used another channel")) return false;
+	auto retiredBrushSchema = root;
+	SetSerializedObjectField(retiredBrushSchema, "brush", Value::String("retired-tool-state"));
+	if (!Check(!VansPcgMaskAssetCodec::DecodeDefinition(retiredBrushSchema, decoded, error) &&
+		decoded.mask.ContentHash() == importedHash,
+		"Mask accepted the retired asset-level brush field or partially overwrote the current Mask")) return false;
 	SetSerializedObjectField(root, "width", Value::Int(-1));
 	if (!Check(!VansPcgMaskAssetCodec::DecodeDefinition(root, decoded, error) && decoded.mask.ContentHash() == importedHash,
 		"Invalid dimensions partially overwrote the Mask")) return false;
@@ -300,8 +398,12 @@ bool TestIndependentMaskSessions()
 	fs::create_directories(assetsRoot);
 	auto maskA = MaskFixture("mask-a", "grass-a", "pixels-a");
 	auto maskB = MaskFixture("mask-b", "grass-b", "pixels-b");
-	maskB.brush.radius = 3;
-	maskB.brush.strength = 0.2f;
+	VansPcgBrushSettings brushA;
+	brushA.radius = 2;
+	brushA.strength = 0.7f;
+	VansPcgBrushSettings brushB;
+	brushB.radius = 3;
+	brushB.strength = 0.2f;
 	std::string error;
 	const auto writeFixture = [&](const VansPcgMaskAsset& mask, const fs::path& path, const fs::path& pixelPath) {
 		Value root;
@@ -343,7 +445,7 @@ bool TestIndependentMaskSessions()
 	VansIOAudit::Reset();
 	const auto& targetA = maskA.mask.target;
 	const auto& targetB = maskB.mask.target;
-	if (!Check(!sessionA->BeginStroke(targetB, error) && sessionA->BeginStroke(targetA, error) &&
+	if (!Check(!sessionA->BeginStroke(targetB, brushA, error) && sessionA->BeginStroke(targetA, brushA, error) &&
 		sessionA->AddPoint(targetA, -2, 0, false, error) && !sessionA->AddPoint(targetB, 2, 0, false, error),
 		"Scene brush did not lock the complete target")) return false;
 	std::vector<VansStagedFile> files;
@@ -357,7 +459,7 @@ bool TestIndependentMaskSessions()
 	if (!Check(VansIOAudit::Snapshot().empty() && paintedHash != originalA->mask.ContentHash() &&
 		painted && painted->mask.ContentHash() == paintedHash &&
 		sessionB->WorkingAsset().mask.ContentHash() == originalB->mask.ContentHash() &&
-		sessionB->WorkingAsset().brush.radius == 3 && !sessionB->IsDirty() &&
+		brushB.radius == 3 && !sessionB->IsDirty() &&
 		!sessionA->TakePendingPixelChange().Empty() && sessionA->TakePendingPixelChange().Empty(),
 		"Painting touched disk, another grass, or failed to publish its dirty pixels")) return false;
 	if (!Check(VansAssetDocument::Fingerprint(pixelsA, error) == fingerprintA &&
@@ -369,7 +471,7 @@ bool TestIndependentMaskSessions()
 		VansAssetDocumentEditService::Redo(sessionA->Document()->sourceDocument).success &&
 		sessionA->WorkingAsset().mask.ContentHash() == paintedHash,
 		"One stroke did not undo/redo exact pixels and dirty state")) return false;
-	if (!Check(sessionA->BeginStroke(targetA, error) && sessionA->AddPoint(targetA, 0, 0, true, error) &&
+	if (!Check(sessionA->BeginStroke(targetA, brushA, error) && sessionA->AddPoint(targetA, 0, 0, true, error) &&
 		sessionA->CancelStroke(error) && sessionA->WorkingAsset().mask.ContentHash() == paintedHash,
 		"Cancel did not restore the published painted Mask")) return false;
 	Value definition;
@@ -393,7 +495,7 @@ bool TestIndependentMaskSessions()
 		sessionA->ObservePublishedSave(error), "Mask save transaction failed: " + error)) return false;
 	sessionA->Document()->sourceDocument.AdoptObservedSave(sourceStage);
 	sessionA->AdoptObservedSave();
-	if (!Check(sessionB->BeginStroke(targetB, error) && sessionB->AddPoint(targetB, 3, 1, false, error) && sessionB->EndStroke(error), error)) return false;
+	if (!Check(sessionB->BeginStroke(targetB, brushB, error) && sessionB->AddPoint(targetB, 3, 1, false, error) && sessionB->EndStroke(error), error)) return false;
 	const auto unsavedB = repository.ResolveLatest<VansPcgMaskAsset>(recordB->guid);
 	const auto refreshA = VansAssetObjectBootstrapper::Publish({ *recordA }, repository, database.All());
 	if (!Check(static_cast<bool>(refreshA) && repository.ResolveLatest<VansPcgMaskAsset>(recordB->guid) == unsavedB && sessionB->IsDirty(),
@@ -571,6 +673,26 @@ bool TestRecipeAndExecution()
 	const auto first = VansPcgExecutor::Generate(recipe, repository, {});
 	if (!Check(first && first.layers.size() == 1 && first.layers[0].points.size() == 256 && VansIOAudit::Snapshot().empty(),
 		"Memory recipe execution failed or read authoring files: " + first.error)) return false;
+	VansPcgUpdatePlan fullPlan;
+	if (!Check(VansPcgUpdatePlanner::PlanRecipe(recipe, repository, {}, std::nullopt, {},
+		VansPcgUpdatePartition::PerLayer, fullPlan, error) && fullPlan.updates.size() == 1 &&
+		fullPlan.candidates == first.layers[0].stats.candidates && !fullPlan.updates[0].batches.empty(),
+		"Full recipe update planning diverged from direct generation: " + error)) return false;
+	const VansPcgBounds leftHalf{ { -8, -4 }, { 0, 4 } };
+	VansPcgUpdatePlan cellPlan;
+	if (!Check(VansPcgUpdatePlanner::PlanLayer(recipe.name, region, layer, repository, {}, leftHalf, {},
+		VansPcgUpdatePartition::PerCellWhenCovered, false, cellPlan, error) && cellPlan.updates.size() == 4 &&
+		std::all_of(cellPlan.updates.begin(), cellPlan.updates.end(), [](const auto& update) {
+			return update.coverage && update.coverage->max[0] - update.coverage->min[0] == update.cellSize &&
+				update.coverage->max[1] - update.coverage->min[1] == update.cellSize;
+		}), "Covered update planning did not emit exact world cells: " + error)) return false;
+	auto disabledLayer = layer;
+	disabledLayer.enabled = false;
+	VansPcgUpdatePlan clearPlan;
+	if (!Check(VansPcgUpdatePlanner::PlanLayer(recipe.name, region, disabledLayer, repository, {}, leftHalf, {},
+		VansPcgUpdatePartition::PerCellWhenCovered, true, clearPlan, error) && clearPlan.updates.size() == 1 &&
+		!clearPlan.updates.front().coverage && clearPlan.updates.front().batches.empty(),
+		"Disabled layer did not produce one whole-layer clear update: " + error)) return false;
 	for (const auto& point : first.layers[0].points)
 		if (!Check(point.position[1] == 7, "Explicit plane was not used for grounding")) return false;
 	layer.id = "grass-b";
@@ -709,7 +831,7 @@ bool TestFixedTreeMaskFiltering()
 	VansPcgMaskStroke stroke;
 	VansPcgMaskEdit edit;
 	VansPcgPixelRect changed;
-	auto brush = mask.brush; brush.operation = VansPcgBrushOperation::Erase;
+	VansPcgBrushSettings brush; brush.operation = VansPcgBrushOperation::Erase;
 	brush.radius = 2; brush.hardness = 1; brush.strength = 1;
 	if (!Check(stroke.Begin(mask.mask, brush, error) && stroke.AddPoint(mask.mask, -4, 0, false, changed, error) &&
 		stroke.Finish(mask.mask, edit, error) && publish(mask), error)) return false;
@@ -734,7 +856,7 @@ bool TestFixedTreeMaskFiltering()
 	if (!publish(mask)) return false;
 	const auto black = run();
 	VansPcgBatchUpdate originalBatches, clearedBatches;
-	if (!Check(black && black.layers[0].points.empty() && black.layers[0].requiresWholeRegionUpdate &&
+	if (!Check(black && black.layers[0].points.empty() && ResolvePcgUpdateScope(fixed)==VansPcgUpdateScope::WholeRegion &&
 		BuildPcgBatchUpdate(region, white.layers[0], std::nullopt, originalBatches, error) &&
 		BuildPcgBatchUpdate(region, black.layers[0], std::nullopt, clearedBatches, error) && clearedBatches.batches.empty(), error)) return false;
 	for (const auto& batch : originalBatches.batches)

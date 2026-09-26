@@ -9,7 +9,7 @@ void VansGraphics::VansConsoleWindow::ShowWindow(Vans::EditorAPI::IEngineEditorA
 
 void VansGraphics::VansConsoleWindow::DrawConsoleContents()
 {
-    if (!VansEditorWindow::m_ConsoleWindowOpen)
+    if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::Console))
         return;
 
     ImGui::Begin("Console");

@@ -3,11 +3,10 @@
 #include "../GameplayActionSchema/VansGameplaySchemaTypes.h"
 
 #include <cstdint>
-#include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace Vans
@@ -32,11 +31,11 @@ public:
 		std::string replacement,
 		std::string& error);
 	bool Seal(std::string& error);
-	const VansGameplayTagDefinition* Resolve(VansGameplayTagId id) const;
-	const VansGameplayTagDefinition* Find(std::string_view name) const;
+	bool Contains(VansGameplayTagId id) const;
+	std::optional<VansGameplayTagId> FindId(std::string_view name) const;
+	std::optional<std::string> FindName(VansGameplayTagId id) const;
 	bool IsDescendantOrEqual(VansGameplayTagId candidate, VansGameplayTagId ancestor) const;
-	std::vector<VansGameplayTagId> ExpandWildcard(std::string_view pattern) const;
-	const std::vector<VansGameplayTagDefinition>& Definitions() const { return m_Definitions; }
+	std::vector<VansGameplayTagDefinition> Snapshot() const;
 	std::uint64_t Version() const { return m_Version; }
 	bool IsSealed() const { return m_Sealed; }
 
@@ -60,32 +59,26 @@ class VansGameplayTagContainer
 {
 public:
 	using SourceId = std::uint64_t;
-	using ChangedCallback = std::function<void(const std::vector<VansGameplayTagId>&)>;
 
 	explicit VansGameplayTagContainer(const VansGameplayTagDictionary* dictionary = nullptr)
 		: m_Dictionary(dictionary) {}
 
-	void SetDictionary(const VansGameplayTagDictionary* dictionary) { m_Dictionary = dictionary; }
+	bool Contains(VansGameplayTagId tag) const
+	{
+		return m_Dictionary && m_Dictionary->Contains(tag);
+	}
 	bool Add(VansGameplayTagId tag, SourceId source, std::uint32_t count = 1);
-	bool Remove(VansGameplayTagId tag, SourceId source, std::uint32_t count = 1);
 	std::size_t RemoveSource(SourceId source);
 	std::uint32_t CountExact(VansGameplayTagId tag) const;
 	bool Has(VansGameplayTagId tag, bool exact = false) const;
 	bool Matches(const VansGameplayTagQuery& query) const;
+	bool MatchesWithTags(const VansGameplayTagQuery& query,
+		const std::vector<VansGameplayTagId>& added) const;
 	std::vector<std::pair<VansGameplayTagId, std::uint32_t>> Snapshot() const;
-	void BeginBatch();
-	void EndBatch();
 	void Clear();
-	void SetChangedCallback(ChangedCallback callback) { m_Changed = std::move(callback); }
 
 private:
-	void MarkChanged(VansGameplayTagId tag);
-	void FlushChanged();
-
 	const VansGameplayTagDictionary* m_Dictionary = nullptr;
 	std::unordered_map<VansGameplayTagId, std::unordered_map<SourceId, std::uint32_t>> m_Counts;
-	std::unordered_set<VansGameplayTagId> m_PendingChanges;
-	ChangedCallback m_Changed;
-	std::uint32_t m_BatchDepth = 0;
 };
 }

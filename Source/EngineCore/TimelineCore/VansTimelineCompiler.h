@@ -126,6 +126,7 @@ private:
 struct VansTimelineCompileOptions
 {
 	const VansTimelineTrackExtensionRegistry* extensions = nullptr;
+	std::uint64_t runtimeRegistryManifestHash = 0;
 	VansTimelineValidationContext validation;
 	VansTimelineDependencyAssetLoader dependencyLoader;
 	std::size_t maximumSubTimelineDepth = 16;
@@ -142,6 +143,7 @@ struct VansTimelineCompileResult
 class VansTimelineCompiler
 {
 public:
+	static std::uint64_t RegistryManifestHash(const VansTimelineCompileOptions& options);
 	static VansTimelineCompileResult Compile(
 		const VansTimelineAsset& source,
 		const VansTimelineCompileOptions& options);

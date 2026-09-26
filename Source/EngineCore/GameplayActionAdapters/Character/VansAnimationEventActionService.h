@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../GameplayActionCore/VansActionServices.h"
+#include "../../GameplayActionCore/VansGameplayServiceRuntime.h"
 #include "../../RuntimeCore/VansGenerationPool.h"
 #include "../../SceneRuntime/VansRuntimeHandle.h"
 #include <memory>
@@ -9,7 +10,6 @@
 namespace Vans
 {
 class VansRuntimeWorld;
-class VansGameplayRuntime;
 
 const VansActionServiceCapability& VansAnimationEventActionCapability();
 
@@ -17,7 +17,7 @@ const VansActionServiceCapability& VansAnimationEventActionCapability();
 class VansAnimationEventActionService final : public IVansActionService
 {
 public:
-    VansAnimationEventActionService(VansRuntimeWorld& world, VansGameplayRuntime& gameplay);
+    VansAnimationEventActionService(VansRuntimeWorld& world, IVansGameplayServiceRuntime& runtime);
     const VansActionServiceCapability& Capability() const override;
     VansActionCommandResult Execute(const VansActionCommand& command) override;
     bool Release(VansGenerationHandle resource, std::string& error) override;
@@ -38,7 +38,7 @@ private:
         std::unordered_set<std::string> delivered;
     };
     VansRuntimeWorld& m_World;
-    VansGameplayRuntime& m_Gameplay;
+    IVansGameplayServiceRuntime& m_Runtime;
     VansGenerationPool<Subscription> m_Subscriptions;
 };
 }

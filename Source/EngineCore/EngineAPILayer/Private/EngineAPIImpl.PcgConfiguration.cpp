@@ -1,11 +1,11 @@
 #include "EngineAPIImpl.h"
 #include "../../ProjectSystem/VansProjectManager.h"
-#include "../../EditorCore/VansAssetDocumentRegistry.h"
-#include "../../EditorCore/VansAssetDocumentEditService.h"
-#include "../../EditorCore/VansEditorAssetSaveService.h"
+#include "../../AuthoringCore/VansAssetDocumentRegistry.h"
+#include "../../AuthoringCore/VansAssetDocumentEditService.h"
 #include "../../PcgCore/Serialization/VansPlantTypeAssetCodec.h"
 #include "../../SceneCore/Serialization/VansVegetationConfigCodec.h"
 #include <algorithm>
+#include <type_traits>
 
 namespace Vans::EditorAPI
 {
@@ -45,6 +45,80 @@ template<class Region> auto FindLayer(Region& region,const PcgBrushTarget& targe
 {
     return std::find_if(region.layers.begin(),region.layers.end(),[&](const auto& value){return value.id==target.layerId;});
 }
+template<class Owner,class Member> PcgConfigurationFieldKind PublicFieldKind(Member)
+{
+    if constexpr(std::is_same_v<Member,float Owner::*>) return PcgConfigurationFieldKind::Float;
+    if constexpr(std::is_same_v<Member,std::uint32_t Owner::*>) return PcgConfigurationFieldKind::Unsigned;
+    if constexpr(std::is_same_v<Member,bool Owner::*>) return PcgConfigurationFieldKind::Boolean;
+    if constexpr(std::is_same_v<Member,std::array<float,2> Owner::*>) return PcgConfigurationFieldKind::Float2;
+    if constexpr(std::is_same_v<Member,std::array<float,3> Owner::*>) return PcgConfigurationFieldKind::Float3;
+    return PcgConfigurationFieldKind::FloatList;
+}
+template<class Owner,size_t Count> std::vector<PcgConfigurationField> ToPublicFields(
+    const Owner& owner,const std::array<VansPcgConfigurationFieldDescriptor<Owner>,Count>& descriptors,bool tree)
+{
+    std::vector<PcgConfigurationField> result;
+    for(const auto& descriptor:descriptors) {
+        if(!IsPcgConfigurationFieldPresent(descriptor,tree)) continue;
+        PcgConfigurationField field;
+        field.name=descriptor.name;
+        field.label=tree && descriptor.treeLabel[0]?descriptor.treeLabel:descriptor.label;
+        field.editorSpeed=descriptor.editorSpeed;field.minimum=descriptor.minimum;field.maximum=descriptor.maximum;
+        field.hasMinimum=descriptor.hasMinimum;field.hasMaximum=descriptor.hasMaximum;
+        field.editorConstrained=descriptor.editorConstrained;
+        field.minimumCount=static_cast<uint32_t>(descriptor.minimumCount);
+        field.maximumCount=static_cast<uint32_t>(descriptor.maximumCount);
+        field.editorOrder=descriptor.editorOrder;
+        field.visibility=descriptor.visibility==VansPcgConfigurationFieldVisibility::DensitySourceOnly?
+            PcgConfigurationFieldVisibility::DensitySourceOnly:PcgConfigurationFieldVisibility::Always;
+        std::visit([&](auto member) {
+            using Member=decltype(member);field.kind=PublicFieldKind<Owner>(member);
+            if constexpr(std::is_same_v<Member,float Owner::*>) field.values={owner.*member};
+            else if constexpr(std::is_same_v<Member,std::uint32_t Owner::*>) field.unsignedValue=owner.*member;
+            else if constexpr(std::is_same_v<Member,bool Owner::*>) field.boolValue=owner.*member;
+            else field.values.assign((owner.*member).begin(),(owner.*member).end());
+        },descriptor.member);
+        result.push_back(std::move(field));
+    }
+    return result;
+}
+template<class Owner,size_t Count> bool FromPublicFields(
+    const std::vector<PcgConfigurationField>& fields,Owner& owner,
+    const std::array<VansPcgConfigurationFieldDescriptor<Owner>,Count>& descriptors,bool tree,std::string& error)
+{
+    size_t inputIndex=0;
+    for(const auto& descriptor:descriptors) {
+        if(!IsPcgConfigurationFieldPresent(descriptor,tree)) continue;
+        if(inputIndex>=fields.size() || fields[inputIndex].name!=descriptor.name) {
+            error="Configuration field set does not match the engine schema at '"+std::string(descriptor.name)+"'.";
+            return false;
+        }
+        const auto& field=fields[inputIndex++];
+        bool valid=true;
+        std::visit([&](auto member) {
+            using Member=decltype(member);
+            if(field.kind!=PublicFieldKind<Owner>(member)) {valid=false;return;}
+            if constexpr(std::is_same_v<Member,float Owner::*>) {
+                if(field.values.size()!=1) valid=false;else owner.*member=field.values[0];
+            } else if constexpr(std::is_same_v<Member,std::uint32_t Owner::*>) owner.*member=field.unsignedValue;
+            else if constexpr(std::is_same_v<Member,bool Owner::*>) owner.*member=field.boolValue;
+            else if constexpr(std::is_same_v<Member,std::array<float,2> Owner::*>) {
+                if(field.values.size()!=2) valid=false;else std::copy(field.values.begin(),field.values.end(),(owner.*member).begin());
+            } else if constexpr(std::is_same_v<Member,std::array<float,3> Owner::*>) {
+                if(field.values.size()!=3) valid=false;else std::copy(field.values.begin(),field.values.end(),(owner.*member).begin());
+            } else {
+                if(field.values.size()<descriptor.minimumCount || field.values.size()>descriptor.maximumCount) valid=false;
+                else owner.*member=field.values;
+            }
+        },descriptor.member);
+        if(!valid) {
+            error="Configuration field has the wrong type or element count: "+field.name;
+            return false;
+        }
+    }
+    if(inputIndex!=fields.size()) {error="Configuration field set contains unknown fields.";return false;}
+    return true;
+}
 }
 PcgPlantConfiguration EngineAPIImpl::GetPcgPlantConfiguration(const std::string& guid)
 {
@@ -55,33 +129,8 @@ PcgPlantConfiguration EngineAPIImpl::GetPcgPlantConfiguration(const std::string&
     if (!VansPlantTypeAssetCodec::Decode(document->sourceDocument.SerializedRootSnapshot(),plant,result.message)) return result;
     ReadHistory(*document,result);
     result.name=plant.name;result.tree=plant.category==VansPlantCategory::Tree;
-    result.grass.boneCount=plant.grass.boneCount;
-    result.grass.subBladeCount=plant.grass.subBladeCount;
-    result.grass.bladeHeight=plant.grass.bladeHeight;
-    result.grass.leanDeviation=plant.grass.leanDeviation;
-    result.grass.restTipBendDegrees=plant.grass.restTipBendDegrees;
-    result.grass.restRootBendDegrees=plant.grass.restRootBendDegrees;
-    result.grass.scatterSeed=plant.grass.scatterSeed;
-    result.grass.scatterRadiusMin=plant.grass.scatterRadiusMin;
-    result.grass.scatterRadiusMax=plant.grass.scatterRadiusMax;
-    result.grass.windDirection=plant.grass.windDirection;
-    result.grass.windStrength=plant.grass.windStrength;
-    result.grass.windFrequency=plant.grass.windFrequency;
-    result.grass.windSpeed=plant.grass.windSpeed;
-    result.grass.windBendMultiplier=plant.grass.windBendMultiplier;
-    result.grass.stiffness=plant.grass.stiffness;
-    result.grass.damping=plant.grass.damping;
-    result.grass.softness=plant.grass.softness;
-    result.grass.simulationFullDistance=plant.grass.simulationFullDistance;
-    result.grass.simulationFadeDistance=plant.grass.simulationFadeDistance;
-    result.grass.subBladeLodMidDistance=plant.grass.subBladeLodMidDistance;
-    result.grass.subBladeLodFarDistance=plant.grass.subBladeLodFarDistance;
-    result.render.cullingEnabled=plant.render.cullingEnabled;
-    result.render.hizEnabled=plant.render.hizEnabled;
-    result.render.castShadows=plant.render.castShadows;
-    result.render.cullDistance=plant.render.cullDistance;
-    result.render.hizBias=plant.render.hizBias;
-    result.render.lodDistances=plant.render.lodDistances;result.render.lodHysteresis=plant.render.lodHysteresis;
+    result.grassFields=ToPublicFields(plant.grass,VansPlantGrassConfigurationFields,result.tree);
+    result.renderFields=ToPublicFields(plant.render,VansPlantRenderConfigurationFields,result.tree);
     for (const auto& variant : plant.variants) {
         PcgPlantVariant item;
         item.id=variant.id;item.name=variant.name;item.geometry=static_cast<PcgGeometry>(variant.geometry);
@@ -124,20 +173,7 @@ PcgLayerConfiguration EngineAPIImpl::GetPcgLayerConfiguration(const PcgBrushTarg
     result.plantGuid=layer->plant.IsValid()?layer->plant.ToString():"";
     result.source=static_cast<PcgSourceMode>(layer->source);result.seed=layer->seed;result.treeTargetCount=layer->targetCount;
     result.maxCandidates=layer->budget.maxCandidates;result.maxInstances=layer->budget.maxInstances;
-    result.placement.density=layer->placement.density;
-    result.placement.positionJitter=layer->placement.positionJitter;
-    result.placement.minimumSpacing=layer->placement.minimumSpacing;
-    result.placement.scaleMin=layer->placement.scaleMin;
-    result.placement.scaleMax=layer->placement.scaleMax;
-    result.placement.uniformScale=layer->placement.uniformScale;
-    result.placement.yawMinDegrees=layer->placement.yawMinDegrees;
-    result.placement.yawMaxDegrees=layer->placement.yawMaxDegrees;
-    result.placement.normalAlignment=layer->placement.normalAlignment;
-    result.placement.maximumTiltDegrees=layer->placement.maximumTiltDegrees;
-    result.placement.rootOffset=layer->placement.rootOffset;
-    result.placement.maskThreshold=layer->placement.maskThreshold;
-    result.placement.maskMultiplier=layer->placement.maskMultiplier;
-    result.placement.invertMask=layer->placement.invertMask;
+    result.placementFields=ToPublicFields(layer->placement,VansPcgPlacementConfigurationFields,false);
     result.regionName=region->name;result.regionEnabled=region->enabled;
     result.boundsMin=region->bounds.min;result.boundsMax=region->bounds.max;result.cellSize=region->cellSize;result.regionSeed=region->seed;
     result.surface=static_cast<PcgSurfaceKind>(region->surface.kind);result.planeHeight=region->surface.planeHeight;
@@ -155,33 +191,9 @@ PcgEditorOperationResult EngineAPIImpl::ApplyPcgPlantConfiguration(const PcgPlan
     VansPlantTypeAsset previous,plant;
     if (!VansPlantTypeAssetCodec::Decode(document->sourceDocument.SerializedRootSnapshot(),previous,error)) return {false,error};
     plant.name=configuration.name;plant.category=previous.category;
-    plant.grass.boneCount=configuration.grass.boneCount;
-    plant.grass.subBladeCount=configuration.grass.subBladeCount;
-    plant.grass.bladeHeight=configuration.grass.bladeHeight;
-    plant.grass.leanDeviation=configuration.grass.leanDeviation;
-    plant.grass.restTipBendDegrees=configuration.grass.restTipBendDegrees;
-    plant.grass.restRootBendDegrees=configuration.grass.restRootBendDegrees;
-    plant.grass.scatterSeed=configuration.grass.scatterSeed;
-    plant.grass.scatterRadiusMin=configuration.grass.scatterRadiusMin;
-    plant.grass.scatterRadiusMax=configuration.grass.scatterRadiusMax;
-    plant.grass.windDirection=configuration.grass.windDirection;
-    plant.grass.windStrength=configuration.grass.windStrength;
-    plant.grass.windFrequency=configuration.grass.windFrequency;
-    plant.grass.windSpeed=configuration.grass.windSpeed;
-    plant.grass.windBendMultiplier=configuration.grass.windBendMultiplier;
-    plant.grass.stiffness=configuration.grass.stiffness;
-    plant.grass.damping=configuration.grass.damping;
-    plant.grass.softness=configuration.grass.softness;
-    plant.grass.simulationFullDistance=configuration.grass.simulationFullDistance;
-    plant.grass.simulationFadeDistance=configuration.grass.simulationFadeDistance;
-    plant.grass.subBladeLodMidDistance=configuration.grass.subBladeLodMidDistance;
-    plant.grass.subBladeLodFarDistance=configuration.grass.subBladeLodFarDistance;
-    plant.render.cullingEnabled=configuration.render.cullingEnabled;
-    plant.render.hizEnabled=configuration.render.hizEnabled;
-    plant.render.castShadows=configuration.render.castShadows;
-    plant.render.cullDistance=configuration.render.cullDistance;
-    plant.render.hizBias=configuration.render.hizBias;
-    plant.render.lodDistances=configuration.render.lodDistances;plant.render.lodHysteresis=configuration.render.lodHysteresis;
+    if(!FromPublicFields(configuration.grassFields,plant.grass,VansPlantGrassConfigurationFields,configuration.tree,error) ||
+       !FromPublicFields(configuration.renderFields,plant.render,VansPlantRenderConfigurationFields,configuration.tree,error))
+        return {false,error};
     for (const auto& variant : configuration.variants) {
         VansPlantVariant item;
         item.id=variant.id.empty()?VansAssetGuid::New().ToString():variant.id;
@@ -234,20 +246,8 @@ PcgEditorOperationResult EngineAPIImpl::ApplyPcgLayerConfiguration(const PcgBrus
     if (!ReadGuid(configuration.plantGuid,layer->plant,error)) return {false,error};
     layer->source=static_cast<VansPcgSourceMode>(configuration.source);layer->seed=configuration.seed;layer->targetCount=configuration.treeTargetCount;
     layer->budget={configuration.maxCandidates,configuration.maxInstances};
-    layer->placement.density=configuration.placement.density;
-    layer->placement.positionJitter=configuration.placement.positionJitter;
-    layer->placement.minimumSpacing=configuration.placement.minimumSpacing;
-    layer->placement.scaleMin=configuration.placement.scaleMin;
-    layer->placement.scaleMax=configuration.placement.scaleMax;
-    layer->placement.uniformScale=configuration.placement.uniformScale;
-    layer->placement.yawMinDegrees=configuration.placement.yawMinDegrees;
-    layer->placement.yawMaxDegrees=configuration.placement.yawMaxDegrees;
-    layer->placement.normalAlignment=configuration.placement.normalAlignment;
-    layer->placement.maximumTiltDegrees=configuration.placement.maximumTiltDegrees;
-    layer->placement.rootOffset=configuration.placement.rootOffset;
-    layer->placement.maskThreshold=configuration.placement.maskThreshold;
-    layer->placement.maskMultiplier=configuration.placement.maskMultiplier;
-    layer->placement.invertMask=configuration.placement.invertMask;
+    if(!FromPublicFields(configuration.placementFields,layer->placement,VansPcgPlacementConfigurationFields,false,error))
+        return {false,error};
     region->name=configuration.regionName;region->enabled=configuration.regionEnabled;
     region->bounds={configuration.boundsMin,configuration.boundsMax};region->cellSize=configuration.cellSize;region->seed=configuration.regionSeed;
     region->surface.kind=static_cast<VansPcgSurfaceKind>(configuration.surface);region->surface.planeHeight=configuration.planeHeight;
@@ -273,8 +273,8 @@ PcgEditorOperationResult EngineAPIImpl::EditPcgConfiguration(const std::string& 
     if (!document) return {false,error};
     const auto finish=SelectPcgBrushTarget({},false);if (!finish.success) return finish;
     if (action==PcgConfigurationAction::Save) {
-        const auto saved=VansEditorAssetSaveService::Get().SaveAsset(*this,document);
-        return {static_cast<bool>(saved),saved.message};
+        const auto saved=SaveAuthoringDocument(document);
+        return {saved.success,saved.message};
     }
     AssetDocumentEditResult edited;
     switch (action) {

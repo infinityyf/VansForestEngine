@@ -2,6 +2,7 @@
 
 #include "VansActionHost.h"
 #include "VansActionScheduler.h"
+#include "VansGameplayServiceRuntime.h"
 #include "VansGameplayModuleContributor.h"
 #include "../GameplayActionSchema/VansGameplayAssetLibrary.h"
 #include "../GameplayActionSchema/VansGAFProjectConfiguration.h"
@@ -43,9 +44,10 @@ struct VansGameplayRuntimeDependencies
 {
 	std::vector<VansGameplayAssetSourceOverride> sourceOverrides;
 	std::vector<std::shared_ptr<const IVansGameplayModuleContributor>> contributors;
+	const VansGAFProjectConfiguration* projectConfiguration = nullptr;
 };
 
-class VansGameplayRuntime
+class VansGameplayRuntime : public IVansGameplayServiceRuntime
 {
 public:
 	bool Initialize(const std::vector<VansAssetRecord>& records,
@@ -69,6 +71,18 @@ public:
 		return m_Scheduler.FindByOwner(owner);
 	}
 	std::vector<std::shared_ptr<VansActionHost>> Hosts() const { return m_Scheduler.Hosts(); }
+	bool HasHost(VansEntityHandle owner) const override;
+	bool IsActionActive(VansEntityHandle owner, VansActionHandle action) const override;
+	bool HasTag(VansEntityHandle owner, VansGameplayTagId tag) const override;
+	bool EnqueueActionEvent(VansEntityHandle owner, VansActionHandle action,
+		VansActionEvent event, std::string& error) override;
+	bool PublishGameplayEvent(VansEntityHandle owner, VansActionEvent event) override;
+	bool ReadAttribute(VansEntityHandle owner, VansAttributeId attribute,
+		double& value) const override;
+	bool ApplyBaseAttribute(VansEntityHandle owner, VansAttributeId attribute,
+		VansAttributeBaseOperation operation, double magnitude, double& value) override;
+	VansActionResult ActivateAction(VansEntityHandle owner, VansActionId action,
+		VansActionContext context, VansTargetData targetData) override;
 	void TickEarly(double deltaSeconds)
 	{
 		m_Scheduler.TickEarly(deltaSeconds);
@@ -82,10 +96,8 @@ public:
 	const VansActionServiceRegistry& Services() const { return m_Services; }
 	// A service may retire an already completed World-owned resource without
 	// invoking its destruction callback again. Action/Host ownership is untouched.
-	bool ForgetCompletedWorldResource(VansActionServiceId service, VansGenerationHandle resource)
-	{
-		return m_WorldResources.ForgetExternalResource(service, resource);
-	}
+	bool ForgetCompletedWorldResource(VansActionServiceId service,
+		VansGenerationHandle resource) override;
 
 private:
 	static std::uint64_t SourceFor(VansEntityHandle owner, std::uint32_t slot);
@@ -103,6 +115,7 @@ private:
 	std::shared_ptr<IVansActionExternalCostProvider> m_ExternalCosts;
 	std::unordered_map<std::string, VansGAFRuntimeRegistry::HostInitializer> m_HostInitializers;
 	std::unordered_map<std::string, VansActionSetInitializerHandler> m_ActionSetInitializers;
+	bool m_RuntimeRegistrySealed = false;
 	VansGameplayCueRegistry m_Cues;
 	VansTargetingHandlerRegistry m_TargetingHandlers;
 	VansActionScheduler m_Scheduler;

@@ -1,6 +1,7 @@
 #include "VansEditorRuntimePreviewProjector.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../SceneCore/VansSceneAuthoringEntityProjection.h"
 #include "../SceneCore/VansSceneRuntimeProjection.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
@@ -10,6 +11,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -18,207 +20,60 @@ namespace Vans
 {
 namespace
 {
-const VansSerializedValue* FindSerializedComponent(
-    const VansSerializedValue& entity,
-    const std::string& type)
-{
-    const VansSerializedValue* components = FindObjectField(entity, "components");
-    if (!components || components->kind != VansSerializedValue::Kind::Array)
-        return nullptr;
-    for (const VansSerializedValue& component : components->arrayItems)
-        if (ReadSerializedStringField(component, "type") == type)
-            return &component;
-    return nullptr;
-}
-
-bool ReadPreviewVec3(const VansSerializedValue& value, EditorAPI::Vec3& out)
-{
-    if (value.kind != VansSerializedValue::Kind::Array || value.arrayItems.size() < 3)
-        return false;
-    out = {
-        static_cast<float>(ReadSerializedNumber(value.arrayItems[0])),
-        static_cast<float>(ReadSerializedNumber(value.arrayItems[1])),
-        static_cast<float>(ReadSerializedNumber(value.arrayItems[2]))
-    };
-    return true;
-}
-
-bool ReadPreviewRotationEuler(
-	const VansSerializedValue& value,
-	bool yawOnly,
-	EditorAPI::Vec3& out)
-{
-    if (value.kind != VansSerializedValue::Kind::Array)
-        return false;
-
-    if (value.arrayItems.size() == 4)
-    {
-		const std::array<float, 3> euler = ProjectSceneQuaternionToEulerDegrees({
-			static_cast<float>(ReadSerializedNumber(value.arrayItems[0])),
-			static_cast<float>(ReadSerializedNumber(value.arrayItems[1])),
-			static_cast<float>(ReadSerializedNumber(value.arrayItems[2])),
-			static_cast<float>(ReadSerializedNumber(value.arrayItems[3])) }, yawOnly);
-		out = { euler[0], euler[1], euler[2] };
-        return true;
-    }
-
-    return ReadPreviewVec3(value, out);
-}
-
-bool BuildRuntimeTransformPreview(
-    const VansSerializedValue& entity,
-    EditorAPI::RuntimeTransformEdit& edit)
-{
-    const std::string entityGuid = ReadSerializedStringField(entity, "id");
-    if (entityGuid.empty())
-        return false;
-
-    const VansSerializedValue* transformComponent = FindSerializedComponent(entity, "Transform");
-    if (!transformComponent || !ReadSerializedBoolField(*transformComponent, "enabled", true))
-        return false;
-
-	const VansSerializedValue* data = FindObjectField(*transformComponent, "data");
-	if (!data)
-		return false;
-	bool yawOnly = false;
-	if (const VansSerializedValue* aiComponent = FindSerializedComponent(entity, "AIAgent"))
-	{
-		if (const VansSerializedValue* aiData = FindObjectField(*aiComponent, "data");
-			aiData && aiData->kind == VansSerializedValue::Kind::Object)
-		{
-			if (const VansSerializedValue* facing = FindObjectField(*aiData, "facing");
-				facing && facing->kind == VansSerializedValue::Kind::Object)
-				yawOnly = ReadSerializedBoolField(*facing, "yawOnly", false);
-		}
-	}
-
-    edit = {};
-    edit.entityGuid = entityGuid;
-	edit.space = EditorAPI::RuntimeTransformSpace::Local;
-
-    if (const VansSerializedValue* position = FindObjectField(*data, "position");
-        position && ReadPreviewVec3(*position, edit.position))
-    {
-        edit.writePosition = true;
-    }
-	if (const VansSerializedValue* rotation = FindObjectField(*data, "rotation");
-		rotation && ReadPreviewRotationEuler(*rotation, yawOnly, edit.rotationDegrees))
-    {
-        edit.writeRotation = true;
-    }
-    if (const VansSerializedValue* scale = FindObjectField(*data, "scale");
-        scale && ReadPreviewVec3(*scale, edit.scale))
-    {
-        edit.writeScale = true;
-    }
-
-    return edit.writePosition || edit.writeRotation || edit.writeScale;
-}
-
-bool ReadPreviewColor(const VansSerializedValue& data, EditorAPI::Vec3& out)
-{
-    const VansSerializedValue* color = FindObjectField(data, "color");
-    return color && ReadPreviewVec3(*color, out);
-}
-
 bool AppendRuntimeLightPreview(
-    const VansSerializedValue& entity,
-    const char* componentType,
+	const std::string& entityGuid,
+	const VansSceneAuthoringLightProjection& projection,
     EditorAPI::RuntimePreviewLightType lightType,
     std::vector<EditorAPI::RuntimeLightEdit>& edits)
 {
-    const VansSerializedValue* component = FindSerializedComponent(entity, componentType);
-    if (!component || !ReadSerializedBoolField(*component, "enabled", true))
-        return false;
-
-    const VansSerializedValue* data = FindObjectField(*component, "data");
-    if (!data)
-        return false;
-
     EditorAPI::RuntimeLightEdit edit;
     edit.type = lightType;
-    edit.entityGuid = ReadSerializedStringField(entity, "id");
+    edit.entityGuid = entityGuid;
     if (edit.entityGuid.empty())
         return false;
-
-    if (const auto* cookie = FindObjectField(*data, "cookie"))
+	const auto applyCookie = [&](const VansSceneLightCookieConfig& cookie)
     {
-        edit.writeCookie = true;
-        edit.cookie.enabled = ReadSerializedBoolField(*cookie, "enabled", false);
-        edit.cookie.repeat = ReadSerializedBoolField(*cookie, "repeat", false);
-        edit.cookie.useAlpha = ReadSerializedBoolField(*cookie, "useAlpha", false);
-        if (const auto* texture = FindObjectField(*cookie, "texture"))
-            edit.cookie.textureGuid = ReadSerializedStringField(*texture, "guid");
-        if (const auto* value = FindObjectField(*cookie, "strength")) edit.cookie.strength = static_cast<float>(ReadSerializedNumber(*value));
-        if (const auto* value = FindObjectField(*cookie, "sizeX")) edit.cookie.sizeX = static_cast<float>(ReadSerializedNumber(*value));
-        if (const auto* value = FindObjectField(*cookie, "sizeY")) edit.cookie.sizeY = static_cast<float>(ReadSerializedNumber(*value));
-        if (const auto* value = FindObjectField(*cookie, "scaleX")) edit.cookie.scaleX = static_cast<float>(ReadSerializedNumber(*value));
-        if (const auto* value = FindObjectField(*cookie, "scaleY")) edit.cookie.scaleY = static_cast<float>(ReadSerializedNumber(*value));
-        if (const auto* value = FindObjectField(*cookie, "offsetX")) edit.cookie.offsetX = static_cast<float>(ReadSerializedNumber(*value));
-        if (const auto* value = FindObjectField(*cookie, "offsetY")) edit.cookie.offsetY = static_cast<float>(ReadSerializedNumber(*value));
-        if (const auto* value = FindObjectField(*cookie, "rotationDegrees")) edit.cookie.rotationDegrees = static_cast<float>(ReadSerializedNumber(*value));
-    }
-
-    if (ReadPreviewColor(*data, edit.color))
-        edit.writeColor = true;
-    if (const VansSerializedValue* intensity = FindObjectField(*data, "intensity"))
-    {
-        edit.intensity = static_cast<float>(ReadSerializedNumber(*intensity));
-        edit.writeIntensity = true;
-    }
-
-    if (lightType == EditorAPI::RuntimePreviewLightType::Point ||
-        lightType == EditorAPI::RuntimePreviewLightType::Spot)
-    {
-        if (const VansSerializedValue* radius = FindObjectField(*data, "radius"))
-        {
-            edit.radius = static_cast<float>(ReadSerializedNumber(*radius));
-            edit.writeRadius = true;
-        }
-    }
-
-    if (lightType == EditorAPI::RuntimePreviewLightType::Spot)
-    {
-        if (const VansSerializedValue* innerCutoff = FindObjectField(*data, "innercutoff"))
-        {
-            edit.innerCutoffRadians = glm::radians(static_cast<float>(ReadSerializedNumber(*innerCutoff)));
-            edit.writeInnerCutoff = true;
-        }
-        if (const VansSerializedValue* outerCutoff = FindObjectField(*data, "outerCutoff"))
-        {
-            edit.outerCutoffRadians = glm::radians(static_cast<float>(ReadSerializedNumber(*outerCutoff)));
-            edit.writeOuterCutoff = true;
-        }
-    }
-
-    if (lightType == EditorAPI::RuntimePreviewLightType::Rect)
-    {
-        if (const VansSerializedValue* width = FindObjectField(*data, "width"))
-        {
-            edit.rectWidth = static_cast<float>(ReadSerializedNumber(*width));
-            edit.writeRectWidth = true;
-        }
-        if (const VansSerializedValue* height = FindObjectField(*data, "height"))
-        {
-            edit.rectHeight = static_cast<float>(ReadSerializedNumber(*height));
-            edit.writeRectHeight = true;
-        }
-        if (const VansSerializedValue* range = FindObjectField(*data, "range"))
-        {
-            edit.rectRange = static_cast<float>(ReadSerializedNumber(*range));
-            edit.writeRectRange = true;
-        }
-        if (const VansSerializedValue* twoSided = FindObjectField(*data, "two_sided"))
-        {
-            edit.rectTwoSided = ReadSerializedBool(*twoSided) ? 1.0f : 0.0f;
-            edit.writeRectTwoSided = true;
-        }
-        if (const VansSerializedValue* shadow = FindObjectField(*data, "shadow"))
-        {
-            edit.rectShadowIndex = ReadSerializedBool(*shadow) ? 0.0f : -1.0f;
-            edit.writeRectShadow = true;
-        }
-    }
+		edit.writeCookie = projection.hasCookie;
+		edit.cookie.enabled = cookie.enabled;
+		edit.cookie.textureGuid = cookie.textureGuid;
+		edit.cookie.strength = cookie.strength;
+		edit.cookie.sizeX = cookie.sizeX;
+		edit.cookie.sizeY = cookie.sizeY;
+		edit.cookie.scaleX = cookie.scaleX;
+		edit.cookie.scaleY = cookie.scaleY;
+		edit.cookie.offsetX = cookie.offsetX;
+		edit.cookie.offsetY = cookie.offsetY;
+		edit.cookie.rotationDegrees = cookie.rotationDegrees;
+		edit.cookie.repeat = cookie.repeat;
+		edit.cookie.useAlpha = cookie.useAlpha;
+	};
+	const auto applyCommon = [&](const auto& config)
+	{
+		applyCookie(config.cookie);
+		if (config.color) { edit.color = {(*config.color)[0], (*config.color)[1], (*config.color)[2]}; edit.writeColor = true; }
+		if (config.intensity) { edit.intensity = *config.intensity; edit.writeIntensity = true; }
+	};
+	std::visit([&](const auto& config)
+	{
+		applyCommon(config);
+		using T = std::decay_t<decltype(config)>;
+		if constexpr (std::is_same_v<T, VansScenePointLightComponentConfig> ||
+			std::is_same_v<T, VansSceneSpotLightComponentConfig>)
+			if (config.radius) { edit.radius = *config.radius; edit.writeRadius = true; }
+		if constexpr (std::is_same_v<T, VansSceneSpotLightComponentConfig>)
+		{
+			if (config.innerCutoffDegrees) { edit.innerCutoffRadians = glm::radians(*config.innerCutoffDegrees); edit.writeInnerCutoff = true; }
+			if (config.outerCutoffDegrees) { edit.outerCutoffRadians = glm::radians(*config.outerCutoffDegrees); edit.writeOuterCutoff = true; }
+		}
+		if constexpr (std::is_same_v<T, VansSceneRectLightComponentConfig>)
+		{
+			if (config.width) { edit.rectWidth = *config.width; edit.writeRectWidth = true; }
+			if (config.height) { edit.rectHeight = *config.height; edit.writeRectHeight = true; }
+			if (config.range) { edit.rectRange = *config.range; edit.writeRectRange = true; }
+			if (config.twoSided) { edit.rectTwoSided = *config.twoSided ? 1.0f : 0.0f; edit.writeRectTwoSided = true; }
+			if (config.shadow.castShadows) { edit.rectShadowIndex = *config.shadow.castShadows ? 0.0f : -1.0f; edit.writeRectShadow = true; }
+		}
+	}, projection.config);
 
     if (edit.writeCookie || edit.writeColor || edit.writeIntensity || edit.writeRadius ||
         edit.writeInnerCutoff || edit.writeOuterCutoff ||
@@ -229,48 +84,6 @@ bool AppendRuntimeLightPreview(
         return true;
     }
     return false;
-}
-
-std::string ReadPreviewAssetGuid(const VansSerializedValue& reference)
-{
-    if (reference.kind == VansSerializedValue::Kind::String)
-        return reference.stringValue;
-    if (reference.kind == VansSerializedValue::Kind::Object)
-        return ReadSerializedStringField(reference, "guid");
-    return {};
-}
-
-void AppendRuntimeMaterialOverridePreviews(
-    const VansSerializedValue& entity,
-    std::vector<EditorAPI::RuntimeRendererMaterialOverrideEdit>& edits)
-{
-    const std::string entityGuid = ReadSerializedStringField(entity, "id");
-    if (entityGuid.empty())
-        return;
-
-    const VansSerializedValue* renderer = FindSerializedComponent(entity, "ModelRenderer");
-    if (!renderer || !ReadSerializedBoolField(*renderer, "enabled", true))
-        return;
-
-    const VansSerializedValue* data = FindObjectField(*renderer, "data");
-    if (!data || data->kind != VansSerializedValue::Kind::Object)
-        return;
-
-    const auto appendOverrides = [&](const VansSerializedValue* overrides)
-    {
-        if (!overrides || overrides->kind != VansSerializedValue::Kind::Object)
-            return;
-        for (const auto& [slot, reference] : overrides->objectFields)
-        {
-            const std::string materialGuid = ReadPreviewAssetGuid(reference);
-            if (materialGuid.empty())
-                continue;
-            edits.push_back({ entityGuid, slot, materialGuid });
-        }
-    };
-
-    appendOverrides(FindObjectField(*data, "materialOverrides"));
-    appendOverrides(FindObjectField(*data, "submeshMaterialOverrides"));
 }
 
 const VansSerializedValue& UnwrapMaterialParameterValue(const VansSerializedValue& value)
@@ -425,73 +238,86 @@ void AppendTransparentTextureArrayPreviewEdits(
             AppendMaterialPreviewTexture(change, slot, *texture);
     }
 }
+
+EditorAPI::RuntimeEntityPreviewChange TranslateRuntimeEntityPreview(
+	const VansSceneAuthoringEntityProjection& projection)
+{
+	EditorAPI::RuntimeEntityPreviewChange change;
+	change.nameEdits.push_back({ projection.entityGuid, projection.name });
+	change.activeEdits.push_back({ projection.entityGuid, projection.active });
+	for (const VansSceneAuthoringComponentProjection& component : projection.components)
+	{
+		if (component.guid.empty()) continue;
+		change.componentEnabled.push_back({
+			projection.entityGuid, component.guid, component.type, component.enabled });
+		if (component.localVolumetricFogComponent)
+			change.localVolumetricFogEdits.push_back({
+				projection.entityGuid, component.guid, *component.localVolumetricFogComponent });
+	}
+	if (projection.transform)
+	{
+		change.hasTransform = true;
+		change.transform.entityGuid = projection.entityGuid;
+		change.transform.space = EditorAPI::RuntimeTransformSpace::Local;
+		const auto toVec3 = [](const std::array<float, 3>& value)
+		{ return EditorAPI::Vec3{ value[0], value[1], value[2] }; };
+		if (projection.transform->position)
+		{
+			change.transform.position = toVec3(*projection.transform->position);
+			change.transform.writePosition = true;
+		}
+		if (projection.transform->rotationDegrees)
+		{
+			change.transform.rotationDegrees = toVec3(*projection.transform->rotationDegrees);
+			change.transform.writeRotation = true;
+		}
+		if (projection.transform->scale)
+		{
+			change.transform.scale = toVec3(*projection.transform->scale);
+			change.transform.writeScale = true;
+		}
+	}
+	for (const VansSceneAuthoringLightProjection& light : projection.lights)
+	{
+		EditorAPI::RuntimePreviewLightType type;
+		if (light.componentType == "DirectionalLight")
+			type = EditorAPI::RuntimePreviewLightType::Directional;
+		else if (light.componentType == "PointLight")
+			type = EditorAPI::RuntimePreviewLightType::Point;
+		else if (light.componentType == "SpotLight")
+			type = EditorAPI::RuntimePreviewLightType::Spot;
+		else if (light.componentType == "RectLight")
+			type = EditorAPI::RuntimePreviewLightType::Rect;
+		else
+			continue;
+		AppendRuntimeLightPreview(projection.entityGuid, light, type, change.lights);
+	}
+	for (const VansSceneAuthoringMaterialOverrideProjection& overrideValue :
+		projection.materialOverrides)
+		change.materialOverrides.push_back({
+			projection.entityGuid, overrideValue.slot, overrideValue.materialGuid });
+	return change;
+}
 }
 
 EditorAPI::RuntimeEntityPreviewChange BuildRuntimeEntityPreviewChange(
     const VansSerializedValue& entity)
 {
-    EditorAPI::RuntimeEntityPreviewChange change;
-    const std::string entityGuid = ReadSerializedStringField(entity, "id");
-    const std::string entityName = ReadSerializedStringField(entity, "name");
-    if (!entityGuid.empty())
-    {
-        change.nameEdits.push_back({ entityGuid, entityName });
-        change.activeEdits.push_back({ entityGuid, ReadSerializedBoolField(entity, "active", true) });
-    }
-    const VansSerializedValue* components = FindObjectField(entity, "components");
-    if (components && components->kind == VansSerializedValue::Kind::Array)
-    {
-        for (const VansSerializedValue& component : components->arrayItems)
-        {
-            const std::string componentGuid = ReadSerializedStringField(component, "id");
-            const std::string componentType = ReadSerializedStringField(component, "type");
-            if (entityGuid.empty() || componentGuid.empty())
-                continue;
-            change.componentEnabled.push_back({
-                entityGuid,
-                componentGuid,
-                componentType,
-                ReadSerializedBoolField(component, "enabled", true)
-            });
-			if (componentType == "LocalVolumetricFog")
-			{
-				change.localVolumetricFogEdits.push_back({
-					entityGuid,
-					componentGuid,
-					component
-				});
-			}
-        }
-    }
-
-    change.hasTransform = BuildRuntimeTransformPreview(entity, change.transform);
-    AppendRuntimeLightPreview(entity, "DirectionalLight",
-        EditorAPI::RuntimePreviewLightType::Directional, change.lights);
-    AppendRuntimeLightPreview(entity, "PointLight",
-        EditorAPI::RuntimePreviewLightType::Point, change.lights);
-    AppendRuntimeLightPreview(entity, "SpotLight",
-        EditorAPI::RuntimePreviewLightType::Spot, change.lights);
-    AppendRuntimeLightPreview(entity, "RectLight",
-        EditorAPI::RuntimePreviewLightType::Rect, change.lights);
-    AppendRuntimeMaterialOverridePreviews(entity, change.materialOverrides);
-    return change;
+	VansSceneAuthoringEntityProjection projection;
+	return VansSceneRuntimeProjection::ProjectAuthoringEntity(entity, projection)
+		? TranslateRuntimeEntityPreview(projection)
+		: EditorAPI::RuntimeEntityPreviewChange{};
 }
 
 EditorAPI::RuntimeEntityPreviewChange BuildRuntimeEntityPreviewChangeFromSceneRoot(
     const VansSerializedValue& sceneRoot,
     const std::string& entityGuid)
 {
-    if (entityGuid.empty())
-        return {};
-    const VansSerializedValue* entities = FindObjectField(sceneRoot, "entities");
-    if (!entities || entities->kind != VansSerializedValue::Kind::Array)
-        return {};
-    for (const VansSerializedValue& entity : entities->arrayItems)
-    {
-        if (ReadSerializedStringField(entity, "id") == entityGuid)
-            return BuildRuntimeEntityPreviewChange(entity);
-    }
-    return {};
+	VansSceneAuthoringEntityProjection projection;
+	return VansSceneRuntimeProjection::ProjectAuthoringEntityFromSceneRoot(
+		sceneRoot, entityGuid, projection)
+		? TranslateRuntimeEntityPreview(projection)
+		: EditorAPI::RuntimeEntityPreviewChange{};
 }
 
 EditorAPI::RuntimeMaterialPreviewChange BuildRuntimeMaterialPreviewChange(

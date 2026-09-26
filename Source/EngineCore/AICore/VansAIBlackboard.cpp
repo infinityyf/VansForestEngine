@@ -1,5 +1,6 @@
 #include "VansAIBlackboard.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace Vans
@@ -34,7 +35,7 @@ bool VansAIBlackboard::Configure(
 			return false;
 		}
 		if (!m_Entries.emplace(definition.name,
-			Entry{ definition.type, definition.defaultValue }).second)
+			Entry{ definition.type, definition.defaultValue, "Behavior.Default" }).second)
 		{
 			error = "Duplicate AI Blackboard entry: " + definition.name;
 			m_Entries.clear();
@@ -45,7 +46,8 @@ bool VansAIBlackboard::Configure(
 	return true;
 }
 
-bool VansAIBlackboard::Set(const std::string& name, VansAIValue value, std::string* error)
+bool VansAIBlackboard::Set(const std::string& name, VansAIValue value,
+	const std::string& writer, std::string* error)
 {
 	const auto found = m_Entries.find(name);
 	if (found == m_Entries.end())
@@ -58,7 +60,13 @@ bool VansAIBlackboard::Set(const std::string& name, VansAIValue value, std::stri
 		if (error) *error = "AI Blackboard type mismatch: " + name;
 		return false;
 	}
+	if (writer.empty())
+	{
+		if (error) *error = "AI Blackboard writer is empty: " + name;
+		return false;
+	}
 	found->second.value = std::move(value);
+	found->second.lastWriter = writer;
 	if (error) error->clear();
 	return true;
 }
@@ -69,9 +77,16 @@ const VansAIValue* VansAIBlackboard::Find(const std::string& name) const
 	return found == m_Entries.end() ? nullptr : &found->second.value;
 }
 
-bool VansAIBlackboard::SetBool(const std::string& name, bool value, std::string* error)
+bool VansAIBlackboard::Has(const std::string& name, VansAIValueType type) const
 {
-	return Set(name, VansAIValue(value), error);
+	const auto found = m_Entries.find(name);
+	return found != m_Entries.end() && found->second.type == type;
+}
+
+bool VansAIBlackboard::SetBool(const std::string& name, bool value,
+	const std::string& writer, std::string* error)
+{
+	return Set(name, VansAIValue(value), writer, error);
 }
 
 bool VansAIBlackboard::GetBool(const std::string& name, bool fallback) const
@@ -82,9 +97,10 @@ bool VansAIBlackboard::GetBool(const std::string& name, bool fallback) const
 }
 
 bool VansAIBlackboard::SetEntity(
-	const std::string& name, VansEntityHandle value, std::string* error)
+	const std::string& name, VansEntityHandle value,
+	const std::string& writer, std::string* error)
 {
-	return Set(name, VansAIValue(value), error);
+	return Set(name, VansAIValue(value), writer, error);
 }
 
 VansEntityHandle VansAIBlackboard::GetEntity(const std::string& name) const
@@ -92,5 +108,28 @@ VansEntityHandle VansAIBlackboard::GetEntity(const std::string& name) const
 	const VansAIValue* value = Find(name);
 	const VansEntityHandle* entity = value ? std::get_if<VansEntityHandle>(value) : nullptr;
 	return entity ? *entity : VansEntityHandle{};
+}
+
+VansAIBlackboardDebugSnapshot VansAIBlackboard::CaptureDebugSnapshot(
+	std::size_t maxEntries) const
+{
+	VansAIBlackboardDebugSnapshot snapshot;
+	snapshot.totalEntries = m_Entries.size();
+	snapshot.entries.reserve((std::min)(maxEntries, m_Entries.size()));
+	for (const auto& [name, entry] : m_Entries)
+	{
+		snapshot.entries.push_back(VansAIBlackboardDebugEntry{
+			name, entry.type, entry.value, entry.lastWriter });
+	}
+	std::sort(snapshot.entries.begin(), snapshot.entries.end(),
+		[](const VansAIBlackboardDebugEntry& left,
+			const VansAIBlackboardDebugEntry& right)
+		{
+			return left.name < right.name;
+		});
+	if (snapshot.entries.size() > maxEntries)
+		snapshot.entries.resize(maxEntries);
+	snapshot.truncated = snapshot.entries.size() < snapshot.totalEntries;
+	return snapshot;
 }
 }

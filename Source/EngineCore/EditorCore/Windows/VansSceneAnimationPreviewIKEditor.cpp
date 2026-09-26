@@ -1,10 +1,13 @@
 #include "VansSceneAnimationPreviewWindow.h"
+#include "../../EngineAPILayer/Public/IAnimationEditorAPI.h"
+#include "../../EngineAPILayer/Public/IAnimationPreviewEditorAPI.h"
+#include "../../EngineAPILayer/Public/IAssetEditorAPI.h"
 #include "../VansEditorWindow.h"
 #include "../VansSceneEditService.h"
 #include "../VansSceneEntityCreationService.h"
-#include "../VansAssetDocumentRegistry.h"
-#include "../VansAssetDocumentEditService.h"
-#include "../Animation/VansSceneAnimationSaveService.h"
+#include "../../AuthoringCore/VansAssetDocumentRegistry.h"
+#include "../../AuthoringCore/VansAssetDocumentEditService.h"
+#include "../VansEditorAssetSaveService.h"
 #include "../../SceneCore/VansSceneDocument.h"
 #include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include <imgui.h>
@@ -61,9 +64,9 @@ void VansSceneAnimationPreviewWindow::AddRotationDistributionNode()
 	auto* graph = TargetGraph(m_AnimatorDocument.get());
 	if (!graph) { m_Message = "Animator has no Target Post Process graph"; return; }
 	for (const auto& [id, node] : graph->nodes)
-		if (node->GetType() == AnimGraphNodeType::RotationDistribution && node->m_RotationProfileId == m_RotationOriginalId)
+		if (node->GetType() == VansAnimGraphNodeType::RotationDistribution && node->m_RotationProfileId == m_RotationOriginalId)
 		{ m_Message = "This rotation profile already has a graph node"; return; }
-	auto node = AnimationGraphDTO::CreateNodeByType(AnimGraphNodeType::RotationDistribution);
+	auto node = AnimationGraphDTO::CreateNodeByType(VansAnimGraphNodeType::RotationDistribution);
 	node->m_RotationProfileId = m_RotationOriginalId;
 	if (InsertBefore(*graph, graph->outputNodeId, std::move(node))) m_AnimatorDraftDirty = true;
 	else m_Message = "Connect the Target Post Process output before adding a rotation node";
@@ -71,22 +74,25 @@ void VansSceneAnimationPreviewWindow::AddRotationDistributionNode()
 
 bool VansSceneAnimationPreviewWindow::ApplyAnimatorWorkingCopy(IEngineEditorAPI& api, bool recordEdit)
 {
+	IAnimationEditorAPI& animationAPI = api;
+	IAnimationPreviewEditorAPI& previewAPI = api;
+	IAssetEditorAPI& assetAPI = api;
 	if (!m_AnimatorDocument) return false;
-	auto sharedDocument = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(api.ResolveAssetGuid(m_SelectedAnimatorGuid).sourcePath);
+	auto sharedDocument = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(assetAPI.ResolveAssetGuid(m_SelectedAnimatorGuid).sourcePath);
 	if (!sharedDocument || sharedDocument->sourceDocument.CurrentStateId() != m_AnimatorDocumentStateId)
 	{ m_Message = "Animator was edited elsewhere; reload its working copy before applying"; return false; }
-	const auto encoded = api.EncodeAnimatorDocument(*m_AnimatorDocument);
+	const auto encoded = animationAPI.EncodeAnimatorDocument(*m_AnimatorDocument);
 	if (!encoded.success) { m_Message = encoded.message; return false; }
-	const auto snapshot = api.GetAnimationPreviewSnapshot(m_SessionId);
+	const auto snapshot = previewAPI.GetAnimationPreviewSnapshot(m_SessionId);
 	AnimationPreviewDefinitionUpdate update;
 	update.sessionId = m_SessionId;
 	update.revision = snapshot.requestedRevision + 1;
 	update.canonicalJson = encoded.canonicalJson;
-	const auto applied = api.UpdateAnimationPreviewDefinition(update);
+	const auto applied = previewAPI.UpdateAnimationPreviewDefinition(update);
 	if (!applied.success) { m_Message = applied.message; return false; }
 	if (recordEdit)
 	{
-		const auto resolved = api.ResolveAssetGuid(m_SelectedAnimatorGuid);
+		const auto resolved = assetAPI.ResolveAssetGuid(m_SelectedAnimatorGuid);
 		auto document = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(resolved.sourcePath);
 		if (!document) { m_Message = "Animator document is unavailable"; return false; }
 		const auto edit = Vans::VansAssetDocumentEditService::ReplaceRoot(document->sourceDocument,
@@ -99,7 +105,8 @@ bool VansSceneAnimationPreviewWindow::ApplyAnimatorWorkingCopy(IEngineEditorAPI&
 	return true;
 }
 
-bool VansSceneAnimationPreviewWindow::ApplyTargetBindingsToDocument(IEngineEditorAPI& api)
+bool VansSceneAnimationPreviewWindow::ApplyTargetBindingsToDocument(
+	IAnimationPreviewEditorAPI& previewAPI)
 {
 	auto* scene = VansEditorWindow::GetSceneDocument();
 	auto* edits = VansEditorWindow::GetSceneEditService();
@@ -108,7 +115,7 @@ bool VansSceneAnimationPreviewWindow::ApplyTargetBindingsToDocument(IEngineEdito
 	const auto pointer = BindingProperty(root, m_SelectedEntityGuid, m_SelectedAnimationComponentGuid);
 	if (pointer.empty()) { m_Message = "Scene Animation Component was removed"; return false; }
 	const auto before = m_RigSnapshot.targetBindings;
-	const auto applied = api.SetAnimationPreviewTargetBindings({m_SessionId, m_RigSnapshot.bindingRevision, m_TargetBindings});
+	const auto applied = previewAPI.SetAnimationPreviewTargetBindings({m_SessionId, m_RigSnapshot.bindingRevision, m_TargetBindings});
 	if (!applied.success) { m_Message = applied.message; return false; }
 	nlohmann::json bindings = nlohmann::json::array();
 	for (const auto& binding : m_TargetBindings)
@@ -117,17 +124,18 @@ bool VansSceneAnimationPreviewWindow::ApplyTargetBindingsToDocument(IEngineEdito
 	const auto edited = edits->Set({Vans::DocumentPropertySpace::Scene, pointer}, Vans::DecodeSerializedValueJson(bindings));
 	if (!edited && edited.message != "Scene property is unchanged")
 	{
-		api.SetAnimationPreviewTargetBindings({m_SessionId, applied.acceptedRevision, before});
+		previewAPI.SetAnimationPreviewTargetBindings({m_SessionId, applied.acceptedRevision, before});
 		m_Message = edited.message;
-		RefreshRigSnapshot(api);
+		RefreshRigSnapshot(previewAPI);
 		return false;
 	}
-	RefreshRigSnapshot(api);
+	RefreshRigSnapshot(previewAPI);
 	m_Message = "IK bindings applied to Scene working copy";
 	return true;
 }
 
-void VansSceneAnimationPreviewWindow::ReloadSceneTargetEdits(IEngineEditorAPI& api)
+void VansSceneAnimationPreviewWindow::ReloadSceneTargetEdits(
+	IAnimationPreviewEditorAPI& previewAPI)
 {
 	auto* scene = VansEditorWindow::GetSceneDocument();
 	if (!scene) return;
@@ -137,8 +145,8 @@ void VansSceneAnimationPreviewWindow::ReloadSceneTargetEdits(IEngineEditorAPI& a
 	if (!pointer.empty() && root.contains(nlohmann::json::json_pointer(pointer)))
 		for (const auto& binding : root.at(nlohmann::json::json_pointer(pointer)))
 			m_TargetBindings.push_back({binding.at("id").get<std::string>(), binding.at("target").at("entityGuid").get<std::string>(), {}});
-	api.SetAnimationPreviewTargetBindings({m_SessionId, m_RigSnapshot.bindingRevision, m_TargetBindings});
-	RefreshRigSnapshot(api);
+	previewAPI.SetAnimationPreviewTargetBindings({m_SessionId, m_RigSnapshot.bindingRevision, m_TargetBindings});
+	RefreshRigSnapshot(previewAPI);
 	for (const auto& entity : root.at("entities"))
 	{
 		const auto guid = entity.value("id", "");
@@ -156,18 +164,21 @@ void VansSceneAnimationPreviewWindow::ReloadSceneTargetEdits(IEngineEditorAPI& a
 					data["rotation"][1].get<float>(), data["rotation"][2].get<float>());
 				const auto degrees = glm::degrees(glm::eulerAngles(rotation));
 				transform.rotationDegrees = {degrees.x,degrees.y,degrees.z};
-				api.SetAnimationPreviewAttachmentTransform({m_SessionId, m_RigSnapshot.attachmentRevision, guid,
+				previewAPI.SetAnimationPreviewAttachmentTransform({m_SessionId, m_RigSnapshot.attachmentRevision, guid,
 					RuntimeTransformSpace::Local, transform});
-				RefreshRigSnapshot(api);
+				RefreshRigSnapshot(previewAPI);
 			}
 	}
 }
 
 bool VansSceneAnimationPreviewWindow::SaveAnimationSetup(IEngineEditorAPI& api)
 {
+	IAnimationEditorAPI& animationAPI = api;
+	IAnimationPreviewEditorAPI& previewAPI = api;
+	IAssetEditorAPI& assetAPI = api;
 	if (m_LimitDraftDirty || m_RotationDraftDirty)
 	{ m_Message = "Apply or discard the Limit / Rotation Profile draft before saving"; return false; }
-	if (!ApplyAnimatorWorkingCopy(api, true) || !ApplyTargetBindingsToDocument(api)) return false;
+	if (!ApplyAnimatorWorkingCopy(api, true) || !ApplyTargetBindingsToDocument(previewAPI)) return false;
 	auto* scene = VansEditorWindow::GetSceneDocument();
 	auto* edits = VansEditorWindow::GetSceneEditService();
 	if (!scene || !edits) return false;
@@ -180,12 +191,12 @@ bool VansSceneAnimationPreviewWindow::SaveAnimationSetup(IEngineEditorAPI& api)
 			if (!changed && changed.message != "Scene entity transform is unchanged") { m_Message = changed.message; return false; }
 			m_AppliedTargetTransforms.push_back(attachment.entityGuid);
 		}
-	auto workingRig = api.GetAnimationPreviewWorkingRigDocument(m_SessionId);
+	auto workingRig = previewAPI.GetAnimationPreviewWorkingRigDocument(m_SessionId);
 	if (!workingRig.success) { m_Message = workingRig.message; return false; }
-	const auto rigJson = api.EncodeAnimationRigDocument(workingRig.document);
+	const auto rigJson = animationAPI.EncodeAnimationRigDocument(workingRig.document);
 	if (!rigJson.success) { m_Message = rigJson.message; return false; }
 	auto rig = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(m_RigSnapshot.rigAssetPath);
-	auto animator = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(api.ResolveAssetGuid(m_SelectedAnimatorGuid).sourcePath);
+	auto animator = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(assetAPI.ResolveAssetGuid(m_SelectedAnimatorGuid).sourcePath);
 	if (!rig || !animator) return false;
 	if (rig->sourceDocument.CurrentStateId() != m_RigDocumentStateId)
 	{m_Message="Rig was edited elsewhere; restart preview before saving";return false;}
@@ -193,17 +204,22 @@ bool VansSceneAnimationPreviewWindow::SaveAnimationSetup(IEngineEditorAPI& api)
 		Vans::DecodeSerializedValueJson(nlohmann::json::parse(rigJson.canonicalJson)));
 	if (!edited && edited.message != "Asset property is unchanged") { m_Message = edited.message; return false; }
 	m_RigDocumentStateId = rig->sourceDocument.CurrentStateId();
-	if (!Vans::VansSceneAnimationSaveService::Save(*scene, {animator, rig}, m_Message)) return false;
-	if (!api.AdoptAnimationPreviewRig({m_SessionId, m_RigSnapshot.rigRevision}).success ||
-		!api.AdoptAnimationPreviewSceneChanges({m_SessionId,m_AppliedTargetTransforms}))
+	const auto saved = Vans::VansEditorAssetSaveService::Get().SaveSceneAndAssets(api, *scene, {animator, rig});
+	if (!saved) { m_Message = saved.message; return false; }
+	if (!previewAPI.AdoptAnimationPreviewRig({m_SessionId, m_RigSnapshot.rigRevision}).success ||
+		!previewAPI.AdoptAnimationPreviewSceneChanges({
+			m_SessionId, m_RigSnapshot.attachmentRevision,
+			m_AppliedTargetTransforms }))
 	{ m_Message = "Files saved; preview baseline adoption failed"; return false; }
 	m_Message = "Scene, Animator and Rig saved";
-	RefreshRigSnapshot(api);
+	RefreshRigSnapshot(previewAPI);
 	return true;
 }
 
 bool VansSceneAnimationPreviewWindow::DrawTransformIKEditor(IEngineEditorAPI& api)
 {
+	IAssetEditorAPI& assetAPI = api;
+	IAnimationPreviewEditorAPI& previewAPI = api;
 	if (!ImGui::CollapsingHeader("Transform Target IK", ImGuiTreeNodeFlags_DefaultOpen)) return false;
 	auto* scene = VansEditorWindow::GetSceneDocument();
 	auto* sceneEdits = VansEditorWindow::GetSceneEditService();
@@ -242,7 +258,7 @@ bool VansSceneAnimationPreviewWindow::DrawTransformIKEditor(IEngineEditorAPI& ap
 		if (editPosition || editRotation)
 		{
 			// 选择仅更新预览绑定；Scene 文档仍由显式 Apply/Save 写入。
-			const auto applied = api.SetAnimationPreviewTargetBindings({m_SessionId, m_RigSnapshot.bindingRevision, m_TargetBindings});
+			const auto applied = previewAPI.SetAnimationPreviewTargetBindings({m_SessionId, m_RigSnapshot.bindingRevision, m_TargetBindings});
 			m_Message = applied.message;
 			if (applied.success)
 			{
@@ -267,7 +283,7 @@ bool VansSceneAnimationPreviewWindow::DrawTransformIKEditor(IEngineEditorAPI& ap
 			if (inlineAnchorVisible && graph)
 			{
 				for (auto& [id, node] : graph->nodes)
-					if (node->GetType() == AnimGraphNodeType::Goal && node->m_Goal.binding == binding.id)
+					if (node->GetType() == VansAnimGraphNodeType::Goal && node->m_Goal.binding == binding.id)
 					{
 						drawGoal(id, node->m_Goal);
 						visibleGoals.push_back(id);
@@ -300,7 +316,7 @@ bool VansSceneAnimationPreviewWindow::DrawTransformIKEditor(IEngineEditorAPI& ap
 			m_SelectedAttachmentGuid = created.entityGuid;
 			m_SelectedSceneEntityGuid = created.entityGuid;
 			m_TransformTarget = TransformTarget::Attachment;
-			m_SceneEntities = api.QueryAnimationPreviewSceneEntities(m_SessionId);
+			m_SceneEntities = previewAPI.QueryAnimationPreviewSceneEntities(m_SessionId);
 			RefreshRigSnapshot(api);
 		}
 	}
@@ -311,12 +327,12 @@ bool VansSceneAnimationPreviewWindow::DrawTransformIKEditor(IEngineEditorAPI& ap
 	{
 
 		for (auto& [id,node] : graph->nodes)
-			if (node->GetType() == AnimGraphNodeType::Goal
+			if (node->GetType() == VansAnimGraphNodeType::Goal
 				&& std::find(visibleGoals.begin(), visibleGoals.end(), id) == visibleGoals.end())
 			{
 				drawGoal(id, node->m_Goal);
 			}
-		auto rig = api.GetAnimationPreviewWorkingRigDocument(m_SessionId);
+		auto rig = previewAPI.GetAnimationPreviewWorkingRigDocument(m_SessionId);
 		if (rig.success && ImGui::BeginCombo("IK Chain",m_NewChainId.empty()?"Choose chain...":m_NewChainId.c_str()))
 		{
 			for (const auto& chain : rig.document.chains)
@@ -368,7 +384,7 @@ bool VansSceneAnimationPreviewWindow::DrawTransformIKEditor(IEngineEditorAPI& ap
 			for (auto& [id, node] : graph->nodes)
 			{
 				ImGui::PushID(id + 99000);
-				if (node->GetType() == AnimGraphNodeType::LimbIK)
+				if (node->GetType() == VansAnimGraphNodeType::LimbIK)
 				{
 					ImGui::Text("%s", node->m_Name.c_str());
 					for (const auto& chain : node->m_ChainIds) ImGui::TextDisabled("%s", chain.c_str());
@@ -376,7 +392,7 @@ bool VansSceneAnimationPreviewWindow::DrawTransformIKEditor(IEngineEditorAPI& ap
 					if (ImGui::Combo("Tip Rotation", &mode, "Preserve Input\0Match Goal\0Follow Chain\0"))
 					{ node->m_LimbSettings.tipRotationMode = static_cast<AnimationLimbTipRotationMode>(mode); m_AnimatorDraftDirty = true; }
 				}
-				if (node->GetType() == AnimGraphNodeType::RotationDistribution)
+				if (node->GetType() == VansAnimGraphNodeType::RotationDistribution)
 				{
 					m_AnimatorDraftDirty |= EditText("Rotation Profile", node->m_RotationProfileId);
 					if (ImGui::SmallButton("Remove Rotation Node"))
@@ -400,7 +416,7 @@ bool VansSceneAnimationPreviewWindow::DrawTransformIKEditor(IEngineEditorAPI& ap
 		}
 		if (ImGui::TreeNode("Pose Checkpoints"))
 		{
-			for(auto& [id,node]:graph->nodes) if(node->GetType()==AnimGraphNodeType::PoseCheckpoint)
+			for(auto& [id,node]:graph->nodes) if(node->GetType()==VansAnimGraphNodeType::PoseCheckpoint)
 			{
 				ImGui::PushID(id+95000);
 				m_AnimatorDraftDirty|=EditText("Checkpoint ID",node->m_CheckpointId);
@@ -419,9 +435,9 @@ bool VansSceneAnimationPreviewWindow::DrawTransformIKEditor(IEngineEditorAPI& ap
 				for(const auto& link:graph->links)if(link.toNodeId==graph->outputNodeId)
 				{
 					const auto* previous=graph->GetNode(link.fromNodeId);
-					if(previous && (previous->GetType()==AnimGraphNodeType::LimbIK || previous->GetType()==AnimGraphNodeType::ChainIK))successor=previous->GetNodeId();
+					if(previous && (previous->GetType()==VansAnimGraphNodeType::LimbIK || previous->GetType()==VansAnimGraphNodeType::ChainIK))successor=previous->GetNodeId();
 				}
-				auto checkpoint=AnimationGraphDTO::CreateNodeByType(AnimGraphNodeType::PoseCheckpoint);
+				auto checkpoint=AnimationGraphDTO::CreateNodeByType(VansAnimGraphNodeType::PoseCheckpoint);
 				checkpoint->m_CheckpointId=m_CheckpointDraftId;checkpoint->m_CheckpointBones={m_CheckpointDraftBone};
 				if(InsertBefore(*graph,successor,std::move(checkpoint)))m_AnimatorDraftDirty=true;
 			}
@@ -440,12 +456,12 @@ bool VansSceneAnimationPreviewWindow::DrawTransformIKEditor(IEngineEditorAPI& ap
 				auto candidate = AnimationGraphDTO::Clone(*graph);
 				int first=-1;
 				for (const auto& [id,node] : candidate->nodes)
-					if (node->GetType()==AnimGraphNodeType::TargetPoseInput)
+					if (node->GetType()==VansAnimGraphNodeType::TargetPoseInput)
 						for (const auto& link:candidate->links) if(link.fromNodeId==id) first=link.toNodeId;
-				auto goal=AnimationGraphDTO::CreateNodeByType(AnimGraphNodeType::Goal);
+				auto goal=AnimationGraphDTO::CreateNodeByType(VansAnimGraphNodeType::Goal);
 				goal->m_Goal.goalId=chain->goal; goal->m_Goal.binding=m_NewBindingId;
 				goal->m_Goal.fixedRotationWeight=1;
-				auto solver=AnimationGraphDTO::CreateNodeByType(chain->solver==AnimationRigSolverKind::Limb?AnimGraphNodeType::LimbIK:AnimGraphNodeType::ChainIK);
+				auto solver=AnimationGraphDTO::CreateNodeByType(chain->solver==AnimationRigSolverKind::Limb?VansAnimGraphNodeType::LimbIK:VansAnimGraphNodeType::ChainIK);
 				solver->m_ChainIds={chain->id};
 				if (InsertBefore(*candidate,first,std::move(goal)) && InsertBefore(*candidate,candidate->outputNodeId,std::move(solver)))
 				{ *graph=std::move(*candidate);m_AnimatorDraftDirty=true; }
@@ -469,7 +485,7 @@ bool VansSceneAnimationPreviewWindow::DrawTransformIKEditor(IEngineEditorAPI& ap
 		if (ImGui::Button("Redo Scene Edit")) {m_Message=sceneEdits->Redo().message;ReloadSceneTargetEdits(api);}
 		ImGui::EndDisabled();
 	}
-	auto document=Vans::VansAssetDocumentRegistry::Get().Find(api.ResolveAssetGuid(m_SelectedAnimatorGuid).sourcePath);
+	auto document=Vans::VansAssetDocumentRegistry::Get().Find(assetAPI.ResolveAssetGuid(m_SelectedAnimatorGuid).sourcePath);
 	if(document)
 	{
 		bool reload=false;

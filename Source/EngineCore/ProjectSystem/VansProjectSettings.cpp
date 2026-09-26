@@ -1,6 +1,7 @@
 #include "VansProjectSettings.h"
 #include "VansProjectSettingsData.h"
 #include "../PhysicsCore/VansCollisionLayerManager.h"
+#include "../RenderCore/UpscalingCore/VansUpscaleResolutionPolicy.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
@@ -11,7 +12,7 @@ namespace Vans
 {
 	void VansProjectSettings::SetDefaults()
 	{
-		m_FixedTimeStep = 1.0f / 60.0f;
+		m_PhysicsTiming = {};
 		m_PhysicsQueryProfiles.clear();
 		m_UpscalerSettings = {};
 		m_CommandRecordingSettings = {};
@@ -20,18 +21,38 @@ namespace Vans
 		m_NearMediaQualitySettings = {};
 		m_CloudShadowQualitySettings = {};
 		m_MainCameraHiZCullSettings = {};
+		m_CameraLensLimits = {};
+		m_NavigationSettings = {};
 	}
 
-	void VansProjectSettings::SetFixedTimeStep(float fixedTimeStep)
+	bool VansProjectSettings::SetNavigationSettings(
+		const VansNavigationSettings& settings,
+		std::string* error)
 	{
-		if (fixedTimeStep <= 0.0f)
+		std::string validationError;
+		if (!ValidateNavigationSettings(settings, validationError))
 		{
-			VANS_LOG_WARN("[ProjectSettings] Invalid fixedTimeStep: " << fixedTimeStep << ", fallback to default 1/60s");
-			m_FixedTimeStep = 1.0f / 60.0f;
-			return;
+			if (error) *error = std::move(validationError);
+			return false;
+		}
+		m_NavigationSettings = settings;
+		if (error) error->clear();
+		return true;
+	}
+
+	bool VansProjectSettings::SetPhysicsTiming(
+		const VansEngine::VansPhysicsTiming& timing,
+		std::string& error)
+	{
+		if (!timing.IsValid())
+		{
+			error = "Physics timing requires positive finite rigid/cloth steps and bounded substep counts";
+			return false;
 		}
 
-		m_FixedTimeStep = fixedTimeStep;
+		m_PhysicsTiming = timing;
+		error.clear();
+		return true;
 	}
 
 	bool VansProjectSettings::ResolvePhysicsQueryProfile(
@@ -72,18 +93,11 @@ namespace Vans
 		const VansProjectUpscalerSettings& settings,
 		std::string* error)
 	{
-		if (!std::isfinite(settings.fsrSharpness) ||
-			settings.fsrSharpness < 0.0f || settings.fsrSharpness > 1.0f)
+		std::string validationError;
+		if (!VansGraphics::VansUpscaleResolutionPolicy::ValidateConfig(
+			settings, validationError))
 		{
-			if (error)
-				*error = "upscaler.fsrSharpness must be in [0, 1]";
-			return false;
-		}
-		if (settings.backend == VansGraphics::VansUpscalerBackend::Off &&
-			settings.quality != VansGraphics::VansUpscaleQualityMode::NativeAA)
-		{
-			if (error)
-				*error = "Off upscaler backend requires NativeAA quality";
+			if (error) *error = std::move(validationError);
 			return false;
 		}
 		m_UpscalerSettings = settings;
@@ -96,21 +110,11 @@ namespace Vans
 		const VansProjectRenderOutputSettings& settings,
 		std::string* error)
 	{
-		constexpr std::uint32_t kMinimumOutputWidth = 320u;
-		constexpr std::uint32_t kMinimumOutputHeight = 180u;
-		constexpr std::uint32_t kMaximumOutputDimension = 16384u;
-		if (!settings.UsesWindowExtent() &&
-			(!settings.HasExplicitExtent() ||
-			 settings.width < kMinimumOutputWidth ||
-			 settings.height < kMinimumOutputHeight ||
-			 settings.width > kMaximumOutputDimension ||
-			 settings.height > kMaximumOutputDimension))
+		std::string validationError;
+		if (!VansGraphics::VansUpscaleResolutionPolicy::ValidateOutputExtent(
+			{ settings.width, settings.height }, true, 0u, validationError))
 		{
-			if (error)
-			{
-				*error = "outputResolution must be 0x0 (follow window) or an explicit "
-					"resolution between 320x180 and 16384x16384";
-			}
+			if (error) *error = std::move(validationError);
 			return false;
 		}
 		m_RenderOutputSettings = settings;
@@ -148,6 +152,16 @@ namespace Vans
 			std::clamp(m_MainCameraHiZCullSettings.maxScreenCoverageForCull, 0.05f, 1.0f);
 	}
 
+	bool VansProjectSettings::SetCameraLensLimits(
+		const VansCameraLensLimits& limits,
+		std::string& error)
+	{
+		if (!VansValidateCameraLensLimits(limits, error)) return false;
+		m_CameraLensLimits = limits;
+		error.clear();
+		return true;
+	}
+
 	bool VansProjectSettings::ApplyRenderSettingsData(
 		const VansProjectRenderSettingsData& renderSettings,
 		std::string& error)
@@ -166,16 +180,24 @@ namespace Vans
 		candidate.m_NearMediaQualitySettings = renderSettings.nearMediaQualitySettings;
 		candidate.m_CloudShadowQualitySettings = renderSettings.cloudShadowQualitySettings;
 		candidate.SetMainCameraHiZCullSettings(renderSettings.mainCameraHiZCullSettings);
+		if (!candidate.SetCameraLensLimits(renderSettings.cameraLensLimits, error))
+			return false;
 		*this = std::move(candidate);
 		error.clear();
 		return true;
 	}
 
-	void VansProjectSettings::ApplyPhysicsSettingsData(
-		const VansProjectPhysicsSettingsData& physicsSettings)
+	bool VansProjectSettings::ApplyPhysicsSettingsData(
+		const VansProjectPhysicsSettingsData& physicsSettings,
+		std::string& error)
 	{
-		SetFixedTimeStep(physicsSettings.fixedTimeStep);
-		m_PhysicsQueryProfiles = physicsSettings.queryProfiles;
+		VansProjectSettings candidate = *this;
+		if (!candidate.SetPhysicsTiming(physicsSettings.timing, error))
+			return false;
+		candidate.m_PhysicsQueryProfiles = physicsSettings.queryProfiles;
+		*this = std::move(candidate);
+		error.clear();
+		return true;
 	}
 
 	VansProjectRenderSettingsData VansProjectSettings::BuildRenderSettingsData() const
@@ -188,13 +210,14 @@ namespace Vans
 		settings.nearMediaQualitySettings = m_NearMediaQualitySettings;
 		settings.cloudShadowQualitySettings = m_CloudShadowQualitySettings;
 		settings.mainCameraHiZCullSettings = m_MainCameraHiZCullSettings;
+		settings.cameraLensLimits = m_CameraLensLimits;
 		return settings;
 	}
 
 	VansProjectPhysicsSettingsData VansProjectSettings::BuildPhysicsSettingsData() const
 	{
 		VansProjectPhysicsSettingsData settings;
-		settings.fixedTimeStep = m_FixedTimeStep;
+		settings.timing = m_PhysicsTiming;
 		settings.queryProfiles = m_PhysicsQueryProfiles;
 		return settings;
 	}

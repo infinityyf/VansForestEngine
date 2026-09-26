@@ -6,6 +6,7 @@
 #include <../../GLM/gtc/quaternion.hpp>
 
 #include <vector>
+#include <string>
 
 namespace VansGraphics::VansPoseMath
 {
@@ -35,6 +36,34 @@ namespace VansGraphics::VansPoseMath
 	bool FromMatrices(const std::vector<glm::mat4>& matrices,
 	                  VansAnimationFrameVector<VansBoneTransform>& outPose);
 
+	// These are the only local/model hierarchy propagation entry points. They
+	// reject missing or invalid topology instead of falling back to bone-index
+	// order, which is incorrect when a parent follows its child in storage.
+	bool BuildModelTransforms(const std::vector<glm::mat4>& localTransforms,
+	                          const Skeleton& skeleton,
+	                          std::vector<glm::mat4>& outModelTransforms,
+	                          std::string* error = nullptr);
+	bool BuildModelTransforms(const VansAnimationFrameVector<glm::mat4>& localTransforms,
+	                          const Skeleton& skeleton,
+	                          VansAnimationFrameVector<glm::mat4>& outModelTransforms,
+	                          std::string* error = nullptr);
+	bool BuildModelTransforms(const VansAnimationFrameVector<VansBoneTransform>& localPose,
+	                          const Skeleton& skeleton,
+	                          VansAnimationFrameVector<glm::mat4>& outModelTransforms,
+	                          std::string* error = nullptr);
+	bool BuildModelTransforms(const std::vector<VansBoneTransform>& localPose,
+	                          const Skeleton& skeleton,
+	                          std::vector<glm::mat4>& outModelTransforms,
+	                          std::string* error = nullptr);
+	bool BuildLocalTransforms(const std::vector<glm::mat4>& modelTransforms,
+	                          const Skeleton& skeleton,
+	                          std::vector<glm::mat4>& outLocalTransforms,
+	                          std::string* error = nullptr);
+	bool BuildLocalTransforms(const VansAnimationFrameVector<glm::mat4>& modelTransforms,
+	                          const Skeleton& skeleton,
+	                          VansAnimationFrameVector<glm::mat4>& outLocalTransforms,
+	                          std::string* error = nullptr);
+
 	// Translation/scale use linear interpolation; rotation uses normalized
 	// shortest-arc slerp. Invalid inputs use a deterministic nearest endpoint.
 	glm::mat4 BlendTransforms(const glm::mat4& first,
@@ -57,13 +86,4 @@ namespace VansGraphics::VansPoseMath
 	                                           const glm::mat4& referenceModel,
 	                                           float weight);
 
-	void BlendPoses(const std::vector<glm::mat4>& first,
-	                const std::vector<glm::mat4>& second,
-	                float alpha,
-	                std::vector<glm::mat4>& outPose);
-
-	void ApplyAdditivePose(const std::vector<glm::mat4>& base,
-	                       const std::vector<glm::mat4>& additive,
-	                       float weight,
-	                       std::vector<glm::mat4>& outPose);
 }

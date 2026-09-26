@@ -1,10 +1,11 @@
 #include "VansAudioTimelineIntegration.h"
 
 #include "../VansAudioSourceBinding.h"
+#include "../VansAudioVoice.h"
 #include "../VansAudioManager.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../../SceneRuntime/VansRuntimeWorld.h"
-#include "../../ScriptCore/VansTransform.h"
+#include "../../SceneRuntime/Transform/VansTransformStore.h"
 #include "../../TimelineRuntime/VansTimelineEvaluator.h"
 #include "../../TimelineRuntime/VansTimelineModuleApplierState.h"
 #include "../../TimelineRuntime/VansTimelinePropertyAccessRegistry.h"
@@ -17,12 +18,12 @@ namespace Vans
 {
 namespace
 {
-VansEngine::VansAudioSourceBinding* ResolveAudio(
+VansEngine::VansAudioSourceBinding* ResolveAudioBinding(
 	VansRuntimeWorld& world,
 	const VansResolvedTimelineTarget& target)
 {
-	auto* storage = static_cast<VansComponentStorage<VansRuntimeAudioComponent>*>(
-		world.FindStorage(VansRuntimeComponentType_Audio));
+	auto* storage = world.FindStorage<VansRuntimeAudioComponent>(
+		VansRuntimeComponentType_Audio);
 	if (!storage || !world.IsAlive(target.entity)) return nullptr;
 	for (VansComponentHandle component : world.CollectComponentsOwnedBy(target.entity))
 		if (component.typeId == VansRuntimeComponentType_Audio)
@@ -30,9 +31,10 @@ VansEngine::VansAudioSourceBinding* ResolveAudio(
 	return nullptr;
 }
 
-VansEngine::VansAudioSourceBinding* ResolveAudio(const VansTimelinePropertyAccessContext& context)
+VansEngine::VansAudioVoice* ResolveAudio(const VansTimelinePropertyAccessContext& context)
 {
-	return context.world ? ResolveAudio(*context.world, context.target) : nullptr;
+	auto* binding = context.world ? ResolveAudioBinding(*context.world, context.target) : nullptr;
+	return binding ? binding->GetVoice() : nullptr;
 }
 
 #define VANS_AUDIO_FLOAT_PROPERTY(Name, Getter, Setter) \
@@ -97,7 +99,7 @@ public:
 			const auto* text = value ? std::get_if<std::string>(value) : nullptr;
 			return text ? *text : std::move(fallback);
 		};
-		VansEngine::VansAudioSourceBinding* boundSource = ResolveAudio(m_World, target);
+		VansEngine::VansAudioSourceBinding* boundSource = ResolveAudioBinding(m_World, target);
 		const std::string sourceMode = stringAt(0, "SectionAsset");
 		const std::string requestedSource = sourceMode == "SectionAsset" ? context.section->assetGuid
 			: (boundSource ? boundSource->GetSourceName() : std::string{});
@@ -124,15 +126,15 @@ public:
 		request.startSeconds = VansTimelineTime::TickToSeconds(sample->localTick, context.timeline.Timebase());
 		if (request.spatial)
 		{
-			const auto* transformStorage = static_cast<VansComponentStorage<VansRuntimeTransformComponent>*>(
-				m_World.FindStorage(VansRuntimeComponentType_Transform));
+			const auto* transformStorage = m_World.FindStorage<VansRuntimeTransformComponent>(
+				VansRuntimeComponentType_Transform);
 			if (transformStorage)
 				for (VansComponentHandle component : m_World.CollectComponentsOwnedBy(target.entity))
 					if (component.typeId == VansRuntimeComponentType_Transform)
 						if (const auto* transform = transformStorage->Get(component))
-							if (transform->transformStoreId < VansGraphics::VansTransformStore::GlobalTransforms.size())
+							if (Vans::VansTransformStore::IsAllocated(transform->transformStoreId))
 							{
-								const auto& position = VansGraphics::VansTransformStore::GetTransform(transform->transformStoreId).m_Position;
+								const auto& position = Vans::VansTransformStore::Read(transform->transformStoreId).m_Position;
 								request.positionX = position.x; request.positionY = position.y; request.positionZ = position.z;
 							}
 		}
@@ -140,7 +142,7 @@ public:
 			? VansTimelineApplyResult{ VansTimelineApplyStatus::Applied }
 			: VansTimelineApplyResult{ VansTimelineApplyStatus::Failed, {}, "Audio one-shot playback could not start" };
 	}
-	bool Restore(VansTimelineRestoreToken) override { return false; }
+	bool Restore(VansTimelineRestoreToken) override { return true; }
 	void ReleaseWriter(VansTimelineWriterHandle) override {}
 	void ReleaseAll() override {}
 private:

@@ -1,7 +1,9 @@
 #include "VansHiZCullWindow.h"
 
 #include "../VansEditorWindow.h"
+#include "../VansEditorDebugViewState.h"
 #include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
+#include "../../EngineAPILayer/Public/IRenderEditorAPI.h"
 
 #include "imgui.h"
 
@@ -26,17 +28,18 @@ namespace
 
 void VansHiZCullWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-	if (!VansEditorWindow::m_HiZCullWindowOpen)
+	Vans::EditorAPI::IRenderEditorAPI& renderAPI = editorAPI;
+	if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::HiZCull))
 		return;
 
-	if (!ImGui::Begin("HiZ Occlusion Culling", &VansEditorWindow::m_HiZCullWindowOpen))
+	if (!ImGui::Begin("HiZ Occlusion Culling", VansEditorWindow::WindowOpenState(VansEditorWindowId::HiZCull)))
 	{
 		ImGui::End();
 		return;
 	}
 
 	const Vans::EditorAPI::MainCameraHiZCullDebugSnapshot snapshot =
-		editorAPI.GetMainCameraHiZCullDebugSnapshot();
+		renderAPI.GetMainCameraHiZCullDebugSnapshot();
 	if (!snapshot.available)
 	{
 		ImGui::TextDisabled("No runtime scene");
@@ -44,7 +47,7 @@ void VansHiZCullWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 		return;
 	}
 
-	ImGui::Checkbox("Visualize Culled Bounds", &VansEditorWindow::m_HiZCullDebugVisualization);
+	ImGui::Checkbox("Visualize Culled Bounds", &m_DebugViewState.hiZCullDebugVisualization);
 	ImGui::Separator();
 
 	ImGui::Text("Enabled: %s", snapshot.enabled ? "Yes" : "No");

@@ -1,6 +1,7 @@
 #include "VansUIEditorWindow.h"
 
 #include "../VansEditorWindow.h"
+#include "../../EngineAPILayer/Public/IUIEditorAPI.h"
 #include "../../Util/VansLog.h"
 
 #include "imgui.h"
@@ -18,12 +19,13 @@ VansUIEditorWindow::VansUIEditorWindow()
 
 void VansUIEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api)
 {
-    DrawUIEditorContents(api);
+    Vans::EditorAPI::IUIEditorAPI& uiAPI = api;
+    DrawUIEditorContents(uiAPI);
 }
 
-void VansUIEditorWindow::DrawUIEditorContents(Vans::EditorAPI::IEngineEditorAPI& api)
+void VansUIEditorWindow::DrawUIEditorContents(Vans::EditorAPI::IUIEditorAPI& api)
 {
-    if (!VansEditorWindow::m_UIEditorWindowOpen)
+    if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::UIEditor))
         return;
 
     ImGui::SetNextWindowSize(ImVec2(720.0f, 520.0f), ImGuiCond_FirstUseEver);
@@ -76,7 +78,7 @@ void VansUIEditorWindow::DrawUIEditorContents(Vans::EditorAPI::IEngineEditorAPI&
     ImGui::End();
 }
 
-void VansUIEditorWindow::LoadPreview(Vans::EditorAPI::IEngineEditorAPI& api)
+void VansUIEditorWindow::LoadPreview(Vans::EditorAPI::IUIEditorAPI& api)
 {
     UnloadPreview(api);
 
@@ -99,7 +101,7 @@ void VansUIEditorWindow::LoadPreview(Vans::EditorAPI::IEngineEditorAPI& api)
         : "UI document loaded. " + preview.message;
 }
 
-void VansUIEditorWindow::UnloadPreview(Vans::EditorAPI::IEngineEditorAPI& api)
+void VansUIEditorWindow::UnloadPreview(Vans::EditorAPI::IUIEditorAPI& api)
 {
     if (m_PreviewDocumentId == 0)
         return;
@@ -110,7 +112,7 @@ void VansUIEditorWindow::UnloadPreview(Vans::EditorAPI::IEngineEditorAPI& api)
     m_LastStatus = "UI document unloaded.";
 }
 
-void VansUIEditorWindow::DrawMetaPanel(Vans::EditorAPI::IEngineEditorAPI& api)
+void VansUIEditorWindow::DrawMetaPanel(Vans::EditorAPI::IUIEditorAPI& api)
 {
     ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.3f, 1.0f), "Document");
     ImGui::Separator();
@@ -200,7 +202,7 @@ void VansUIEditorWindow::DrawMetaPanel(Vans::EditorAPI::IEngineEditorAPI& api)
         ImGui::BulletText("%s", message.c_str());
 }
 
-void VansUIEditorWindow::DrawPreviewViewport(Vans::EditorAPI::IEngineEditorAPI& api)
+void VansUIEditorWindow::DrawPreviewViewport(Vans::EditorAPI::IUIEditorAPI& api)
 {
     ImVec2 avail = ImGui::GetContentRegionAvail();
     ImVec2 cursor = ImGui::GetCursorScreenPos();

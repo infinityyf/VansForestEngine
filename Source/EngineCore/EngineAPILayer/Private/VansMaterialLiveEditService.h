@@ -8,6 +8,14 @@
 namespace VansGraphics
 {
 class VansScene;
+class VansRenderSystem;
+
+struct VansMaterialOverrideBatchResult
+{
+	bool transactionSucceeded = false;
+	bool anyApplied = false;
+	bool anyFailed = false;
+};
 
 class VansMaterialLiveEditService
 {
@@ -30,5 +38,9 @@ public:
 	bool ApplyRendererMaterialOverride(
 		VansScene* scene,
 		const Vans::EditorAPI::RuntimeRendererMaterialOverrideEdit& edit);
+	VansMaterialOverrideBatchResult ApplyRendererMaterialOverrideBatch(
+		VansRenderSystem& renderSystem,
+		VansScene& scene,
+		std::vector<Vans::EditorAPI::RuntimeRendererMaterialOverrideEdit> edits);
 };
 }

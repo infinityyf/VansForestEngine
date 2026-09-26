@@ -1,5 +1,6 @@
 #pragma once
 #include "../../GameplayActionCore/VansActionServices.h"
+#include "../../GameplayActionCore/VansGameplayServiceRuntime.h"
 #include "../../RuntimeCore/VansGenerationPool.h"
 #include "../../SceneCore/VansSceneParticleComponentConfig.h"
 #include <glm/glm.hpp>
@@ -9,7 +10,6 @@
 namespace Vans
 {
 class VansRuntimeWorld;
-class VansGameplayRuntime;
 struct VansProjectileSpawnRequest
 {
     VansEntityHandle owner;
@@ -35,7 +35,7 @@ struct VansProjectileSceneBackend
 class VansProjectileActionService final : public IVansActionService
 {
 public:
-    VansProjectileActionService(VansRuntimeWorld& world, VansGameplayRuntime& gameplay, VansProjectileSceneBackend backend);
+    VansProjectileActionService(VansRuntimeWorld& world, IVansGameplayServiceRuntime& runtime, VansProjectileSceneBackend backend);
     const VansActionServiceCapability& Capability() const override;
     VansActionCommandResult Execute(const VansActionCommand& command) override;
     bool Release(VansGenerationHandle resource, std::string& error) override;
@@ -43,7 +43,7 @@ public:
 private:
     struct Projectile { VansEntityHandle entity; std::optional<double> remainingSeconds; bool justSpawned = true; };
     VansRuntimeWorld& m_World;
-    VansGameplayRuntime& m_Gameplay;
+    IVansGameplayServiceRuntime& m_Runtime;
     VansProjectileSceneBackend m_Backend;
     VansGenerationPool<Projectile> m_Projectiles;
 };

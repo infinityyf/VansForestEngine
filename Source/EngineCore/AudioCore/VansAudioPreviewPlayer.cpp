@@ -36,10 +36,10 @@ namespace VansEngine
             return false;
         }
 
-        AudioNodeProperties props;
+        VansAudioProperties props;
         props.m_Name = "EditorAudioPreview";
         props.m_FilePath = filePath.lexically_normal().string();
-        props.m_PlayMode = settings.streaming ? AudioPlayMode::Streaming : AudioPlayMode::Static;
+        props.m_PlayMode = settings.streaming ? VansAudioPlayMode::Streaming : VansAudioPlayMode::Static;
         props.m_Loop = settings.loop;
         props.m_AutoPlay = false;
         props.m_Volume = std::clamp(settings.volume, 0.0f, 4.0f);

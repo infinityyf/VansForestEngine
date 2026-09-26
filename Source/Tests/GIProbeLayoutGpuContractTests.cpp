@@ -22,6 +22,11 @@ namespace
 {
     using namespace VansGraphics;
     uint32_t validationErrors = 0;
+    void BuildQuery(VansTriangleGeometryQuery& query, std::vector<VansGeometryTriangle> triangles)
+    {
+        std::string error;
+        if (!query.Build(std::move(triangles), error)) throw std::runtime_error(error);
+    }
     void Require(VkResult result, const char* operation)
     {
         if (result != VK_SUCCESS) throw std::runtime_error(std::string(operation) + ": " + std::to_string(result));
@@ -594,14 +599,14 @@ namespace
         description.overrideGridDimensions = true; description.probeSpacing = 4;
         const auto region = ResolveGIRegion(description);
         VansSceneGeometrySnapshot geometry;
-        geometry.opaque.Build({
+        BuildQuery(geometry.opaque, {
             {{-32,-9.25f,-32},{-32,-9.25f,32},{32,-9.25f,32}},
             {{-32,-9.25f,-32},{32,-9.25f,32},{32,-9.25f,-32}},
             {{.75f,-15,-32},{.75f,4,32},{.75f,-15,32},{1,0,0}},
             {{.75f,-15,-32},{.75f,4,-32},{.75f,4,32},{1,0,0}}});
         GIProbePlacementSettings settings; settings.enabled = true;
         VansGIProbeLayout layout; std::string error;
-        if (!layout.Build({region}, settings, geometry, error)) throw std::runtime_error(error);
+        if (!layout.Build({region}, settings, geometry, nullptr, error)) throw std::runtime_error(error);
         const uint32_t count = uint32_t(layout.Positions().size());
         SamplingAtlas irradiance(count,false), visibility(count,true);
         std::vector<SamplingState> states(count);
@@ -680,10 +685,10 @@ namespace
             {{0.75f,-15,-32},{0.75f,4,32},{0.75f,-15,32},{1,0,0}},
             {{0.75f,-15,-32},{0.75f,4,-32},{0.75f,4,32},{1,0,0}}};
         for (auto& t : triangles) { t.a += offset; t.b += offset; t.c += offset; }
-        VansSceneGeometrySnapshot geometry; geometry.opaque.Build(std::move(triangles));
+        VansSceneGeometrySnapshot geometry; BuildQuery(geometry.opaque, std::move(triangles));
         GIProbePlacementSettings settings; settings.enabled = true; settings.minProbeSpacing = spacing; settings.maxProbeCount = 4096;
         VansGIProbeLayout layout; std::string error;
-        if (!layout.Build({region}, settings, geometry, error)) throw std::runtime_error(error);
+        if (!layout.Build({region}, settings, geometry, nullptr, error)) throw std::runtime_error(error);
         const uint32_t probeCount = uint32_t(layout.Positions().size());
         SamplingAtlas irradiance(probeCount, false), visibility(probeCount, true);
         std::vector<SamplingState> states(probeCount);
@@ -844,10 +849,10 @@ namespace
             {{0.75f,-15,-32},{0.75f,4,32},{0.75f,-15,32},{1,0,0}},
             {{0.75f,-15,-32},{0.75f,4,-32},{0.75f,4,32},{1,0,0}}};
         for (auto& t : triangles) { t.a += offset; t.b += offset; t.c += offset; }
-        VansSceneGeometrySnapshot geometry; geometry.opaque.Build(std::move(triangles));
+        VansSceneGeometrySnapshot geometry; BuildQuery(geometry.opaque, std::move(triangles));
         GIProbePlacementSettings settings; settings.enabled = true; settings.minProbeSpacing = spacing; settings.maxProbeCount = 8192;
         VansGIProbeLayout layout; std::string error;
-        if (sparse && !layout.Build(regions, settings, geometry, error)) throw std::runtime_error(error);
+        if (sparse && !layout.Build(regions, settings, geometry, nullptr, error)) throw std::runtime_error(error);
         const auto packet = BuildGIProbeLayoutGPUData(regions, sparse ? &layout : nullptr);
         std::mt19937 random(20260908); std::uniform_real_distribution<float> unit(-0.05f, 1.05f);
         std::vector<glm::vec4> queries;

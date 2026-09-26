@@ -88,6 +88,8 @@ namespace VansGraphics
         { error = "Reflection placement requires a finite, non-empty volume"; return false; }
         const float cell = settings.cellSize;
         const float clearance = settings.minCaptureClearance;
+        VansGeometryQueryOptions frontFacing;
+        frontFacing.backfaces = VansGeometryBackfacePolicy::RejectOneSided;
         if (!std::isfinite(cell) || cell < 0.05f || !std::isfinite(clearance) || clearance < 0.001f
             || !std::isfinite(settings.indoorSpacing) || !std::isfinite(settings.corridorSpacing)
             || !std::isfinite(settings.outdoorSpacing) || settings.indoorSpacing < cell
@@ -222,8 +224,8 @@ namespace VansGraphics
                         glm::vec3 offset(0); offset[(axis+1)%3] = u * spread; offset[(axis+2)%3] = v * spread;
                         VansGeometryHit hit;
                         if (geometry.opaque.Raycast(position, offset, glm::length(offset) + clearance, hit)) continue;
-                        const bool found = geometry.opaque.Raycast(position + offset, direction, rayDistance, hit);
-                        if (found && !hit.twoSided && hit.backface) continue;
+                        const bool found = geometry.opaque.Raycast(
+                            position + offset, direction, rayDistance, hit, 0.0001f, frontFacing);
                         distances.push_back(found ? hit.distance : rayDistance);
                     }
                     std::sort(distances.begin(), distances.end());

@@ -72,7 +72,6 @@ std::unique_ptr<VansSceneDocument> VansSceneDocument::CreateInMemory(VansSeriali
     auto document = std::make_unique<VansSceneDocument>();
     document->m_Root = std::make_shared<const VansSerializedValue>(std::move(root));
     if (!document->SetPrefabLookup(std::move(lookup), error)) return {};
-    document->m_Diagnostics = VansSceneSchema::ValidateSceneJson(EncodeSerializedValueJson<SceneJson>(document->SerializedRootSnapshot()));
     if (!document->IsHealthy()) { error = document->m_Diagnostics.front().message; return {}; }
     return document;
 }
@@ -88,15 +87,7 @@ bool VansSceneDocument::SetPrefabLookup(VansPrefabLookup lookup, std::string& er
 
 bool VansSceneDocument::RefreshPrefabView(std::string& error)
 {
-    error.clear();
-    const auto* instances = FindObjectField(*m_Root, "prefabInstances");
-    if (!instances || (instances->kind == VansSerializedValue::Kind::Array && instances->arrayItems.empty()))
-    { m_ResolvedRoot.reset(); return true; }
-    if (!m_PrefabLookup) { error = "Prefab asset lookup is unavailable"; return false; }
-    VansSerializedValue resolved;
-    if (!VansPrefabResolver::ResolveScene(*m_Root, m_PrefabLookup, resolved, error)) return false;
-    m_ResolvedRoot = std::make_shared<const VansSerializedValue>(std::move(resolved));
-    return true;
+    return RebuildResolvedViewFromAuthoring(*m_Root, error);
 }
 
 bool VansSceneDocument::IsHealthy() const
@@ -128,8 +119,7 @@ bool VansSceneDocument::StageSave(SceneDocumentSaveStage& stage, std::string& er
     if (!IsDirty())
         return true;
     const SceneJson root = EncodeSerializedValueJson<SceneJson>(*m_Root);
-    if (!IsHealthy() || !root.is_object() || !VansSceneSchema::ValidateSceneJson(
-        EncodeSerializedValueJson<SceneJson>(SerializedRootSnapshot())).empty())
+    if (!IsHealthy() || !root.is_object())
     {
         error = "Cannot save an invalid scene document";
         return false;
@@ -194,12 +184,41 @@ void VansSceneDocument::AdoptObservedSave(const SceneDocumentSaveStage& stage)
 
 void VansSceneDocument::RestoreAuthoringRoot(VansSerializedValue root, SceneStateId state)
 {
-    auto original = m_Root;
-    m_Root = std::make_shared<const VansSerializedValue>(std::move(root));
     std::string error;
-    if (!RefreshPrefabView(error)) { m_Root = std::move(original); throw std::runtime_error(error); }
+    if (!RebuildResolvedViewFromAuthoring(std::move(root), error))
+        throw std::runtime_error(error);
     m_CurrentStateId = state;
     if (state >= m_NextStateId) m_NextStateId = state + 1;
+}
+
+bool VansSceneDocument::RebuildResolvedViewFromAuthoring(
+    VansSerializedValue authoringRoot,
+    std::string& error)
+{
+    error.clear();
+    auto nextRoot = std::make_shared<const VansSerializedValue>(std::move(authoringRoot));
+    std::shared_ptr<const VansSerializedValue> nextResolvedRoot;
+    const VansSerializedValue* instances = FindObjectField(*nextRoot, "prefabInstances");
+    if (instances &&
+        !(instances->kind == VansSerializedValue::Kind::Array && instances->arrayItems.empty()))
+    {
+        if (!m_PrefabLookup)
+        {
+            error = "Prefab asset lookup is unavailable";
+            return false;
+        }
+        VansSerializedValue resolved;
+        if (!VansPrefabResolver::ResolveScene(*nextRoot, m_PrefabLookup, resolved, error))
+            return false;
+        nextResolvedRoot = std::make_shared<const VansSerializedValue>(std::move(resolved));
+    }
+
+    SceneDiagnostics nextDiagnostics = VansSceneSchema::ValidateSceneJson(
+        EncodeSerializedValueJson<SceneJson>(nextResolvedRoot ? *nextResolvedRoot : *nextRoot));
+    m_Root = std::move(nextRoot);
+    m_ResolvedRoot = std::move(nextResolvedRoot);
+    m_Diagnostics = std::move(nextDiagnostics);
+    return true;
 }
 
 SceneStateId VansSceneDocument::AllocateStateId()
@@ -209,47 +228,34 @@ SceneStateId VansSceneDocument::AllocateStateId()
 
 SceneStateId VansSceneDocument::ApplyEditedSerializedRoot(VansSerializedValue root)
 {
-    if (!FindObjectField(root, "prefabInstances"))
-    {
-        m_Root = std::make_shared<const VansSerializedValue>(std::move(root));
-        m_ResolvedRoot.reset();
-        m_CurrentStateId = AllocateStateId();
-        return m_CurrentStateId;
-    }
-    VansSerializedValue authoring;
     std::string error;
-    if (!VansPrefabResolver::CaptureScene(root, m_PrefabLookup, authoring, error))
+    VansSerializedValue authoring = std::move(root);
+    if (FindObjectField(authoring, "prefabInstances"))
+    {
+        VansSerializedValue captured;
+        if (!VansPrefabResolver::CaptureScene(authoring, m_PrefabLookup, captured, error))
+            throw std::runtime_error(error);
+        authoring = std::move(captured);
+    }
+    if (!RebuildResolvedViewFromAuthoring(std::move(authoring), error))
         throw std::runtime_error(error);
-    VansSerializedValue resolved;
-    if (!VansPrefabResolver::ResolveScene(authoring, m_PrefabLookup, resolved, error))
-        throw std::runtime_error(error);
-    auto next = std::make_shared<const VansSerializedValue>(std::move(authoring));
-    m_ResolvedRoot = std::make_shared<const VansSerializedValue>(std::move(resolved));
-    m_Root = std::move(next);
     m_CurrentStateId = AllocateStateId();
     return m_CurrentStateId;
 }
 
 void VansSceneDocument::RestoreEditedSerializedRoot(VansSerializedValue root, SceneStateId stateId)
 {
-    if (!FindObjectField(root, "prefabInstances"))
-    {
-        m_Root = std::make_shared<const VansSerializedValue>(std::move(root));
-        m_ResolvedRoot.reset();
-        m_CurrentStateId = stateId;
-        if (stateId >= m_NextStateId) m_NextStateId = stateId + 1;
-        return;
-    }
-    VansSerializedValue authoring;
     std::string error;
-    if (!VansPrefabResolver::CaptureScene(root, m_PrefabLookup, authoring, error))
+    VansSerializedValue authoring = std::move(root);
+    if (FindObjectField(authoring, "prefabInstances"))
+    {
+        VansSerializedValue captured;
+        if (!VansPrefabResolver::CaptureScene(authoring, m_PrefabLookup, captured, error))
+            throw std::runtime_error(error);
+        authoring = std::move(captured);
+    }
+    if (!RebuildResolvedViewFromAuthoring(std::move(authoring), error))
         throw std::runtime_error(error);
-    VansSerializedValue resolved;
-    if (!VansPrefabResolver::ResolveScene(authoring, m_PrefabLookup, resolved, error))
-        throw std::runtime_error(error);
-    auto next = std::make_shared<const VansSerializedValue>(std::move(authoring));
-    m_ResolvedRoot = std::make_shared<const VansSerializedValue>(std::move(resolved));
-    m_Root = std::move(next);
     m_CurrentStateId = stateId;
     if (m_CurrentStateId >= m_NextStateId)
         m_NextStateId = m_CurrentStateId + 1;

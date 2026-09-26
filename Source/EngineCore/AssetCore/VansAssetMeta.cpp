@@ -103,17 +103,6 @@ bool VansAssetMeta::ReadBoolSetting(const std::string& key, bool fallback) const
     return value != nullptr && value->kind == VansSerializedValue::Kind::Bool ? value->boolValue : fallback;
 }
 
-bool VansAssetMeta::ReadBoolSetting(const std::string& key, const std::string& legacyKey, bool fallback) const
-{
-    if (!m_Settings)
-        return fallback;
-    const VansSerializedValue* value = FindObjectField(*m_Settings, key);
-    if (value != nullptr && value->kind == VansSerializedValue::Kind::Bool)
-        return value->boolValue;
-    value = FindObjectField(*m_Settings, legacyKey);
-    return value != nullptr && value->kind == VansSerializedValue::Kind::Bool ? value->boolValue : fallback;
-}
-
 int VansAssetMeta::ReadIntSetting(const std::string& key, int fallback) const
 {
     if (!m_Settings)
@@ -129,23 +118,6 @@ float VansAssetMeta::ReadFloatSetting(const std::string& key, float fallback) co
     if (!m_Settings)
         return fallback;
     const VansSerializedValue* value = FindObjectField(*m_Settings, key);
-    return value != nullptr &&
-        (value->kind == VansSerializedValue::Kind::Float || value->kind == VansSerializedValue::Kind::Int)
-        ? static_cast<float>(ReadSerializedNumber(*value, fallback))
-        : fallback;
-}
-
-float VansAssetMeta::ReadFloatSetting(const std::string& key, const std::string& legacyKey, float fallback) const
-{
-    if (!m_Settings)
-        return fallback;
-    const VansSerializedValue* value = FindObjectField(*m_Settings, key);
-    if (value != nullptr &&
-        (value->kind == VansSerializedValue::Kind::Float || value->kind == VansSerializedValue::Kind::Int))
-    {
-        return static_cast<float>(ReadSerializedNumber(*value, fallback));
-    }
-    value = FindObjectField(*m_Settings, legacyKey);
     return value != nullptr &&
         (value->kind == VansSerializedValue::Kind::Float || value->kind == VansSerializedValue::Kind::Int)
         ? static_cast<float>(ReadSerializedNumber(*value, fallback))

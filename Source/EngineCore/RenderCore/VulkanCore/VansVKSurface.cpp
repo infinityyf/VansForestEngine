@@ -6,6 +6,11 @@
 #include <iostream>
 #include <vector>
 
+#if defined(_WIN32)
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
+
 namespace VansGraphics
 {
 
@@ -340,8 +345,22 @@ namespace VansGraphics
 		{
 			return false;
 		}
-		VkResult result;
+		VkResult result = VK_ERROR_INITIALIZATION_FAILED;
+#if defined(_WIN32)
+		VkWin32SurfaceCreateInfoKHR createInfo{};
+		createInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+		createInfo.hinstance = GetModuleHandleW(nullptr);
+		createInfo.hwnd = glfwGetWin32Window(window);
+		if (createInfo.hinstance != nullptr && createInfo.hwnd != nullptr)
+		{
+			// Use the engine's instance dispatch table. When Streamline is enabled,
+			// this is the interposer-backed function loaded by VansVKFunctions.
+			result = VansGraphics::vkCreateWin32SurfaceKHR(
+				instance, &createInfo, nullptr, &m_VansVKPresentSurface);
+		}
+#else
 		result = glfwCreateWindowSurface(instance, window, nullptr, &m_VansVKPresentSurface);
+#endif
 		if (result != VK_SUCCESS || m_VansVKPresentSurface == VK_NULL_HANDLE)
 		{
 			VANS_LOG_ERROR("Could not create presentation surface.");
