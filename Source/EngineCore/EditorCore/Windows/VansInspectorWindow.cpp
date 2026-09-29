@@ -21,6 +21,7 @@
 #include "../../AudioCore/VansAudioPreviewPlayer.h"
 #include "../../AssetCore/VansAssetGuid.h"
 #include "../../AssetCore/VansAssetDatabase.h"
+#include "../../AssetCore/VansTextureResidentMip.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../../GameplayActionSchema/VansGameplayActionHostAuthoring.h"
@@ -32,6 +33,7 @@
 #include "../../Util/VansLog.h"
 
 #include "imgui.h"
+#include <stb_image.h>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <../../GLM/glm.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
@@ -46,6 +48,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -1547,6 +1550,8 @@ struct VansInspectorWindow::Impl
     bool SaveAssetDocuments(bool reloadSceneOnSuccess = true);
 
     std::filesystem::path m_AssetPath;
+    int m_TextureSourceWidth = 0;
+    int m_TextureSourceHeight = 0;
     std::shared_ptr<Vans::VansOpenAssetDocument> m_AssetDocuments;
     std::string m_Error;
     std::vector<std::string> m_CollisionLayerNames;
@@ -2157,6 +2162,16 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
         if (readOnly)
         {
             ImGui::TextDisabled("%lld", static_cast<long long>(edited));
+        }
+        else if (pointer == "/meta/settings/maxResidentDimension")
+        {
+            const std::int64_t step = 256;
+            if (ImGui::InputScalar("##value", ImGuiDataType_S64, &edited, &step))
+            {
+                value = Vans::VansSerializedValue::Int(edited);
+                changed = true;
+            }
+            ImGui::SetItemTooltip("0 = original resolution; positive values cap the longest GPU mip edge in pixels");
         }
         else if (IsNormalizedField(label))
         {
@@ -2915,6 +2930,14 @@ bool VansInspectorWindow::Impl::LoadAssetDocuments(const std::filesystem::path& 
     if (sourcePath != m_AssetPath)
         m_AudioPreview.Stop();
     m_AssetPath = sourcePath;
+    m_TextureSourceWidth = 0;
+    m_TextureSourceHeight = 0;
+    if (Vans::VansAssetDatabase::Classify(sourcePath) == Vans::VansAssetType::Texture)
+    {
+        int channels = 0;
+        stbi_info(sourcePath.string().c_str(), &m_TextureSourceWidth,
+            &m_TextureSourceHeight, &channels);
+    }
     m_AssetDocuments = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(sourcePath);
     m_Error = m_AssetDocuments ? m_AssetDocuments->lastError : "Cannot open asset document";
     return m_AssetDocuments &&
@@ -3091,11 +3114,56 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
         if (const Vans::VansSerializedValue* settingsValue = Vans::FindObjectField(metaRoot, "settings"))
         {
             Vans::VansSerializedValue editedSettings = *settingsValue;
+            if (selectedType == Vans::VansAssetType::Texture)
+                EnsureSerializedField(editedSettings, "maxResidentDimension",
+                    Vans::VansSerializedValue::Int(0));
             const bool normalizedSettings =
                 audioMeta ? NormalizeAudioImportSettings(editedSettings) : false;
-            if (DrawSerializedValue("Import Settings", editedSettings, "/meta/settings") ||
-                normalizedSettings)
+            const bool edited = DrawSerializedValue(
+                "Import Settings", editedSettings, "/meta/settings");
+            if (selectedType == Vans::VansAssetType::Texture &&
+                m_TextureSourceWidth > 0 && m_TextureSourceHeight > 0)
             {
+                const Vans::VansSerializedValue* capValue =
+                    Vans::FindObjectField(editedSettings, "maxResidentDimension");
+                if (capValue && capValue->kind == Vans::VansSerializedValue::Kind::Int &&
+                    capValue->intValue >= 0 &&
+                    capValue->intValue <= (std::numeric_limits<int>::max)())
+                {
+                    int residentWidth = m_TextureSourceWidth;
+                    int residentHeight = m_TextureSourceHeight;
+                    const std::uint32_t firstMip = Vans::SelectTextureResidentMip(
+                        static_cast<std::uint32_t>(residentWidth),
+                        static_cast<std::uint32_t>(residentHeight),
+                        static_cast<std::uint32_t>(capValue->intValue));
+                    for (std::uint32_t mip = 0; mip < firstMip; ++mip)
+                    {
+                        residentWidth = std::max(1, residentWidth / 2);
+                        residentHeight = std::max(1, residentHeight / 2);
+                    }
+                    ImGui::TextDisabled("Source: %d x %d   GPU base: %d x %d",
+                        m_TextureSourceWidth, m_TextureSourceHeight,
+                        residentWidth, residentHeight);
+                }
+                else
+                    ImGui::TextDisabled("Resident resolution limit is invalid");
+            }
+            if (edited || normalizedSettings)
+            {
+                if (selectedType == Vans::VansAssetType::Texture)
+                {
+                    const Vans::VansSerializedValue* capValue =
+                        Vans::FindObjectField(editedSettings, "maxResidentDimension");
+                    if (capValue && capValue->kind == Vans::VansSerializedValue::Kind::Int &&
+                        capValue->intValue == 0)
+                    {
+                        auto& fields = editedSettings.objectFields;
+                        fields.erase(std::remove_if(fields.begin(), fields.end(),
+                            [](const auto& field) {
+                                return field.first == "maxResidentDimension";
+                            }), fields.end());
+                    }
+                }
                 const Vans::AssetDocumentEditResult result =
                     Vans::VansAssetDocumentEditService::Set(
                         m_AssetDocuments->metaDocument,

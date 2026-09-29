@@ -7,7 +7,7 @@
 namespace Vans
 {
 	// 持久化轨迹生成器。输入只提供目标，生成器跨帧保存计划速度、参考方向和
-	// Facing 状态；Root Motion/CCT 的实际结果仅以低频误差反馈参与下一帧规划。
+	// Facing 状态。目标速度模型使用低频反馈；加速度模型直接从碰撞结算速度积分。
 	class VansCharacterTrajectoryGenerator
 	{
 	public:
@@ -26,6 +26,7 @@ namespace Vans
 		const VansCharacterTrajectory& GetTrajectory() const { return m_Trajectory; }
 		const glm::vec3& GetPlannedVelocityWorld() const { return m_PlannedVelocityWorld; }
 		float GetPlannedFacingYaw() const { return m_PlannedFacingYaw; }
+		glm::vec3 GetIntegrationVelocity() const { return m_HasActualVelocity ? m_ActualVelocityWorld : m_PlannedVelocityWorld; }
 
 	private:
 		struct HistorySample

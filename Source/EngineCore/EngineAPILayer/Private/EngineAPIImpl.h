@@ -295,6 +295,10 @@ namespace Vans::EditorAPI
 
 		LightingSettingsSnapshot GetLightingSettings() const override;
 		void ApplyLightingSettings(const LightingSettingsSnapshot& settings) override;
+		RainWeatherSettingsSnapshot GetRainWeatherSettings() const override;
+		RainWeatherApplyResult ApplyRainWeatherSettings(
+			const RainWeatherSettingsSnapshot& settings) override;
+		bool CommitRainWeatherSettings() override;
 		PostProcessSettingsSnapshot GetPostProcessSettings() const override;
 		void ApplyPostProcessSettings(const PostProcessSettingsSnapshot& settings) override;
 		void CommitPostProcessSettings() override;

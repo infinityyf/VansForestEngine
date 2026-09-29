@@ -83,4 +83,10 @@ namespace VansGraphics
 		VansAnimationFrameVector<float> sourceBoneMask;
 		bool valid = false;
 	};
+
+	// 播放器只采样；Slot 节点收到全部贡献后，再与基础姿态统一混合。
+	struct VansSlotPoseInputs
+	{
+		std::vector<VansPosePayload> poses;
+	};
 }

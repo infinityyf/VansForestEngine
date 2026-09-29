@@ -139,6 +139,110 @@ namespace VansGraphics
 		}
 	}
 
+	VansPosePayload VansPosePayloadMixer::BlendWeighted(
+		const VansAnimationFrameVector<VansPosePayload>& poses,
+		const VansAnimationFrameVector<float>& weights)
+	{
+		VansPosePayload result;
+		if (poses.empty() || poses.size() != weights.size()) return result;
+		const size_t boneCount = poses.front().localPose.size();
+		for (const auto& pose : poses)
+			if (!pose.valid || pose.localPose.size() != boneCount) return result;
+		result.localPose.resize(boneCount);
+		for (auto& bone : result.localPose)
+			bone = { glm::vec3(0.0f), glm::quat(0.0f, 0.0f, 0.0f, 0.0f), glm::vec3(0.0f) };
+		result.rootMotion.rotation = glm::quat(0.0f, 0.0f, 0.0f, 0.0f);
+		result.rootMotion.scale = glm::vec3(0.0f);
+		result.sourceWeight = 0.0f;
+		size_t dominant = 0;
+		for (size_t i = 0; i < poses.size(); ++i)
+		{
+			const auto& pose = poses[i];
+			const float weight = weights[i];
+			if (!std::isfinite(weight) || weight < 0.0f) return {};
+			if (weight <= 0.0f) continue;
+			if (weight > weights[dominant]) dominant = i;
+			for (size_t boneIndex = 0; boneIndex < boneCount; ++boneIndex)
+			{
+				auto& target = result.localPose[boneIndex];
+				const auto& source = pose.localPose[boneIndex];
+				target.translation += source.translation * weight;
+				target.scale += source.scale * weight;
+				// Match shortest-hemisphere accumulation against the partial sum.
+				target.rotation += source.rotation * (glm::dot(target.rotation, source.rotation) < 0.0f ? -weight : weight);
+			}
+			const auto& root = pose.rootMotion;
+			const glm::quat rootRotation = root.valid ? root.rotation : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+			result.rootMotion.translation += (root.valid ? root.translation : glm::vec3(0.0f)) * weight;
+			result.rootMotion.scale += (root.valid ? root.scale : glm::vec3(1.0f)) * weight;
+			result.rootMotion.rotation += rootRotation * (glm::dot(result.rootMotion.rotation, rootRotation) < 0.0f ? -weight : weight);
+			result.rootMotion.valid |= root.valid;
+			for (const auto& curve : pose.curves)
+			{
+				if (!curve.present) continue;
+				auto found = std::find_if(result.curves.begin(), result.curves.end(),
+					[&](const auto& candidate) { return candidate.id == curve.id; });
+				if (found == result.curves.end())
+				{
+					result.curves.push_back(curve);
+					result.curves.back().value *= weight;
+				}
+				else found->value += curve.value * weight;
+			}
+			AppendWeightedEvents(result.events, pose.events, weight);
+			result.sourceWeight += pose.sourceWeight * weight;
+		}
+		for (auto& bone : result.localPose)
+			bone.rotation = glm::dot(bone.rotation, bone.rotation) > 1.0e-12f
+				? glm::normalize(bone.rotation) : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+		result.rootMotion.rotation = glm::dot(result.rootMotion.rotation, result.rootMotion.rotation) > 1.0e-12f
+			? glm::normalize(result.rootMotion.rotation) : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+		result.sync = poses[dominant].sync;
+		result.sourceAdditive = poses[dominant].sourceAdditive;
+		result.sourceBoneMask = poses[dominant].sourceBoneMask;
+		// Scene tracks blend only over sources containing that track. Accumulate
+		// quaternion components once, just as for skeleton bones above.
+		VansAnimationFrameVector<float> nodeWeights;
+		VansAnimationFrameVector<VansBoneTransform> nodeTransforms;
+		float accumulated = 0.0f;
+		for (size_t i = 0; i < poses.size(); ++i)
+		{
+			if (weights[i] <= 0.0f) continue;
+			for (const auto& source : poses[i].nodeTransforms)
+			{
+				VansBoneTransform sourceTransform;
+				if (!VansPoseMath::TryDecompose(source.modelTransform, sourceTransform)) return {};
+				auto found = std::find_if(result.nodeTransforms.begin(), result.nodeTransforms.end(),
+					[&](const auto& candidate) { return NodeTransformKey(candidate) == NodeTransformKey(source); });
+				if (found == result.nodeTransforms.end())
+				{
+					result.nodeTransforms.push_back(source);
+					found = result.nodeTransforms.end() - 1;
+					nodeTransforms.push_back({ glm::vec3(0), glm::quat(0, 0, 0, 0), glm::vec3(0) });
+					nodeWeights.push_back(0.0f);
+				}
+				auto& target = nodeTransforms[found - result.nodeTransforms.begin()];
+				target.translation += sourceTransform.translation * weights[i];
+				target.scale += sourceTransform.scale * weights[i];
+				target.rotation += sourceTransform.rotation *
+					(glm::dot(target.rotation, sourceTransform.rotation) < 0 ? -weights[i] : weights[i]);
+				nodeWeights[found - result.nodeTransforms.begin()] += weights[i];
+			}
+			accumulated += weights[i];
+		}
+		for (size_t i = 0; i < result.nodeTransforms.size(); ++i)
+		{
+			auto& target = nodeTransforms[i];
+			target.translation /= nodeWeights[i];
+			target.scale /= nodeWeights[i];
+			target.rotation = glm::dot(target.rotation, target.rotation) > 1.0e-12f
+				? glm::normalize(target.rotation) : glm::quat(1, 0, 0, 0);
+			result.nodeTransforms[i].modelTransform = VansPoseMath::Compose(target);
+		}
+		result.valid = accumulated > 0.0f;
+		return result;
+	}
+
 	VansPosePayload VansPosePayloadMixer::BlendOverride(const VansPosePayload& first,
 	                                                   const VansPosePayload& second,
 	                                                   float alpha)

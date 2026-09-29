@@ -43,6 +43,7 @@
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "TerrainCore/VansTerrain.h"
 #include "WaterCore/VansWaterSystem.h"
+#include "WeatherCore/VansRainRenderSystem.h"
 #include "AtmosphereCore/VansAtmosphereSystem.h"
 #include "AtmosphereCore/VansNearMediaSystem.h"
 #include "CloudCore/VansVolumetricCloudSystem.h"
@@ -85,6 +86,19 @@ using namespace physx::vehicle2;
 
 namespace
 {
+	struct alignas(16) VansSurfaceWeatherFrameGPU final
+	{
+		glm::vec4 state = glm::vec4(0.0f); // x=enabled, y=intensity, z=film, w=puddle flood
+		glm::vec4 motion = glm::vec4(0.0f); // xy=wind direction, z=wind speed, w=fall speed
+		glm::vec4 precipitation = glm::vec4(0.0f); // x=max distance, y=splash lifetime, z=splash radius
+		glm::vec4 surface = glm::vec4(0.0f); // x=ripple scale, y=ripple strength, z=weather time
+		glm::vec4 puddleField0 = glm::vec4(0.0f); // scale, detail, threshold, softness
+		glm::vec4 puddleField1 = glm::vec4(0.0f); // strength, seed
+		glm::vec4 groundResponse = glm::vec4(0.0f); // wet albedo, wet roughness, puddle roughness, puddle F0
+	};
+	static_assert(sizeof(VansSurfaceWeatherFrameGPU) == 112,
+		"Surface-weather frame UBO must match the GLSL std140 layout");
+
 	class SceneEntityDestructionBarrier final
 		: public VansGraphics::IVansRenderThreadTransaction
 	{
@@ -417,11 +431,28 @@ bool VansGraphics::VansScene::InitializeEnvironmentRendering(VansVKDevice& devic
 		m_NearMediaSystem->GetOpticalDepthDescriptor());
 	m_NearMediaSystem->BindGlobalDescriptor(m_GlobalDescriptorSet);
 	m_VolumetricCloudSystem->BindGlobalDescriptors(m_GlobalDescriptorSet);
+	m_RainRenderSystem = std::make_unique<VansRainRenderSystem>();
+	if (!m_RainRenderSystem->Initialize(*this))
+	{
+		m_RainRenderSystem.reset();
+		m_VolumetricCloudSystem->Shutdown();
+		m_VolumetricCloudSystem.reset();
+		m_NearMediaSystem->Shutdown();
+		m_NearMediaSystem.reset();
+		m_AtmosphereSystem->Shutdown();
+		m_AtmosphereSystem.reset();
+		return false;
+	}
 	return true;
 }
 
 void VansGraphics::VansScene::ShutdownEnvironmentRendering()
 {
+	if (m_RainRenderSystem)
+	{
+		m_RainRenderSystem->Shutdown();
+		m_RainRenderSystem.reset();
+	}
 	if (m_VolumetricCloudSystem)
 	{
 		m_VolumetricCloudSystem->Shutdown();
@@ -471,6 +502,8 @@ bool VansGraphics::VansScene::ReinitializeEnvironmentRendering(
 		m_NearMediaSystem->GetOpticalDepthDescriptor());
 	m_NearMediaSystem->BindGlobalDescriptor(m_GlobalDescriptorSet);
 	m_VolumetricCloudSystem->BindGlobalDescriptors(m_GlobalDescriptorSet);
+	if (m_RainRenderSystem && !m_RainRenderSystem->RebindSceneTextures())
+		return false;
 	return true;
 }
 
@@ -705,9 +738,6 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
     case POSTPROCESS_NODE:
 		m_PostProcessRenderNodes.push_back(renderNode);
 		break;
-    case SCREEN_SPACE_NODE:
-        m_ScreenSpaceRenderNodes.push_back(renderNode);
-        break;
     case VEGETATION_NODE:
         m_VegetationRenderNode = renderNode;
         break;
@@ -758,10 +788,6 @@ void VansGraphics::VansScene::CreateNodeDescriptorSets()
     {
         node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
     }
-    for (auto node : m_ScreenSpaceRenderNodes)
-    {
-        node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
-    }
     for (auto node : m_DecalRenderNodes)
     {
         node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
@@ -782,6 +808,18 @@ void VansGraphics::VansScene::CreateGlobalDescriptorSet(VkDevice device)
     std::vector<VkDescriptorSet> sets;
     VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(m_GlobalDescriptorSetLayout, sets);
     m_GlobalDescriptorSet = sets[0];
+
+	VansSurfaceWeatherFrameGPU neutralWeather;
+	if (!m_SurfaceWeatherFrameBuffer.CreatVulkanBuffer(
+		device,
+		sizeof(VansSurfaceWeatherFrameGPU),
+		VK_FORMAT_R32_SFLOAT,
+		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ||
+		!m_SurfaceWeatherFrameBuffer.SetBufferData(&neutralWeather, 0, sizeof(neutralWeather)))
+	{
+		throw std::runtime_error("Failed to create the surface-weather frame uniform buffer");
+	}
 
     // Create object layout + set (Set 2: scene transforms + draw-instance records)
     std::vector<VkDescriptorSet> objSets;
@@ -997,6 +1035,25 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
     descManager->WriteBufferDescriptor(m_GlobalDescriptorSet, GLOBAL_BINDING_LIGHT_COOKIE_DATA,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{vkDevice->GetLightCookieDataBuffer().GetNativeBuffer(),
             0, vkDevice->GetLightCookieDataBuffer().GetBufferSize()}});
+
+	descManager->WriteBufferDescriptor(
+		m_GlobalDescriptorSet,
+		GLOBAL_BINDING_SURFACE_WEATHER_FRAME_UBO,
+		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		{{ m_SurfaceWeatherFrameBuffer.GetNativeBuffer(), 0, m_SurfaceWeatherFrameBuffer.GetBufferSize() }});
+	VansTexture* rainRippleSeed = static_cast<VansTexture*>(GetTextureAsset("rainRippleSeed"));
+	VansVKImage* surfaceRipple = m_RainRenderSystem
+		? m_RainRenderSystem->GetSurfaceRippleImage() : nullptr;
+	if (surfaceRipple == nullptr && rainRippleSeed == nullptr)
+		throw std::runtime_error("Surface-weather ripple texture is unavailable");
+	VansVKImage& rippleImage = surfaceRipple != nullptr
+		? *surfaceRipple : rainRippleSeed->GetImage();
+	descManager->WriteImageDescriptor(
+		m_GlobalDescriptorSet,
+		GLOBAL_BINDING_SURFACE_WEATHER_RIPPLE,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{{ rippleImage.GetSampler(), rippleImage.GetImageView(), surfaceRipple != nullptr
+			? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 
     // Binding 6: 同一固定 SkyBox 的 SH 系数。
     descManager->WriteBufferDescriptor(
@@ -1310,7 +1367,7 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 	VANS_LOG("[VansScene] Step 0: editor selection cleared");
 
 	// ── 1. 清理场景级运行时纹理，保留屏幕空间纹理 ──
-	//  SSGI / SSAO / HZB / SSR 等屏幕空间纹理在 PrepareRenderingData()
+	//  SSGI / GTAO / HZB / SSR 等屏幕空间纹理在 PrepareRenderingData()
 	//  时创建，不依赖场景内容，无需在场景切换时销毁。
 	VANS_UNLOAD_STEP(1, "娓呯悊鍦烘櫙绾ц繍琛屾椂绾圭悊");
 	m_MaterialManager.m_SSGITemporalFrame = 0;
@@ -1402,6 +1459,8 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 			}
 		}
 		m_CharControllerNodes.clear();
+		m_DeferredCharacterAnimations.clear();
+		m_CharacterMovementResults.clear();
 		VANS_LOG("[VansScene] Step 5b: 瑙掕壊鎺у埗鍣ㄨ妭鐐瑰凡娓呯悊");
 	} // 释放 SimulationMutex
 
@@ -1460,9 +1519,6 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 		deleteRenderNode(node);
 	m_PostProcessRenderNodes.clear();
 
-	for (auto* node : m_ScreenSpaceRenderNodes)
-		deleteRenderNode(node);
-	m_ScreenSpaceRenderNodes.clear();
 
 	// 贴花节点清理
 	for (auto* node : m_DecalRenderNodes)
@@ -1661,6 +1717,8 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 	m_DummyBoneIDBuffer.DestroyVulkanBuffer(nativeDevice);
 	m_DummyBoneBuffer.DestroyVulkanBuffer(nativeDevice);
 	m_DummyWeightBuffer.DestroyVulkanBuffer(nativeDevice);
+	m_SurfaceWeatherFrameBuffer.DestroyVulkanBuffer(nativeDevice);
+	m_RainRuntime.Configure({});
 
 	// ── 18. 暂停视频播放（视频为项目级资源，GPU 纹理保留，切换场景 Play 时复用）────────
     VANS_UNLOAD_STEP(18, "Pause project videos");
@@ -1779,8 +1837,47 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
 
     VANS_PROFILE_SCOPE("Scene::PrepareMainThreadRenderFrame", Vans::ProfileCategory::RenderPrepare);
     const VansRenderViewSnapshot& view = context.view;
-    const float deltaTime = static_cast<float>(context.timing.deltaSeconds);
+	// Rain is an authored render preview as well as a gameplay effect. Use the
+	// existing render clock so precipitation, wetting and puddles advance in
+	// Edit, Pause and Play without creating a second Editor-owned timer.
+	const float deltaTime = static_cast<float>(context.timing.deltaSeconds);
+	const float weatherDeltaTime = static_cast<float>(context.timing.renderDeltaSeconds);
 	VansRenderSceneFrameSnapshot& snapshot = output.scene;
+	m_RainRuntime.Update(weatherDeltaTime);
+	const Vans::VansRainState& rainState = m_RainRuntime.State();
+	snapshot.surfaceWeather.enabled = rainState.enabled;
+	snapshot.surfaceWeather.normalizedIntensity = rainState.normalizedIntensity;
+	snapshot.surfaceWeather.filmWetness = rainState.filmWetness;
+	snapshot.surfaceWeather.puddleFill = rainState.puddleFill;
+	snapshot.surfaceWeather.visualTimeSeconds = static_cast<float>(
+		std::fmod(rainState.visualTimeSeconds, 4096.0));
+	const Vans::VansRainSettings& rainSettings = m_RainRuntime.Settings();
+	snapshot.surfaceWeather.windDirection = glm::vec2(
+		rainSettings.windDirectionX, rainSettings.windDirectionZ);
+	snapshot.surfaceWeather.windSpeedMetersPerSecond = rainSettings.windSpeedMetersPerSecond;
+	snapshot.surfaceWeather.fallSpeedMetersPerSecond = rainSettings.fallSpeedMetersPerSecond;
+	snapshot.surfaceWeather.maximumVisibleDistanceMeters = rainSettings.maximumVisibleDistanceMeters;
+	snapshot.surfaceWeather.splashLifetimeSeconds = rainSettings.splashLifetimeSeconds;
+	snapshot.surfaceWeather.splashRadiusMeters = rainSettings.splashRadiusMeters;
+	snapshot.surfaceWeather.rippleScaleMeters = rainSettings.rippleScaleMeters;
+	snapshot.surfaceWeather.rippleStrength = rainSettings.rippleStrength;
+	if (m_TerrainRenderNode != nullptr)
+	{
+		const auto* terrain = static_cast<const VansTerrainRenderNode*>(m_TerrainRenderNode)->GetTerrain();
+		if (terrain != nullptr)
+		{
+			const auto& puddle = terrain->GetPuddleSettings();
+			const auto& wet = terrain->GetWetSurfaceSettings();
+			snapshot.surfaceWeather.puddleScaleMeters = puddle.scaleMeters;
+			snapshot.surfaceWeather.puddleDetailScale = puddle.detailScale;
+			snapshot.surfaceWeather.puddleThreshold = puddle.threshold;
+			snapshot.surfaceWeather.puddleSoftness = puddle.softness;
+			snapshot.surfaceWeather.puddleStrength = puddle.strength;
+			snapshot.surfaceWeather.puddleSeed = puddle.seed;
+			snapshot.surfaceWeather.wetAlbedoScale = wet.albedoScale;
+			snapshot.surfaceWeather.wetRoughness = wet.roughness;
+		}
+	}
 	snapshot.sceneReady = true;
 	snapshot.terrainUploads = std::move(m_PendingTerrainUploads);
 	m_PendingTerrainUploads.clear();
@@ -2197,9 +2294,13 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
 		snapshot.transforms.emplace_back(std::move(transform));
 	}
 	snapshot.features.hasWater = HasWaterNodes();
+    snapshot.features.hasHair = std::any_of(m_HairRenderNodes.begin(), m_HairRenderNodes.end(),
+        [](const VansRenderNode* node) { return node && node->IsEnabled(); });
 	snapshot.features.hasDecal = HasDecalNodes();
 	snapshot.features.hasForwardOpaquePreAtmosphere =
 		HasForwardOpaquePreAtmosphereNodes();
+	snapshot.features.hasRainPrecipitation = rainState.enabled &&
+		rainState.normalizedIntensity > 1.0e-4f;
 	if (hasParticleInstances)
 	{
 		// 粒子线程与不读取粒子 Runtime 的材质、Transform 快照构建重叠；
@@ -2231,6 +2332,37 @@ void VansGraphics::VansScene::PrepareRenderBackendData(
     VANS_PROFILE_SCOPE("Scene::PrepareRenderBackendData", Vans::ProfileCategory::RenderPrepare);
 	if (!sceneSnapshot.sceneReady)
 		return;
+	VansSurfaceWeatherFrameGPU weatherFrame;
+	const auto& weather = sceneSnapshot.surfaceWeather;
+	weatherFrame.state = glm::vec4(
+		weather.enabled ? 1.0f : 0.0f,
+		weather.normalizedIntensity,
+		weather.filmWetness,
+		weather.puddleFill);
+	weatherFrame.motion = glm::vec4(
+		weather.windDirection,
+		weather.windSpeedMetersPerSecond,
+		weather.fallSpeedMetersPerSecond);
+	weatherFrame.precipitation = glm::vec4(
+		weather.maximumVisibleDistanceMeters,
+		weather.splashLifetimeSeconds,
+		weather.splashRadiusMeters,
+		0.0f);
+	weatherFrame.surface = glm::vec4(
+		weather.rippleScaleMeters,
+		weather.rippleStrength,
+		weather.visualTimeSeconds,
+		0.0f);
+	weatherFrame.puddleField0 = glm::vec4(
+		weather.puddleScaleMeters, weather.puddleDetailScale,
+		weather.puddleThreshold, weather.puddleSoftness);
+	weatherFrame.puddleField1 = glm::vec4(
+		weather.puddleStrength, weather.puddleSeed, 0.0f, 0.0f);
+	weatherFrame.groundResponse = glm::vec4(
+		weather.wetAlbedoScale, weather.wetRoughness,
+		weather.puddleRoughness, weather.puddleFresnel0);
+	if (!m_SurfaceWeatherFrameBuffer.SetBufferData(&weatherFrame, 0, sizeof(weatherFrame)))
+		throw std::runtime_error("Surface-weather frame UBO upload failed.");
 
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
@@ -2955,6 +3087,9 @@ void VansGraphics::VansScene::EvaluateAnimations(float deltaTime)
 			m_ExternallyDrivenAnimationNodes.find(node) == m_ExternallyDrivenAnimationNodes.end()))
 			nodes.push_back(node);
 	EvaluateAnimationBatch(nodes, deltaTime, m_LoadMode == VansSceneLoadMode::Runtime);
+	if (m_LoadMode == VansSceneLoadMode::Runtime)
+		if (auto* scripts = VansScriptContext::GetInstance(); scripts && scripts->GetScene() == this)
+			scripts->PublishAnimationEvents(nodes);
 }
 
 bool VansGraphics::VansScene::BeginExternalAnimationEvaluation(
@@ -3052,8 +3187,6 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord(
         updateNode(node);
     for (auto* node : m_PostProcessRenderNodes)
         updateNode(node);
-    for (auto* node : m_ScreenSpaceRenderNodes)
-        updateNode(node);
     // 贴花节点：更新 GBuffer2 descriptor 绑定
     for (auto* node : m_DecalRenderNodes)
         updateNode(node);
@@ -3082,8 +3215,6 @@ void VansGraphics::VansScene::MarkRenderNodeDescriptorSetsDirty()
 	for (auto* node : m_TransParentRenderNodes)
 		markNode(node);
 	for (auto* node : m_PostProcessRenderNodes)
-		markNode(node);
-	for (auto* node : m_ScreenSpaceRenderNodes)
 		markNode(node);
 	for (auto* node : m_DecalRenderNodes)
 		markNode(node);
@@ -3679,7 +3810,6 @@ void VansGraphics::VansScene::RemoveRenderNodeFromVector(VansRenderNode* node)
 		break;
     case TRANSPARENT_NODE: vec = &m_TransParentRenderNodes; break;
 	case POSTPROCESS_NODE:   vec = &m_PostProcessRenderNodes; break;
-	case SCREEN_SPACE_NODE:  vec = &m_ScreenSpaceRenderNodes; break;
     case DECAL_NODE:       vec = &m_DecalRenderNodes;       break;
 	default: return;
     }

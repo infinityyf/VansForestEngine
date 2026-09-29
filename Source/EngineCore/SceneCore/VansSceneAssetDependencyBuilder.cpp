@@ -6,6 +6,7 @@
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AssetCore/Serialization/VansSerializedObjectReference.h"
 #include "../AssetCore/VansAssetMeta.h"
+#include "../AssetCore/VansTextureResidentMip.h"
 #include "../AssetCore/VansAssetObjectRepository.h"
 #include "../AssetCore/VansAssetReference.h"
 #include "../AssetCore/VansBuiltInAssetCatalog.h"
@@ -55,9 +56,10 @@ namespace
 	constexpr int SceneTexture2D = 0;
 	constexpr int SceneTextureCube = 2;
 
-	void ApplyTextureImportSettings(
+	bool ApplyTextureImportSettings(
 		VansSceneTextureResourceRequest& request,
-		const VansAssetMeta& meta)
+		const VansAssetMeta& meta,
+		std::string& error)
 	{
 		const std::string colorSpace = meta.ReadStringSetting("colorSpace");
 		request.srgb = colorSpace.empty()
@@ -65,6 +67,8 @@ namespace
 			: colorSpace != "linear";
 		request.useCompress = meta.ReadBoolSetting("useCompress", true);
 		request.needMip = meta.ReadBoolSetting("needMip", true);
+		if (!ReadTextureMaxResidentDimension(meta, request.maxResidentDimension, error))
+			return false;
 		const std::string precision = meta.ReadStringSetting("precision");
 		if (!precision.empty())
 			request.precision = precision;
@@ -72,6 +76,7 @@ namespace
 		const std::string addressMode = meta.ReadStringSetting("addressMode");
 		if (!addressMode.empty())
 			request.addressMode = addressMode;
+		return true;
 	}
 
 	bool SupportsRectLightEmissive(const VansSceneTextureResourceRequest& request)
@@ -622,7 +627,13 @@ namespace
 		VansSceneContentBuildPlan contentPlan;
 		std::string error;
 		if (!VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
-			entities, projectRoot.generic_string(), contentPlan, error))
+			entities, projectRoot.generic_string(),
+			[&records](VansAssetGuid guid) -> std::optional<VansAssetRecord>
+			{
+				const auto found = records.find(guid.ToString());
+				return found == records.end() ? std::nullopt
+					: std::optional<VansAssetRecord>(found->second);
+			}, contentPlan, error))
 		{
 			AppendDependencyError(result,
 				"Could not project Scene for navigation source validation: " + error);
@@ -1985,7 +1996,13 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			request.path = texturePath;
 			request.artifactPath = record.artifactPath.string();
 			request.textureType = isCubemap ? SceneTextureCube : SceneTexture2D;
-			ApplyTextureImportSettings(request, meta);
+			std::string importError;
+			if (!ApplyTextureImportSettings(request, meta, importError))
+			{
+				AppendDependencyError(result, "Texture " + record.guid.ToString() +
+					" has invalid import settings: " + importError);
+				continue;
+			}
 			request.retainRgba8Pixels =
 				rectLightEmissiveTextures.count(record.guid.ToString()) != 0;
 			if (request.retainRgba8Pixels && !SupportsRectLightEmissive(request))
@@ -2111,7 +2128,13 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				request.path.clear();
 				request.artifactPath = record->artifactPath.string();
 				request.textureType = SceneTexture2D;
-				ApplyTextureImportSettings(request, meta);
+				std::string importError;
+				if (!ApplyTextureImportSettings(request, meta, importError))
+				{
+					AppendDependencyError(result, "Texture " + record->guid.ToString() +
+						" has invalid import settings: " + importError);
+					break;
+				}
 				request.retainRgba8Pixels =
 					rectLightEmissiveTextures.count(record->guid.ToString()) != 0;
 				if (request.retainRgba8Pixels && !SupportsRectLightEmissive(request))

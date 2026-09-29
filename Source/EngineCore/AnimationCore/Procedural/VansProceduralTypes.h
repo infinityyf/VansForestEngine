@@ -62,6 +62,8 @@ namespace VansGraphics
 		glm::quat rotationModel{ 1.0f, 0.0f, 0.0f, 0.0f };
 		float positionWeight = 1.0f;
 		float rotationWeight = 0.0f;
+		glm::vec3 poleTargetModel{ 0.0f };
+		bool hasPoleTarget = false;
 		bool valid = false;
 	};
 

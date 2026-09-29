@@ -204,6 +204,16 @@ bool VansAnimationController::SetAnimationGraphSets(
 			error = "Animation layer IDs must be unique";
 			return false;
 		}
+		if ((!layer.definition.dynamicAdditiveBaseLayerId.empty()
+				|| !layer.definition.dynamicAdditiveReferenceLayerId.empty())
+			&& (!layer.definition.dynamicAdditive
+				|| layer.definition.dynamicAdditiveBaseLayerId.empty()
+				|| layer.definition.dynamicAdditiveReferenceLayerId.empty()))
+		{
+			error = "Animation layer '" + layer.definition.name
+				+ "' has incomplete dynamic-additive pose inputs";
+			return false;
+		}
 		if (layer.definition.kind == VansAnimationLayerKind::Base)
 		{
 			++baseCount;
@@ -300,6 +310,71 @@ bool VansAnimationController::SetAnimationGraphSets(
 		for (size_t index = 0; index < layers.size(); ++index)
 		{
 			const VansAnimationLayerDefinition& layer = layers[index].definition;
+			if (!layer.poseSourceLayerId.empty())
+			{
+				size_t sourceIndex = index;
+				for (size_t source = 0; source < index; ++source)
+					if (layers[source].definition.id == layer.poseSourceLayerId)
+					{
+						sourceIndex = source;
+						break;
+					}
+				if (layer.kind != VansAnimationLayerKind::Overlay
+					|| layer.sync != VansLayerSyncMode::Independent
+					|| sourceIndex == index
+					|| !graphSet.bindings[index].definition.enabled
+					|| !graphSet.bindings[sourceIndex].definition.enabled
+					|| (layers[sourceIndex].definition.kind != VansAnimationLayerKind::Base
+						&& !layers[sourceIndex].definition.updateWhenWeightIsZero)
+					|| graphSet.bindings[index].definition.graphId
+						!= graphSet.bindings[sourceIndex].definition.graphId)
+				{
+					error = "Layer '" + layer.name
+						+ "' requires an enabled earlier pose source bound to the same Graph";
+					return false;
+				}
+			}
+			if (!layer.weightCurveSourceLayerId.empty())
+			{
+				size_t sourceIndex = index;
+				for (size_t source = 0; source < index; ++source)
+					if (layers[source].definition.id == layer.weightCurveSourceLayerId)
+					{
+						sourceIndex = source;
+						break;
+					}
+				if (layer.weightCurve.empty() || sourceIndex == index
+					|| !graphSet.bindings[index].definition.enabled
+					|| !graphSet.bindings[sourceIndex].definition.enabled
+					|| !layers[sourceIndex].definition.updateWhenWeightIsZero)
+				{
+					error = "Layer '" + layer.name
+						+ "' requires an enabled earlier curve source";
+					return false;
+				}
+			}
+			if (layer.dynamicAdditive
+				&& (!layer.dynamicAdditiveBaseLayerId.empty()
+					|| !layer.dynamicAdditiveReferenceLayerId.empty()))
+			{
+				auto earlierIndex = [&](const std::string& id) {
+					for (size_t source = 0; source < index; ++source)
+						if (layers[source].definition.id == id
+							&& graphSet.bindings[source].definition.enabled
+							&& layers[source].definition.updateWhenWeightIsZero)
+							return source;
+					return index;
+				};
+				if (layer.dynamicAdditiveBaseLayerId.empty()
+					|| layer.dynamicAdditiveReferenceLayerId.empty()
+					|| earlierIndex(layer.dynamicAdditiveBaseLayerId) == index
+					|| earlierIndex(layer.dynamicAdditiveReferenceLayerId) == index)
+				{
+					error = "Layer '" + layer.name
+						+ "' requires enabled earlier dynamic-additive pose inputs";
+					return false;
+				}
+			}
 			if (layer.sync == VansLayerSyncMode::Independent
 				|| !graphSet.bindings[index].definition.enabled)
 				continue;
@@ -368,6 +443,9 @@ bool VansAnimationController::SetAnimationGraphSets(
 	{
 		LayerRuntime runtime;
 		runtime.definition = std::move(setup.definition);
+		runtime.mixDefinition = runtime.definition;
+		if (!runtime.definition.dynamicAdditiveBaseLayerId.empty())
+			runtime.mixDefinition.dynamicAdditive = false;
 		runtime.maskAsset = std::move(setup.mask);
 		layerRuntimes.push_back(std::move(runtime));
 	}
@@ -391,6 +469,31 @@ bool VansAnimationController::SetAnimationGraphSets(
 		}
 		for (size_t index = 0; index < runtime.bindings.size(); ++index)
 		{
+			if (!layerRuntimes[index].definition.poseSourceLayerId.empty())
+				for (size_t source = 0; source < index; ++source)
+					if (layerRuntimes[source].definition.id
+						== layerRuntimes[index].definition.poseSourceLayerId)
+					{
+						runtime.bindings[index].poseSourceIndex = static_cast<int>(source);
+						break;
+					}
+			if (!layerRuntimes[index].definition.weightCurveSourceLayerId.empty())
+				for (size_t source = 0; source < index; ++source)
+					if (layerRuntimes[source].definition.id
+						== layerRuntimes[index].definition.weightCurveSourceLayerId)
+					{
+						runtime.bindings[index].weightCurveSourceIndex = static_cast<int>(source);
+						break;
+					}
+			const auto& dynamic = layerRuntimes[index].definition;
+			if (dynamic.dynamicAdditive && !dynamic.dynamicAdditiveBaseLayerId.empty())
+				for (size_t source = 0; source < index; ++source)
+				{
+					if (layerRuntimes[source].definition.id == dynamic.dynamicAdditiveBaseLayerId)
+						runtime.bindings[index].dynamicBaseIndex = static_cast<int>(source);
+					if (layerRuntimes[source].definition.id == dynamic.dynamicAdditiveReferenceLayerId)
+						runtime.bindings[index].dynamicReferenceIndex = static_cast<int>(source);
+				}
 			if (!runtime.bindings[index].definition.enabled
 				|| layerRuntimes[index].definition.sync == VansLayerSyncMode::Independent)
 				continue;
@@ -403,6 +506,21 @@ bool VansAnimationController::SetAnimationGraphSets(
 					break;
 				}
 			}
+		}
+		runtime.cachedSourcePoses.resize(runtime.bindings.size());
+		runtime.poseSourceUsed.assign(runtime.bindings.size(), false);
+		runtime.cachedComposedPoses.resize(runtime.bindings.size());
+		runtime.composedPoseUsed.assign(runtime.bindings.size(), false);
+		for (const GraphBindingRuntime& binding : runtime.bindings)
+		{
+			if (binding.poseSourceIndex >= 0)
+				runtime.poseSourceUsed[static_cast<size_t>(binding.poseSourceIndex)] = true;
+			if (binding.weightCurveSourceIndex >= 0)
+				runtime.poseSourceUsed[static_cast<size_t>(binding.weightCurveSourceIndex)] = true;
+			if (binding.dynamicReferenceIndex >= 0)
+				runtime.poseSourceUsed[static_cast<size_t>(binding.dynamicReferenceIndex)] = true;
+			if (binding.dynamicBaseIndex >= 0)
+				runtime.composedPoseUsed[static_cast<size_t>(binding.dynamicBaseIndex)] = true;
 		}
 		graphSetRuntimes.push_back(std::move(runtime));
 	}
@@ -785,15 +903,25 @@ bool VansAnimationController::SetSlots(
 				if (node && node->GetType() == VansAnimGraphNodeType::Slot
 					&& static_cast<const AnimGraphSlotNode*>(node.get())->m_SlotId == slot.id)
 					++matchingNodeCount;
+			if (m_LayerRuntimes[layerIndex].definition.slotId == slot.id)
+				++matchingNodeCount;
 			if (matchingNodeCount != 1)
 			{
-				error = "Slot '" + slot.name + "' requires exactly one matching Slot node in enabled binding '"
+				error = "Slot '" + slot.name + "' requires exactly one matching Slot input in enabled binding '"
 					+ binding.definition.graphId + "' of Graph Set '" + graphSet.definition.name + "'";
 				return false;
 			}
 		}
 		slotIds.push_back(slot.id);
 	}
+	for (const LayerRuntime& layer : m_LayerRuntimes)
+		if (!layer.definition.slotId.empty()
+			&& std::none_of(slots.begin(), slots.end(), [&](const VansAnimationSlotDefinition& slot)
+				{ return slot.id == layer.definition.slotId && slot.layerId == layer.definition.id; }))
+		{
+			error = "Layer '" + layer.definition.name + "' references an unmatched Slot";
+			return false;
+		}
 	if (!m_SlotRuntime.Configure(std::move(slots), error))
 		return false;
 	// Slot IDs are definition data. Allocate the lookup nodes at configuration
@@ -924,6 +1052,11 @@ VansSlotPlaybackHandle VansAnimationController::PlaySlot(
 bool VansAnimationController::StopSlot(VansSlotPlaybackHandle handle, float blendOut, bool force)
 {
 	return m_SlotRuntime.Stop(handle, blendOut, force);
+}
+
+bool VansAnimationController::StopSlotById(const std::string& slotId, float blendOut, bool force)
+{
+	return m_SlotRuntime.StopSlot(slotId, blendOut, force);
 }
 
 bool VansAnimationController::DriveSlot(
@@ -1644,6 +1777,8 @@ VansAnimationController::GetLayerRuntimeDebugInfo() const
 		const LayerRuntime& layer = m_LayerRuntimes[index];
 		const GraphBindingRuntime* binding = graphSet && index < graphSet->bindings.size()
 			? &graphSet->bindings[index] : nullptr;
+		const GraphBindingRuntime* poseBinding = binding && binding->poseSourceIndex >= 0
+			? &graphSet->bindings[static_cast<std::size_t>(binding->poseSourceIndex)] : binding;
 		LayerRuntimeDebugInfo info;
 		info.id = layer.definition.id;
 		info.name = layer.definition.name;
@@ -1661,11 +1796,11 @@ VansAnimationController::GetLayerRuntimeDebugInfo() const
 			for (float maskWeight : layer.compiledMask.weights)
 				info.boneWeights.push_back(glm::clamp(maskWeight * info.weight, 0.0f, 1.0f));
 		}
-		if (binding && binding->instance)
+		if (poseBinding && poseBinding->instance)
 		{
-			info.state = binding->instance->GetCurrentStateName();
-			info.clip = binding->instance->GetPrimaryClipName();
-			info.playbackTime = binding->instance->GetPrimaryPlaybackTime();
+			info.state = poseBinding->instance->GetCurrentStateName();
+			info.clip = poseBinding->instance->GetPrimaryClipName();
+			info.playbackTime = poseBinding->instance->GetPrimaryPlaybackTime();
 			if (const VansAnimationClip* clip = GetClip(info.clip); clip && clip->duration > 0.0f)
 				info.normalizedTime = glm::clamp(info.playbackTime / clip->duration, 0.0f, 1.0f);
 		}
@@ -1832,6 +1967,10 @@ bool VansAnimationController::EvaluateGraphSet(
 	graphSet.evaluatedSync.clear();
 	graphSet.evaluatedSync.resize(m_LayerRuntimes.size());
 	auto& evaluatedSync = graphSet.evaluatedSync;
+	for (VansPosePayload& pose : graphSet.cachedSourcePoses)
+		pose.valid = false;
+	for (VansPosePayload& pose : graphSet.cachedComposedPoses)
+		pose.valid = false;
 	const VansAnimGraphMotionMatchingPort motionMatchingPort(motionMatching);
 
 	for (size_t layerIndex = 0; layerIndex < m_LayerRuntimes.size(); ++layerIndex)
@@ -1889,6 +2028,9 @@ bool VansAnimationController::EvaluateGraphSet(
 		{
 			const GraphBindingRuntime& leader = graphSet.bindings[
 				static_cast<size_t>(binding.syncLeaderIndex)];
+			// Named groups are the phase source for follower clips embedded in
+			// state pose graphs. A primary state-machine clip name can be empty.
+			binding.instance->SetExternalSyncGroups(leader.instance->GetActiveSyncGroups());
 			if (binding.instance->GetPrimaryClipName().empty())
 				binding.instance->SetPrimaryPlaybackTime(0.0f);
 
@@ -1910,12 +2052,20 @@ bool VansAnimationController::EvaluateGraphSet(
 		}
 		const auto evaluationBegin = m_DebugMetricsEnabled
 			? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-		VansPosePayload sampled = advancesIndependently
-			? binding.instance->EvaluateFrame(context)
-			: binding.instance->Evaluate(context);
+		const bool reusePose = binding.poseSourceIndex >= 0;
+		if (reusePose && !graphSet.cachedSourcePoses[static_cast<size_t>(binding.poseSourceIndex)].valid)
+			return false;
+		VansPosePayload evaluatedPose = reusePose ? VansPosePayload{}
+			: advancesIndependently
+				? binding.instance->EvaluateFrame(context)
+				: binding.instance->Evaluate(context);
+		VansPosePayload& sampled = reusePose ? binding.reusedPoseScratch : evaluatedPose;
+		if (reusePose)
+			sampled = graphSet.cachedSourcePoses[static_cast<size_t>(binding.poseSourceIndex)];
 		if (m_DebugMetricsEnabled)
-			binding.lastEvaluationMilliseconds = std::chrono::duration<float, std::milli>(
-				std::chrono::steady_clock::now() - evaluationBegin).count();
+			binding.lastEvaluationMilliseconds = reusePose ? 0.0f
+				: std::chrono::duration<float, std::milli>(
+					std::chrono::steady_clock::now() - evaluationBegin).count();
 		if (!sampled.valid)
 		{
 			if (layerIndex == 0)
@@ -1957,6 +2107,15 @@ bool VansAnimationController::EvaluateGraphSet(
 		if (m_NormalizeRootPose && hasPoseRoot)
 			RestoreRootReference(sampled.localPose[m_RootBoneIndex],
 				skeleton.bones[m_RootBoneIndex].localTransform);
+		if (!layer.definition.slotId.empty())
+		{
+			const auto slot = m_SlotPayloads.find(layer.definition.slotId);
+			if (slot == m_SlotPayloads.end())
+				return false;
+			sampled = AnimGraphSlotNode::BlendInputs(sampled, &slot->second, &skeleton, true);
+			if (!sampled.valid)
+				return false;
+		}
 
 		const std::uint64_t stableLayerId = VansAnimationStableId(layer.definition.id);
 		for (VansAnimationEventSample& event : sampled.events)
@@ -1964,17 +2123,26 @@ bool VansAnimationController::EvaluateGraphSet(
 		if (sampled.rootMotion.valid)
 			sampled.rootMotion.sourceLayerId = stableLayerId;
 		evaluatedSync[layerIndex] = sampled.sync;
+		if (graphSet.poseSourceUsed[layerIndex])
+			graphSet.cachedSourcePoses[layerIndex] = sampled;
 
 		if (layerIndex == 0)
 		{
 			outPayload = std::move(sampled);
+			if (graphSet.composedPoseUsed[layerIndex])
+				graphSet.cachedComposedPoses[layerIndex] = outPayload;
 			continue;
 		}
 		float sampledLayerWeight = layer.state.currentWeight;
 		if (!layer.definition.weightCurve.empty())
 		{
 			float curveValue = layer.definition.weightCurveDefault;
-			for (const VansAnimationCurveSample& curve : sampled.curves)
+			const VansPosePayload& curveSource = binding.weightCurveSourceIndex >= 0
+				? graphSet.cachedSourcePoses[static_cast<size_t>(binding.weightCurveSourceIndex)]
+				: sampled;
+			if (!curveSource.valid)
+				return false;
+			for (const VansAnimationCurveSample& curve : curveSource.curves)
 				if (curve.present && curve.name == std::string_view(layer.definition.weightCurve))
 				{
 					curveValue = curve.value;
@@ -1987,9 +2155,38 @@ bool VansAnimationController::EvaluateGraphSet(
 		if (m_NormalizeRootPose && hasPoseRoot)
 			RestoreRootReference(referencePose[m_RootBoneIndex],
 				skeleton.bones[m_RootBoneIndex].localTransform);
+		const bool hasDynamicInputs = binding.dynamicBaseIndex >= 0
+			&& binding.dynamicReferenceIndex >= 0;
+		VansPosePayload adjustedPose;
+		const VansPosePayload* poseToMix = &sampled;
+		if (hasDynamicInputs && sampledLayerWeight > 1.0e-6f)
+		{
+			const VansPosePayload& baseInput = graphSet.cachedComposedPoses[
+				static_cast<size_t>(binding.dynamicBaseIndex)];
+			const VansPosePayload& referenceInput = graphSet.cachedSourcePoses[
+				static_cast<size_t>(binding.dynamicReferenceIndex)];
+			if (!baseInput.valid || !referenceInput.valid)
+				return false;
+			float additiveWeight = layer.definition.dynamicAdditiveWeight;
+			if (!layer.definition.dynamicAdditiveWeightParameter.empty())
+			{
+				const auto parameter = m_Parameters.find(
+					layer.definition.dynamicAdditiveWeightParameter);
+				additiveWeight = parameter != m_Parameters.end()
+					&& parameter->second.type == AnimatorParamType::Float
+					? parameter->second.floatVal : 0.0f;
+			}
+			adjustedPose = VansAnimationLayerMixer::ApplyDynamicAdditive(
+				baseInput, sampled, referenceInput.localPose, skeleton,
+				m_LayerRuntimes[0].compiledMask, std::clamp(additiveWeight, 0.0f, 1.0f),
+				layer.definition.dynamicAdditiveRotationSpace);
+			poseToMix = &adjustedPose;
+		}
 		outPayload = VansAnimationLayerMixer::ApplyLayer(
-			outPayload, sampled, layer.definition, layer.compiledMask,
+			outPayload, *poseToMix, layer.mixDefinition, layer.compiledMask,
 			skeleton, referencePose, sampledLayerWeight);
+		if (graphSet.composedPoseUsed[layerIndex])
+			graphSet.cachedComposedPoses[layerIndex] = outPayload;
 	}
 	return outPayload.valid;
 }
@@ -2147,6 +2344,14 @@ bool VansAnimationController::GatherPreparedWorldQueries(const Skeleton& skeleto
 	accessor.readFloat = ReadProceduralFloat;
 	accessor.readVector3 = ReadProceduralVector3;
 	accessor.readQuaternion = ReadProceduralQuaternion;
+	accessor.curveContext = &m_SampledCurves;
+	accessor.readCurve = [](const void* context, const std::string& name, float& value)
+	{
+		const auto& curves = *static_cast<const VansAnimationFrameVector<VansAnimationCurveSample>*>(context);
+		for (const auto& curve : curves)
+			if (curve.present && curve.name == name) { value = curve.value; return true; }
+		return false;
+	};
 	m_ExternalInput.ownerWorld = m_OwnerWorldTransform;
 	auto& completedPose = m_ProceduralCompletedPoseScratch;
 	bool needsResolve = false;
@@ -2433,6 +2638,12 @@ int VansAnimationController::DetectRootBoneIndex(const Skeleton& skeleton) const
 		auto clipIt = m_Clips.find(graphSet->bindings.front().instance->GetPrimaryClipName());
 		if (clipIt != m_Clips.end())
 			clip = &clipIt->second;
+	}
+	// 姿态归一化必须与Sampler显式指定的提取骨一致，不能被有静态关键帧的场景根抢占。
+	if (clip && !clip->rootMotion.boneName.empty())
+	{
+		const int declaredRoot = skeleton.FindBoneIndex(clip->rootMotion.boneName);
+		return declaredRoot;
 	}
 	// If the skeleton root itself has keyed translation data, use it directly.
 	if (clip && skeletonRoot < static_cast<int>(clip->boneKeyframes.size())

@@ -6,6 +6,8 @@
 #include <array>
 #include <algorithm>
 #include <cmath>
+#include <optional>
+#include "VansCharacterVelocityIntegrator.h"
 
 namespace Vans
 {
@@ -50,6 +52,8 @@ namespace Vans
 		bool jumpRequested = false;
 		float jumpSpeed = 5.5f;
 		float gravity = 16.0f;
+		// 有值时由输入加速度/摩擦积分速度；无值时使用目标速度半衰期模型。
+		std::optional<VansCharacterAccelerationModel> accelerationModel;
 		bool valid = false;
 	};
 

@@ -2,6 +2,8 @@
 
 namespace VansGraphics
 {
+	enum class VansCurveModifyMode { Blend, Scale };
+	enum class VansAdditivePoseMode { LocalSpherical, LocalLinear, MeshRotationLinear };
 	struct VansAnimGraphNodeLayout
 	{
 		float x = 0.0f;
@@ -33,6 +35,11 @@ namespace VansGraphics
 		RotationDistribution,
 		SaveCachedPose,
 		UseCachedPose,
-		LayeredBlendPerBone
+		LayeredBlendPerBone,
+		MultiWayBlend,
+		Inertialization,
+		ModifyCurve,
+		ComponentBoneScale,
+		ComponentBoneTransform
 	};
 }

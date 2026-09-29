@@ -159,6 +159,7 @@ namespace
 		json["srgb"] = request.srgb;
 		json["useCompress"] = request.useCompress;
 		json["needMip"] = request.needMip;
+		json["maxResidentDimension"] = request.maxResidentDimension;
 		json["precision"] = request.precision;
 		json["importChannel"] = request.importChannel;
 		json["addressMode"] = request.addressMode;
@@ -178,6 +179,7 @@ namespace
 		request.srgb = json.value("srgb", request.srgb);
 		request.useCompress = json.value("useCompress", request.useCompress);
 		request.needMip = json.value("needMip", request.needMip);
+		request.maxResidentDimension = json.value("maxResidentDimension", request.maxResidentDimension);
 		request.precision = json.value("precision", request.precision);
 		request.importChannel = json.value("importChannel", request.importChannel);
 		request.addressMode = json.value("addressMode", request.addressMode);
@@ -323,6 +325,7 @@ namespace
 		json["artifactFormat"] = record.artifactFormat;
 		json["sourceHash"] = record.sourceHash;
 		json["metaHash"] = record.metaHash;
+		json["maxResidentDimension"] = record.maxResidentDimension;
 		json["missing"] = record.missing;
 		return json;
 	}
@@ -339,6 +342,7 @@ namespace
 		record.artifactFormat = json.at("artifactFormat").get<std::string>();
 		record.sourceHash = json.value("sourceHash", static_cast<std::uint64_t>(0));
 		record.metaHash = json.value("metaHash", static_cast<std::uint64_t>(0));
+		record.maxResidentDimension = json.value("maxResidentDimension", record.maxResidentDimension);
 		record.missing = json.value("missing", record.missing);
 		return record;
 	}

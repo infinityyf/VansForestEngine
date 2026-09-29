@@ -18,11 +18,12 @@ namespace Vans::EditorAPI
 	struct AnimationBlendSpaceSampleDTO { float x = 0.0f, y = 0.0f; };
 
 	enum class AnimatorParamType { Float, Bool, Int, Trigger, Vector3, Quaternion };
-	enum class CompareOp { Greater, Less, Equal, NotEqual, GreaterEqual, LessEqual };
+	enum class CompareOp { Greater, Less, Equal, NotEqual, GreaterEqual, LessEqual, AbsGreaterEqual, AbsLess };
+	enum class AnimatorConditionSource { Parameter, MachineWeight, StateElapsedTime };
 	enum class AnimGraphPinType { Pose, Float, Bool, Int };
 	enum class AnimGraphPinKind { Input, Output };
 	enum class AnimatorGraphRole { Pose, TargetPostProcess };
-	enum class AnimationGoalSource { Binding, Parameters, Fixed };
+	enum class AnimationGoalSource { Binding, Parameters, Fixed, PoseBone };
 	enum class AnimationPlantPivot { Heel, Ball, Ankle };
 	enum class AnimationLimbTipRotationMode { PreserveInput, MatchGoal, FollowChain };
 	enum class VansAnimationLayerKind { Base, Overlay };
@@ -90,6 +91,8 @@ namespace Vans::EditorAPI
 		float floatVal = 0.0f;
 		bool boolVal = false;
 		int intVal = 0;
+		AnimatorConditionSource source = AnimatorConditionSource::Parameter;
+		int machineNodeId = -1;
 	};
 
 	struct AnimatorStateDTO
@@ -101,6 +104,18 @@ namespace Vans::EditorAPI
 		bool rootMotion = false;
 		float startTime = 0.0f;
 		float endTime = -1.0f;
+		int poseNodeId = -1;
+		std::string speedParameter;
+		bool alwaysResetOnEntry = false;
+		bool conduit = false;
+		std::string entryConditionParameter;
+		std::string enteredEvent, leftEvent, fullyBlendedEvent;
+	};
+
+	struct AnimatorTransitionCurveKeyDTO
+	{
+		float time = 0.0f, value = 0.0f;
+		float arriveTangent = 0.0f, leaveTangent = 0.0f;
 	};
 
 	struct AnimatorTransitionDTO
@@ -111,6 +126,15 @@ namespace Vans::EditorAPI
 		bool hasExitTime = false;
 		float exitTime = 1.0f;
 		std::vector<TransitionConditionDTO> conditions;
+		std::vector<AnimatorTransitionCurveKeyDTO> blendCurve;
+		std::vector<AnimatorTransitionCurveKeyDTO> durationScaleCurve;
+		bool requireSourceFullyBlended = false;
+		bool requireRelevantClipFinished = false;
+		bool automaticRemainingTime = false;
+		bool matchAnyCondition = false;
+		bool inertialization = false;
+		std::unordered_map<std::string, float> boneBlendFactors;
+		std::string startEvent, endEvent, interruptEvent;
 	};
 
 	struct AnimationGoalDefinitionDTO
@@ -118,9 +142,14 @@ namespace Vans::EditorAPI
 		std::string goalId;
 		AnimationGoalSource source = AnimationGoalSource::Binding;
 		std::string binding;
+		std::string boneName;
+		std::string poleBoneName;
+		AnimationVector3DTO poleOffsetLocal;
 		std::string positionParameter;
 		std::string rotationParameter;
 		std::string weightParameter;
+		std::string weightCurve;
+		std::string offsetWeightCurve;
 		AnimationVector3DTO fixedPositionModel;
 		AnimationQuaternionDTO fixedRotationModel;
 		float fixedPositionWeight = 1.0f;
@@ -215,6 +244,22 @@ namespace Vans::EditorAPI
 		AnimGraphPinKind kind = AnimGraphPinKind::Input;
 	};
 
+	struct AnimationCurveValueDTO
+	{
+		std::string name;
+		float value = 0;
+		std::string parameter;
+	};
+
+	struct AnimationGridInfluenceDTO { int sampleIndex=-1; float weight=0; };
+	struct AnimationSampleGridDTO
+	{
+		int columns=0,rows=0;
+		float minX=0,maxX=1,minY=0,maxY=1;
+		std::vector<std::vector<AnimationGridInfluenceDTO>> cells;
+		bool IsEnabled()const {return columns!=0||rows!=0||!cells.empty();}
+	};
+
 	struct AnimationNodeDTO
 	{
 		int m_NodeId = -1;
@@ -223,15 +268,48 @@ namespace Vans::EditorAPI
 		VansGraphics::VansAnimGraphNodeLayout m_EditorLayout;
 
 		std::string m_ClipName;
+		std::string m_SyncGroup;
 		float m_Speed = 1.0f;
+		std::string m_SampleTimeParameter;
+		float m_SampleTime = -1.0f;
+		float m_StartPosition = 0.0f;
+		std::string m_LoopParameter;
+		float m_AdditiveReferenceTime = -1.0f;
+		std::string m_AdditiveReferenceClip;
+		VansGraphics::VansAdditivePoseMode m_AdditiveMode = VansGraphics::VansAdditivePoseMode::LocalSpherical;
 		bool m_Loop = true;
 		bool m_RootMotion = true;
 		std::string m_ParamName;
 		float m_FixedAlpha = 0.5f;
+		bool m_MapAlpha = false, m_InterpolateAlpha = false;
+		float m_AlphaInMin = 0, m_AlphaInMax = 1, m_AlphaOutMin = 0, m_AlphaOutMax = 1;
+		float m_AlphaSpeedIncreasing = 0, m_AlphaSpeedDecreasing = 0;
 		bool m_UseParam = true;
 		std::vector<float> m_Thresholds;
+		std::vector<std::string> m_WeightParameters;
+		VansGraphics::VansCurveModifyMode m_CurveMode = VansGraphics::VansCurveModifyMode::Blend;
+		float m_CurveAlpha = 1;
+		std::string m_CurveAlphaParameter;
+		std::vector<AnimationCurveValueDTO> m_Curves;
+		std::string m_BoneScaleName;
+		float m_BoneScaleX = 1, m_BoneScaleY = 1, m_BoneScaleZ = 1;
+		float m_BoneScaleAlpha = 1;
+		std::string m_BoneScaleAlphaParameter;
+		std::string m_BoneTransformName;
+		std::string m_BonePositionParameter;
+		std::string m_BoneRotationParameter;
+		std::string m_BoneTransformAlphaParameter;
+		float m_BoneTransformAlpha = 1.0f;
+		bool m_BonePositionAdditive = false;
+		bool m_BoneRotationAdditive = false;
+		bool m_BoneTransformWorldSpace = false;
 		std::string m_XParamName;
 		std::string m_YParamName;
+		bool m_BilinearGrid = false;
+		AnimationSampleGridDTO m_SampleGrid;
+		float m_CubicFilterWindowX = 0.0f;
+		float m_CubicFilterWindowY = 0.0f;
+		bool m_SynchronizeSamples = false;
 		std::vector<AnimationBlendSpaceSampleDTO> m_BlendSpaceSamples;
 		CompareOp m_CompareOp = CompareOp::Greater;
 		float m_FloatVal = 0.0f;
@@ -240,9 +318,13 @@ namespace Vans::EditorAPI
 		int m_CaseCount = 2;
 		float m_FixedWeight = 1.0f;
 		float m_FixedSpeed = 1.0f;
+		float m_TeleportDistance = 3.0f;
 		std::vector<AnimatorStateDTO> m_States;
 		std::vector<AnimatorTransitionDTO> m_Transitions;
 		std::string m_DefaultStateName;
+		bool m_SkipFirstUpdateTransition = false;
+		int m_MaxTransitionsPerFrame = 1;
+		bool m_LinearRotationBlend = false;
 		bool m_EnableFallbackInput = true;
 		std::string m_SlotId;
 		std::string m_CacheName;
@@ -253,6 +335,7 @@ namespace Vans::EditorAPI
 		float m_LayerFixedWeight = 1.0f;
 		bool m_UseLayerWeightParameter = false;
 		bool m_ApplyLayerAdditiveInput = false;
+		bool m_MeshSpaceRotationOnly = false;
 
 		std::string m_CheckpointId;
 		std::vector<std::string> m_CheckpointBones;
@@ -324,6 +407,8 @@ namespace Vans::EditorAPI
 	struct AnimationLayerDTO
 	{
 		std::string id, name, maskGuid, maskPathHint;
+		std::string poseSourceLayerId;
+		std::string slotId;
 		VansAnimationLayerKind kind = VansAnimationLayerKind::Overlay;
 		VansLayerBlendMode blendMode = VansLayerBlendMode::Override;
 		VansRotationBlendSpace rotationSpace = VansRotationBlendSpace::Local;
@@ -335,6 +420,7 @@ namespace Vans::EditorAPI
 		bool useWeightParameter = false;
 		float weightSmoothingTime = 0.0f;
 		std::string weightCurve;
+		std::string weightCurveSourceLayerId;
 		float weightCurveDefault = 1.0f;
 		float activationBlendInSeconds = 0.0f;
 		float activationBlendOutSeconds = 0.0f;
@@ -342,6 +428,10 @@ namespace Vans::EditorAPI
 		bool restartOnActivation = false;
 		bool dynamicAdditive = false;
 		float dynamicAdditiveWeight = 0.0f;
+		std::string dynamicAdditiveBaseLayerId;
+		std::string dynamicAdditiveReferenceLayerId;
+		std::string dynamicAdditiveWeightParameter;
+		VansRotationBlendSpace dynamicAdditiveRotationSpace = VansRotationBlendSpace::Local;
 		float inertializationHalfLife = 0.0f;
 		float inertializationMaxDuration = 0.0f;
 		VansLayerRootMotionMode rootMotion = VansLayerRootMotionMode::Ignore;
@@ -471,9 +561,14 @@ namespace Vans::EditorAPI
 		case VansGraphics::VansAnimGraphNodeType::Blend: return "Blend";
 		case VansGraphics::VansAnimGraphNodeType::Blend1D: return "Blend1D";
 		case VansGraphics::VansAnimGraphNodeType::BlendSpace2D: return "BlendSpace2D";
+		case VansGraphics::VansAnimGraphNodeType::MultiWayBlend: return "MultiWayBlend";
+		case VansGraphics::VansAnimGraphNodeType::ModifyCurve: return "ModifyCurve";
+		case VansGraphics::VansAnimGraphNodeType::ComponentBoneScale: return "ComponentBoneScale";
+		case VansGraphics::VansAnimGraphNodeType::ComponentBoneTransform: return "ComponentBoneTransform";
 		case VansGraphics::VansAnimGraphNodeType::IfCondition: return "IfCondition";
 		case VansGraphics::VansAnimGraphNodeType::Switch: return "Switch";
 		case VansGraphics::VansAnimGraphNodeType::AdditiveBlend: return "AdditiveBlend";
+		case VansGraphics::VansAnimGraphNodeType::Inertialization: return "Inertialization";
 		case VansGraphics::VansAnimGraphNodeType::SpeedScale: return "SpeedScale";
 		case VansGraphics::VansAnimGraphNodeType::StateMachine: return "StateMachine";
 		case VansGraphics::VansAnimGraphNodeType::MotionMatching: return "MotionMatching";
@@ -513,6 +608,14 @@ namespace Vans::EditorAPI
 			pins.push_back(output(0, "Pose"));
 			return pins;
 		}
+		case VansGraphics::VansAnimGraphNodeType::MultiWayBlend:
+		{
+			std::vector<AnimGraphPinDTO> pins;
+			for (int index = 0; index < static_cast<int>(m_WeightParameters.size()); ++index)
+				pins.push_back(input(index, "Pose " + std::to_string(index)));
+			pins.push_back(output(0, "Pose"));
+			return pins;
+		}
 		case VansGraphics::VansAnimGraphNodeType::BlendSpace2D:
 		{
 			std::vector<AnimGraphPinDTO> pins;
@@ -531,6 +634,10 @@ namespace Vans::EditorAPI
 			return pins;
 		}
 		case VansGraphics::VansAnimGraphNodeType::AdditiveBlend: return { input(0, "Base"), input(1, "Additive"), output(0, "Pose") };
+		case VansGraphics::VansAnimGraphNodeType::Inertialization:
+		case VansGraphics::VansAnimGraphNodeType::ModifyCurve:
+		case VansGraphics::VansAnimGraphNodeType::ComponentBoneScale:
+		case VansGraphics::VansAnimGraphNodeType::ComponentBoneTransform:
 		case VansGraphics::VansAnimGraphNodeType::SpeedScale:
 		case VansGraphics::VansAnimGraphNodeType::Goal:
 		case VansGraphics::VansAnimGraphNodeType::AimConstraint:
@@ -566,6 +673,7 @@ namespace Vans::EditorAPI
 		node->m_Type = type;
 		node->m_Name = AnimationNodeDTO::TypeToString(type);
 		if (type == VansGraphics::VansAnimGraphNodeType::Blend1D) node->m_Thresholds = { 0.0f, 1.0f };
+		if (type == VansGraphics::VansAnimGraphNodeType::MultiWayBlend) node->m_WeightParameters.resize(2);
 		if (type == VansGraphics::VansAnimGraphNodeType::BlendSpace2D)
 			node->m_BlendSpaceSamples = { { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, 1.0f } };
 		if (type == VansGraphics::VansAnimGraphNodeType::Slot) node->m_EnableFallbackInput = true;

@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <glm/glm.hpp>
+#include "WeatherCore/VansSurfaceWeather.h"
 #include <string>
 #include <vector>
 
@@ -65,13 +66,15 @@ namespace VansGraphics
 	{
 		bool hasPunctualShadowJobs = false;
 		bool hasWater = false;
+        bool hasHair = false;
 		bool hasDecal = false;
 		bool hasForwardOpaquePreAtmosphere = false;
+		bool hasRainPrecipitation = false;
 
 		bool Any() const
 		{
-			return hasPunctualShadowJobs || hasWater || hasDecal ||
-				hasForwardOpaquePreAtmosphere;
+			return hasPunctualShadowJobs || hasWater || hasHair || hasDecal ||
+				hasForwardOpaquePreAtmosphere || hasRainPrecipitation;
 		}
 	};
 
@@ -171,6 +174,7 @@ namespace VansGraphics
 	{
 		VansRenderMaterialBufferSnapshot pbr;
 		VansRenderMaterialBufferSnapshot cloth;
+        VansRenderMaterialBufferSnapshot hair;
 		VansRenderMaterialBufferSnapshot treeLeaf;
 		VansRenderMaterialBufferSnapshot skin;
 		VansRenderMaterialBufferSnapshot custom;
@@ -235,6 +239,7 @@ namespace VansGraphics
 		VansRenderMaterialFrameData materials;
 		VansRenderGIFrameData gi;
 		VansRenderPostProcessFrameData postProcess;
+		VansSurfaceWeatherFrameData surfaceWeather;
 		std::vector<VansRenderTerrainRegionUpload> terrainUploads;
 		std::shared_ptr<const Vans::VansPcgSplineFieldSnapshot> splineFieldUpdate;
 		std::vector<std::shared_ptr<const Vans::VansPcgBatchUpdate>> vegetationUpdates;

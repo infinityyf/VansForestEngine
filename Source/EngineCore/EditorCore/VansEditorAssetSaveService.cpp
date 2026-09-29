@@ -2,6 +2,8 @@
 #include "VansAssetDocumentTypeRegistry.h"
 
 #include "../AssetCore/VansAssetDatabase.h"
+#include "../AssetCore/VansTextureResidentMip.h"
+#include "../AssetCore/Serialization/VansAssetMetaJsonCodec.h"
 #include "../AssetCore/Storage/VansStagedFileTransaction.h"
 #include "../EngineAPILayer/Public/IEngineEditorAPI.h"
 #include "../EngineAPILayer/Public/IAssetAuthoringEditorAPI.h"
@@ -117,7 +119,10 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveDocuments(const VansEditorAs
     {
         if (!document) { AppendError(result, {}, "No asset document"); return result; }
         if (!seen.insert(document.get()).second) continue;
-        if (!document->sourceDocument.IsLoaded())
+        const VansAssetType type = VansAssetDatabase::Classify(document->sourcePath);
+        const bool metaOnlyTexture = type == VansAssetType::Texture &&
+            document->metaDocument.IsLoaded() && document->metaDocument.IsDirty();
+        if (!document->sourceDocument.IsLoaded() && !metaOnlyTexture)
         { AppendError(result, document->sourcePath, "Asset authoring document is unavailable"); return result; }
         // 所有显式保存入口（含 Save All）在提交作者文档前准备派生模型。
         if (VansAssetDatabase::Classify(document->sourcePath) == VansAssetType::PlantType)
@@ -138,6 +143,19 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveDocuments(const VansEditorAs
         document->lastError.clear();
         const bool sourceDirty = document->sourceDocument.IsDirty();
         const bool metaDirty = document->metaDocument.IsDirty();
+		if (metaDirty && type == VansAssetType::Texture)
+		{
+			VansAssetMeta meta;
+			std::uint32_t maxResidentDimension = 0;
+			if (!VansAssetMetaJsonCodec::Decode(
+				document->metaDocument.SerializedRootSnapshot(), document->metaPath,
+				meta, document->lastError) ||
+				!ReadTextureMaxResidentDimension(meta, maxResidentDimension, document->lastError))
+			{
+				AppendError(result, document->metaPath, document->lastError);
+				return result;
+			}
+		}
 
         std::vector<VansStagedFile> companionStages;
         const std::shared_ptr<IVansAssetDocumentCompanion> companion =

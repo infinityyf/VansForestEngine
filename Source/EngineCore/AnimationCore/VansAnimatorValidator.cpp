@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -78,6 +79,7 @@ namespace VansGraphics
 				{
 				case VansAnimGraphNodeType::Entry:
 				case VansAnimGraphNodeType::Clip:
+				case VansAnimGraphNodeType::Inertialization:
 				case VansAnimGraphNodeType::SpeedScale:
 				case VansAnimGraphNodeType::StateMachine:
 				case VansAnimGraphNodeType::MotionMatching:
@@ -179,7 +181,9 @@ namespace VansGraphics
 		                        const std::string& owner) -> bool
 		{
 			if ((requireGoalId && goal.goalId.empty())
-				|| !finiteVec3(goal.fixedPositionModel) || !finiteQuat(goal.fixedRotationModel)
+				|| !finiteVec3(goal.fixedPositionModel) || !finiteVec3(goal.poleOffsetLocal)
+				|| (!goal.poleBoneName.empty() && goal.source != VansGraphGoalSource::PoseBone)
+				|| !finiteQuat(goal.fixedRotationModel)
 				|| glm::dot(goal.fixedRotationModel, goal.fixedRotationModel) <= 1.0e-8f
 				|| !finiteWeight(goal.fixedPositionWeight) || !finiteWeight(goal.fixedRotationWeight)
 				|| !hasParameter(goal.weightParameter, AnimatorParamType::Float, true))
@@ -201,6 +205,12 @@ namespace VansGraphics
 				return false;
 			case VansGraphGoalSource::Fixed:
 				return true;
+			case VansGraphGoalSource::PoseBone:
+				if (!goal.boneName.empty()
+					&& hasParameter(goal.positionParameter, AnimatorParamType::Vector3, true)
+					&& hasParameter(goal.rotationParameter, AnimatorParamType::Quaternion, true)) return true;
+				error = owner + " has a missing pose bone or mistyped offset parameter";
+				return false;
 			}
 			error = owner + " has an invalid Goal source";
 			return false;
@@ -242,7 +252,19 @@ namespace VansGraphics
 				{
 					const auto* clipNode = static_cast<const AnimGraphClipNode*>(node.get());
 					if (clipNames.find(clipNode->m_ClipName) == clipNames.end()
-						|| !std::isfinite(clipNode->m_Speed))
+						|| !std::isfinite(clipNode->m_Speed)
+						|| !std::isfinite(clipNode->m_StartPosition) || clipNode->m_StartPosition < 0
+						|| (clipNode->m_StartPosition != 0 && clipNode->HasExplicitSampleTime())
+						|| !std::isfinite(clipNode->m_SampleTime) || (clipNode->m_SampleTime < 0 && clipNode->m_SampleTime != -1)
+						|| (clipNode->m_AdditiveMode!=VansAdditivePoseMode::LocalSpherical && clipNode->m_AdditiveMode!=VansAdditivePoseMode::LocalLinear && clipNode->m_AdditiveMode!=VansAdditivePoseMode::MeshRotationLinear)
+						|| (clipNode->m_AdditiveMode!=VansAdditivePoseMode::LocalSpherical && clipNode->m_AdditiveReferenceTime<0)
+						|| !std::isfinite(clipNode->m_AdditiveReferenceTime) || clipNode->m_AdditiveReferenceTime < -1
+						|| (!clipNode->m_AdditiveReferenceClip.empty() && (clipNode->m_AdditiveReferenceTime < 0
+							|| clipNames.find(clipNode->m_AdditiveReferenceClip) == clipNames.end()))
+						|| (!clipNode->m_LoopParameter.empty() && (!hasParameter(clipNode->m_LoopParameter, AnimatorParamType::Bool)
+							|| clipNode->HasExplicitSampleTime()))
+						|| (!clipNode->m_SampleTimeParameter.empty()
+							&& !hasParameter(clipNode->m_SampleTimeParameter, AnimatorParamType::Float)))
 					{
 						error = "Graph '" + graph.name + "' contains a Clip node with an invalid Clip binding or speed";
 						return false;
@@ -272,9 +294,11 @@ namespace VansGraphics
 								});
 						}
 						const bool clipReferenceValid = clipNames.find(state.clipName) != clipNames.end();
-						if (state.poseNodeId < -1
+						if ((state.conduit && (hasPoseReference || !state.clipName.empty()))
+							|| (!state.entryConditionParameter.empty() && (!state.conduit || !hasParameter(state.entryConditionParameter, AnimatorParamType::Bool)))
+							|| state.poseNodeId < -1
 							|| state.name.empty() || !states.insert(state.name).second
-							|| (!hasPoseReference && !clipReferenceValid)
+							|| (!hasPoseReference && !state.clipName.empty() && !clipReferenceValid)
 							|| (hasPoseReference && !poseReferenceValid)
 							|| (!state.clipName.empty() && !clipReferenceValid)
 							|| (!state.speedParameter.empty()
@@ -328,14 +352,49 @@ namespace VansGraphics
 							|| !std::isfinite(transition.blendDuration) || transition.blendDuration < 0.0f
 							|| !std::isfinite(transition.exitTime)
 							|| transition.exitTime < 0.0f || transition.exitTime > 1.0f
-							|| !hasExitTimeClock)
+							|| !hasExitTimeClock
+							|| (transition.automaticRemainingTime && (transition.hasExitTime || transition.requireRelevantClipFinished || !transition.conditions.empty())))
 						{
 							error = "State Machine in Graph '" + graph.name
 								+ "' contains an invalid Transition";
 							return false;
 						}
+
+						for (const auto& factor : transition.boneBlendFactors)
+							if (factor.first.empty() || !std::isfinite(factor.second) || factor.second <= 0.0f)
+							{
+								error = "Invalid transition bone blend factor in Graph '" + graph.name + "'";
+								return false;
+							}
+						for (const auto* curve : {&transition.blendCurve, &transition.durationScaleCurve})
+						{
+						float previousCurveTime = -1.0f;
+						for (const auto& key : *curve)
+						{
+							if (!std::isfinite(key.time) || !std::isfinite(key.value)
+								|| !std::isfinite(key.arriveTangent) || !std::isfinite(key.leaveTangent)
+								|| key.time <= previousCurveTime || key.time < 0.0f || key.time > 1.0f)
+							{
+								error = "Invalid transition blend curve in Graph '" + graph.name + "'";
+								return false;
+							}
+							previousCurveTime = key.time;
+						}
+						}
+
 						for (const TransitionCondition& condition : transition.conditions)
 						{
+							if (condition.source != AnimatorConditionSource::Parameter)
+							{
+								const auto* queried = condition.machineNodeId < 0 ? node.get() : graph.graph->GetNode(condition.machineNodeId);
+								if ((condition.source != AnimatorConditionSource::MachineWeight && condition.source != AnimatorConditionSource::StateElapsedTime)
+									|| !condition.paramName.empty() || condition.machineNodeId < -1 || !std::isfinite(condition.floatVal)
+									|| !queried || queried->GetType() != VansAnimGraphNodeType::StateMachine)
+								{ error = "Invalid state-machine runtime condition in Graph '" + graph.name + "'"; return false; }
+								continue;
+							}
+							if (condition.machineNodeId != -1)
+							{ error = "Parameter condition cannot reference a state machine"; return false; }
 							const auto parameter = parameters.find(condition.paramName);
 							if (parameter == parameters.end()
 								|| parameter->second == AnimatorParamType::Vector3
@@ -375,15 +434,73 @@ namespace VansGraphics
 						return false;
 					}
 				}
+				else if (node->GetType() == VansAnimGraphNodeType::ModifyCurve)
+				{
+					const auto* modifier=static_cast<const AnimGraphModifyCurveNode*>(node.get());
+					bool valid=std::isfinite(modifier->m_Alpha)
+						&& (modifier->m_Mode==VansCurveModifyMode::Blend || modifier->m_Mode==VansCurveModifyMode::Scale)
+						&& (modifier->m_AlphaParameter.empty() || hasParameter(modifier->m_AlphaParameter,AnimatorParamType::Float));
+					std::unordered_set<std::string> names;
+					for (const auto& curve:modifier->m_Curves)
+						valid=valid && !curve.name.empty() && names.insert(curve.name).second && std::isfinite(curve.value)
+							&& (curve.parameter.empty() || hasParameter(curve.parameter,AnimatorParamType::Float));
+					if (!valid)
+					{ error="ModifyCurve in Graph '"+graph.name+"' requires unique curve names, finite values and float parameters"; return false; }
+				}
+				else if (node->GetType() == VansAnimGraphNodeType::ComponentBoneScale)
+				{
+					const auto* scaler=static_cast<const AnimGraphComponentBoneScaleNode*>(node.get());
+					if (scaler->m_BoneName.empty() || !std::isfinite(scaler->m_Scale.x)
+						|| !std::isfinite(scaler->m_Scale.y) || !std::isfinite(scaler->m_Scale.z)
+						|| !std::isfinite(scaler->m_Alpha) || (scaler->m_AlphaParameter.size()
+							&& !hasParameter(scaler->m_AlphaParameter,AnimatorParamType::Float)))
+					{ error="ComponentBoneScale in Graph '"+graph.name+"' requires a bone, finite scale/alpha and a float alpha parameter"; return false; }
+				}
+				else if (node->GetType() == VansAnimGraphNodeType::ComponentBoneTransform)
+				{
+					const auto* transform=static_cast<const AnimGraphComponentBoneTransformNode*>(node.get());
+					if (graph.role != AnimatorGraphAsset::Role::TargetPostProcess || transform->m_BoneName.empty()
+						|| (transform->m_PositionParameter.empty() && transform->m_RotationParameter.empty())
+						|| !std::isfinite(transform->m_Alpha)
+						|| (!transform->m_PositionParameter.empty()
+							&& !hasParameter(transform->m_PositionParameter,AnimatorParamType::Vector3))
+						|| (!transform->m_RotationParameter.empty()
+							&& !hasParameter(transform->m_RotationParameter,AnimatorParamType::Quaternion))
+						|| (!transform->m_AlphaParameter.empty()
+							&& !hasParameter(transform->m_AlphaParameter,AnimatorParamType::Float)))
+					{ error="ComponentBoneTransform requires a target post-process Graph, bone and typed pose parameters"; return false; }
+				}
+				else if (node->GetType() == VansAnimGraphNodeType::MultiWayBlend)
+				{
+					const auto* blend = static_cast<const AnimGraphMultiWayBlendNode*>(node.get());
+					if (blend->m_WeightParameters.empty() || std::any_of(
+						blend->m_WeightParameters.begin(), blend->m_WeightParameters.end(),
+						[&](const auto& name) { return !hasParameter(name, AnimatorParamType::Float); }))
+					{
+						error = "MultiWayBlend node in Graph '" + graph.name + "' requires float weight parameters";
+						return false;
+					}
+				}
 				else if (node->GetType() == VansAnimGraphNodeType::BlendSpace2D)
 				{
 					const auto* blend = static_cast<const AnimGraphBlendSpace2DNode*>(node.get());
 					bool finiteSamples = !blend->m_Samples.empty();
 					for (const auto& sample : blend->m_Samples)
 						finiteSamples = finiteSamples && std::isfinite(sample.x) && std::isfinite(sample.y);
+					bool validGrid = true;
+					if (blend->m_BilinearGrid && finiteSamples)
+					{
+						std::set<float> xs, ys;
+						std::set<std::pair<float, float>> points;
+						for (const auto& sample : blend->m_Samples)
+						{ xs.insert(sample.x); ys.insert(sample.y); points.insert({sample.x, sample.y}); }
+						validGrid = blend->m_Samples.size() == 4 && points.size() == 4 && xs.size() == 2 && ys.size() == 2;
+					}
 					if (!hasParameter(blend->m_XParamName, AnimatorParamType::Float)
 						|| !hasParameter(blend->m_YParamName, AnimatorParamType::Float)
-						|| !finiteSamples)
+						|| !finiteSamples || !validGrid
+						|| !std::isfinite(blend->m_CubicFilterWindowX) || blend->m_CubicFilterWindowX < 0
+						|| !std::isfinite(blend->m_CubicFilterWindowY) || blend->m_CubicFilterWindowY < 0)
 					{
 						error = "BlendSpace2D node in Graph '" + graph.name
 							+ "' requires two float parameters and finite samples";
@@ -421,6 +538,7 @@ namespace VansGraphics
 					const auto* blend = static_cast<const AnimGraphAdditiveBlendNode*>(node.get());
 					if (!std::isfinite(blend->m_FixedWeight) || blend->m_FixedWeight < 0.0f
 						|| blend->m_FixedWeight > 1.0f
+						|| (blend->m_AdditiveMode!=VansAdditivePoseMode::LocalSpherical && blend->m_AdditiveMode!=VansAdditivePoseMode::LocalLinear && blend->m_AdditiveMode!=VansAdditivePoseMode::MeshRotationLinear)
 						|| (blend->m_UseParam && !hasParameter(blend->m_ParamName, AnimatorParamType::Float)))
 					{
 						error = "Additive Blend node in Graph '" + graph.name + "' has an invalid weight source";
@@ -637,6 +755,25 @@ namespace VansGraphics
 					return false;
 				}
 			}
+			if (!layer.dynamicAdditiveWeightParameter.empty())
+			{
+				auto parameter = parameters.find(layer.dynamicAdditiveWeightParameter);
+				if (!layer.dynamicAdditive || parameter == parameters.end()
+					|| parameter->second != AnimatorParamType::Float)
+				{
+					error = "Layer '" + layer.name + "' requires an existing float dynamic-additive parameter";
+					return false;
+				}
+			}
+			if ((!layer.dynamicAdditiveBaseLayerId.empty()
+					|| !layer.dynamicAdditiveReferenceLayerId.empty())
+				&& (!layer.dynamicAdditive
+					|| layer.dynamicAdditiveBaseLayerId.empty()
+					|| layer.dynamicAdditiveReferenceLayerId.empty()))
+			{
+				error = "Layer '" + layer.name + "' has incomplete dynamic-additive pose inputs";
+				return false;
+			}
 			if (layer.additiveReference == VansAdditiveReferenceMode::ReferenceClip
 				&& clipNames.find(layer.referenceClipName) == clipNames.end())
 			{
@@ -723,6 +860,60 @@ namespace VansGraphics
 						+ "' must reference a Pose Graph";
 					return false;
 				}
+				if (!layer.poseSourceLayerId.empty())
+				{
+					std::size_t sourceIndex = index;
+					for (std::size_t candidate = 0; candidate < index; ++candidate)
+						if (data.layers[candidate].id == layer.poseSourceLayerId)
+						{
+							sourceIndex = candidate;
+							break;
+						}
+					if (layer.kind != VansAnimationLayerKind::Overlay
+						|| layer.sync != VansLayerSyncMode::Independent
+						|| sourceIndex == index || !graphSet.bindings[sourceIndex].enabled
+						|| (data.layers[sourceIndex].kind != VansAnimationLayerKind::Base
+							&& !data.layers[sourceIndex].updateWhenWeightIsZero)
+						|| graphSet.bindings[sourceIndex].graphId != binding.graphId)
+					{
+						error = "Layer '" + layer.name
+							+ "' requires an enabled earlier pose source bound to the same Graph";
+						return false;
+					}
+				}
+				if (!layer.weightCurveSourceLayerId.empty())
+				{
+					std::size_t sourceIndex = index;
+					for (std::size_t source = 0; source < index; ++source)
+						if (data.layers[source].id == layer.weightCurveSourceLayerId)
+						{
+							sourceIndex = source;
+							break;
+						}
+					if (layer.weightCurve.empty() || sourceIndex == index
+						|| !graphSet.bindings[sourceIndex].enabled
+						|| !data.layers[sourceIndex].updateWhenWeightIsZero)
+					{
+						error = "Layer '" + layer.name + "' requires an enabled earlier curve source";
+						return false;
+					}
+				}
+				if (layer.dynamicAdditive && !layer.dynamicAdditiveBaseLayerId.empty())
+				{
+					auto earlierIndex = [&](const std::string& id) {
+						for (std::size_t source = 0; source < index; ++source)
+							if (data.layers[source].id == id && graphSet.bindings[source].enabled
+								&& data.layers[source].updateWhenWeightIsZero)
+								return source;
+						return index;
+					};
+					if (earlierIndex(layer.dynamicAdditiveBaseLayerId) == index
+						|| earlierIndex(layer.dynamicAdditiveReferenceLayerId) == index)
+					{
+						error = "Layer '" + layer.name + "' requires enabled earlier dynamic-additive pose inputs";
+						return false;
+					}
+				}
 				if (layer.sync == VansLayerSyncMode::Independent)
 					continue;
 				std::size_t leaderIndex = data.layers.size();
@@ -797,6 +988,12 @@ namespace VansGraphics
 				return false;
 			}
 		}
+		for (const VansAnimationLayerDefinition& layer : data.layers)
+			if (!layer.slotId.empty() && slotIds.find(layer.slotId) == slotIds.end())
+			{
+				error = "Layer '" + layer.name + "' references an unknown Slot";
+				return false;
+			}
 		for (const VansAnimationGraphSetDefinition& graphSet : data.graphSets)
 		{
 			for (std::size_t layerIndex = 0; layerIndex < data.layers.size(); ++layerIndex)
@@ -810,6 +1007,8 @@ namespace VansGraphics
 				for (const auto& [nodeId, node] : graph->GetNodes())
 					if (node && node->GetType() == VansAnimGraphNodeType::Slot)
 						++graphSlotCounts[static_cast<const AnimGraphSlotNode*>(node.get())->m_SlotId];
+				if (!layer.slotId.empty())
+					++graphSlotCounts[layer.slotId];
 				for (const VansAnimationSlotDefinition& slot : data.slots)
 				{
 					if (slot.layerId != layer.id)

@@ -232,7 +232,6 @@ static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type, bool ro
 	case TRANSPARENT_NODE:  return VansPass::FORWARD_TRANSPARENT;
 	case POSTPROCESS_NODE:  return VansPass::POST_PROCESS;
 	case DEFERRED_NODE:     return VansPass::DEFERRED;
-	case SCREEN_SPACE_NODE: return VansPass::SCREEN_SPACE;
 	case DECAL_NODE:        return roadDecal ? VansPass::ROAD_DECAL_MODIFIER : VansPass::DECAL_MODIFIER;
 	default:                return VansPass::GBUFFER;
 	}
@@ -468,14 +467,14 @@ void VansGraphics::VansCommonRenderNode::CreateDescriptorSets(VansCamera* camera
 		}
 	}
 
-	// Set 4: Per-Material Hair Texture (albedo+alpha, normal, roughness, ao, shift)
+	// Set 4: 发片纹理与共享 Hair 参数缓冲
 	// Owned by VansHairMaterial; built once and shared by all nodes using this material.
 	if (m_Material && m_Material->m_MaterialType == VansMaterialType::VAN_HAIR)
 	{
 		VansHairMaterial* hair = static_cast<VansHairMaterial*>(m_Material);
 		if (hair->m_HairOwnedLayout == VK_NULL_HANDLE)
 		{
-			hair->BuildHairDescriptors(m_Device);
+			hair->BuildHairDescriptors(materialManager);
 		}
 		if (hair->m_HairOwnedLayout != VK_NULL_HANDLE && !hair->m_HairOwnedDescSets.empty())
 		{
@@ -826,7 +825,7 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 		return;
 	}
 
-	VansTexture* ssaoFilterResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSAO_FILTER_RESULT);
+	VansTexture* gtaoResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_GTAO_RESULT);
 	VansTexture* ssgiFilterResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT);
 	VansTexture* ssrAaResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT);
 	VansTexture* screenSpaceShadow = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT);
@@ -837,7 +836,7 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 	VansTexture* ambientSkyCacheZ = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Z);
 	VansVKDevice* runtimeDevice = m_Scene->GetRuntimeResourceDevice();
 
-	if (ssaoFilterResult == nullptr || ssgiFilterResult == nullptr || ssrAaResult == nullptr ||
+	if (gtaoResult == nullptr || ssgiFilterResult == nullptr || ssrAaResult == nullptr ||
 		screenSpaceShadow == nullptr || screenSpaceShadowHZB == nullptr || rectLightEmissive == nullptr ||
 		ambientSkyCacheX == nullptr || ambientSkyCacheY == nullptr || ambientSkyCacheZ == nullptr ||
 		runtimeDevice == nullptr ||
@@ -909,7 +908,7 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { rp->GetDepth().GetSampler(), rp->GetDepth().GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-		{ { ssaoFilterResult->GetImage().GetSampler(), ssaoFilterResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+		{ { gtaoResult->GetImage().GetSampler(), gtaoResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { ssgiFilterResult->GetImage().GetSampler(), ssgiFilterResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -977,67 +976,11 @@ void VansGraphics::VansDeferredRenderNode::Draw(VansVKCommandBuffer& cmd, Global
     VansRenderNode::Draw(cmd, globalState);
 }
 
-void VansGraphics::VansScreenSpaceRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
-{
-	// Set 0: Global
-	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
-	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
-	// Set 1: Per-Pass (screen-space textures)
-	VansDescriptorSetLayoutFactory::CreateAndAllocate_ScreenSpace(textureResourceLayout, textureResourceDescriptorSets);
 
-	m_UsedDescSetLayouts.push_back(textureResourceLayout);
-	m_UsedDescSets.push_back(textureResourceDescriptorSets[0]);
-}
 
-void VansGraphics::VansScreenSpaceRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
-{
-	UpdateDescriptorSets(materialManager);
-}
 
-void VansGraphics::VansScreenSpaceRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
-{
-	if (!m_DescriptorsetsDirty)
-	{
-		return;
-	}
-	m_DescriptorsetsDirty = false;
 
-	VansTexture* ssaoResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSAO_RESULT);
-	if (ssaoResult == nullptr)
-	{
-		m_DescriptorsetsDirty = true;
-		return;
-	}
-
-	auto* descMgr = VansVKDescriptorManager::GetInstance();
-	descMgr->BeginDescriptorUpdate();
-	descMgr->WriteImageDescriptor(
-		textureResourceDescriptorSets[0], 0, // Normal
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { VansRenderPassManager::GetInstance()->GetNormal().GetSampler(), VansRenderPassManager::GetInstance()->GetNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(
-		textureResourceDescriptorSets[0], 1, // Gbuffer0
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { VansRenderPassManager::GetInstance()->GetGbuffer0().GetSampler(), VansRenderPassManager::GetInstance()->GetGbuffer0().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(
-		textureResourceDescriptorSets[0], 2, // Gbuffer1
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { VansRenderPassManager::GetInstance()->GetGbuffer1().GetSampler(), VansRenderPassManager::GetInstance()->GetGbuffer1().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(
-		textureResourceDescriptorSets[0], 3, // Gbuffer2
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { VansRenderPassManager::GetInstance()->GetGbuffer2().GetSampler(), VansRenderPassManager::GetInstance()->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(
-		textureResourceDescriptorSets[0], 4, // Depth
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { VansRenderPassManager::GetInstance()->GetDepth().GetSampler(), VansRenderPassManager::GetInstance()->GetDepth().GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(
-		textureResourceDescriptorSets[0], 5, // SSAO output
-		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-		{ { ssaoResult->GetImage().GetSampler(), ssaoResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-	descMgr->CommitDescriptorUpdates();
-}
 
 // VansShadowRenderNode removed – shadow pass now uses DrawWithPassShader() on opaque nodes
 

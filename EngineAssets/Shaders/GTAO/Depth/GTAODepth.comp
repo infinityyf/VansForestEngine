@@ -1,0 +1,46 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../../Common/CameraData.glsl"
+#include "../GTAOCommon.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 1, binding = 0) uniform sampler2D positionInput;
+layout(set = 1, binding = 1) uniform sampler2D depthInput;
+layout(set = 1, binding = 2, r32f) uniform writeonly image2D depthOutput;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(depthOutput);
+    if (any(greaterThanEqual(pixel, size))) return;
+    if (gtaoParams.sourceMip < 0)
+    {
+        float depth = texelFetch(positionInput, pixel, 0).w;
+        imageStore(depthOutput, pixel, vec4(max(depth, 0.0)));
+        return;
+    }
+
+    // Cover the entire source footprint, including odd trailing rows/columns.
+    // Zero is invalid/background; it must never become an occluding surface.
+    // The descriptor exposes only the previous mip, avoiding read/write aliasing.
+    ivec2 sourceSize = textureSize(depthInput, 0);
+    ivec2 begin = pixel * sourceSize / size;
+    ivec2 end = (pixel + 1) * sourceSize / size;
+    float farthest = 0.0;
+    for (int y = begin.y; y < end.y; ++y)
+        for (int x = begin.x; x < end.x; ++x)
+            farthest = max(farthest, texelFetch(depthInput, ivec2(x, y), 0).r);
+    float threshold = max(gtaoParams.radiusMeters * gtaoParams.falloffFraction, 1e-5);
+    float sum = 0.0, weightSum = 0.0;
+    for (int y = begin.y; y < end.y; ++y)
+        for (int x = begin.x; x < end.x; ++x)
+        {
+            float z = texelFetch(depthInput, ivec2(x, y), 0).r;
+            if (z <= 0.0) continue;
+            float delta = (z - farthest) / threshold;
+            float weight = clamp(1.0 - delta * delta, 0.0, 1.0);
+            sum += z * weight;
+            weightSum += weight;
+        }
+    imageStore(depthOutput, pixel, vec4(weightSum > 0.0 ? sum / weightSum : 0.0));
+}

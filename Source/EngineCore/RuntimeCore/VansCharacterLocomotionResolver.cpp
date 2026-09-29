@@ -48,9 +48,11 @@ namespace Vans
 	{
 		m_TrajectoryGenerator.Reset(positionWorld, facingYaw);
 		m_VerticalVelocity = 0.0f;
+		m_VerticalDisplacement = 0.0f;
 		m_FrameDeltaTime = 0.0f;
 		m_FramePrepared = false;
 		m_FrameMovementBlocked = false;
+		m_MotionStepper = {};
 	}
 
 	void VansCharacterLocomotionResolver::SetIntent(
@@ -64,7 +66,7 @@ namespace Vans
 		m_Intent.valid = true;
 	}
 
-	void VansCharacterLocomotionResolver::Prepare(
+	bool VansCharacterLocomotionResolver::Prepare(
 		float deltaTime,
 		const VansCharacterMotionSettings& settings,
 		const glm::vec3& positionWorld,
@@ -88,28 +90,57 @@ namespace Vans
 		}
 
 		VansCharacterMotionIntent stationaryIntent;
+		const bool jumpAccepted = m_FrameDeltaTime > 0.0f && m_Intent.valid &&
+			m_Intent.jumpRequested && grounded && !movementBlocked &&
+			std::isfinite(m_Intent.jumpSpeed) && m_Intent.jumpSpeed > 0.0f;
 		stationaryIntent.valid = true;
 		stationaryIntent.movementReferenceYaw = facingYaw;
 		stationaryIntent.desiredFacingYaw = facingYaw;
+		m_FrameInitialVelocity = m_TrajectoryGenerator.GetIntegrationVelocity();
+		m_FrameInitialVelocity.y = grounded ? 0.0f : m_VerticalVelocity;
+		if (jumpAccepted) m_FrameInitialVelocity.y = (std::max)(m_FrameInitialVelocity.y,m_Intent.jumpSpeed);
+		m_FrameGrounded = grounded && !jumpAccepted;
 		m_TrajectoryGenerator.Update(
 			m_FrameDeltaTime,
 			m_Intent.valid ? m_Intent : stationaryIntent,
 			settings,
 			positionWorld,
 			facingYaw,
-			grounded && (!m_Intent.valid || !m_Intent.jumpRequested));
+			grounded && !jumpAccepted);
 
 		// Root Motion without gameplay intent may move horizontally/rotate, but
 		// it must not start a gravity state that gameplay never requested.
 		if (!m_Intent.valid)
-			return;
+			return false;
+		// A submitted request belongs to one advancing frame, including rejection.
+		// A paused frame neither accepts nor consumes it.
+		if (m_FrameDeltaTime > 0.0f)
+			m_Intent.jumpRequested = false;
+		if (m_Intent.accelerationModel)
+		{
+			if (grounded) m_VerticalVelocity = 0.0f;
+			if (jumpAccepted) m_VerticalVelocity = (std::max)(m_VerticalVelocity, m_Intent.jumpSpeed);
+			if (!grounded || jumpAccepted)
+			{
+				const auto falling = IntegrateCharacterFalling(m_VerticalVelocity,
+					m_Intent.gravity, m_FrameDeltaTime, m_Intent.accelerationModel->falling);
+				m_VerticalVelocity = falling.velocity;
+				m_VerticalDisplacement = falling.displacement;
+			}
+			else
+				// 当前 CCT 仍靠下压保持接地；完整地面检测/坡面流程另行迁移。
+				m_VerticalDisplacement = -0.5f * m_FrameDeltaTime;
+			return jumpAccepted;
+		}
 		if (grounded && m_VerticalVelocity < 0.0f)
 			m_VerticalVelocity = -0.5f;
-		if (m_Intent.jumpRequested && grounded)
+		if (jumpAccepted)
 			m_VerticalVelocity = m_Intent.jumpSpeed;
 		else
 			m_VerticalVelocity -=
 				(std::max)(0.0f, m_Intent.gravity) * m_FrameDeltaTime;
+		m_VerticalDisplacement = m_VerticalVelocity * m_FrameDeltaTime;
+		return jumpAccepted;
 	}
 
 	VansCharacterLocomotionResult VansCharacterLocomotionResolver::Resolve(
@@ -175,9 +206,13 @@ namespace Vans
 		result.displacementWorld = glm::mix(
 			capsuleDelta, rootWorldDelta, rootWeight);
 		if (m_Intent.valid)
-			result.displacementWorld.y = m_VerticalVelocity * deltaTime;
+			result.displacementWorld.y = m_VerticalDisplacement;
 		result.deltaTime = deltaTime;
 		result.hasMove = true;
+		result.substepped = m_Intent.valid && m_Intent.accelerationModel && !movementBlocked &&
+			authority.mode == VansLocomotionAuthorityMode::Capsule;
+		if (result.substepped)
+			m_MotionStepper.Begin(m_Intent,m_FrameInitialVelocity,m_FrameGrounded,deltaTime);
 
 		const float capsuleFacingDelta = m_Intent.valid
 			? std::remainder(
@@ -189,6 +224,14 @@ namespace Vans
 		result.facingYaw += glm::mix(
 			capsuleFacingDelta, rootYawDelta, rootRotationWeight);
 		return result;
+	}
+
+	std::optional<float> VansCharacterLocomotionResolver::ResolveVerticalContact(bool grounded, bool ceiling)
+	{
+		if (!m_Intent.valid || !m_Intent.accelerationModel) return std::nullopt;
+		if ((grounded && m_VerticalVelocity < 0.0f) || (ceiling && m_VerticalVelocity > 0.0f))
+			m_VerticalVelocity = 0.0f;
+		return m_VerticalVelocity;
 	}
 
 	void VansCharacterLocomotionResolver::RecordResolvedMotion(

@@ -171,7 +171,7 @@ namespace VansGraphics
 		try
 		{
 			if (!RequireObjectFields(root,
-				{ "assetKind", "name", "skeletonGuid", "modelAxes", "semanticBones",
+				{ "assetKind", "name", "skeletonGuid", "modelAxes", "semanticBones", "virtualBones",
 				  "sockets", "attachmentProfiles", "goals", "chains", "jointLimits", "contacts", "rotationDistributions" },
 				{ "assetKind", "name", "skeletonGuid", "modelAxes", "semanticBones",
 				  "sockets", "attachmentProfiles", "goals", "chains", "jointLimits", "contacts" },
@@ -216,6 +216,30 @@ namespace VansGraphics
 					return false;
 				}
 				asset.semanticBones.emplace(item.key(), item.value().get<std::string>());
+			}
+			if (root.contains("virtualBones"))
+			{
+				if (!root["virtualBones"].is_array())
+				{
+					error = "virtualBones must be an array";
+					return false;
+				}
+				for (const json& value : root["virtualBones"])
+				{
+					if (!RequireObjectFields(value,
+						{ "name", "sourceBone", "targetBone" },
+						{ "name", "sourceBone", "targetBone" }, "virtual bone", error)
+						|| !value["name"].is_string()
+						|| !value["sourceBone"].is_string()
+						|| !value["targetBone"].is_string())
+					{
+						if (error.empty()) error = "virtual bone fields must be strings";
+						return false;
+					}
+					asset.virtualBones.push_back({ value["name"].get<std::string>(),
+						value["sourceBone"].get<std::string>(),
+						value["targetBone"].get<std::string>() });
+				}
 			}
 			for (const json& value : root["sockets"])
 			{
@@ -572,6 +596,13 @@ namespace VansGraphics
 			{ "rotationDistributions", json::array() },
 			{ "contacts", json::array() }
 		};
+		if (!asset.virtualBones.empty())
+		{
+			root["virtualBones"] = json::array();
+			for (const VansRigVirtualBoneDefinition& bone : asset.virtualBones)
+				root["virtualBones"].push_back({ { "name", bone.name },
+					{ "sourceBone", bone.sourceBone }, { "targetBone", bone.targetBone } });
+		}
 		for (const VansRigSocketDefinition& socket : asset.sockets)
 		{
 			root["sockets"].push_back({

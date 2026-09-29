@@ -27,42 +27,9 @@ layout( set = 1, binding = 15 ) uniform sampler2DArray rectLightEmissive;
 #include "../BRDF/BRDFGrass.glsl"
 #include "../Common/CameraData.glsl"
 
-// IES profile 纹理数组：最多 32 层，每层 256×128，格式 R16F，用于方向性光照衰减（binding=16）
-layout( set = 1, binding = 16 ) uniform sampler2DArray iesProfileTexture;
-
-// =============================================================================
-// SampleIESProfile — 从 IES profile 纹理数组采样方向衰减系数 [0,1]
-// 参数：
-//   profileIndex  — 纹理数组层索引（来自 PointLightData/SpotLightData.iesProfileIndex）
-//   lightDir      — 世界空间中从光源指向被照点的方向向量（已归一化）
-//   nadirDir      — 光源的 NADIR 轴（IES type C 垂直 0° 方向），向下为正
-//                   点光源使用 vec3(0,-1,0)；聚光灯使用 spotLight.direction.xyz
-// 参数化：
-//   φ  = 垂直角（与 nadirDir 夹角，0° = nadir，90° = 水平，180° = zenith）
-//       → UV.y = (cos(φ) * 0.5) + 0.5
-//   θ  = 水平角，由沿 nadirDir 平面投影得到
-//       → UV.x = θ * INV_TWO_PI + 0.5（范围 [0,1]）
-// 返回：归一化到 [0,1] 的坎德拉系数（0 = 被遮挡方向，1 = 峰值方向）
-// =============================================================================
-float SampleIESProfile(int profileIndex, vec3 lightDir, vec3 nadirDir)
-{
-    // 垂直角 φ：lightDir 与 nadirDir 的夹角
-    // dot(lightDir, nadirDir) = cos(φ)，范围 [-1, 1]
-    float cosVert = clamp(dot(lightDir, nadirDir), -1.0, 1.0);
-    float uv_y    = cosVert * 0.5 + 0.5;  // [0,1]，0 = zenith，1 = nadir
-
-    // 水平角 θ：将 lightDir 投影到垂直于 nadirDir 的平面，再用 atan2 计算角度
-    vec3  projOnPlane = normalize(lightDir - cosVert * nadirDir + vec3(1e-8));
-
-    // 构建参考系（任意与 nadirDir 正交的向量作为 θ=0 参考方向）
-    vec3  refX = normalize(abs(nadirDir.z) < 0.99 ? cross(nadirDir, vec3(0.0, 0.0, 1.0))
-                                                   : cross(nadirDir, vec3(0.0, 1.0, 0.0)));
-    vec3  refY = cross(nadirDir, refX);
-    float theta = atan(dot(projOnPlane, refY), dot(projOnPlane, refX));  // [-π, π]
-    float uv_x  = theta * INV_TWO_PI + 0.5;  // [0, 1]
-
-    return texture(iesProfileTexture, vec3(uv_x, uv_y, float(profileIndex))).r;
-}
+#define IES_PROFILE_SET 1
+#define IES_PROFILE_BINDING 16
+#include "../Lights/IESProfile.glsl"
 
 layout(set = 1, binding = 0) uniform sampler2D normalInput;
 layout(set = 1, binding = 1) uniform sampler2D gbufferInput0;
@@ -79,7 +46,7 @@ void ApplySurfaceDecals(vec2 uv, int materialID, inout vec3 albedo, inout vec3 n
         texture(decalRoughnessInput, uv), albedo, normal, roughness);
 }
 
-layout(set = 1, binding = 5, rgba32f ) uniform image2D ssao;
+layout(set = 1, binding = 5, rg16f ) uniform readonly image2D gtao;
 layout(set = 1, binding = 6) uniform sampler2D ssgi;
 layout(set = 1, binding = 7, rgba32f ) uniform image2D ssr;
 layout(set = 1, binding = 8) uniform sampler2DArray cascadeShadowMap;
@@ -245,9 +212,9 @@ bool EvaluateSubsurfaceSourceAtUV(vec2 uv, int centerMaterialIndex,
         materialDataBuffer.materials[sampleMaterialIndex];
     float sampleIOR = clamp(sampleMaterial.padding, 1.0, 2.5);
 
-    ivec2 aoSize = imageSize(ssao);
+    ivec2 aoSize = imageSize(gtao);
     ivec2 aoCoord = clamp(ivec2(uv * vec2(aoSize)), ivec2(0), aoSize - 1);
-    float sampleAO = min(sampleGBuffer1.y, imageLoad(ssao, aoCoord).r);
+    float sampleAO = min(sampleGBuffer1.y, imageLoad(gtao, aoCoord).r);
 
     BRDFData sampleBRDF;
     // Pre-and-post scatter texturing: half of the apparent albedo is applied
@@ -381,10 +348,10 @@ void main()
     float depth = depthData.x;
     float linearDepth = gbufferData2.w;
 
-    //获取ssao：这里先使用原始半分辨率结果的安全采样，避免深度加权上采样把 AO 错误压黑。
-    ivec2 ssaoSize = imageSize(ssao);
-    ivec2 ssaoCoord = clamp(ivec2(fragTexCoord * vec2(ssaoSize)), ivec2(0), ssaoSize - 1);
-    float ssaoValue = imageLoad(ssao, ssaoCoord).r;
+    // GTAO 与 GBuffer 使用相同内部渲染分辨率，读取同一接收表面的降噪可见度。
+    ivec2 gtaoSize = imageSize(gtao);
+    ivec2 gtaoCoord = clamp(ivec2(fragTexCoord * vec2(gtaoSize)), ivec2(0), gtaoSize - 1);
+    float gtaoValue = imageLoad(gtao, gtaoCoord).r;
 
     vec3 viewDirection = normalize(cameraPosition.xyz - position_world);
 
@@ -394,12 +361,14 @@ void main()
     brdfData.albedo = color.rgb;
     brdfData.roughness = roughness;
     brdfData.metallic = metallic;
-    brdfData.ao = min(ao, ssaoValue);
+    brdfData.ao = min(ao, gtaoValue);
     // Skin 的 cavity/occlusion 还会参与双高光瓣遮蔽。若这里再次平方，
     // 中灰细节会同时压暗环境光与高光，产生红黑且油亮的结果。
     if (matID != MATERIAL_ID_SKIN)
         brdfData.ao = pow(brdfData.ao, 2.0);
     brdfData.fresnel0 = vec3(0.04);
+	if (matID == MATERIAL_ID_PBR && normalData.w >= 0.0)
+		brdfData.fresnel0 = mix(vec3(0.04), vec3(0.02), clamp(normalData.w, 0.0, 1.0));
     brdfData.viewDirection = viewDirection;
     brdfData.positionWS = position_world;
     
@@ -458,7 +427,7 @@ void main()
         vec3 clothTangent;
         vec3 clothBitangent;
         DecodeClothTangentFrame(normal, normalData.w, clothTangent, clothBitangent);
-        brdfData.ao = clamp(min(ao, ssaoValue), 0.0, 1.0);
+        brdfData.ao = clamp(min(ao, gtaoValue), 0.0, 1.0);
         CalculateDirectLight_Cloth(brdfData, cloth, clothTangent,
 								   punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF_Cloth(brdfData, cloth, clothTangent, viewDirection,
@@ -505,8 +474,8 @@ void main()
         float transmission=clamp(normalData.w,0.0,1.0);
         brdfData.metallic=0.0;
         brdfData.fresnel0=vec3(0.04);
-        brdfData.ao=clamp(min(ao,ssaoValue),0.0,1.0);
-        float backAO=clamp(min(ao,imageLoad(ssao,ssaoCoord).g),0.0,1.0);
+        brdfData.ao=clamp(min(ao,gtaoValue),0.0,1.0);
+        float backAO=clamp(min(ao,imageLoad(gtao,gtaoCoord).g),0.0,1.0);
         vec3 backIrradiance=SampleGrassBackIrradiance(brdfData.positionWS,brdfData.normal);
         vec3 L=normalize(uDirectionLight.direction.xyz);
         float sunShadow=min(sssShadow,GrassContactShadow(brdfData.positionWS,L,
@@ -524,7 +493,7 @@ void main()
         {
             // Thin leaf pixels use UE-style two-sided foliage transmission.
             // This affects the current pixel lighting only; leaves are not injected into probe SH.
-            brdfData.ao = clamp(min(ao, ssaoValue), 0.0, 1.0);
+            brdfData.ao = clamp(min(ao, gtaoValue), 0.0, 1.0);
             TreeLeafMaterialPayload leafPayload = GetTreeLeafMaterialPayload(treeMaterialIndex);
             vec4 leafSubsurface = max(leafPayload.subsurfaceColorAndStrength, vec4(0.0));
             vec4 leafScattering = leafPayload.scattering;

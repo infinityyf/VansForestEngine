@@ -28,6 +28,7 @@ enum class VansEditorWindowId : std::uint8_t
 	HiZCull,
 	HairDebug,
 	Water,
+	Weather,
 	Terrain,
 	Pcg,
 	PostProcess,
@@ -61,7 +62,7 @@ public:
 		m_Open = defaults;
 	}
 
-	static constexpr const std::array<VansEditorWindowDescriptor, 24>& All()
+	static constexpr const std::array<VansEditorWindowDescriptor, 25>& All()
 	{
 		return Descriptors;
 	}
@@ -72,7 +73,7 @@ private:
 		return static_cast<std::size_t>(id);
 	}
 
-	inline static constexpr std::array<VansEditorWindowDescriptor, 24> Descriptors{{
+	inline static constexpr std::array<VansEditorWindowDescriptor, 25> Descriptors{{
 		{ VansEditorWindowId::Light, "Light", "Light", VansEditorWindowMenuGroup::General },
 		{ VansEditorWindowId::Scriptor, "Scriptor", "Scripts", VansEditorWindowMenuGroup::General },
 		{ VansEditorWindowId::Console, "Console", "Console", VansEditorWindowMenuGroup::General },
@@ -92,6 +93,7 @@ private:
 		{ VansEditorWindowId::HiZCull, "HiZCull", "HiZ Occlusion Culling", VansEditorWindowMenuGroup::Rendering },
 		{ VansEditorWindowId::HairDebug, "HairDebug", "Hair Debug", VansEditorWindowMenuGroup::Rendering },
 		{ VansEditorWindowId::Water, "Water", "Water", VansEditorWindowMenuGroup::Rendering },
+		{ VansEditorWindowId::Weather, "Weather", "Weather", VansEditorWindowMenuGroup::Rendering },
 		{ VansEditorWindowId::Terrain, "Terrain", "Terrain", VansEditorWindowMenuGroup::Rendering },
 		{ VansEditorWindowId::Pcg, "Pcg", "PCG", VansEditorWindowMenuGroup::Rendering },
 		{ VansEditorWindowId::PostProcess, "PostProcess", "Post Process", VansEditorWindowMenuGroup::Rendering },

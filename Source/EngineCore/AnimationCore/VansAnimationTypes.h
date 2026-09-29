@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "../ScriptCore/VansCommonUtils.h"
+#include "VansAnimationFrameMemory.h"
 #include <../../GLM/glm.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
@@ -142,7 +143,17 @@ namespace VansGraphics
 
 	struct Skeleton
 	{
+		struct VirtualBoneLink
+		{
+			int boneIndex = -1;
+			int sourceBoneIndex = -1;
+			int targetBoneIndex = -1;
+		};
 		std::vector<BoneInfo>                    bones;
+		// Derived non-skinned bones appended after the imported hierarchy.
+		// The source index is the physical bone used to calculate the local
+		// transform; the virtual bone's parent is stored in BoneInfo.
+		std::vector<VirtualBoneLink>             virtualBoneLinks;
 		std::string                              sourceSkeletonGuid;
 		std::uint64_t                           signature = 0;
 		std::unordered_map<std::string, int>     boneNameToIndex;
@@ -255,7 +266,7 @@ namespace VansGraphics
 				return false;
 			}
 
-			std::vector<bool> visited(boneCount, false);
+			VansAnimationFrameVector<bool> visited(boneCount, false);
 			for (int boneIndex : topologicalOrder)
 			{
 				if (boneIndex < 0 || boneIndex >= static_cast<int>(boneCount))
@@ -281,6 +292,27 @@ namespace VansGraphics
 					return false;
 				}
 				visited[index] = true;
+			}
+			if (!virtualBoneLinks.empty())
+			{
+				const int firstVirtual = virtualBoneLinks.front().boneIndex;
+				if (firstVirtual < 0
+					|| static_cast<std::size_t>(firstVirtual) + virtualBoneLinks.size() != boneCount)
+				{
+					if (reason) *reason = "virtual bone links do not cover the appended bone suffix";
+					return false;
+				}
+				for (std::size_t offset = 0; offset < virtualBoneLinks.size(); ++offset)
+				{
+					const VirtualBoneLink& link = virtualBoneLinks[offset];
+					if (link.boneIndex != firstVirtual + static_cast<int>(offset)
+						|| link.sourceBoneIndex < 0 || link.sourceBoneIndex >= firstVirtual
+						|| link.targetBoneIndex < 0 || link.targetBoneIndex >= link.boneIndex)
+					{
+						if (reason) *reason = "virtual bone link has invalid source, target or order";
+						return false;
+					}
+				}
 			}
 			return true;
 		}
@@ -322,6 +354,12 @@ namespace VansGraphics
 						addUint32(bits);
 					}
 				}
+			}
+			for (const VirtualBoneLink& link : virtualBoneLinks)
+			{
+				addUint32(static_cast<std::uint32_t>(link.boneIndex + 1));
+				addUint32(static_cast<std::uint32_t>(link.sourceBoneIndex + 1));
+				addUint32(static_cast<std::uint32_t>(link.targetBoneIndex + 1));
 			}
 			return hash;
 		}

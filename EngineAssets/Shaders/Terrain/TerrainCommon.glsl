@@ -10,7 +10,6 @@ layout(set = 1, binding = 6) uniform TerrainParams
     ivec4 layerCountPacked;
     float tilingFactors[8];
     vec4 heightfieldParams; // x=terrainSize, y=maxHeight, z=heightOffset, w=patchGridResolution
-    vec4 riverWetnessParams; // x=albedoScale, y=roughness, z=detailNormalScale
 } terrainParams;
 
 layout(set = 1, binding = 7) uniform TessellationParams

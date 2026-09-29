@@ -2,6 +2,7 @@
 
 #include "../Storage/VansFileStorage.h"
 #include "../VansAssetDatabase.h"
+#include "../VansTextureResidentMip.h"
 #include "../VansDerivedArtifactLayout.h"
 
 #include <algorithm>
@@ -319,7 +320,7 @@ bool ReadHeaderAndTable(
 bool IsArtifactCurrent(
     const std::filesystem::path& artifactPath,
     const FileStamp& sourceStamp,
-    const FileStamp& metaStamp)
+    std::uint32_t expectedFormat)
 {
     TextureArtifactHeader header{};
     std::vector<TextureArtifactMip> mips;
@@ -328,8 +329,7 @@ bool IsArtifactCurrent(
         return false;
     return header.sourceSize == sourceStamp.size &&
         header.sourceWriteTime == sourceStamp.writeTime &&
-        header.metaSize == metaStamp.size &&
-        header.metaWriteTime == metaStamp.writeTime;
+        header.format == expectedFormat;
 }
 
 bool HeaderMatches(const TextureArtifactHeader& actual, const TextureArtifactHeader& expected)
@@ -455,7 +455,14 @@ VansTextureCookResult VansTextureCooker::CookIfNeeded(
         result.artifactPath.clear();
         return result;
     }
-    if (IsArtifactCurrent(result.artifactPath, sourceStamp, metaStamp))
+    const bool useCompress = meta.ReadBoolSetting("useCompress", true);
+    const int importChannel = meta.ReadIntSetting("importChannel", 4);
+    const std::uint32_t cookedFormat = useCompress
+        ? kFormatBC3
+        : importChannel == 1 ? kFormatR8
+        : importChannel == 2 ? kFormatRG8
+        : kFormatRGBA8;
+    if (IsArtifactCurrent(result.artifactPath, sourceStamp, cookedFormat))
     {
         result.status = VansTextureCookStatus::UpToDate;
         return result;
@@ -488,13 +495,6 @@ VansTextureCookResult VansTextureCooker::CookIfNeeded(
     std::vector<std::uint8_t> rgba(loaded, loaded + baseBytes);
     stbi_image_free(loaded);
 
-    const bool useCompress = meta.ReadBoolSetting("useCompress", true);
-    const int importChannel = meta.ReadIntSetting("importChannel", 4);
-    const std::uint32_t cookedFormat = useCompress
-        ? kFormatBC3
-        : importChannel == 1 ? kFormatR8
-        : importChannel == 2 ? kFormatRG8
-        : kFormatRGBA8;
     const int mipCount = CalculateMipCount(width, height);
     std::vector<TextureArtifactMip> artifactMips;
     artifactMips.reserve(static_cast<std::size_t>(mipCount));
@@ -563,7 +563,8 @@ VansTextureCookResult VansTextureCooker::CookIfNeeded(
 bool VansTextureCooker::LoadArtifact(
     const std::filesystem::path& artifactPath,
     VansCookedTextureData& result,
-    std::string& error)
+    std::string& error,
+    std::uint32_t maxResidentDimension)
 {
     TextureArtifactHeader header{};
     std::vector<TextureArtifactMip> artifactMips;
@@ -572,19 +573,31 @@ bool VansTextureCooker::LoadArtifact(
 
     VansCookedTextureData loaded;
     loaded.format = static_cast<VansCookedTextureFormat>(header.format);
-    loaded.width = header.width;
-    loaded.height = header.height;
+    const std::size_t firstMip = SelectTextureResidentMip(
+        header.width, header.height, maxResidentDimension);
+    if (firstMip >= artifactMips.size())
+    {
+        error = "Cooked texture mip selection exceeds table: " + artifactPath.string();
+        return false;
+    }
+    const std::uint64_t firstOffset = artifactMips[firstMip].offset;
+    loaded.width = artifactMips[firstMip].width;
+    loaded.height = artifactMips[firstMip].height;
     std::string payloadBytes;
-    if (!VansFileStorage::ReadByteRange(artifactPath, header.dataOffset, header.dataSize, payloadBytes, error))
+    if (!VansFileStorage::ReadByteRange(artifactPath, header.dataOffset + firstOffset,
+        header.dataSize - firstOffset, payloadBytes, error))
     {
         error = "Cannot read cooked texture payload: " + artifactPath.string();
         return false;
     }
     loaded.data.resize(payloadBytes.size());
     std::memcpy(loaded.data.data(), payloadBytes.data(), payloadBytes.size());
-    loaded.mips.reserve(artifactMips.size());
-    for (const TextureArtifactMip& mip : artifactMips)
-        loaded.mips.push_back({ mip.width, mip.height, mip.offset, mip.size });
+    loaded.mips.reserve(artifactMips.size() - firstMip);
+    for (std::size_t index = firstMip; index < artifactMips.size(); ++index)
+    {
+        const TextureArtifactMip& mip = artifactMips[index];
+        loaded.mips.push_back({ mip.width, mip.height, mip.offset - firstOffset, mip.size });
+    }
 
     result = std::move(loaded);
     return true;

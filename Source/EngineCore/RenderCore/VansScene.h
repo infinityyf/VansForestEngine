@@ -21,6 +21,7 @@
 #include "../SceneRuntime/VansRuntimeWorld.h"
 #include "../SceneRuntime/Transform/VansTransformGraph.h"
 #include "../CameraCore/VansCameraCore.h"
+#include "../PhysicsCore/VansPhysicsEvents.h"
 #include "../SceneCore/VansSceneParentReference.h"
 #include "../SceneCore/VansSceneRenderSettingsConfig.h"
 #include "../AnimationCore/Procedural/VansProceduralTypes.h"
@@ -48,6 +49,7 @@ namespace VansGraphics { class VansWaterSystem; }
 namespace VansGraphics { class VansAtmosphereSystem; }
 namespace VansGraphics { class VansNearMediaSystem; }
 namespace VansGraphics { class VansVolumetricCloudSystem; }
+namespace VansGraphics { class VansRainRenderSystem; }
 namespace VansGraphics { struct VansAtmosphereQualityConfig; }
 
 namespace VansGraphics { class VansMesh; }
@@ -434,10 +436,10 @@ namespace VansGraphics
 		std::unique_ptr<VansAtmosphereSystem> m_AtmosphereSystem;
 		std::unique_ptr<VansNearMediaSystem> m_NearMediaSystem;
 		std::unique_ptr<VansVolumetricCloudSystem> m_VolumetricCloudSystem;
+		std::unique_ptr<VansRainRenderSystem> m_RainRenderSystem;
 		std::vector<VansRenderNode*> m_TransParentRenderNodes;
 		std::vector<VansRenderNode*> m_ForwardOpaquePreAtmosphereRenderNodes;
 		std::vector<VansRenderNode*> m_PostProcessRenderNodes;
-		std::vector<VansRenderNode*> m_ScreenSpaceRenderNodes;
 		std::vector<VansRenderNode*> m_DecalRenderNodes;
         VansParticleRenderSystem m_ParticleRenderSystem;
         std::unordered_map<const VansParticleAsset*,std::weak_ptr<const VansParticleRenderAsset>> m_ParticleRenderAssets;
@@ -497,6 +499,7 @@ namespace VansGraphics
 		VansMainCameraHiZCullSettings m_MainCameraHiZCullSettings;
 		Vans::VansSceneEnvironmentSettingsConfig m_EnvironmentSettings;
 		std::uint64_t m_EnvironmentSettingsGeneration = 0;
+		Vans::VansRainRuntime m_RainRuntime;
 		VansVKBuffer m_DummyBoneIDBuffer;
 		VansVKBuffer m_DummyBoneBuffer;
 		VansVKBuffer m_DummyWeightBuffer;
@@ -510,6 +513,19 @@ namespace VansGraphics
 		};
 		std::vector<std::unique_ptr<VansSceneClothRuntime>> m_ClothRuntimes;
 		std::vector<VansEngine::VansCharacterControllerNode*> m_CharControllerNodes;
+		struct DeferredCharacterAnimation
+		{
+			Vans::VansComponentHandle controller;
+			Vans::VansComponentHandle animation;
+			float deltaTime;
+		};
+		std::vector<DeferredCharacterAnimation> m_DeferredCharacterAnimations;
+		struct CharacterMovementResult
+		{
+			Vans::VansComponentHandle controller;
+			VansEngine::VansCharacterMovementUpdatedEvent event;
+		};
+		std::vector<CharacterMovementResult> m_CharacterMovementResults;
 		VansEngine::VansPhysicsVehicle* m_Vehicle = nullptr;
 		std::vector<VansScriptObject*> m_SceneObjects;
 		// 仅在实体集合结构发生变化时递增，供上层空间注册表按需重建。
@@ -574,7 +590,6 @@ namespace VansGraphics
 
 		const std::vector<VansRenderNode*>& GetPostProcessRenderNodes() const { return m_PostProcessRenderNodes; }
 
-		const std::vector<VansRenderNode*>& GetScreenSpaceRenderNodes() const { return m_ScreenSpaceRenderNodes; }
 
 		const std::vector<VansRenderNode*>& GetDecalRenderNodes() const { return m_DecalRenderNodes; }
 
@@ -715,6 +730,7 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_GlobalDescriptorSetLayout = VK_NULL_HANDLE;
 
 		VkDescriptorSet m_GlobalDescriptorSet = VK_NULL_HANDLE;
+		VansVKBuffer m_SurfaceWeatherFrameBuffer;
 
 	public:
 
@@ -1130,6 +1146,43 @@ namespace VansGraphics
 			m_EnvironmentSettings = settings;
 			++m_EnvironmentSettingsGeneration;
 		}
+
+		VansRainRenderSystem* GetRainRenderSystem() const
+		{
+			return m_RainRenderSystem.get();
+		}
+		void SetRainSettings(const Vans::VansRainSettings& settings)
+		{
+			m_RainRuntime.Configure(settings);
+		}
+		bool ApplyRainSettings(
+			const Vans::VansRainSettings& settings,
+			std::string& error)
+		{
+			if (!Vans::ValidateRainSettings(settings, error))
+				return false;
+			m_RainRuntime.ApplySettings(settings);
+			error.clear();
+			return true;
+		}
+		bool ApplyRainPuddleFill(float puddleFill, std::string& error)
+		{
+			if (!m_RainRuntime.SetPuddleFill(puddleFill))
+			{
+				error = "Rain puddle-fill preview must be finite and within [0, 1]";
+				return false;
+			}
+			error.clear();
+			return true;
+		}
+		const Vans::VansRainSettings& GetRainSettings() const
+		{
+			return m_RainRuntime.Settings();
+		}
+		const Vans::VansRainState& GetRainState() const
+		{
+			return m_RainRuntime.State();
+		}
 		const Vans::VansSceneEnvironmentSettingsConfig& GetEnvironmentSettings() const
 		{
 			return m_EnvironmentSettings;
@@ -1264,9 +1317,8 @@ namespace VansGraphics
 		void DrawOpaqueNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
 		bool BuildOpaqueDrawSubmission(GlobalStateData globalStateData, VansDrawSubmissionList& submission);
 
-		void DrawHairVisibilityNodes();
+		void DrawHairNodes(const char* passName);
 
-		void DrawHairDeepOpacityNodes(VansGraphicsShader* shader);
 
 
 
@@ -1313,7 +1365,6 @@ namespace VansGraphics
 
 
 
-		void DrawScreenSpaceFeatureNode();
 
 
 

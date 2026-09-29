@@ -67,11 +67,20 @@ std::vector<std::string> ValidateTerrainAsset(const VansTerrainAsset& asset, boo
 		!std::isfinite(asset.settings.heightDetailFadeStart) ||
 		asset.settings.heightDetailFadeStart < 0.0f || asset.settings.heightDetailFadeStart >= 1.0f)
 		diagnostics.emplace_back("Terrain material height detail settings are invalid");
-	const auto& wetness = asset.settings.riverWetness;
+	const auto& wetness = asset.settings.wetSurface;
 	if (!std::isfinite(wetness.albedoScale) || wetness.albedoScale < 0.0f || wetness.albedoScale > 1.0f ||
-		!std::isfinite(wetness.roughness) || wetness.roughness < 0.0f || wetness.roughness > 1.0f ||
-		!std::isfinite(wetness.detailNormalScale) || wetness.detailNormalScale < 0.0f || wetness.detailNormalScale > 1.0f)
-		diagnostics.emplace_back("Terrain river wetness material settings are invalid");
+		!std::isfinite(wetness.roughness) || wetness.roughness < 0.0f || wetness.roughness > 1.0f)
+		diagnostics.emplace_back("Terrain wet-surface material settings are invalid");
+	const auto& puddle = asset.settings.puddle;
+	if (!FinitePositive(puddle.scaleMeters) || !std::isfinite(puddle.detailScale) ||
+		puddle.detailScale <= 1.0f ||
+		!std::isfinite(puddle.threshold) || puddle.threshold < 0.0f || puddle.threshold > 1.0f ||
+		!std::isfinite(puddle.softness) || puddle.softness <= 0.0f || puddle.softness > 0.5f ||
+		!std::isfinite(puddle.strength) || puddle.strength < 0.0f || puddle.strength > 1.0f ||
+		!std::isfinite(puddle.seed))
+	{
+		diagnostics.emplace_back("Terrain puddle-noise mask settings are invalid");
+	}
 	if (asset.layers.empty() || asset.layers.size() > VANS_TERRAIN_LAYER_COUNT)
 		diagnostics.emplace_back("Terrain requires between one and eight material layers");
 	std::unordered_set<std::string> layerIds;

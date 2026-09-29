@@ -1111,6 +1111,18 @@ namespace
 			"Limb IK soft reach did not preserve bend while solving its effective target"))
 			return false;
 
+		VansAnimationRigAsset hardReachAsset = fixture.asset;
+		hardReachAsset.chains.front().softReachStartRatio = 1.0f;
+		VansCompiledAnimationRig hardReachRig;
+		if (!VansAnimationRigCompiler::Compile(
+			hardReachAsset, fixture.skeleton, hardReachRig, error))
+			return Check(false, error.c_str());
+		workspace.Initialize(fixture.skeleton, fixture.localPose);
+		const VansProceduralSolverResult hardReachResult = VansLimbIKSolver::Solve(
+			workspace, hardReachRig, hardReachRig.chains.front(), softGoal);
+		if (!Check(!hardReachResult.softReachApplied && workspace.IsFinite(),
+			"Limb IK hard reach should not soften an attainable target")) return false;
+
 		workspace.Initialize(fixture.skeleton, fixture.localPose);
 		VansProceduralGoal partialGoal = reachable;
 		partialGoal.positionWeight = 0.35f;
@@ -1716,6 +1728,85 @@ namespace
 		return true;
 	}
 
+	bool TestComponentBoneTransformCheckpoint()
+	{
+		LegFixture fixture;
+		if (!BuildLegFixture(fixture, false)) return false;
+		const int foot = fixture.skeleton.FindBoneIndex("foot_l");
+		VansPoseWorkspace original;
+		if (!Check(original.Initialize(fixture.skeleton, fixture.localPose), "Bone transform fixture failed")) return false;
+		const glm::vec3 before = original.GetComponentPosition(foot);
+		VansAnimGraph graph;
+		const int inputId = graph.AddNode(std::make_unique<AnimGraphTargetPoseInputNode>());
+		auto checkpoint = std::make_unique<AnimGraphPoseCheckpointNode>();
+		checkpoint->m_CheckpointId = "pre";
+		checkpoint->m_Bones = {"foot_l"};
+		const int checkpointId = graph.AddNode(std::move(checkpoint));
+		auto transform = std::make_unique<AnimGraphComponentBoneTransformNode>();
+		transform->m_BoneName = "foot_l";
+		transform->m_PositionParameter = "position";
+		transform->m_RotationParameter = "rotation";
+		transform->m_AlphaParameter = "alpha";
+		const int transformId = graph.AddNode(std::move(transform));
+		const int outputId = graph.AddNode(std::make_unique<AnimGraphOutputNode>());
+		graph.AddLink(inputId,0,checkpointId,0);
+		graph.AddLink(checkpointId,0,transformId,0);
+		graph.AddLink(transformId,0,outputId,0);
+		nlohmann::json json;
+		graph.SerializeToJsonObject(json);
+		auto loaded = VansAnimGraph::DeserializeFromJsonObject(json);
+		if (!Check(loaded && loaded->GetNode(transformId)->GetType()==VansAnimGraphNodeType::ComponentBoneTransform,
+			"Bone Transform graph serialization lost the node")) return false;
+		VansProceduralGraphRuntime runtime;
+		std::string error;
+		if (!Check(runtime.Configure(*loaded, fixture.rig, {}, error), error.c_str())) return false;
+		struct Values {float alpha;glm::vec3 position;glm::quat rotation;} values{
+			1.0f, before+glm::vec3(.1f,.2f,0), glm::angleAxis(glm::radians(30.0f),glm::vec3(0,1,0))};
+		VansProceduralParameterAccessor parameters;
+		parameters.context=&values;
+		parameters.readFloat=[](const void* data,const std::string& name,float& value)
+		{if(name!="alpha")return false;value=static_cast<const Values*>(data)->alpha;return true;};
+		parameters.readVector3=[](const void* data,const std::string& name,glm::vec3& value)
+		{if(name!="position")return false;value=static_cast<const Values*>(data)->position;return true;};
+		parameters.readQuaternion=[](const void* data,const std::string& name,glm::quat& value)
+		{if(name!="rotation")return false;value=static_cast<const Values*>(data)->rotation;return true;};
+		VansAnimationExternalInputSnapshot input;
+		std::vector<VansBoneTransform> output;
+		std::vector<VansWorldQueryRequest> requests;
+		bool needsResolve=false;
+		auto prepare=[&](){return runtime.Prepare(1.0f/60,fixture.localPose,
+			{checkpointId,transformId},parameters,input,requests,output,needsResolve,error);};
+		if (!Check(prepare() && !needsResolve,error.c_str())) return false;
+		glm::mat4 snapshot;
+		if (!Check(runtime.TryGetCheckpointTransform("pre",foot,snapshot)
+			&& glm::length(glm::vec3(snapshot[3])-before)<1e-6f,
+			"Bone Transform changed an upstream pose checkpoint")) return false;
+		VansPoseWorkspace result;
+		if (!Check(result.Initialize(fixture.skeleton,output)
+			&& glm::length(result.GetComponentPosition(foot)-values.position)<1e-5f
+			&& std::abs(glm::dot(result.GetComponentRotation(foot),values.rotation))>.99999f,
+			"Bone Transform did not replace component position and rotation")) return false;
+		values.alpha=0;
+		if (!Check(prepare() && result.Initialize(fixture.skeleton,output)
+			&& glm::length(result.GetComponentPosition(foot)-before)<1e-6f,
+			"Zero-alpha Bone Transform changed the input pose")) return false;
+		auto* additive = static_cast<AnimGraphComponentBoneTransformNode*>(loaded->GetNode(transformId));
+		additive->m_PositionAdditive = true;
+		additive->m_RotationAdditive = true;
+		additive->m_WorldSpace = true;
+		if (!Check(runtime.Configure(*loaded,fixture.rig,{},error),error.c_str())) return false;
+		values.alpha = 1;
+		values.position = glm::vec3(.1f,0,0);
+		values.rotation = glm::angleAxis(glm::radians(90.0f),glm::vec3(0,1,0));
+		input.ownerWorld = glm::rotate(glm::mat4(1),glm::radians(90.0f),glm::vec3(0,1,0));
+		if (!Check(prepare() && result.Initialize(fixture.skeleton,output)
+			&& glm::length(result.GetComponentPosition(foot)-(before+glm::vec3(0,0,.1f)))<1e-5f
+			&& std::abs(glm::dot(result.GetComponentRotation(foot),
+				values.rotation*original.GetComponentRotation(foot)))>.99999f,
+			"World-space additive Bone Transform lost owner rotation or composition")) return false;
+		return true;
+	}
+
 	bool TestGroundingRigEditContinuity()
 	{
 		LegFixture fixture;
@@ -2014,6 +2105,7 @@ bool RunProceduralAnimationContractTests()
 		&& TestTransformTargetHierarchy()
 		&& TestChainTargetOrientation()
 		&& TestTransformTargetCheckpoint()
+		&& TestComponentBoneTransformCheckpoint()
 		&& TestGroundingPlanesAndAirborne()
 		&& TestGroundingContactWeightingAndStaticSeams()
 		&& TestGroundingMovingSupport()
@@ -2022,4 +2114,9 @@ bool RunProceduralAnimationContractTests()
 		&& TestChainAndAimSolvers()
 		&& TestStrictRetargetAndContactConfiguration()
 		&& TestProjectSceneProceduralConfiguration();
+}
+
+bool RunComponentBoneTransformContractTest()
+{
+	return TestComponentBoneTransformCheckpoint();
 }

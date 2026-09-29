@@ -806,10 +806,9 @@ namespace VansGraphics
 		VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
 
 		VkFence graphicsFence = VK_NULL_HANDLE;
-		VkFence ssaoRawFence = VK_NULL_HANDLE;
+		VkFence gtaoRawFence = VK_NULL_HANDLE;
 		VkFence graphicsScreenFence = VK_NULL_HANDLE;
 		VkFence shadowMapsFence = VK_NULL_HANDLE;
-		VkFence hairShadowFence = VK_NULL_HANDLE;
 		VkFence gbufferFence = VK_NULL_HANDLE;
 		VkFence gbufferMaterialFence = VK_NULL_HANDLE;
 		VkFence vegetationFence = VK_NULL_HANDLE;
@@ -820,10 +819,9 @@ namespace VansGraphics
 		VkFence giDataFence = VK_NULL_HANDLE;
 
 		bool frameSubmitSucceeded = true;
-		bool ssaoRawRecorded = false;
+		bool gtaoRawRecorded = false;
 		bool graphicsScreenRecorded = false;
 		bool shadowMapsRecorded = false;
-		bool hairShadowRecorded = false;
 		bool gbufferRecorded = false;
 		bool gbufferMaterialRecorded = false;
 		bool vegetationRecorded = false;

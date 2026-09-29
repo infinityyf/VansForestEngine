@@ -46,6 +46,19 @@ namespace
 		}
 	}
 
+	void DrawHairPreviews(Vans::EditorAPI::IRenderEditorAPI& renderAPI)
+	{
+		ImGui::Text("Hair ShortCut (3 depth layers)");
+		ImGui::Text("Nearest depths + total optical depth; bounded storage.");
+        ImGui::TextWrapped("White coverage = opaque; optical depth is scaled by 16. Depth: black = no sample, brighter = farther (log distance). Color uses C/(1+C) and gamma for inspection.");
+        ImGui::TextWrapped("Previews refresh while this section is visible. No active Hair = no preview; after resize, wait one frame. Depth layers are nearest samples, not separate lit layers.");
+		ImGui::Separator();
+
+		Vans::EditorAPI::RenderTextureFilter filter;
+		filter.category = "hair_debug";
+		DrawPreviewTable("HairDebugTable", renderAPI.QueryRenderTexturePreviews(filter));
+	}
+
 	void DrawPipelineRegistryRow(
 		const char* label,
 		const Vans::EditorAPI::PipelineRegistryMapStatsSnapshot& stats)
@@ -259,41 +272,37 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(Vans::EditorAPI::IEngineEdi
 
 	if (VansGraphics::VansEditorWindow::IsWindowOpen(VansGraphics::VansEditorWindowId::RenderDebug))
 	{
-		ImGui::Begin("Render Debug", VansGraphics::VansEditorWindow::WindowOpenState(VansGraphics::VansEditorWindowId::RenderDebug));
-		ImGui::TextWrapped("SSAO: white = unoccluded, black = fully occluded. Filtered is the SSAO input to Deferred lighting, before material AO.");
-		if (ImGui::CollapsingHeader("Ambient Reflection Sky Cache", ImGuiTreeNodeFlags_DefaultOpen))
+		if (ImGui::Begin("Render Debug", VansGraphics::VansEditorWindow::WindowOpenState(VansGraphics::VansEditorWindowId::RenderDebug)))
 		{
-			int mode = static_cast<int>(renderAPI.GetAmbientSkyCacheDebugMode());
-			const char* modes[] = { "Off", "Cached Visibility", "Cache Confidence", "Sky Residual" };
-			if (ImGui::Combo("Visualization", &mode, modes, IM_ARRAYSIZE(modes)))
-				renderAPI.SetAmbientSkyCacheDebugMode(static_cast<std::uint32_t>(std::max(mode, 0)));
-			ImGui::TextDisabled("Only the uncovered sky residual is attenuated; SSR and local probes remain unchanged.");
+			ImGui::TextWrapped("GTAO: white = unoccluded, black = fully occluded. Denoised visibility feeds Deferred before material AO. Grass R/G store front/back hemisphere visibility.");
+			if (ImGui::CollapsingHeader("Ambient Reflection Sky Cache", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				int mode = static_cast<int>(renderAPI.GetAmbientSkyCacheDebugMode());
+				const char* modes[] = { "Off", "Cached Visibility", "Cache Confidence", "Sky Residual" };
+				if (ImGui::Combo("Visualization", &mode, modes, IM_ARRAYSIZE(modes)))
+					renderAPI.SetAmbientSkyCacheDebugMode(static_cast<std::uint32_t>(std::max(mode, 0)));
+				ImGui::TextDisabled("Only the uncovered sky residual is attenuated; SSR and local probes remain unchanged.");
+			}
+			ImGui::Separator();
+			Vans::EditorAPI::RenderTextureFilter filter;
+			filter.category = "render_debug";
+			if (ImGui::CollapsingHeader("Hair Intermediate Results"))
+				DrawHairPreviews(renderAPI);
+			DrawPreviewTable("RenderDebugTable", renderAPI.QueryRenderTexturePreviews(filter));
+			ImGui::Separator();
+			DrawRenderDocControls(renderAPI);
+			ImGui::Separator();
+			DrawRenderBackendDiagnostics(renderAPI);
+			ImGui::Separator();
+			DrawPipelineRegistryStats(renderAPI);
 		}
-		ImGui::Separator();
-		Vans::EditorAPI::RenderTextureFilter filter;
-		filter.category = "render_debug";
-		DrawPreviewTable("RenderDebugTable", renderAPI.QueryRenderTexturePreviews(filter));
-		ImGui::Separator();
-		DrawRenderDocControls(renderAPI);
-		ImGui::Separator();
-		DrawRenderBackendDiagnostics(renderAPI);
-		ImGui::Separator();
-		DrawPipelineRegistryStats(renderAPI);
 		ImGui::End();
 	}
 
 	if (VansGraphics::VansEditorWindow::IsWindowOpen(VansGraphics::VansEditorWindowId::HairDebug))
 	{
-		ImGui::Begin("Hair Debug", VansGraphics::VansEditorWindow::WindowOpenState(VansGraphics::VansEditorWindowId::HairDebug));
-		ImGui::Text("Hair PPLL OIT");
-		ImGui::Text("Visibility pass writes per-pixel linked-list storage buffers.");
-		ImGui::Text("HairColor: RGB lit hair, A resolved coverage");
-		ImGui::Text("HairDeepOpacity: RGBA four opacity slices");
-		ImGui::Separator();
-
-		Vans::EditorAPI::RenderTextureFilter filter;
-		filter.category = "hair_debug";
-		DrawPreviewTable("HairDebugTable", renderAPI.QueryRenderTexturePreviews(filter));
+		if (ImGui::Begin("Hair Debug", VansGraphics::VansEditorWindow::WindowOpenState(VansGraphics::VansEditorWindowId::HairDebug)))
+			DrawHairPreviews(renderAPI);
 		ImGui::End();
 	}
 }

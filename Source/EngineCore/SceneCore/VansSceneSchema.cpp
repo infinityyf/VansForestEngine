@@ -1,4 +1,5 @@
 #include "VansSceneEnvironmentAuthoring.h"
+#include "VansSceneRainAuthoring.h"
 #include "VansComponentTypeCatalog.h"
 #include "VansSceneRenderSettingsConfig.h"
 #include "VansSceneSchema.h"
@@ -262,11 +263,17 @@ VansSerializedValue SerializedObject(std::initializer_list<SerializedField> fiel
 VansSerializedValue VansSceneSchema::MakeDefaultSettings()
 {
     VansSceneEnvironmentSettingsConfig environment;
+	VansRainSettings rain;
     // 空场景尚无天体光源；天气由用户显式配置后启用。
     environment.physicalAtmosphere.enabled = false;
     environment.heightFog.enabled = false;
     environment.volumetricClouds.enabled = false;
-    return VansSerializedValue::Object({{"environment", WriteSceneEnvironmentSettings(environment)}});
+    return VansSerializedValue::Object({
+		{ "environment", WriteSceneEnvironmentSettings(environment) },
+		{ "weather", VansSerializedValue::Object({
+			{ "rain", WriteSceneRainSettings(rain) }
+		}) }
+	});
 }
 
 SceneDiagnostics VansSceneSchema::ValidateSceneJson(const Json& root)

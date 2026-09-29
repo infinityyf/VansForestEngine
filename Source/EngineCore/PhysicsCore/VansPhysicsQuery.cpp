@@ -3,6 +3,8 @@
 #include "VansPhysics.h"
 #include "VansPhysicsNativeAccess.h"
 #include "VansPhysicsNode.h"
+#include "VansCharacterControllerNode.h"
+#include "VansCollisionLayerManager.h"
 
 #include <PxPhysicsAPI.h>
 #include <characterkinematic/PxControllerManager.h>
@@ -11,12 +13,14 @@
 #include <cmath>
 #include <mutex>
 #include <unordered_set>
+#include <unordered_map>
+#include <type_traits>
 
 namespace VansEngine
 {
 	namespace
 	{
-		using ControllerActors = std::unordered_set<const physx::PxRigidActor*>;
+		using ControllerActors = std::unordered_map<const physx::PxRigidActor*,std::uint32_t>;
 
 		ControllerActors CollectControllerActors(physx::PxControllerManager* manager)
 		{
@@ -28,7 +32,10 @@ namespace VansEngine
 			{
 				const physx::PxController* controller = manager->getController(index);
 				if (controller != nullptr && controller->getActor() != nullptr)
-					actors.insert(controller->getActor());
+				{
+					const auto* node=static_cast<const VansCharacterControllerNode*>(controller->getUserData());
+					actors.emplace(controller->getActor(),node?node->GetTransformID():(std::numeric_limits<std::uint32_t>::max)());
+				}
 			}
 			return actors;
 		}
@@ -68,6 +75,7 @@ namespace VansEngine
 				candidate.isStatic = actor->getType() == physx::PxActorType::eRIGID_STATIC;
 				candidate.isDynamic = actor->getType() == physx::PxActorType::eRIGID_DYNAMIC;
 				candidate.isController = controllers.find(actor) != controllers.end();
+				if(candidate.isController)candidate.transformId=controllers.at(actor);
 				if (!candidate.isController && actor->userData != nullptr)
 				{
 					const auto* node = static_cast<const VansPhysicsNode*>(actor->userData);
@@ -84,6 +92,8 @@ namespace VansEngine
 			if (candidate.layerIndex >= 32u ||
 				(filter.layerMask & (1u << candidate.layerIndex)) == 0u)
 				return false;
+			if(filter.collisionLayerIndex < -1 || filter.collisionLayerIndex>=32 ||
+				(filter.collisionLayerIndex>=0 && !VansCollisionLayerManager::Get().CanLayersCollide(filter.collisionLayerIndex,static_cast<int>(candidate.layerIndex))))return false;
 			if ((!filter.includeStatic && candidate.isStatic) ||
 				(!filter.includeDynamic && candidate.isDynamic) ||
 				(!filter.includeTriggers && candidate.isTrigger) ||
@@ -187,6 +197,7 @@ namespace VansEngine
 			hit.normal = glm::dot(normal, normal) > 1.0e-10f
 				? glm::normalize(normal) : glm::vec3(0.0f, 1.0f, 0.0f);
 			hit.distance = nativeHit.distance;
+			if constexpr(std::is_same_v<THit,physx::PxSweepHit>)hit.initialOverlap=nativeHit.hadInitialOverlap();
 			PopulateCommonHit(nativeHit.shape, nativeHit.actor, controllers, hit);
 			return hit;
 		}
@@ -319,6 +330,40 @@ namespace VansEngine
 			&callback) && nativeHit.hasBlock;
 		if (blocked)
 			hit = BuildHit(nativeHit.block, controllers);
+		return blocked;
+	}
+
+	bool VansPhysicsQuery::SweepCapsuleClosest(const VansPhysicsCapsuleSweepRequest& request,VansPhysicsQueryHit& hit)
+	{
+		auto& physics=VansPhysicsSystem::GetInstance();
+		std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+		return SweepCapsuleClosestLocked(request,hit);
+	}
+
+	bool VansPhysicsQuery::SweepCapsuleClosestLocked(const VansPhysicsCapsuleSweepRequest& request,VansPhysicsQueryHit& hit)
+	{
+		hit={};
+		const auto finite=[](const glm::vec3& v){return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);};
+		const float directionLength=glm::length(request.direction),axisLength=glm::length(request.axis);
+		if(!finite(request.origin)||!finite(request.direction)||!finite(request.axis)||
+			!std::isfinite(request.distance)||request.distance<=0||
+			!std::isfinite(request.radius)||request.radius<=0||
+			!std::isfinite(request.halfHeight)||request.halfHeight<request.radius||
+			!std::isfinite(directionLength)||directionLength<=1e-6f||
+			!std::isfinite(axisLength)||axisLength<=1e-6f||request.filter.layerMask==0)return false;
+		auto& physics=VansPhysicsSystem::GetInstance();auto* scene=VansPhysicsNativeAccess::Scene(physics);
+		if(!scene)return false;
+		physx::PxSceneReadLock sceneReadLock(*scene);
+		const auto controllers=CollectControllerActors(VansPhysicsNativeAccess::ControllerManager(physics));
+		QueryFilterCallback callback(request.filter,controllers,physx::PxQueryHitType::eBLOCK);
+		const glm::vec3 direction=request.direction/directionLength;
+		const auto rotation=glm::quat(glm::vec3(1,0,0),request.axis/axisLength);
+		physx::PxSweepBuffer result;
+		const bool blocked=scene->sweep(physx::PxCapsuleGeometry(request.radius,request.halfHeight-request.radius),
+			physx::PxTransform(physx::PxVec3(request.origin.x,request.origin.y,request.origin.z),physx::PxQuat(rotation.x,rotation.y,rotation.z,rotation.w)),
+			physx::PxVec3(direction.x,direction.y,direction.z),request.distance,result,physx::PxHitFlag::eDEFAULT,
+			BuildFilterData(request.filter),&callback)&&result.hasBlock;
+		if(blocked){hit=BuildHit(result.block,controllers);hit.initialOverlap=result.block.hadInitialOverlap();}
 		return blocked;
 	}
 

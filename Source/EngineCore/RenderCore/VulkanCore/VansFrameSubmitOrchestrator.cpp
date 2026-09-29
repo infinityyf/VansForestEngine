@@ -428,9 +428,8 @@ const char* VansGraphics::ToString(VansSyncPoint point)
 	case VansSyncPoint::VegetationReady: return "VegetationReady";
 	case VansSyncPoint::DepthReady: return "DepthReady";
 	case VansSyncPoint::GBufferMaterialReady: return "GBufferMaterialReady";
-	case VansSyncPoint::SSAORawReady: return "SSAORawReady";
+	case VansSyncPoint::GTAORawReady: return "GTAORawReady";
 	case VansSyncPoint::ShadowMapsReady: return "ShadowMapsReady";
-	case VansSyncPoint::HairShadowReady: return "HairShadowReady";
 	case VansSyncPoint::TileLightReady: return "TileLightReady";
 	case VansSyncPoint::ScreenLightingReady: return "ScreenLightingReady";
 	case VansSyncPoint::WaterWaveDone: return "WaterWaveDone";

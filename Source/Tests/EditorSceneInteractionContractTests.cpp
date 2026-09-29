@@ -186,8 +186,8 @@ bool TestEditorSceneInteractionContract()
 				"editor window catalog did not apply configured default visibility");
 		}
 		Check(VansEditorWindowCatalog::All().size() == seenWindowIds.size() &&
-			generalWindowCount == 9 && animationWindowCount == 2 && renderingWindowCount == 13 &&
-			defaultOpenWindowCount == 6,
+			generalWindowCount == 9 && animationWindowCount == 2 && renderingWindowCount == 14 &&
+			defaultOpenWindowCount == 7,
 			"editor window catalog coverage or menu grouping changed unexpectedly");
 		for (bool seen : seenWindowIds)
 			Check(seen, "editor window catalog does not cover every window id");
@@ -196,6 +196,7 @@ bool TestEditorSceneInteractionContract()
 			windowCatalog.IsOpen(VansEditorWindowId::Console) &&
 			windowCatalog.IsOpen(VansEditorWindowId::UIEditor) &&
 			windowCatalog.IsOpen(VansEditorWindowId::Water) &&
+			windowCatalog.IsOpen(VansEditorWindowId::Weather) &&
 			windowCatalog.IsOpen(VansEditorWindowId::Terrain) &&
 			!windowCatalog.IsOpen(VansEditorWindowId::Profiler),
 			"editor window catalog changed the legacy default-open set");
@@ -1470,7 +1471,7 @@ bool TestEditorSceneInteractionContract()
 			packageToolSource.find("return Vans::ParseGamePackagePlatform(value, platform);") != std::string::npos &&
 			countText(packageBuilderSource, "value == \"Windows\"") == 1,
 			"Editor defaults, layout, fonts, or package platform escaped the strict configuration path");
-		Check(countText(editorWindowSource, "m_WindowRegistry.Add<") == 32 &&
+		Check(countText(editorWindowSource, "m_WindowRegistry.Add<") == 33 &&
 			editorWindowSource.find("m_WindowRegistry.All()") != std::string::npos &&
 			editorWindowSource.find("AddEditorWindowComponent") == std::string::npos &&
 			editorWindowHeader.find("m_Windows") == std::string::npos &&
@@ -1813,7 +1814,7 @@ bool TestEditorSceneInteractionContract()
 			gizmoSource.find("api.GetReflectionProbeSettings(") == std::string::npos,
 			"Shader Probe GI or Water operations escaped their domain API facets");
 		Check(editorApiHeader.find("public ISceneSettingsEditorAPI") != std::string::npos &&
-			countText(sceneSettingsApiHeader, "virtual ") == 9 &&
+			countText(sceneSettingsApiHeader, "virtual ") == 12 &&
 			editorApiHeader.find("GetLightingSettings(") == std::string::npos &&
 			editorApiHeader.find("ApplyLightingSettings(") == std::string::npos &&
 			editorApiHeader.find("GetPostProcessSettings(") == std::string::npos &&
@@ -2404,7 +2405,7 @@ bool TestEditorSceneInteractionContract()
 			cameraArbiterSource.find("FrameStage::BaseCaptured") != std::string::npos &&
 			apiSource.find("IsBaseCameraWriteWindowOpen()") != std::string::npos,
 			"camera base-write and contribution phases became implicit again");
-		std::cout<<"EDITOR_SCENE_INTERACTION_PASS window_catalog=24+single_state+configured_defaults editor_config=strict+fonts+layout+windows+platform window_registry=32+ordered+typed+owned debug_view_state=owned+injected+automation shell_menu=18_assets+command_sink+lazy_availability shell_commands=shortcut_priority+semantic_dispatch authoring_commands=save_all+reload+exit_gate package_session=dirty_order+request_forward+result_state prefab_session=owned+queued+stage play_toolbar=edit+play+pause+scene_gate play_commands=gate+timer+physics+state+reload_order project_session=selector+loaded+pending_request project_switch=dirty_gate+unload+open+publish_order scene_load_session=current+pending+mode scene_document_session=paired_owner+prefab_swap scene_load_controller=gate+prepare+publish+mode_order scene_load_request=encapsulated theme_owner=fonts+base_style+49_colors+toolbar history=chronological history_adapter=five_sources+runtime_patch selection_snapshot=derived+single_service save_transaction=single+scene_assets entity_preview_projection=scene_reader+dto_translation serialized_value=direct_dto+single_pointer_validator scene_document=rebuild+live_diagnostics+schema_validation authoring_boundary=instance_sessions+scene_host+asset_creation_transaction+runtime_neutral_preview engine_configuration=explicit_paths+project_owner+immutable_render_bootstrap runtime_command_commit=typed_points+game_logic_guard+batched_hierarchy_recompute scene_vehicle=guid_keyed+postbuild_publish material_override_transaction=service_owned camera_base_write=explicit_window+phase_assert api_facets=animation_12+animation_preview_20+asset_authoring_8+asset_catalog_3+audio_6+ai_1+gaf_19+gi_6+motion_matching_1+particle_2+pcg_27+play_mode_4+project_13+reflection_probe_9+render_20+runtime_command_history_4+runtime_frame_13+runtime_physics_9+runtime_scene_9+scene_interaction_9+scene_settings_9+script_lifecycle_3+shader_2+terrain_9+timeline_7+ui_7+vehicle_1+water_3 asset_meta_dead_bridge=removed lighting_commit_dead_bridge=removed particle_dead_bridge=removed project_mesh_alias_dead_bridge=removed reflection_probe_rebuild_dead_bridge=removed runtime_history_can_helpers_dead_bridge=removed runtime_resource_ready_dead_bridge=removed runtime_script_module_dead_bridge=removed runtime_transform_command_dead_bridge=removed runtime_unique_name_dead_bridge=removed runtime_vehicle_input_dead_bridge=removed runtime_vehicle_step=private viewport_texture_dead_bridge=removed transform=preview+single_scene_commit+undo_redo preview_ownership=instance_registry+session_owner+runtime_detach ray_projection=perspective+orthographic bounds=finite+limited+parallel frame=wide+tall cancel=pass play_isolation=pass selection_toggle=pass\n";
+		std::cout<<"EDITOR_SCENE_INTERACTION_PASS window_catalog=25+single_state+configured_defaults editor_config=strict+fonts+layout+windows+platform window_registry=33+ordered+typed+owned debug_view_state=owned+injected+automation shell_menu=18_assets+command_sink+lazy_availability shell_commands=shortcut_priority+semantic_dispatch authoring_commands=save_all+reload+exit_gate package_session=dirty_order+request_forward+result_state prefab_session=owned+queued+stage play_toolbar=edit+play+pause+scene_gate play_commands=gate+timer+physics+state+reload_order project_session=selector+loaded+pending_request project_switch=dirty_gate+unload+open+publish_order scene_load_session=current+pending+mode scene_document_session=paired_owner+prefab_swap scene_load_controller=gate+prepare+publish+mode_order scene_load_request=encapsulated theme_owner=fonts+base_style+49_colors+toolbar history=chronological history_adapter=five_sources+runtime_patch selection_snapshot=derived+single_service save_transaction=single+scene_assets entity_preview_projection=scene_reader+dto_translation serialized_value=direct_dto+single_pointer_validator scene_document=rebuild+live_diagnostics+schema_validation authoring_boundary=instance_sessions+scene_host+asset_creation_transaction+runtime_neutral_preview engine_configuration=explicit_paths+project_owner+immutable_render_bootstrap runtime_command_commit=typed_points+game_logic_guard+batched_hierarchy_recompute scene_vehicle=guid_keyed+postbuild_publish material_override_transaction=service_owned camera_base_write=explicit_window+phase_assert api_facets=animation_12+animation_preview_20+asset_authoring_8+asset_catalog_3+audio_6+ai_1+gaf_19+gi_6+motion_matching_1+particle_2+pcg_27+play_mode_4+project_13+reflection_probe_9+render_20+runtime_command_history_4+runtime_frame_13+runtime_physics_9+runtime_scene_9+scene_interaction_9+scene_settings_11+script_lifecycle_3+shader_2+terrain_9+timeline_7+ui_7+vehicle_1+water_3 asset_meta_dead_bridge=removed lighting_commit_dead_bridge=removed particle_dead_bridge=removed project_mesh_alias_dead_bridge=removed reflection_probe_rebuild_dead_bridge=removed runtime_history_can_helpers_dead_bridge=removed runtime_resource_ready_dead_bridge=removed runtime_script_module_dead_bridge=removed runtime_transform_command_dead_bridge=removed runtime_unique_name_dead_bridge=removed runtime_vehicle_input_dead_bridge=removed runtime_vehicle_step=private viewport_texture_dead_bridge=removed transform=preview+single_scene_commit+undo_redo preview_ownership=instance_registry+session_owner+runtime_detach ray_projection=perspective+orthographic bounds=finite+limited+parallel frame=wide+tall cancel=pass play_isolation=pass selection_toggle=pass\n";
         return true;
     }
     catch(const std::exception& e) { std::cerr<<"EDITOR_SCENE_INTERACTION_FAIL "<<e.what()<<'\n'; return false; }

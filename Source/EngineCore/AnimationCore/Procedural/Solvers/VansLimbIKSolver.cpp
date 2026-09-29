@@ -35,6 +35,7 @@ namespace VansGraphics
 			if (requested <= start || naturalReach <= kEpsilon)
 				return requested;
 			const float zone = naturalReach - start;
+			if (zone <= kEpsilon) return std::min(requested, naturalReach);
 			return start + zone * (1.0f - std::exp(-(requested - start) / zone));
 		}
 
@@ -178,6 +179,9 @@ namespace VansGraphics
 			// differently proportioned UEFN arm pose.
 			pole = glm::normalize(settings.poleDirectionModel);
 		}
+		else if (goal.hasPoleTarget && Finite(goal.poleTargetModel)
+			&& glm::length(goal.poleTargetModel - root) > kEpsilon)
+			pole = glm::normalize(goal.poleTargetModel - root);
 		else
 		{
 			// The authored pole is compiled into the chain-root parent's bind space.

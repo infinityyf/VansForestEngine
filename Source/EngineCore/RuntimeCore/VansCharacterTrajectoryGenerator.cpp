@@ -33,6 +33,18 @@ namespace
 			return value;
 		return value * (maximum / length);
 	}
+
+	glm::vec3 AdvanceInputVelocity(const glm::vec3& velocity,
+		const Vans::VansCharacterMotionIntent& intent,
+		const Vans::VansCharacterVelocityDynamics& dynamics, float dt)
+	{
+		const float analog = (std::min)(1.0f, glm::length(intent.moveInputLocal));
+		const glm::vec3 local(intent.moveInputLocal.x, 0.0f, intent.moveInputLocal.y);
+		const glm::vec3 acceleration = Vans::ResolveCharacterInputAcceleration(
+			Vans::LocomotionLocalToWorldPlanar(local, intent.movementReferenceYaw), velocity, dynamics);
+		return Vans::IntegrateCharacterVelocity(velocity, acceleration,
+			(std::max)(intent.desiredSpeed * analog, dynamics.minAnalogSpeed), dt, dynamics);
+	}
 }
 
 namespace Vans
@@ -169,7 +181,9 @@ namespace Vans
 			m_ReferenceYawRate = 0.0f;
 		m_PreviousReferenceYaw = intent.movementReferenceYaw;
 		m_HasPreviousReferenceYaw = true;
-		m_FilteredReferenceYaw = AdvanceAngle(
+		const VansCharacterVelocityDynamics* dynamics = intent.accelerationModel
+			? &(grounded ? intent.accelerationModel->grounded : intent.accelerationModel->airborne) : nullptr;
+		m_FilteredReferenceYaw = dynamics ? intent.movementReferenceYaw : AdvanceAngle(
 			m_FilteredReferenceYaw, intent.movementReferenceYaw,
 			settings.facingHalfLife, settings.maxFacingYawRate, dt);
 
@@ -210,9 +224,11 @@ namespace Vans
 		}
 
 		const glm::vec3 targetVelocity = ResolveDesiredVelocity(intent, m_FilteredReferenceYaw);
-		m_PlannedVelocityWorld = AdvanceVelocity(
-			m_PlannedVelocityWorld, targetVelocity, dt, settings);
-		if (m_HasActualVelocity)
+		m_PlannedVelocityWorld = dynamics
+			? AdvanceInputVelocity(m_HasActualVelocity ? m_ActualVelocityWorld : m_PlannedVelocityWorld,
+				intent, *dynamics, dt)
+			: AdvanceVelocity(m_PlannedVelocityWorld, targetVelocity, dt, settings);
+		if (m_HasActualVelocity && !dynamics)
 		{
 			const float feedbackAlpha = 1.0f - std::exp(-kLn2 * dt /
 				(std::max)(settings.actualVelocityFeedbackHalfLife, kEpsilon));
@@ -303,8 +319,8 @@ namespace Vans
 				settings.facingHalfLife);
 			const glm::vec3 futureTargetVelocity = ResolveDesiredVelocity(
 				intent, predictedReferenceYaw);
-			predictedVelocity = AdvanceVelocity(
-				predictedVelocity, futureTargetVelocity, step, settings);
+			predictedVelocity = dynamics ? AdvanceInputVelocity(predictedVelocity, intent, *dynamics, step)
+				: AdvanceVelocity(predictedVelocity, futureTargetVelocity, step, settings);
 			predictedPosition += predictedVelocity * step;
 			elapsed = sampleTime;
 			if (elapsed + kEpsilon >= targetTime)

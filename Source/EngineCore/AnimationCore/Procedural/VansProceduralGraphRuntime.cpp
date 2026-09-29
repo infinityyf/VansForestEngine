@@ -21,14 +21,15 @@ namespace VansGraphics
 		constexpr float kEpsilon = 1.0e-6f;
 		constexpr float kLn2 = 0.69314718055994530942f;
 
-		enum class RuntimeNodeKind { Goal, Aim, Grounding, Limb, Chain, Checkpoint, RotationDistribution };
+		enum class RuntimeNodeKind { Goal, Aim, Grounding, Limb, Chain, Checkpoint, RotationDistribution, BoneTransform };
 
 		int Phase(RuntimeNodeKind kind)
 		{
 			switch (kind)
 			{
-			case RuntimeNodeKind::Goal: return 0;
+			case RuntimeNodeKind::Goal: return 1;
 			case RuntimeNodeKind::Aim: return 1;
+			case RuntimeNodeKind::BoneTransform: return 1;
 			case RuntimeNodeKind::Grounding: return 2;
 			case RuntimeNodeKind::Limb:
 			case RuntimeNodeKind::RotationDistribution:
@@ -49,6 +50,7 @@ namespace VansGraphics
 			case RuntimeNodeKind::Chain: return VansProceduralDebugKind::ChainIK;
 			case RuntimeNodeKind::Checkpoint: return VansProceduralDebugKind::PoseCheckpoint;
 			case RuntimeNodeKind::RotationDistribution: return VansProceduralDebugKind::RotationDistribution;
+			case RuntimeNodeKind::BoneTransform: return VansProceduralDebugKind::BoneTransform;
 			}
 			return VansProceduralDebugKind::Goal;
 		}
@@ -84,11 +86,15 @@ namespace VansGraphics
 			int nodeId = -1;
 			RuntimeNodeKind kind = RuntimeNodeKind::Goal;
 			int goalIndex = -1;
+			int goalBoneIndex = -1;
+			int goalPoleBoneIndex = -1;
 			std::vector<int> chainIndices;
 			std::vector<int> writeBones;
 			int rotationProfileIndex = -1;
 			VansRotationDistributionState rotationState;
 			VansGraphGoalDefinition goal;
+			AnimGraphComponentBoneTransformNode boneTransform;
+			int boneTransformIndex = -1;
 			std::string checkpointId;
 			std::vector<int> checkpointBones;
 			std::vector<glm::mat4> checkpointWorking, checkpointPublished;
@@ -133,6 +139,7 @@ namespace VansGraphics
 		std::unordered_map<int, std::size_t> nodeIndexById;
 		std::vector<int> activeNodeIds;
 		std::vector<VansProceduralGoal> goals;
+		std::vector<VansProceduralGoal> capturedGoals;
 		std::vector<const VansGraphGoalDefinition*> goalDefinitions;
 		std::unordered_map<std::string, std::size_t> checkpointNodes;
 		std::unordered_map<std::string, const VansResolvedAnimationTarget*> targetsById;
@@ -216,9 +223,60 @@ namespace VansGraphics
 			float weight = 1.0f;
 			if (!definition.weightParameter.empty() && (!ReadFloat(parameters, definition.weightParameter, weight) || !std::isfinite(weight)))
 				return fail("Target weight parameter is unavailable or non-finite");
+			if (!definition.weightCurve.empty())
+			{
+				float curve = 0.0f;
+				if (!parameters.readCurve || !parameters.readCurve(parameters.curveContext, definition.weightCurve, curve))
+					curve = 0.0f;
+				if (!std::isfinite(curve)) return fail("Target weight curve is non-finite");
+				weight *= curve;
+			}
 			if (weight <= 0.0f || (outGoal.positionWeight <= 0.0f && outGoal.rotationWeight <= 0.0f))
 			{outGoal.positionWeight=0;outGoal.rotationWeight=0;outGoal.valid=true;return true;}
-			if (definition.source == VansGraphGoalSource::Parameters)
+			if (definition.source == VansGraphGoalSource::PoseBone)
+			{
+				float offsetWeight = 1.0f;
+				if (!definition.offsetWeightCurve.empty())
+				{
+					if (!parameters.readCurve || !parameters.readCurve(
+						parameters.curveContext, definition.offsetWeightCurve, offsetWeight))
+						offsetWeight = 0.0f;
+					if (!std::isfinite(offsetWeight)) return fail("Target offset weight curve is non-finite");
+					offsetWeight = std::clamp(offsetWeight, 0.0f, 1.0f);
+				}
+				const int bone = rig->skeleton->FindBoneIndex(definition.boneName);
+				if (!workspace.IsValidBone(bone)) return fail("Target pose bone is missing: " + definition.boneName);
+				outGoal.positionModel = workspace.GetComponentPosition(bone);
+				outGoal.rotationModel = workspace.GetComponentRotation(bone);
+				if (!definition.poleBoneName.empty())
+				{
+					const int poleBone = rig->skeleton->FindBoneIndex(definition.poleBoneName);
+					if (!workspace.IsValidBone(poleBone)) return fail("Target pole bone is missing: " + definition.poleBoneName);
+					outGoal.poleTargetModel = workspace.GetComponentPosition(poleBone)
+						+ workspace.GetComponentRotation(poleBone) * (definition.poleOffsetLocal * offsetWeight);
+					outGoal.hasPoleTarget = Finite(outGoal.poleTargetModel);
+					if (!outGoal.hasPoleTarget) return fail("Target pose pole is non-finite");
+				}
+				if (!definition.positionParameter.empty())
+				{
+					glm::vec3 offset;
+					if (!parameters.readVector3 || !parameters.readVector3(parameters.context,
+						definition.positionParameter, offset) || !Finite(offset))
+						return fail("Target pose position offset is unavailable");
+					outGoal.positionModel += offset * offsetWeight;
+				}
+				if (!definition.rotationParameter.empty())
+				{
+					glm::quat offset;
+					if (!parameters.readQuaternion || !parameters.readQuaternion(parameters.context,
+						definition.rotationParameter, offset) || !Finite(offset))
+						return fail("Target pose rotation offset is unavailable");
+					outGoal.rotationModel = glm::normalize(
+						glm::slerp(glm::quat(1, 0, 0, 0), glm::normalize(offset), offsetWeight)
+						* outGoal.rotationModel);
+				}
+			}
+			else if (definition.source == VansGraphGoalSource::Parameters)
 			{
 				if (!parameters.readVector3 || !parameters.readVector3(
 					parameters.context, definition.positionParameter, outGoal.positionModel))
@@ -340,7 +398,83 @@ namespace VansGraphics
 				if (node.kind == RuntimeNodeKind::Goal)
 				{
 					goalDefinitions[node.goalIndex] = &node.goal;
-					debugRecords[node.debugRecordOffset].result.status = VansProceduralSolverStatus::NoEffect;
+					if (node.goal.source == VansGraphGoalSource::PoseBone)
+					{
+					auto& goal = capturedGoals[static_cast<std::size_t>(node.goalIndex)];
+						if (!ResolveGoal(node.goal, goal, &debugRecords[node.debugRecordOffset].diagnostic))
+						{
+							error = debugRecords[node.debugRecordOffset].diagnostic;
+							return false;
+						}
+						debugRecords[node.debugRecordOffset].goal = goal;
+						debugRecords[node.debugRecordOffset].result.status = VansProceduralSolverStatus::Solved;
+					}
+					else debugRecords[node.debugRecordOffset].result.status = VansProceduralSolverStatus::NoEffect;
+					continue;
+				}
+				if (node.kind == RuntimeNodeKind::BoneTransform)
+				{
+					const auto& settings = node.boneTransform;
+					float alpha = settings.m_Alpha;
+					if (!settings.m_AlphaParameter.empty() &&
+						!ReadFloat(parameters, settings.m_AlphaParameter, alpha))
+					{ error = "Bone Transform alpha parameter is unavailable"; return false; }
+					if (!std::isfinite(alpha))
+					{ error = "Bone Transform alpha is non-finite"; return false; }
+					alpha = std::clamp(alpha, 0.0f, 1.0f);
+					if (alpha <= kEpsilon)
+					{ debugRecords[node.debugRecordOffset].result.status = VansProceduralSolverStatus::NoEffect; continue; }
+					VansBoneTransform current;
+					if (!VansPoseMath::TryDecompose(BoneMatrix(node.boneTransformIndex), current))
+					{ error = "Bone Transform current component pose is invalid"; return false; }
+					VansBoneTransform modified = current;
+					glm::mat4 inverseOwner(1.0f);
+					VansBoneTransform owner;
+					if (settings.m_WorldSpace)
+					{
+						const float determinant = glm::determinant(input.ownerWorld);
+						if (!std::isfinite(determinant) || std::abs(determinant) < 1.0e-12f
+							|| !VansPoseMath::TryDecompose(input.ownerWorld, owner))
+						{ error = "Bone Transform owner world pose is singular"; return false; }
+						inverseOwner = glm::inverse(input.ownerWorld);
+					}
+					if (!settings.m_PositionParameter.empty())
+					{
+						glm::vec3 requested;
+						if (!parameters.readVector3 || !parameters.readVector3(parameters.context,
+							settings.m_PositionParameter, requested) || !Finite(requested))
+						{ error = "Bone Transform position parameter is unavailable"; return false; }
+						if (settings.m_WorldSpace)
+							requested = glm::vec3(inverseOwner * glm::vec4(requested,
+								settings.m_PositionAdditive ? 0.0f : 1.0f));
+						modified.translation = settings.m_PositionAdditive
+							? current.translation + requested * alpha
+							: glm::mix(current.translation, requested, alpha);
+					}
+					if (!settings.m_RotationParameter.empty())
+					{
+						glm::quat requested;
+						if (!parameters.readQuaternion || !parameters.readQuaternion(parameters.context,
+							settings.m_RotationParameter, requested) || !Finite(requested))
+						{ error = "Bone Transform rotation parameter is unavailable"; return false; }
+						requested = glm::normalize(requested);
+						if (settings.m_WorldSpace)
+							requested = settings.m_RotationAdditive
+								? glm::normalize(glm::inverse(owner.rotation) * requested * owner.rotation)
+								: glm::normalize(glm::inverse(owner.rotation) * requested);
+						modified.rotation = settings.m_RotationAdditive
+							? glm::normalize(glm::slerp(glm::quat(1,0,0,0), requested, alpha) * current.rotation)
+							: glm::normalize(glm::slerp(current.rotation, requested, alpha));
+					}
+					const int parent = rig->skeleton->bones[node.boneTransformIndex].parentIndex;
+					const glm::mat4 componentMatrix = VansPoseMath::Compose(modified);
+					const glm::mat4 localMatrix = parent < 0 ? componentMatrix
+						: glm::inverse(BoneMatrix(parent)) * componentMatrix;
+					VansBoneTransform local;
+					if (!VansPoseMath::TryDecompose(localMatrix, local)
+						|| !workspace.SetLocal(node.boneTransformIndex, local))
+					{ error = "Bone Transform could not commit a finite local pose"; return false; }
+					debugRecords[node.debugRecordOffset].result.status = VansProceduralSolverStatus::Solved;
 					continue;
 				}
 				if (node.kind == RuntimeNodeKind::Aim)
@@ -399,6 +533,8 @@ namespace VansGraphics
 					if (!definition) debug.diagnostic = "Rotation Distribution requires an active upstream Goal";
 					else if (TargetWouldFeedBack(*definition, activeIndex))
 						debug.diagnostic = "Target depends on a bone written by this or a downstream constraint; use an upstream Pose Checkpoint";
+					else if (definition->source == VansGraphGoalSource::PoseBone)
+						goal = capturedGoals[static_cast<std::size_t>(node.goalIndex)];
 					else ResolveGoal(*definition, goal, &debug.diagnostic);
 					debug.goal = goal;
 					if (!goal.valid) { node.rotationState = {}; debug.result.status = VansProceduralSolverStatus::NoEffect; continue; }
@@ -423,6 +559,8 @@ namespace VansGraphics
 							goal = {};
 							debug.diagnostic = "Target depends on a bone written by this or a downstream IK; use an upstream Pose Checkpoint";
 						}
+						else if (definition->source == VansGraphGoalSource::PoseBone)
+							goal = capturedGoals[static_cast<std::size_t>(chain.goalIndex)];
 						else ResolveGoal(*definition, goal, &debug.diagnostic);
 					}
 					debug.goal = goal;
@@ -506,6 +644,28 @@ namespace VansGraphics
 				node.goal = static_cast<const AnimGraphGoalNode*>(source)->m_Goal;
 				node.goalIndex = rig.FindGoal(node.goal.goalId);
 				if (node.goalIndex < 0) error = "Goal node references missing Rig goal '" + node.goal.goalId + "'";
+				if (error.empty() && node.goal.source == VansGraphGoalSource::PoseBone)
+				{
+					node.goalBoneIndex = rig.skeleton->FindBoneIndex(node.goal.boneName);
+					if (node.goalBoneIndex < 0)
+						error = "Goal node references missing pose bone '" + node.goal.boneName + "'";
+					if (!node.goal.poleBoneName.empty())
+					{
+						node.goalPoleBoneIndex = rig.skeleton->FindBoneIndex(node.goal.poleBoneName);
+						if (node.goalPoleBoneIndex < 0)
+							error = "Goal node references missing pole bone '" + node.goal.poleBoneName + "'";
+					}
+				}
+				break;
+			}
+			case VansAnimGraphNodeType::ComponentBoneTransform:
+			{
+				node.kind = RuntimeNodeKind::BoneTransform;
+				node.boneTransform = *static_cast<const AnimGraphComponentBoneTransformNode*>(source);
+				node.boneTransformIndex = rig.skeleton->FindBoneIndex(node.boneTransform.m_BoneName);
+				if (node.boneTransformIndex < 0)
+					error = "Bone Transform references missing bone '" + node.boneTransform.m_BoneName + "'";
+				else node.writeBones.push_back(node.boneTransformIndex);
 				break;
 			}
 			case VansAnimGraphNodeType::AimConstraint:
@@ -682,6 +842,7 @@ namespace VansGraphics
 		}
 		m_Impl->groundedChainIndices = std::move(groundedChainIndices);
 		m_Impl->goals.assign(rig.goals.size(), VansProceduralGoal{});
+		m_Impl->capturedGoals.assign(rig.goals.size(), VansProceduralGoal{});
 		m_Impl->goalDefinitions.assign(rig.goals.size(), nullptr);
 		m_Impl->transactionSmoothedTargets.resize(m_Impl->nodes.size());
 		m_Impl->transactionAimStates.resize(m_Impl->nodes.size());
@@ -730,6 +891,7 @@ namespace VansGraphics
 		m_Impl->prepared = false;
 		m_Impl->activeNodeIds.clear();
 		std::fill(m_Impl->goals.begin(), m_Impl->goals.end(), VansProceduralGoal{});
+		std::fill(m_Impl->capturedGoals.begin(), m_Impl->capturedGoals.end(), VansProceduralGoal{});
 		for (VansProceduralDebugRecord& debug : m_Impl->debugRecords)
 		{
 			debug.goal = {};
@@ -785,6 +947,7 @@ namespace VansGraphics
 			if (node.kind == RuntimeNodeKind::RotationDistribution &&
 				std::find(activeNodeIds.begin(), activeNodeIds.end(), node.nodeId) == activeNodeIds.end()) node.rotationState = {};
 		std::fill(m_Impl->goals.begin(), m_Impl->goals.end(), VansProceduralGoal{});
+		std::fill(m_Impl->capturedGoals.begin(), m_Impl->capturedGoals.end(), VansProceduralGoal{});
 		for (VansProceduralDebugRecord& debug : m_Impl->debugRecords)
 		{
 			debug.goal = {};

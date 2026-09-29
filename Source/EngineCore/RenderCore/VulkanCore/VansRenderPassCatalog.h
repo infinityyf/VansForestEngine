@@ -10,8 +10,10 @@ namespace VansGraphics
 		Always,
 		HasPunctualShadowJobs,
 		HasWater,
+        HasHair,
 		HasDecal,
-		HasForwardOpaquePreAtmosphere
+		HasForwardOpaquePreAtmosphere,
+		HasRainPrecipitation
 	};
 
 	namespace VansRenderPassNames
@@ -21,8 +23,8 @@ namespace VansGraphics
 		constexpr const char* VegetationCompute = "Vegetation Compute";
 		constexpr const char* CascadeShadow = "Cascade Shadow";
 		constexpr const char* PunctualShadow = "Punctual Shadow";
-		constexpr const char* HairDeepOpacity = "Hair Deep Opacity";
 		constexpr const char* MainCameraHiZCull = "Main Camera HiZ Cull";
+		constexpr const char* SurfaceWeatherRipple = "Surface Weather Ripple";
 		constexpr const char* SkyMotionVector = "Sky Motion Vector";
 		constexpr const char* GBuffer = "GBuffer";
 		constexpr const char* WaterWaveCompute = "Water Wave Compute";
@@ -33,8 +35,9 @@ namespace VansGraphics
 		constexpr const char* HZB = "HZB";
 		constexpr const char* PunctualShadowDebug = "Punctual Shadow Debug Preview";
 		constexpr const char* ScreenSpaceShadow = "Screen Space Shadow";
-		constexpr const char* ScreenSpaceEffects = "Screen Space Effects";
-		constexpr const char* SSAOFilter = "SSAO Filter";
+		constexpr const char* GTAODepth = "GTAO Depth";
+        constexpr const char* GTAOMain = "GTAO Main";
+		constexpr const char* GTAODenoise = "GTAO Denoise";
 		constexpr const char* GIData = "GI Data";
 		constexpr const char* SSR = "SSR";
 		constexpr const char* RayTracing = "Ray Tracing";
@@ -48,9 +51,12 @@ namespace VansGraphics
 		constexpr const char* RawOpaqueLighting = "Raw Opaque Lighting";
 		constexpr const char* WaterPreCompute = "Water Pre Compute";
 		constexpr const char* WaterCompositePreAtmosphere = "Water Composite Pre Atmosphere";
+		constexpr const char* RainPrecipitation = "Rain Precipitation";
 		constexpr const char* ForwardOpaquePreAtmosphere = "Forward Opaque Pre Atmosphere";
 		constexpr const char* AtmosphereComposite = "Atmosphere Composite";
 		constexpr const char* HairVisibility = "Hair Visibility";
+		constexpr const char* HairDebug = "HairDebug";
+		constexpr const char* HairDepthResolve = "Hair Depth Resolve";
 		constexpr const char* HairLighting = "Hair Lighting";
 		constexpr const char* TransparentSceneColorPrepare = "Transparent SceneColor Prepare";
 		constexpr const char* TransparentPostProcess = "Transparent PostProcess";

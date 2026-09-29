@@ -1,4 +1,5 @@
 #include "VansMaterialAuthoringAsset.h"
+#include "../MaterialCore/VansHairMaterialParameters.h"
 
 #include "Serialization/VansSerializedValueAccess.h"
 #include "VansAssetReference.h"
@@ -181,6 +182,21 @@ bool ReadMaterialAuthoringAsset(
             return false;
     }
 
+    if (parsed.materialType == "hair")
+    {
+        VansHairMaterialParameters hair;
+        if (!ReadHairMaterialParameters(parsed.parameters, hair, error)) return false;
+        parsed.parameters = WriteHairMaterialParameters(hair);
+        if (parsed.textures.kind != VansSerializedValue::Kind::Object)
+        { error = "Hair textures must be an object"; return false; }
+        for (const auto& entry : parsed.textures.objectFields)
+            if (!IsHairTextureSlot(entry.first))
+            { error = "Unknown Hair texture slot: " + entry.first; return false; }
+        if (!FindObjectField(parsed.textures, "alpha"))
+        { error = "Hair requires an explicit linear alpha texture (red channel)"; return false; }
+        if (hair.flowStrength > 0.0f && !FindObjectField(parsed.textures, "flow"))
+        { error = "Hair flowStrength requires a flow texture"; return false; }
+    }
     asset = std::move(parsed);
     return true;
 }

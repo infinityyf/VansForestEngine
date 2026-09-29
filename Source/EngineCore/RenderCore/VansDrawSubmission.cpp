@@ -59,7 +59,8 @@ namespace
 		using namespace VansGraphics;
 		switch (materialType)
 		{
-		case VAN_PBR:
+		case VAN_HAIR:
+        case VAN_PBR:
 		case VAN_COAT:
 		case VAN_SKIN:
 		case VAN_CLOTH:

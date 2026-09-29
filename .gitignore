@@ -21,4 +21,12 @@ x64
 !/EngineAssets/Textures/Default/defaultSkinCavity.png.meta
 !/EngineAssets/Textures/Default/defaultSkinMask.png
 !/EngineAssets/Textures/Default/defaultSkinMask.png.meta
+!/EngineAssets/Textures/Weather/
+/EngineAssets/Textures/Weather/*
+!/EngineAssets/Textures/Weather/RainLayerTexture.png
+!/EngineAssets/Textures/Weather/RainLayerTexture.png.meta
+!/EngineAssets/Textures/Weather/RainRippleSeed.png
+!/EngineAssets/Textures/Weather/RainRippleSeed.png.meta
+!/EngineAssets/Textures/Weather/RainSplashAtlas.png
+!/EngineAssets/Textures/Weather/RainSplashAtlas.png.meta
 /openspec

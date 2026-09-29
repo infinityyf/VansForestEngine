@@ -1,6 +1,9 @@
 #pragma once
 
+#include "../AssetCore/VansAssetDatabase.h"
+
 #include <array>
+#include <functional>
 #include <string>
 
 namespace Vans
@@ -16,6 +19,8 @@ namespace Vans
 	struct VansSceneContentBuildPlan;
 	struct VansSceneAuthoringEntityProjection;
 	struct VansSceneLocalVolumetricFogComponentConfig;
+	using VansSceneAssetRecordResolver =
+		std::function<std::optional<VansAssetRecord>(VansAssetGuid)>;
 
 	class VansSceneRuntimeProjection
 	{
@@ -38,6 +43,7 @@ namespace Vans
 		static bool BuildRuntimeSceneEntityPlan(
 			const VansSerializedValue& entities,
 			const std::string& projectRoot,
+			const VansSceneAssetRecordResolver& resolveAssetRecord,
 			VansSceneContentBuildPlan& outPlan,
 			std::string& outError);
 

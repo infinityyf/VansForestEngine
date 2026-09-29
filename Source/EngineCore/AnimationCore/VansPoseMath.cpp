@@ -108,6 +108,52 @@ namespace VansGraphics::VansPoseMath
 		}
 	}
 
+	bool MakeAdditiveDeltaPose(VansAnimationFrameVector<VansBoneTransform>& pose,
+		const VansAnimationFrameVector<VansBoneTransform>& reference, const Skeleton& skeleton, VansAdditivePoseMode mode)
+	{
+		if(mode!=VansAdditivePoseMode::LocalSpherical && mode!=VansAdditivePoseMode::LocalLinear && mode!=VansAdditivePoseMode::MeshRotationLinear)return false;
+		if (pose.size()!=reference.size() || pose.size()!=skeleton.bones.size() || !skeleton.ValidateTopology()) return false;
+		const bool mesh=mode==VansAdditivePoseMode::MeshRotationLinear;
+		VansAnimationFrameVector<glm::quat> targetRotation(pose.size()), referenceRotation(pose.size());
+		for (int i : skeleton.topologicalOrder)
+		{
+			const int parent=skeleton.bones[i].parentIndex;
+			targetRotation[i]=!mesh || parent<0?pose[i].rotation:targetRotation[parent]*pose[i].rotation;
+			referenceRotation[i]=!mesh || parent<0?reference[i].rotation:referenceRotation[parent]*reference[i].rotation;
+			pose[i].rotation=glm::normalize(mode==VansAdditivePoseMode::LocalSpherical
+				? glm::inverse(referenceRotation[i])*targetRotation[i] : targetRotation[i]*glm::inverse(referenceRotation[i]));
+			pose[i].translation-=reference[i].translation;
+			for (int axis=0;axis<3;++axis) pose[i].scale[axis]=std::abs(reference[i].scale[axis])>1e-8f ? pose[i].scale[axis]/reference[i].scale[axis] : 0;
+		}
+		return true;
+	}
+
+	bool ApplyAdditiveDeltaPose(const VansAnimationFrameVector<VansBoneTransform>& base,
+		const VansAnimationFrameVector<VansBoneTransform>& additive, float weight,
+		const Skeleton& skeleton, VansAnimationFrameVector<VansBoneTransform>& result, VansAdditivePoseMode mode)
+	{
+		if(!std::isfinite(weight) || (mode!=VansAdditivePoseMode::LocalSpherical && mode!=VansAdditivePoseMode::LocalLinear && mode!=VansAdditivePoseMode::MeshRotationLinear))return false;
+		if (base.size()!=additive.size() || base.size()!=skeleton.bones.size() || !skeleton.ValidateTopology()) return false;
+		if (mode==VansAdditivePoseMode::LocalSpherical) {ApplyAdditivePose(base,additive,weight,result);return true;}
+		const bool mesh=mode==VansAdditivePoseMode::MeshRotationLinear;
+		weight=std::clamp(weight,0.0f,1.0f);
+		VansAnimationFrameVector<glm::quat> baseRotation(base.size()), finalRotation(base.size());
+		result=base;
+		for (int i : skeleton.topologicalOrder)
+		{
+			const int parent=skeleton.bones[i].parentIndex;
+			baseRotation[i]=!mesh || parent<0?base[i].rotation:baseRotation[parent]*base[i].rotation;
+			auto delta=additive[i].rotation; if (delta.w<0) delta=-delta;
+			// 仅旋转转为组件空间，平移和缩放仍使用局部增量。
+			const auto weighted=glm::quat(1,0,0,0)*(1-weight)+delta*weight;
+			finalRotation[i]=glm::normalize(weighted*baseRotation[i]);
+			result[i].rotation=!mesh || parent<0?finalRotation[i]:glm::normalize(glm::inverse(finalRotation[parent])*finalRotation[i]);
+			result[i].translation=base[i].translation+additive[i].translation*weight;
+			result[i].scale=base[i].scale*glm::mix(glm::vec3(1),additive[i].scale,weight);
+		}
+		return true;
+	}
+
 	bool TryDecompose(const glm::mat4& matrix, VansBoneTransform& outTransform)
 	{
 		if (!IsFinite(matrix))

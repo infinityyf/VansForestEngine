@@ -230,7 +230,8 @@ bool VansAnimationNode::ConfigureRetargetSource(
 {
 	error.clear();
 	m_RetargetEnabled = false;
-	m_SourceSkeleton = sourceSkeleton;
+	m_SourceSkeleton = sourceController && sourceController->GetRuntimeSkeleton()
+		? *sourceController->GetRuntimeSkeleton() : sourceSkeleton;
 	m_SourceController = std::move(sourceController);
 	m_RetargetDesc = desc;
 	m_LastRetargetSourceMMSwitchCount = -1;
@@ -294,10 +295,23 @@ bool VansAnimationNode::ExchangeRetargetSourceController(
 	if (!m_RetargetEnabled || !controller)
 		return false;
 	std::string error;
+	const Skeleton previousSkeleton = m_SourceSkeleton;
+	if (const Skeleton* runtimeSkeleton = controller->GetRuntimeSkeleton())
+		m_SourceSkeleton = *runtimeSkeleton;
 	if (!controller->BindAnimationRigSkeleton(m_SourceSkeleton, error))
 	{
+		m_SourceSkeleton = previousSkeleton;
 		VANS_LOG_WARN("[Retarget] " << m_Name
 			<< ": replacement source Rig bind rejected: " << error);
+		return false;
+	}
+	const VansCompiledAnimationRig* targetRig = m_Controller ? m_Controller->GetAnimationRig() : nullptr;
+	if (!targetRig || !m_RetargetProcessor.Build(
+		m_SourceSkeleton, m_Skeleton, *targetRig, m_RetargetDesc))
+	{
+		m_SourceSkeleton = previousSkeleton;
+		if (targetRig)
+			m_RetargetProcessor.Build(m_SourceSkeleton, m_Skeleton, *targetRig, m_RetargetDesc);
 		return false;
 	}
 	previousController = std::move(m_SourceController);
@@ -371,8 +385,12 @@ bool VansAnimationNode::ExchangeController(
 		return false;
 
 	std::string error;
+	const Skeleton previousSkeleton = m_Skeleton;
+	if (const Skeleton* runtimeSkeleton = controller->GetRuntimeSkeleton())
+		SetSkeleton(*runtimeSkeleton);
 	if (!controller->BindAnimationRigSkeleton(m_Skeleton, error))
 	{
+		SetSkeleton(previousSkeleton);
 		VANS_LOG_WARN("[VansAnimationNode] " << m_Name
 			<< ": controller Rig bind rejected: " << error);
 		return false;
@@ -646,18 +664,34 @@ bool VansAnimationNode::ApplyRagdollPose(const Vans::VansRagdollPose& pose)
 
 void VansAnimationNode::SetRootBone(const std::string& boneName)
 {
-	const int boneIndex = m_Skeleton.FindBoneIndex(boneName);
-	if (boneIndex >= 0)
+	const int targetBoneIndex = m_Skeleton.FindBoneIndex(boneName);
+	if (targetBoneIndex >= 0)
 	{
 		if (m_Controller)
-			m_Controller->SetRootBoneIndex(boneIndex);
+			m_Controller->SetRootBoneIndex(targetBoneIndex);
 
 		VANS_LOG("[VansAnimationNode] " << m_Name << ": root bone set to \"" << boneName
-		         << "\" (index " << boneIndex << ")");
+		         << "\" (index " << targetBoneIndex << ")");
 	}
 	else
 	{
 		VANS_LOG_WARN("[VansAnimationNode] " << m_Name << ": root bone \"" << boneName << "\" not found in skeleton");
+	}
+	if (m_RetargetEnabled && m_SourceController)
+	{
+		// 重定向源也必须按其自身骨架归一化同一根骨，不能依赖主图的 Clip 推断。
+		const int sourceBoneIndex = m_SourceSkeleton.FindBoneIndex(boneName);
+		if (sourceBoneIndex >= 0)
+		{
+			m_SourceController->SetRootBoneIndex(sourceBoneIndex);
+			VANS_LOG("[VansAnimationNode] " << m_Name << ": retarget source root bone set to \""
+				<< boneName << "\" (index " << sourceBoneIndex << ")");
+		}
+		else
+		{
+			VANS_LOG_WARN("[VansAnimationNode] " << m_Name << ": root bone \"" << boneName
+				<< "\" not found in retarget source skeleton");
+		}
 	}
 }
 

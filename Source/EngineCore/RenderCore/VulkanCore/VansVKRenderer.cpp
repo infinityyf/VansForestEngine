@@ -13,6 +13,7 @@
 #include "../VansCamera.h"
 #include "../VansShaderManager.h"
 #include "../WaterCore/VansWaterSystem.h"
+#include "../WeatherCore/VansRainRenderSystem.h"
 #include "../VansRenderBootstrapSettings.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansJobSystem.h"
@@ -372,10 +373,9 @@ namespace VansGraphics
         rayTracingContext.DiscardGIProbeUpdate();
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKShadowMapsCommandBuffer.ResetCommandBuffer(false);
-		m_VansVKHairShadowCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKGBufferCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKGBufferMaterialCommandBuffer.ResetCommandBuffer(false);
-		m_VansVKSSAORawCommandBuffer.ResetCommandBuffer(false);
+		m_VansVKGTAORawCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKGraphicsScreenCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKVegetationCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKEarlyAuxCommandBuffer.ResetCommandBuffer(false);
@@ -384,10 +384,9 @@ namespace VansGraphics
 		m_VansVKRayTracingCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKGIDataCommandBuffer.ResetCommandBuffer(false);
 		ResetGBufferSecondaryCommandBuffersIfNeeded();
-		m_CurrentFrameContext.ssaoRawRecorded = false;
+		m_CurrentFrameContext.gtaoRawRecorded = false;
 		m_CurrentFrameContext.graphicsScreenRecorded = false;
 		m_CurrentFrameContext.shadowMapsRecorded = false;
-		m_CurrentFrameContext.hairShadowRecorded = false;
 		m_CurrentFrameContext.gbufferRecorded = false;
 		m_CurrentFrameContext.gbufferMaterialRecorded = false;
 		m_CurrentFrameContext.vegetationRecorded = false;
@@ -486,15 +485,13 @@ namespace VansGraphics
 		renderPassManager->SetupVansShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
 		renderPassManager->SetupVansPunctualShadowRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue);
 		renderPassManager->SetupVansSkyMotionVectorRenderPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
-		renderPassManager->SetupVansHairDeepOpacityPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
-		renderPassManager->SetupVansHairVisibilityPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
+		renderPassManager->SetupVansHairVisibilityPass(m_VansVKLogicDevice, m_VansVKPhysicalDevice, { m_RenderWidth, m_RenderHeight });
+		renderPassManager->SetupVansHairDepthResolvePass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
 		renderPassManager->SetupVansHairLightingPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
-		SetupHairLightingDescriptors(renderPassManager);
 		SetupHairCompositeDescriptors(renderPassManager);
 		SetupTransmissionGlassDescriptors(renderPassManager);
 		// 贴花只读主深度与接收材质，输出独立修饰附件。
 		renderPassManager->SetupVansDecalRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, { m_RenderWidth, m_RenderHeight });
-		renderPassManager->SetupVansScreenSpaceEffectsPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
 		// 水面 GBuffer Pass：必须在 SetupVansDeferredRenderPass 之后调用，依赖已创建的深度图像。
 		renderPassManager->SetupVansWaterGBufferPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
 		// 注：水面 descriptor sets 在场景加载时由 VansSceneEnvironmentNodeBuilder::BuildWaterNode 调用 SetupDescriptors 完成。
@@ -587,10 +584,9 @@ namespace VansGraphics
 		else
 			BindCurrentFrameContextToLegacyResources();
 		m_CurrentFrameContext.frameSubmitSucceeded = true;
-		m_CurrentFrameContext.ssaoRawRecorded = false;
+		m_CurrentFrameContext.gtaoRawRecorded = false;
 		m_CurrentFrameContext.graphicsScreenRecorded = false;
 		m_CurrentFrameContext.shadowMapsRecorded = false;
-		m_CurrentFrameContext.hairShadowRecorded = false;
 		m_CurrentFrameContext.gbufferRecorded = false;
 		m_CurrentFrameContext.gbufferMaterialRecorded = false;
 		m_CurrentFrameContext.vegetationRecorded = false;
@@ -798,10 +794,9 @@ namespace VansGraphics
 			m_SwapChainImageIndex < m_SwapchainImageRenderFinishedSemaphores.size()
 			? m_SwapchainImageRenderFinishedSemaphores[m_SwapChainImageIndex] : VK_NULL_HANDLE;
 		m_CurrentFrameContext.graphicsFence = m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence;
-		m_CurrentFrameContext.ssaoRawFence = m_VansVKSSAORawCommandBuffer.m_CommandBufferFinishSubmitFence;
+		m_CurrentFrameContext.gtaoRawFence = m_VansVKGTAORawCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.graphicsScreenFence = m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.shadowMapsFence = m_VansVKShadowMapsCommandBuffer.m_CommandBufferFinishSubmitFence;
-		m_CurrentFrameContext.hairShadowFence = m_VansVKHairShadowCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.gbufferFence = m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.gbufferMaterialFence = m_VansVKGBufferMaterialCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.vegetationFence = m_VansVKVegetationCommandBuffer.m_CommandBufferFinishSubmitFence;
@@ -823,10 +818,9 @@ namespace VansGraphics
 			? m_SwapchainImageRenderFinishedSemaphores[slot.swapchainImageIndex]
 			: VK_NULL_HANDLE;
 		m_CurrentFrameContext.graphicsFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
-		m_CurrentFrameContext.ssaoRawFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
+		m_CurrentFrameContext.gtaoRawFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.graphicsScreenFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.shadowMapsFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
-		m_CurrentFrameContext.hairShadowFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.gbufferFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.gbufferMaterialFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.vegetationFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
@@ -836,10 +830,9 @@ namespace VansGraphics
 		m_CurrentFrameContext.rayTracingFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.giDataFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.frameSubmitSucceeded = slot.frameSubmitSucceeded;
-		m_CurrentFrameContext.ssaoRawRecorded = false;
+		m_CurrentFrameContext.gtaoRawRecorded = false;
 		m_CurrentFrameContext.graphicsScreenRecorded = false;
 		m_CurrentFrameContext.shadowMapsRecorded = false;
-		m_CurrentFrameContext.hairShadowRecorded = false;
 		m_CurrentFrameContext.gbufferRecorded = false;
 		m_CurrentFrameContext.gbufferMaterialRecorded = false;
 		m_CurrentFrameContext.vegetationRecorded = false;
@@ -1318,15 +1311,12 @@ namespace VansGraphics
 					static_cast<int>(atlasIndex));
 			}
 
-			RecordFrameGraphicsPass(
-				m_CurrentFramePlan,
-				VansRenderPassNames::HairDeepOpacity,
-				"Hair Deep Opacity Pass",
-				renderPassManager,
-				renderPassManager->GetVansHairDeepOpacityPass(),
-				frameGraphicsCommandBuffer,
-				m_globalRenderStateData,
-				[&]() { m_Scene->DrawHairDeepOpacityNodes(VansShaderManager::Get().FindGraphicsShader("HairDeepOpacity")); });
+			RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SurfaceWeatherRipple,
+				[&]()
+				{
+					if (auto* rain = m_Scene->GetRainRenderSystem())
+						rain->GenerateSurfaceRipple(frameGraphicsCommandBuffer);
+				});
 
 			RecordFrameGpuStep(
 				m_CurrentFramePlan,
@@ -1378,15 +1368,10 @@ namespace VansGraphics
 					}
 				});
 
-			RecordFrameGraphicsPass(
-				m_CurrentFramePlan,
-				VansRenderPassNames::ScreenSpaceEffects,
-				"Screen Space Effects Pass",
-				renderPassManager,
-				renderPassManager->GetVansScreenSpaceEffectsPass(),
-				frameGraphicsCommandBuffer,
-				m_globalRenderStateData,
-				[&]() { m_Scene->DrawScreenSpaceFeatureNode(); });
+			RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::GTAODepth,
+                [&]() { UpdateGTAODepth(renderPassManager, frameGraphicsCommandBuffer); });
+            RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::GTAOMain,
+                [&]() { UpdateGTAOMain(renderPassManager, frameGraphicsCommandBuffer); });
 
 			{
 				VANS_GPU_SCOPE(cmd, "Compute Between GBuffer And Deferred");
@@ -1394,10 +1379,10 @@ namespace VansGraphics
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::TileLightBuild, [&]() { BuildTileLightLists(frameGraphicsCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::HZB, [&]() { UpdateHZB(renderPassManager, frameGraphicsCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::PunctualShadowDebug, [&]() { UpdatePunctualShadowDebugPreview(renderPassManager, frameGraphicsCommandBuffer); });
-				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SSAOFilter, [&]()
+				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::GTAODenoise, [&]()
 				{
-					VANS_GPU_SCOPE_LANE(cmd, "SSAO.Bilateral", Vans::VansGpuQueueLane::Graphics);
-					BilateralFilterSSAO(renderPassManager, frameGraphicsCommandBuffer);
+					VANS_GPU_SCOPE_LANE(cmd, "GTAO.Denoise", Vans::VansGpuQueueLane::Graphics);
+					DenoiseGTAO(renderPassManager, frameGraphicsCommandBuffer);
 				});
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::ScreenSpaceShadow, [&]() { UpdateScreenSpaceShadow(renderPassManager, frameGraphicsCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::RayTracing, [&]() { UpdateRayTracing(frameGraphicsCommandBuffer); });
@@ -1563,10 +1548,24 @@ namespace VansGraphics
 				m_CurrentFramePlan,
 				VansRenderPassNames::AtmosphereComposite,
 				[&]() { CompositeAtmosphere(frameGraphicsCommandBuffer); });
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::RainPrecipitation,
+				"Rain Precipitation Pass",
+				renderPassManager,
+				renderPassManager->m_VansTransparentPass,
+				frameGraphicsCommandBuffer,
+				m_globalRenderStateData,
+				[&]()
+				{
+					VANS_GPU_SCOPE(cmd, "Rain Precipitation");
+					if (auto* rain = m_Scene->GetRainRenderSystem())
+						rain->Render(frameGraphicsCommandBuffer, m_globalRenderStateData);
+				});
 			if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot) &&
 				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::HairVisibility))
 			{
-				ClearHairOITResources(renderPassManager, frameGraphicsCommandBuffer);
+				ClearHairVisibilityResources(renderPassManager, frameGraphicsCommandBuffer);
 				RecordFrameGraphicsPass(
 					m_CurrentFramePlan,
 					VansRenderPassNames::HairVisibility,
@@ -1575,8 +1574,12 @@ namespace VansGraphics
 					renderPassManager->GetVansHairVisibilityPass(),
 					frameGraphicsCommandBuffer,
 					m_globalRenderStateData,
-					[&]() { m_Scene->DrawHairVisibilityNodes(); });
-				PrepareHairOITForResolve(renderPassManager, frameGraphicsCommandBuffer);
+					[&]() { m_Scene->DrawHairNodes(VansPass::HAIR_VISIBILITY); });
+				PrepareHairVisibilityForLighting(renderPassManager, frameGraphicsCommandBuffer);
+                RecordFrameGraphicsPass(m_CurrentFramePlan, VansRenderPassNames::HairDepthResolve,
+                    "Hair Depth Resolve Pass", renderPassManager,
+                    renderPassManager->GetVansHairDepthResolvePass(), frameGraphicsCommandBuffer, m_globalRenderStateData,
+                    [&]() { DrawHairDepthResolve(renderPassManager, frameGraphicsCommandBuffer); });
 			}
 
 					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
@@ -1590,6 +1593,7 @@ namespace VansGraphics
 					frameGraphicsCommandBuffer,
 					m_globalRenderStateData,
 					[&]() { DrawHairLighting(renderPassManager, frameGraphicsCommandBuffer); });
+                RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::HairDebug, [&]() { UpdateHairDebugPreview(renderPassManager, frameGraphicsCommandBuffer); });
 			}
 
 			RecordFrameStep(
@@ -1821,37 +1825,6 @@ namespace VansGraphics
 			}
 			m_CurrentFrameContext.shadowMapsRecorded = true;
 
-			m_pActiveCommandBuffer = &m_VansVKHairShadowCommandBuffer;
-			shadowCmd = m_VansVKHairShadowCommandBuffer.GetVKCommandBuffer();
-			{
-				VANS_PROFILE_SCOPE("Vulkan::RecordHairShadow", Vans::ProfileCategory::CommandRecord);
-				if (!m_VansVKHairShadowCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
-				{
-					m_CurrentFrameContext.frameSubmitSucceeded = false;
-					VANS_LOG_ERROR("[VansVKDevice] Failed to begin hair-shadow command buffer.");
-					ResetAsyncFrameCommandBuffersAfterFailure();
-					return;
-				}
-				{
-					VANS_GPU_SCOPE_LANE(shadowCmd, "Hair Deep Opacity", Vans::VansGpuQueueLane::Graphics);
-					RecordFrameGraphicsPassNoGpuScope(
-						m_CurrentFramePlan,
-						VansRenderPassNames::HairDeepOpacity,
-						renderPassManager,
-						renderPassManager->GetVansHairDeepOpacityPass(),
-						m_VansVKHairShadowCommandBuffer,
-						m_globalRenderStateData,
-						[&]() { m_Scene->DrawHairDeepOpacityNodes(VansShaderManager::Get().FindGraphicsShader("HairDeepOpacity")); });
-				}
-				if (!m_VansVKHairShadowCommandBuffer.EndCommandBufferRecord())
-				{
-					m_CurrentFrameContext.frameSubmitSucceeded = false;
-					VANS_LOG_ERROR("[VansVKDevice] Failed to end hair-shadow command buffer.");
-					ResetAsyncFrameCommandBuffersAfterFailure();
-					return;
-				}
-			}
-			m_CurrentFrameContext.hairShadowRecorded = true;
 			m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
 
 			// GBuffer base owns uploads, geometry, depth, and per-surface motion.
@@ -1883,6 +1856,12 @@ namespace VansGraphics
 							m_VansVKGBufferCommandBuffer,
 							m_CurrentRenderSceneSnapshot);
 					});
+			RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SurfaceWeatherRipple,
+				[&]()
+				{
+					if (auto* rain = m_Scene->GetRainRenderSystem())
+						rain->GenerateSurfaceRipple(m_VansVKGBufferCommandBuffer);
+				});
 			RecordFrameStep(
 				m_CurrentFramePlan,
 				VansRenderPassNames::GBuffer,
@@ -1960,35 +1939,30 @@ namespace VansGraphics
 			}
 			m_CurrentFrameContext.gbufferMaterialRecorded = true;
 
-			// SSAO 原始结果独立提交，SSAO filter 只等待精确的 SSAORawReady 依赖。
-			m_pActiveCommandBuffer = &m_VansVKSSAORawCommandBuffer;
+			// GTAO 原始结果独立提交，GTAO denoise 只等待精确的 GTAORawReady 依赖。
+			m_pActiveCommandBuffer = &m_VansVKGTAORawCommandBuffer;
 			{
-				VANS_PROFILE_SCOPE("Vulkan::RecordSSAORaw", Vans::ProfileCategory::CommandRecord);
-				if (!m_VansVKSSAORawCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+				VANS_PROFILE_SCOPE("Vulkan::RecordGTAORaw", Vans::ProfileCategory::CommandRecord);
+				if (!m_VansVKGTAORawCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 				{
 					m_CurrentFrameContext.frameSubmitSucceeded = false;
-					VANS_LOG_ERROR("[VansVKDevice] Failed to begin SSAO-raw command buffer.");
+					VANS_LOG_ERROR("[VansVKDevice] Failed to begin GTAO-raw command buffer.");
 					ResetAsyncFrameCommandBuffersAfterFailure();
 					return;
 				}
 			}
-			RecordFrameGraphicsPass(
-				m_CurrentFramePlan,
-				VansRenderPassNames::ScreenSpaceEffects,
-				"Screen Space Effects Pass",
-				renderPassManager,
-				renderPassManager->GetVansScreenSpaceEffectsPass(),
-				m_VansVKSSAORawCommandBuffer,
-				m_globalRenderStateData,
-				[&]() { m_Scene->DrawScreenSpaceFeatureNode(); });
-			if (!m_VansVKSSAORawCommandBuffer.EndCommandBufferRecord())
+			RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::GTAODepth,
+                [&]() { UpdateGTAODepth(renderPassManager, m_VansVKGTAORawCommandBuffer); });
+            RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::GTAOMain,
+                [&]() { UpdateGTAOMain(renderPassManager, m_VansVKGTAORawCommandBuffer); });
+			if (!m_VansVKGTAORawCommandBuffer.EndCommandBufferRecord())
 			{
 				m_CurrentFrameContext.frameSubmitSucceeded = false;
-				VANS_LOG_ERROR("[VansVKDevice] Failed to end SSAO-raw command buffer.");
+				VANS_LOG_ERROR("[VansVKDevice] Failed to end GTAO-raw command buffer.");
 				ResetAsyncFrameCommandBuffersAfterFailure();
 				return;
 			}
-			m_CurrentFrameContext.ssaoRawRecorded = true;
+			m_CurrentFrameContext.gtaoRawRecorded = true;
 
 			m_pActiveCommandBuffer = &m_VansVKAsyncHZBCommandBuffer;
 			{
@@ -2113,10 +2087,10 @@ namespace VansGraphics
 						m_CurrentFramePlan,
 						VansRenderPassNames::PunctualShadowDebug,
 						[&]() { UpdatePunctualShadowDebugPreview(renderPassManager, m_VansVKGraphicsScreenCommandBuffer); });
-					RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SSAOFilter, [&]()
+					RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::GTAODenoise, [&]()
 					{
-						VANS_GPU_SCOPE_LANE(cmd, "SSAO.Bilateral", Vans::VansGpuQueueLane::Compute);
-						BilateralFilterSSAO(renderPassManager, m_VansVKGraphicsScreenCommandBuffer);
+						VANS_GPU_SCOPE_LANE(cmd, "GTAO.Denoise", Vans::VansGpuQueueLane::Compute);
+						DenoiseGTAO(renderPassManager, m_VansVKGraphicsScreenCommandBuffer);
 					});
 					RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::ScreenSpaceShadow, [&]() { UpdateScreenSpaceShadow(renderPassManager, m_VansVKGraphicsScreenCommandBuffer); });
 					RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SSR, [&]() { UpdateSSR(renderPassManager, m_VansVKGraphicsScreenCommandBuffer); });
@@ -2282,10 +2256,24 @@ namespace VansGraphics
 				m_CurrentFramePlan,
 				VansRenderPassNames::AtmosphereComposite,
 				[&]() { CompositeAtmosphere(m_VansVKCommandBuffer); });
+			RecordFrameGraphicsPass(
+				m_CurrentFramePlan,
+				VansRenderPassNames::RainPrecipitation,
+				"Rain Precipitation Pass",
+				renderPassManager,
+				renderPassManager->m_VansTransparentPass,
+				m_VansVKCommandBuffer,
+				m_globalRenderStateData,
+				[&]()
+				{
+					VANS_GPU_SCOPE(cmd, "Rain Precipitation");
+					if (auto* rain = m_Scene->GetRainRenderSystem())
+						rain->Render(m_VansVKCommandBuffer, m_globalRenderStateData);
+				});
 			if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot) &&
 				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::HairVisibility))
 			{
-				ClearHairOITResources(renderPassManager, m_VansVKCommandBuffer);
+				ClearHairVisibilityResources(renderPassManager, m_VansVKCommandBuffer);
 				RecordFrameGraphicsPass(
 					m_CurrentFramePlan,
 					VansRenderPassNames::HairVisibility,
@@ -2294,8 +2282,12 @@ namespace VansGraphics
 					renderPassManager->GetVansHairVisibilityPass(),
 					m_VansVKCommandBuffer,
 					m_globalRenderStateData,
-					[&]() { m_Scene->DrawHairVisibilityNodes(); });
-				PrepareHairOITForResolve(renderPassManager, m_VansVKCommandBuffer);
+					[&]() { m_Scene->DrawHairNodes(VansPass::HAIR_VISIBILITY); });
+				PrepareHairVisibilityForLighting(renderPassManager, m_VansVKCommandBuffer);
+                RecordFrameGraphicsPass(m_CurrentFramePlan, VansRenderPassNames::HairDepthResolve,
+                    "Hair Depth Resolve Pass", renderPassManager,
+                    renderPassManager->GetVansHairDepthResolvePass(), m_VansVKCommandBuffer, m_globalRenderStateData,
+                    [&]() { DrawHairDepthResolve(renderPassManager, m_VansVKCommandBuffer); });
 			}
 
 					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
@@ -2309,6 +2301,7 @@ namespace VansGraphics
 					m_VansVKCommandBuffer,
 					m_globalRenderStateData,
 					[&]() { DrawHairLighting(renderPassManager, m_VansVKCommandBuffer); });
+                RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::HairDebug, [&]() { UpdateHairDebugPreview(renderPassManager, m_VansVKCommandBuffer); });
 			}
 
 			RecordFrameStep(
@@ -2537,10 +2530,9 @@ namespace VansGraphics
 				VANS_PROFILE_SCOPE("Vulkan::ResetAsyncFrameCommandBuffers", Vans::ProfileCategory::VulkanSubmit);
 				std::vector<VkFence> submittedFences = {
 					m_CurrentFrameContext.shadowMapsFence,
-					m_CurrentFrameContext.hairShadowFence,
 					m_CurrentFrameContext.gbufferFence,
 					m_CurrentFrameContext.gbufferMaterialFence,
-					m_CurrentFrameContext.ssaoRawFence,
+					m_CurrentFrameContext.gtaoRawFence,
 					m_CurrentFrameContext.graphicsScreenFence,
 					m_CurrentFrameContext.vegetationFence,
 					m_CurrentFrameContext.earlyAuxFence,
@@ -2566,10 +2558,9 @@ namespace VansGraphics
 					VANS_LOG_ERROR("[VansVKDevice] Failed to reset " << name << " command buffer.");
 				};
 				resetCommandBuffer("shadow maps", m_VansVKShadowMapsCommandBuffer);
-				resetCommandBuffer("hair-shadow", m_VansVKHairShadowCommandBuffer);
 				resetCommandBuffer("GBuffer", m_VansVKGBufferCommandBuffer);
 				resetCommandBuffer("GBuffer-material", m_VansVKGBufferMaterialCommandBuffer);
-				resetCommandBuffer("SSAO-raw", m_VansVKSSAORawCommandBuffer);
+				resetCommandBuffer("GTAO-raw", m_VansVKGTAORawCommandBuffer);
 				resetCommandBuffer("graphics-screen", m_VansVKGraphicsScreenCommandBuffer);
 				resetCommandBuffer("vegetation", m_VansVKVegetationCommandBuffer);
 				resetCommandBuffer("early auxiliary", m_VansVKEarlyAuxCommandBuffer);
@@ -2659,10 +2650,9 @@ namespace VansGraphics
 		else
 		{
 			if (!m_CurrentFrameContext.frameSubmitSucceeded
-				|| !m_CurrentFrameContext.ssaoRawRecorded
+				|| !m_CurrentFrameContext.gtaoRawRecorded
 				|| !m_CurrentFrameContext.graphicsScreenRecorded
 				|| !m_CurrentFrameContext.shadowMapsRecorded
-				|| !m_CurrentFrameContext.hairShadowRecorded
 				|| !m_CurrentFrameContext.gbufferRecorded
 				|| !m_CurrentFrameContext.gbufferMaterialRecorded
 				|| !m_CurrentFrameContext.vegetationRecorded
@@ -2755,17 +2745,6 @@ namespace VansGraphics
 				shadowMaps.fence = m_CurrentFrameContext.shadowMapsFence;
 				m_FrameSubmitOrchestrator.AddNode(std::move(shadowMaps));
 
-				VansFrameSubmitNode hairShadow;
-				hairShadow.name = "HairShadow";
-				hairShadow.queue = VansQueueRole::Graphics;
-				hairShadow.commandBuffers = { m_VansVKHairShadowCommandBuffer.GetVKCommandBuffer() };
-				hairShadow.signals = { VansSyncPoint::HairShadowReady };
-				hairShadow.resources = {
-					{ "HairDeepOpacity", VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, true, true, false }
-				};
-				hairShadow.fence = m_CurrentFrameContext.hairShadowFence;
-				m_FrameSubmitOrchestrator.AddNode(std::move(hairShadow));
 
 				VansFrameSubmitNode gbuffer;
 				gbuffer.name = "GBuffer";
@@ -2808,21 +2787,23 @@ namespace VansGraphics
 				gbufferMaterial.fence = m_CurrentFrameContext.gbufferMaterialFence;
 				m_FrameSubmitOrchestrator.AddNode(std::move(gbufferMaterial));
 
-				VansFrameSubmitNode ssaoRaw;
-				ssaoRaw.name = "SSAORaw";
-				ssaoRaw.queue = VansQueueRole::Graphics;
-				ssaoRaw.commandBuffers = { m_VansVKSSAORawCommandBuffer.GetVKCommandBuffer() };
-				ssaoRaw.signals = { VansSyncPoint::SSAORawReady };
-				ssaoRaw.resources = {
-					{ "GBufferData", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+				VansFrameSubmitNode gtaoRaw;
+				gtaoRaw.name = "GTAORaw";
+				gtaoRaw.queue = VansQueueRole::Graphics;
+				gtaoRaw.commandBuffers = { m_VansVKGTAORawCommandBuffer.GetVKCommandBuffer() };
+				gtaoRaw.signals = { VansSyncPoint::GTAORawReady };
+				gtaoRaw.resources = {
+					{ "GBufferData", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false, false, false },
-					{ "Depth", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-						VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, true, false, false, false },
-					{ "SSAORaw", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+					{ "GTAODepth", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+						VK_IMAGE_LAYOUT_GENERAL, true, true, false, false },
+					{ "GTAOEdges", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                        VK_IMAGE_LAYOUT_GENERAL, true, true, false, false },
+                    { "GTAORaw", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, true, false, false }
 				};
-				ssaoRaw.fence = m_CurrentFrameContext.ssaoRawFence;
-				m_FrameSubmitOrchestrator.AddNode(std::move(ssaoRaw));
+				gtaoRaw.fence = m_CurrentFrameContext.gtaoRawFence;
+				m_FrameSubmitOrchestrator.AddNode(std::move(gtaoRaw));
 
 				VansFrameSubmitNode asyncHZB;
 				asyncHZB.name = "AsyncHZB";
@@ -2897,9 +2878,9 @@ namespace VansGraphics
 				graphicsScreen.queue = VansQueueRole::Compute;
 				graphicsScreen.commandBuffers = { m_VansVKGraphicsScreenCommandBuffer.GetVKCommandBuffer() };
 				// HZB/RT/GI/TileLight 已在同一 compute queue 上有序完成；这里只等待
-				// Graphics queue 生产的 SSAO raw，避免让重型 compute 相互竞争。
+				// Graphics queue 生产的 GTAO raw，避免让重型 compute 相互竞争。
 				graphicsScreen.waits = {
-					{ VansSyncPoint::SSAORawReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
+					{ VansSyncPoint::GTAORawReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
 				};
 				graphicsScreen.signals = { VansSyncPoint::ScreenLightingReady };
 				graphicsScreen.resources = {
@@ -2923,9 +2904,11 @@ namespace VansGraphics
 						VK_IMAGE_LAYOUT_GENERAL, true, true, false, false },
 					{ "ScreenLightingData", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, true, false, false },
-					{ "SSAORaw", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+					{ "GTAOEdges", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                        VK_IMAGE_LAYOUT_GENERAL, true, false, false, false },
+                    { "GTAORaw", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, false, false },
-					{ "SSAO", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+					{ "GTAO", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, true, false, false },
 					{ "AtmosphereTransmittance", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
@@ -2953,7 +2936,6 @@ namespace VansGraphics
 				graphicsMain.commandBuffers = { m_VansVKCommandBuffer.GetVKCommandBuffer() };
 				graphicsMain.waits = {
 					{ VansSyncPoint::ScreenLightingReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT },
-					{ VansSyncPoint::HairShadowReady, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
 				};
 				graphicsMain.externalWaits = {
 					{ m_CurrentFrameContext.imageAcquiredSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT }
@@ -2976,8 +2958,6 @@ namespace VansGraphics
 						VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, true, false, true, false },
 					{ "PunctualShadowAtlas1", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, true, false, true, false },
-					{ "HairDeepOpacity", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false, true, false },
 					{ "TileLightLists", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_UNDEFINED, false, false, false, false },
 					{ "AtmosphereTransmittance", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
@@ -3017,13 +2997,15 @@ namespace VansGraphics
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
 					{ "GIData", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
+                    { "RayTracingGI", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                        VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
 					{ "AmbientSkyCacheX", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
 					{ "AmbientSkyCacheY", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
 					{ "AmbientSkyCacheZ", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
-					{ "SSAO", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+					{ "GTAO", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, false, false },
 					{ "ScreenLightingData", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, false, false },
@@ -3648,7 +3630,8 @@ namespace VansGraphics
 	{
 					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 		{
-			DrawHairComposite(renderPassManager, commandBuffer);
+			if (m_CurrentRenderSceneSnapshot.features.hasHair)
+                DrawHairComposite(renderPassManager, commandBuffer);
 			m_Scene->DrawTransParentNodes();
 		}
 	}
@@ -3947,7 +3930,9 @@ namespace VansGraphics
 	{
 		DestroyHairLightingDescriptors();
 
-		if (renderPassManager == nullptr)
+		if (renderPassManager == nullptr || m_Scene == nullptr ||
+            !m_Scene->GetIESProfileManager()->IsGPUResourcesCreated() ||
+            renderPassManager->GetHairOpticalDepth().GetImage() == VK_NULL_HANDLE)
 		{
 			return;
 		}
@@ -3962,34 +3947,15 @@ namespace VansGraphics
 
 		auto* descManager = VansVKDescriptorManager::GetInstance();
 		descManager->BeginDescriptorUpdate();
-		descManager->WriteImageDescriptor(
-			m_HairLightingPassSets[0],
-			HAIR_LIGHTING_BINDING_OIT_HEAD,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			{{
-				VK_NULL_HANDLE,
-				renderPassManager->GetHairOITHead().GetImageView(),
-				VK_IMAGE_LAYOUT_GENERAL
-			}});
 		descManager->WriteBufferDescriptor(
 			m_HairLightingPassSets[0],
-			HAIR_LIGHTING_BINDING_OIT_NODES,
+			HAIR_LIGHTING_BINDING_LAYER_DEPTHS,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ renderPassManager->GetHairOITNodeBuffer().GetNativeBuffer(), 0, renderPassManager->GetHairOITNodeBuffer().GetBufferSize() }});
-		descManager->WriteBufferDescriptor(
-			m_HairLightingPassSets[0],
-			HAIR_LIGHTING_BINDING_OIT_COUNTER,
-			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ renderPassManager->GetHairOITCounterBuffer().GetNativeBuffer(), 0, renderPassManager->GetHairOITCounterBuffer().GetBufferSize() }});
-		descManager->WriteImageDescriptor(
-			m_HairLightingPassSets[0],
-			HAIR_LIGHTING_BINDING_DEEP_OPACITY,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{
-				renderPassManager->GetHairDeepOpacity().GetSampler(),
-				renderPassManager->GetHairDeepOpacity().GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}});
+			{{ renderPassManager->GetHairLayerDepthBuffer().GetNativeBuffer(), 0, renderPassManager->GetHairLayerDepthBuffer().GetBufferSize() }});
+        descManager->WriteImageDescriptor(m_HairLightingPassSets[0],
+            HAIR_LIGHTING_BINDING_PUNCTUAL_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            renderPassManager->GetPunctualShadowDescriptorInfos());
+
 		descManager->WriteImageDescriptor(
 			m_HairLightingPassSets[0],
 			HAIR_LIGHTING_BINDING_CASCADE_SHADOW,
@@ -3999,127 +3965,196 @@ namespace VansGraphics
 				renderPassManager->GetCascadeShadowArrayView(),
 				VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
 			}});
+        auto* ies = m_Scene->GetIESProfileManager();
+        descManager->WriteImageDescriptor(m_HairLightingPassSets[0], HAIR_LIGHTING_BINDING_IES,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {{ ies->GetIESProfileTexture().GetSampler(), ies->GetIESProfileArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		descManager->WriteImageDescriptor(m_HairLightingPassSets[0], HAIR_LIGHTING_BINDING_OPAQUE_DEPTH,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {{renderPassManager->GetDepth().GetSampler(), renderPassManager->GetDepth().GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL}});
 		descManager->CommitDescriptorUpdates();
+
+        // Publish readiness only after every shared lighting resource is bound.
+        // The owner calls this after GI creation/rebuild or render-size recreation.
+        auto* materials = m_Scene->GetMaterialManager();
+        auto* sky = materials->m_SkyLighting.DiffuseIrradiance();
+        const auto& layout = rayTracingContext.GetGIProbeLayoutBuffer();
+        const uint32_t count = rayTracingContext.GetGIRegionCount();
+        auto* skyX = materials->GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_X);
+        auto* skyY = materials->GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Y);
+        auto* skyZ = materials->GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Z);
+        if (!sky || !skyX || !skyY || !skyZ ||
+            (count > 0 && layout.GetNativeBuffer() == VK_NULL_HANDLE) ||
+            materials->m_AmbientSkyCacheInfoCBBuffer.GetNativeBuffer() == VK_NULL_HANDLE) return;
+        if (count > VANS_SSGI_MAX_GI_REGIONS)
+            throw std::runtime_error("Hair GI region count exceeds the shared descriptor contract");
+        std::vector<VkDescriptorImageInfo> irradiance, visibility;
+        std::vector<VkDescriptorBufferInfo> states;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            auto* light = rayTracingContext.GetGIRegionIrradianceAtlas(i);
+            auto* depth = rayTracingContext.GetGIRegionVisibilityAtlas(i);
+            auto* state = rayTracingContext.GetGIRegionProbeStateBuffer(i);
+            if (!light || !depth || !state || state->GetNativeBuffer() == VK_NULL_HANDLE)
+                throw std::runtime_error("Hair GI region resources are incomplete");
+            irradiance.push_back({light->GetImage().GetSampler(), light->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL});
+            visibility.push_back({depth->GetImage().GetSampler(), depth->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL});
+            states.push_back({state->GetNativeBuffer(), 0, state->GetBufferSize()});
+        }
+        // Unused array slots must still contain valid descriptors. Shader indexing
+        // is bounded by the published layout's region count, never by this padding.
+        descManager->BeginDescriptorUpdate();
+        if (count > 0)
+        {
+            irradiance.resize(VANS_SSGI_MAX_GI_REGIONS, irradiance.front());
+            visibility.resize(VANS_SSGI_MAX_GI_REGIONS, visibility.front());
+            states.resize(VANS_SSGI_MAX_GI_REGIONS, states.front());
+            descManager->WriteImageDescriptor(m_HairLightingPassSets[0], HAIR_LIGHTING_BINDING_GI_IRRADIANCE,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, irradiance);
+            descManager->WriteImageDescriptor(m_HairLightingPassSets[0], HAIR_LIGHTING_BINDING_GI_VISIBILITY,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, visibility);
+            descManager->WriteBufferDescriptor(m_HairLightingPassSets[0], HAIR_LIGHTING_BINDING_GI_STATE,
+                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, states);
+            descManager->WriteBufferDescriptor(m_HairLightingPassSets[0], HAIR_LIGHTING_BINDING_GI_LAYOUT,
+                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{layout.GetNativeBuffer(), 0, layout.GetBufferSize()}});
+        }
+        descManager->WriteImageDescriptor(m_HairLightingPassSets[0], HAIR_LIGHTING_BINDING_SKY_DIFFUSE,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {{sky->GetImage().GetSampler(), sky->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+        const std::pair<uint32_t, VansTexture*> caches[] = {
+            {DEFERRED_BINDING_AMBIENT_SKY_CACHE_X, skyX},
+            {DEFERRED_BINDING_AMBIENT_SKY_CACHE_Y, skyY},
+            {DEFERRED_BINDING_AMBIENT_SKY_CACHE_Z, skyZ}};
+        for (const auto& cache : caches)
+            descManager->WriteImageDescriptor(m_HairLightingPassSets[0], cache.first,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{cache.second->GetImage().GetSampler(), cache.second->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL}});
+        descManager->WriteBufferDescriptor(m_HairLightingPassSets[0], DEFERRED_BINDING_AMBIENT_SKY_CACHE_PARAMS,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{materials->m_AmbientSkyCacheInfoCBBuffer.GetNativeBuffer(), 0,
+            materials->m_AmbientSkyCacheInfoCBBuffer.GetBufferSize()}});
+        descManager->CommitDescriptorUpdates();
 		m_HairLightingDescriptorsReady = true;
 	}
 
-	void VansVKDevice::ClearHairOITResources(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
+	void VansVKDevice::ClearHairVisibilityResources(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{
 		if (renderPassManager == nullptr)
 			return;
 
-		VansVKImage& headImage = renderPassManager->GetHairOITHead();
-		const VkImageLayout oldHeadLayout = headImage.GetImageLayout();
-		VkImageMemoryBarrier toClear{};
-		toClear.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		toClear.srcAccessMask = (oldHeadLayout == VK_IMAGE_LAYOUT_UNDEFINED) ? 0 : (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-		toClear.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		toClear.oldLayout = oldHeadLayout;
-		toClear.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		toClear.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		toClear.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		toClear.image = headImage.GetImage();
-		toClear.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-		commandBuffer.PipelineBarrier(
-			(oldHeadLayout == VK_IMAGE_LAYOUT_UNDEFINED) ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			VK_PIPELINE_STAGE_TRANSFER_BIT,
-			{}, {}, { toClear });
-
-		VkClearColorValue clearHead{};
-		clearHead.uint32[0] = 0xffffffffu;
-		commandBuffer.ClearColorImage(headImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, clearHead);
-
-		VkImageMemoryBarrier toShader{};
-		toShader.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-		toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		toShader.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		toShader.image = headImage.GetImage();
-		toShader.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-		commandBuffer.PipelineBarrier(
-			VK_PIPELINE_STAGE_TRANSFER_BIT,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			{}, {}, { toShader });
-		headImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
-
-		commandBuffer.FillBuffer(renderPassManager->GetHairOITCounterBuffer().GetNativeBuffer(), 0, sizeof(uint32_t), 0u);
-		VkBufferMemoryBarrier counterBarrier{};
-		counterBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-		counterBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		counterBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-		counterBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		counterBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		counterBarrier.buffer = renderPassManager->GetHairOITCounterBuffer().GetNativeBuffer();
-		counterBarrier.offset = 0;
-		counterBarrier.size = renderPassManager->GetHairOITCounterBuffer().GetBufferSize();
-		commandBuffer.PipelineBarrier(
-			VK_PIPELINE_STAGE_TRANSFER_BIT,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			{}, { counterBarrier }, {});
-
-		VkBufferMemoryBarrier nodeWriteBarrier{};
-		nodeWriteBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-		nodeWriteBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-		nodeWriteBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-		nodeWriteBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		nodeWriteBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		nodeWriteBarrier.buffer = renderPassManager->GetHairOITNodeBuffer().GetNativeBuffer();
-		nodeWriteBarrier.offset = 0;
-		nodeWriteBarrier.size = renderPassManager->GetHairOITNodeBuffer().GetBufferSize();
-		commandBuffer.PipelineBarrier(
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			{}, { nodeWriteBarrier }, {});
+        auto& depths = renderPassManager->GetHairLayerDepthBuffer();
+        VkBufferMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.buffer = depths.GetNativeBuffer();
+        barrier.size = depths.GetBufferSize();
+        commandBuffer.PipelineBarrier((VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT),
+            VK_PIPELINE_STAGE_TRANSFER_BIT, {}, { barrier }, {});
+        commandBuffer.FillBuffer(depths.GetNativeBuffer(), 0, depths.GetBufferSize(), 0xffffffffu);
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        commandBuffer.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+            (VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT), {}, { barrier }, {});
 	}
 
-	void VansVKDevice::PrepareHairOITForResolve(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
+	void VansVKDevice::PrepareHairVisibilityForLighting(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{
 		if (renderPassManager == nullptr)
 			return;
 
-		VansVKImage& headImage = renderPassManager->GetHairOITHead();
-		VkImageMemoryBarrier headBarrier{};
-		headBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		headBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-		headBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		headBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-		headBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		headBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		headBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		headBarrier.image = headImage.GetImage();
-		headBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-
-		VkBufferMemoryBarrier bufferBarriers[2]{};
+		VkBufferMemoryBarrier bufferBarriers[1]{};
 		bufferBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
 		bufferBarriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 		bufferBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		bufferBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		bufferBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		bufferBarriers[0].buffer = renderPassManager->GetHairOITNodeBuffer().GetNativeBuffer();
+		bufferBarriers[0].buffer = renderPassManager->GetHairLayerDepthBuffer().GetNativeBuffer();
 		bufferBarriers[0].offset = 0;
-		bufferBarriers[0].size = renderPassManager->GetHairOITNodeBuffer().GetBufferSize();
-
-		bufferBarriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-		bufferBarriers[1].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-		bufferBarriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		bufferBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		bufferBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		bufferBarriers[1].buffer = renderPassManager->GetHairOITCounterBuffer().GetNativeBuffer();
-		bufferBarriers[1].offset = 0;
-		bufferBarriers[1].size = renderPassManager->GetHairOITCounterBuffer().GetBufferSize();
+		bufferBarriers[0].size = renderPassManager->GetHairLayerDepthBuffer().GetBufferSize();
 
 		commandBuffer.PipelineBarrier(
 			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			{}, { bufferBarriers[0], bufferBarriers[1] }, { headBarrier });
+			{}, { bufferBarriers[0] }, {});
 	}
+
+    void VansVKDevice::UpdateHairDebugPreview(VansRenderPassManager* passes, VansVKCommandBuffer& cmd)
+    {
+        if (!m_HairDebugRequested.exchange(false, std::memory_order_acq_rel) ||
+            !m_CurrentRenderSceneSnapshot.features.hasHair || !passes || !m_Scene)
+            return;
+        auto* shader = VansShaderManager::Get().FindComputeShader("HairDebug");
+        if (!shader) return;
+        if (m_HairDebugImage.GetImage() == VK_NULL_HANDLE)
+        {
+            const auto sourceSize = passes->GetHairColor().GetImageDimension();
+            const uint32_t longestSide = (std::max)(sourceSize.width, sourceSize.height);
+            if (longestSide == 0) return;
+            const uint32_t previewSide = (std::min)(longestSide, 960u);
+            const uint32_t width = (std::max)(1u, sourceSize.width * previewSide / longestSide);
+            const uint32_t height = (std::max)(1u, sourceSize.height * previewSide / longestSide);
+            if (!m_HairDebugImage.CreateVulkanImage(m_VansVKLogicDevice, {width, height, 1},
+                VK_FORMAT_R8G8B8A8_UNORM, 1, 8, VK_IMAGE_TYPE_2D,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLE_COUNT_1_BIT,
+                false, false, true, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE) ||
+                !VansDescriptorSetLayoutFactory::CreateAndAllocate_HairDebug(m_HairDebugLayout, m_HairDebugSets))
+            {
+                auto* descriptors = VansVKDescriptorManager::GetInstance();
+                descriptors->DestroyDescriptorSet(m_HairDebugSets);
+                descriptors->ReleaseDescriptorSetLayout(m_HairDebugLayout);
+                m_HairDebugImage.DestroyVulkanImage(m_VansVKLogicDevice);
+                VANS_LOG_ERROR("[HairDebug] Could not allocate intermediate preview resources");
+                return;
+            }
+            auto* descriptors = VansVKDescriptorManager::GetInstance();
+            descriptors->BeginDescriptorUpdate();
+            descriptors->WriteImageDescriptor(m_HairDebugSets[0], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                {{VK_NULL_HANDLE, passes->GetHairOpticalDepth().GetImageView(), VK_IMAGE_LAYOUT_GENERAL}});
+            auto& depths = passes->GetHairLayerDepthBuffer();
+            descriptors->WriteBufferDescriptor(m_HairDebugSets[0], 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                {{depths.GetNativeBuffer(), 0, depths.GetBufferSize()}});
+            auto& color = passes->GetHairColor();
+            descriptors->WriteImageDescriptor(m_HairDebugSets[0], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{color.GetSampler(), color.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+            descriptors->WriteImageDescriptor(m_HairDebugSets[0], 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                {{VK_NULL_HANDLE, m_HairDebugImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL}});
+            descriptors->CommitDescriptorUpdates();
+        }
+        // 生产结果只读；预览转换输出独立 RGBA8 数组，不把浮点厚度/SSBO 交给 ImGui。
+        VkMemoryBarrier source{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        source.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        source.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        VkImageMemoryBarrier target{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        target.oldLayout = m_HairDebugImage.GetImageLayout();
+        target.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        target.srcAccessMask = target.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+        target.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        target.srcQueueFamilyIndex = target.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        target.image = m_HairDebugImage.GetImage();
+        target.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 8};
+        cmd.PipelineBarrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, {source}, {}, {target});
+        m_HairDebugImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
+        cmd.EnsureComputeShader(*shader, {m_Scene->GetGlobalDescriptorSetLayout(), m_HairDebugLayout});
+        const auto size = m_HairDebugImage.GetImageDimension();
+        cmd.DispatchCompute(*shader, (size.width+7)/8, (size.height+7)/8, 1,
+            {m_Scene->GetGlobalDescriptorSet(), m_HairDebugSets[0]});
+        source.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        source.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        cmd.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, {source});
+        m_HairDebugReady.store(true, std::memory_order_release);
+    }
 
 	void VansVKDevice::DestroyHairLightingDescriptors()
 	{
 		auto* descManager = VansVKDescriptorManager::GetInstance();
+        m_HairDebugReady.store(false, std::memory_order_release);
+        m_HairDebugRequested.store(false, std::memory_order_release);
+        descManager->DestroyDescriptorSet(m_HairDebugSets);
+        descManager->ReleaseDescriptorSetLayout(m_HairDebugLayout);
+        m_HairDebugImage.DestroyVulkanImage(m_VansVKLogicDevice);
 		descManager->DestroyDescriptorSet(m_HairLightingPassSets);
 		descManager->ReleaseDescriptorSetLayout(m_HairLightingPassLayout);
 		m_HairLightingDescriptorsReady = false;
@@ -4153,7 +4188,10 @@ namespace VansGraphics
 				renderPassManager->GetHairColor().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			}});
-		descManager->CommitDescriptorUpdates();
+        descManager->WriteImageDescriptor(m_HairCompositePassSets[0], HAIR_COMP_BINDING_OPTICAL_DEPTH,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            {{ VK_NULL_HANDLE, renderPassManager->GetHairOpticalDepth().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+        descManager->CommitDescriptorUpdates();
 		m_HairCompositeDescriptorsReady = true;
 	}
 
@@ -4249,23 +4287,24 @@ namespace VansGraphics
 				return;
 			}
 
-			VansGraphicsShader* shader = VansShaderManager::Get().FindGraphicsShader("HairLighting");
-			if (shader == nullptr)
-			{
-				return;
-			}
-
-			m_globalRenderStateData.vertexInputBindingDescriptions = nullptr;
-			m_globalRenderStateData.vertexInputAttributeDescriptions = nullptr;
-
-			std::vector<VkDescriptorSetLayout> layouts = { m_Scene->GetGlobalDescriptorSetLayout(), m_HairLightingPassLayout };
-			std::vector<VkDescriptorSet> sets = { m_Scene->GetGlobalDescriptorSet(), m_HairLightingPassSets[0] };
-
-			commandBuffer.EnsureGraphicsShader(*shader, m_globalRenderStateData, layouts);
-			commandBuffer.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0, sets, {});
-			commandBuffer.BindGraphicsPipeline(*shader->GetGraphicsPipeline());
-			commandBuffer.Draw(3, 1, 0, 0);
+            m_Scene->DrawHairNodes(rayTracingContext.GetGIRegionCount() > 0
+                ? VansPass::HAIR_LIGHTING : VansPass::HAIR_LIGHTING_SKY);
 		}
+
+    void VansVKDevice::DrawHairDepthResolve(VansRenderPassManager*, VansVKCommandBuffer& commandBuffer)
+    {
+        if (!m_HairLightingDescriptorsReady || m_HairLightingPassSets.empty()) return;
+        auto* shader = VansShaderManager::Get().FindGraphicsShader("HairDepthResolve");
+        if (!shader) throw std::runtime_error("HairDepthResolve shader is not registered");
+        m_globalRenderStateData.vertexInputBindingDescriptions = nullptr;
+        m_globalRenderStateData.vertexInputAttributeDescriptions = nullptr;
+        commandBuffer.EnsureGraphicsShader(*shader, m_globalRenderStateData,
+            {m_Scene->GetGlobalDescriptorSetLayout(), m_HairLightingPassLayout});
+        commandBuffer.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0,
+            {m_Scene->GetGlobalDescriptorSet(), m_HairLightingPassSets[0]}, {});
+        commandBuffer.BindGraphicsPipeline(*shader->GetGraphicsPipeline());
+        commandBuffer.Draw(3, 1, 0, 0);
+    }
 
 	void VansVKDevice::DrawHairComposite(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{

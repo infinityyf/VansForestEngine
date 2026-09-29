@@ -13,6 +13,7 @@
 namespace VansGraphics
 {
 	enum class VansSlotConcurrency { Replace, Queue, Reject };
+	enum class VansSlotBlendOption { Linear, Cubic, HermiteCubic };
 	enum class VansSlotPlaybackState { Invalid, Queued, BlendingIn, Playing, BlendingOut, Completed, Interrupted, Rejected };
 	enum class VansSlotLifecycleEventType
 	{
@@ -49,6 +50,10 @@ namespace VansGraphics
 		int priority = 0;
 		std::optional<float> blendIn;
 		std::optional<float> blendOut;
+		VansSlotBlendOption blendInOption = VansSlotBlendOption::Linear;
+		VansSlotBlendOption blendOutOption = VansSlotBlendOption::Linear;
+		// 负值按淡出时长提前触发；非负值表示距离播放结束的真实秒数，0 表示结束时触发。
+		float blendOutTriggerTime = -1.0f;
 		float weight = 1.0f;
 		bool externallyDriven = false;
 		bool suppressRootMotion = false;
@@ -91,6 +96,7 @@ namespace VansGraphics
 		bool Configure(std::vector<VansAnimationSlotDefinition> definitions, std::string& error);
 		VansSlotPlaybackHandle Play(const std::string& slotId, const VansSlotPlayRequest& request);
 		bool Stop(VansSlotPlaybackHandle handle, float blendOut, bool force = false);
+		bool StopSlot(const std::string& slotId, float blendOut, bool force = false);
 		bool Drive(VansSlotPlaybackHandle handle, float playbackTime, float weight);
 		VansSlotPlaybackStatus GetStatus(VansSlotPlaybackHandle handle) const;
 		bool IsSlotActive(const std::string& slotId) const;
@@ -102,7 +108,7 @@ namespace VansGraphics
 		void Update(float deltaTime,
 		            const std::unordered_map<std::string, VansAnimationClip>& clips,
 		            const Skeleton& skeleton,
-		            std::unordered_map<std::string, VansPosePayload>& outSlotPayloads);
+		            std::unordered_map<std::string, VansSlotPoseInputs>& outSlotPayloads);
 
 		const std::vector<VansSlotLifecycleEvent>& GetLifecycleEvents() const { return m_LifecycleEvents; }
 		const std::vector<VansAnimationSlotDefinition>& GetDefinitions() const { return m_Definitions; }
@@ -116,17 +122,20 @@ namespace VansGraphics
 			float currentTime = 0.0f;
 			float blendIn = 0.0f;
 			float blendOut = 0.0f;
+			float blendElapsed = 0.0f;
 			float fadeElapsed = 0.0f;
 			float fadeDuration = 0.0f;
 			float fadeStartWeight = 1.0f;
+			VansSlotBlendOption fadeOption = VansSlotBlendOption::Linear;
 			float weight = 0.0f;
-			bool stopped = false;
+			bool interrupted = false;
+			bool reachedEnd = false;
 		};
 
 		struct SlotState
 		{
 			std::optional<RequestRuntime> active;
-			std::optional<RequestRuntime> outgoing;
+			std::vector<RequestRuntime> outgoing;
 			std::deque<RequestRuntime> queue;
 		};
 
@@ -140,7 +149,9 @@ namespace VansGraphics
 
 		void StartRequest(std::size_t slotIndex, RequestRuntime request);
 		void BeginBlendOut(std::size_t slotIndex, VansSlotLifecycleEventType reason,
-		                   float duration);
+		                   float duration, std::optional<VansSlotBlendOption> option = std::nullopt);
+		void RetargetBlendOut(std::size_t slotIndex, RequestRuntime& request, float duration,
+		                      std::optional<VansSlotBlendOption> option = std::nullopt);
 		void PublishLifecycle(std::size_t slotIndex, const RequestRuntime& request,
 		                      VansSlotLifecycleEventType type);
 		bool SampleRequest(RequestRuntime& runtime, const VansAnimationClip& clip,

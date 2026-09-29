@@ -7,6 +7,7 @@ layout(early_fragment_tests) in;
 #include "../../Common/VansDrawSubmission.glsl"
 #include "../../Common/MotionVector.glsl"
 #include "../../BRDF/BRDFData.glsl"
+#include "../../Weather/SurfaceWeather.glsl"
 
 layout( location = 0 ) in vec2 frag_uv;
 layout( location = 1 ) in vec3 normal_ws;
@@ -50,12 +51,21 @@ void main()
     normal_sample = normal_sample * 2.0 - 1.0;
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normal_sample);
+    float puddleAmount = -1.0;
+    uint groundWeatherEffects = uint(max(drawData.passUser0, 0));
+    if (groundWeatherEffects != 0u)
+    {
+        puddleAmount = 0.0;
+        SurfaceWeatherApplyGround(albedo, roughness, normal,
+            normalize(normal_ws), TBN, position_world.xz,
+            groundWeatherEffects, puddleAmount);
+    }
 
     
 
     vec3 fresnel0 = vec3(0.04);
     
-    outNormal = vec4(normal, 1.0);
+    outNormal = vec4(normal, puddleAmount);
     outGBuffer0 = vec4(albedo, roughness);
     // PBR 的 w 未参与材质计算；负整数携带弹坑接收组，0 表示未绑定。
     outGBuffer1 = vec4(metallic, ao, float(MATERIAL_ID_PBR),

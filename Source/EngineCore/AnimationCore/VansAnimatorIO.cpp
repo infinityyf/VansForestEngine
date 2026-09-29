@@ -344,6 +344,8 @@ namespace
 			{ "id", layer.id },
 			{ "name", layer.name },
 			{ "kind", ToString(layer.kind) },
+			{ "poseSourceLayerId", layer.poseSourceLayerId },
+			{ "slotId", layer.slotId },
 			{ "mask", { { "guid", layer.maskGuid }, { "pathHint", layer.maskPathHint } } },
 			{ "blend", {
 				{ "mode", ToString(layer.blendMode) },
@@ -360,6 +362,7 @@ namespace
 				{ "parameter", layer.weightParameter },
 				{ "smoothingTime", layer.weightSmoothingTime },
 				{ "curve", layer.weightCurve },
+				{ "curveSourceLayerId", layer.weightCurveSourceLayerId },
 				{ "curveDefault", layer.weightCurveDefault }
 			} },
 			{ "activation", {
@@ -370,7 +373,11 @@ namespace
 			} },
 			{ "dynamicAdditive", {
 				{ "enabled", layer.dynamicAdditive },
-				{ "weight", layer.dynamicAdditiveWeight }
+				{ "weight", layer.dynamicAdditiveWeight },
+				{ "baseLayerId", layer.dynamicAdditiveBaseLayerId },
+				{ "referenceLayerId", layer.dynamicAdditiveReferenceLayerId },
+				{ "weightParameter", layer.dynamicAdditiveWeightParameter },
+				{ "rotationSpace", ToString(layer.dynamicAdditiveRotationSpace) }
 			} },
 			{ "inertialization", {
 				{ "halfLife", layer.inertializationHalfLife },
@@ -397,7 +404,7 @@ namespace
 	{
 		std::string unknown;
 		if (!HasOnlyFields(source,
-			{ "id", "name", "kind", "mask", "blend", "weight", "activation", "dynamicAdditive",
+			{ "id", "name", "kind", "poseSourceLayerId", "slotId", "mask", "blend", "weight", "activation", "dynamicAdditive",
 			  "inertialization", "outputs", "sync", "updateWhenWeightIsZero" },
 			unknown))
 		{
@@ -428,9 +435,9 @@ namespace
 		const json& sync = source["sync"];
 		if (!HasOnlyFields(mask, { "guid", "pathHint" }, unknown)
 			|| !HasOnlyFields(blend, { "mode", "rotationSpace", "additiveReference" }, unknown)
-			|| !HasOnlyFields(weight, { "source", "value", "parameter", "smoothingTime", "curve", "curveDefault" }, unknown)
+			|| !HasOnlyFields(weight, { "source", "value", "parameter", "smoothingTime", "curve", "curveSourceLayerId", "curveDefault" }, unknown)
 			|| !HasOnlyFields(activation, { "blendInSeconds", "blendOutSeconds", "curve", "restartOnRise" }, unknown)
-			|| !HasOnlyFields(dynamicAdditive, { "enabled", "weight" }, unknown)
+			|| !HasOnlyFields(dynamicAdditive, { "enabled", "weight", "baseLayerId", "referenceLayerId", "weightParameter", "rotationSpace" }, unknown)
 			|| !HasOnlyFields(inertialization, { "halfLife", "maxDuration" }, unknown)
 			|| !HasOnlyFields(outputs, { "rootMotion", "curves", "events", "nodeTracks", "eventWeightThreshold" }, unknown)
 			|| !HasOnlyFields(sync, { "mode", "leaderLayerId" }, unknown))
@@ -454,6 +461,8 @@ namespace
 		{
 			layer.id = source["id"].get<std::string>();
 			layer.name = source["name"].get<std::string>();
+			layer.poseSourceLayerId = source.value("poseSourceLayerId", "");
+			layer.slotId = source.value("slotId", "");
 			layer.maskGuid = mask.at("guid").get<std::string>();
 			layer.maskPathHint = mask.at("pathHint").get<std::string>();
 			layer.referenceClipName = additive.at("clip").get<std::string>();
@@ -462,12 +471,23 @@ namespace
 			layer.weightParameter = weight.at("parameter").get<std::string>();
 			layer.weightSmoothingTime = weight.at("smoothingTime").get<float>();
 			layer.weightCurve = weight.value("curve", "");
+			layer.weightCurveSourceLayerId = weight.value("curveSourceLayerId", "");
 			layer.weightCurveDefault = weight.value("curveDefault", 1.0f);
 			layer.activationBlendInSeconds = activation.value("blendInSeconds", 0.0f);
 			layer.activationBlendOutSeconds = activation.value("blendOutSeconds", 0.0f);
 			layer.restartOnActivation = activation.value("restartOnRise", false);
 			layer.dynamicAdditive = dynamicAdditive.value("enabled", false);
 			layer.dynamicAdditiveWeight = dynamicAdditive.value("weight", 0.0f);
+			layer.dynamicAdditiveBaseLayerId = dynamicAdditive.value("baseLayerId", "");
+			layer.dynamicAdditiveReferenceLayerId = dynamicAdditive.value("referenceLayerId", "");
+			layer.dynamicAdditiveWeightParameter = dynamicAdditive.value("weightParameter", "");
+			if (!ParseEnum(dynamicAdditive.value("rotationSpace", "local"),
+				{ { "local", VansRotationBlendSpace::Local }, { "mesh", VansRotationBlendSpace::Mesh } },
+				layer.dynamicAdditiveRotationSpace))
+			{
+				error = "Invalid dynamic additive rotation space";
+				return false;
+			}
 			layer.inertializationHalfLife = inertialization.value("halfLife", 0.0f);
 			layer.inertializationMaxDuration = inertialization.value("maxDuration", 0.0f);
 			layer.syncLeaderLayerId = sync.at("leaderLayerId").get<std::string>();

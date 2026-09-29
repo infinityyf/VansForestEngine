@@ -78,6 +78,7 @@ VansSceneContentBuildResult VansSceneContentBuildExecutor::BuildFromPlan(
 	const std::string sceneSourcePathString = sceneSourcePath.string();
 	const Vans::VansSceneRenderSettingsConfig& renderSettings = buildPlan.renderSettings;
 	scene.SetEnvironmentSettings(renderSettings.environment);
+	scene.SetRainSettings(renderSettings.rain);
 	ApplyPostProcessSettings(*scene.GetMaterialManager(), renderSettings.postProcess);
 	ApplyMainCameraHiZCullSettings(scene, renderSettings.mainCameraHiZCulling);
 	if (Vans::VansProjectManager::Get().IsProjectLoaded())
@@ -99,8 +100,9 @@ VansSceneContentBuildResult VansSceneContentBuildExecutor::BuildFromPlan(
 	scene.GetReflectionProbeSystem()->LoadFromSceneConfig(buildPlan.reflectionProbes, sceneSourcePathString);
 	ApplyGISettings(scene, renderSettings.globalIllumination);
 
-	if (!buildPlan.materials.empty())
-		VansSceneMaterialBuilder::LoadMaterials(scene, buildPlan.materials);
+	std::string materialError;
+    if (!VansSceneMaterialBuilder::LoadMaterials(scene, buildPlan.materials, materialError))
+        return failure(VansSceneContentBuildFailure::MaterialBuildFailed, materialError);
 
 	const VansSceneObjectBuildResult objectBuild =
 		VansSceneAssembly::BuildObjects(
@@ -202,17 +204,6 @@ VansSceneContentBuildResult VansSceneContentBuildExecutor::BuildFromPlan(
 			VANS_LOG_ERROR("[SceneBuild] Deferred node build failed: " << error);
 			return failure(
 				VansSceneContentBuildFailure::DeferredNodeBuildFailed,
-				std::move(error));
-		}
-	}
-	{
-		std::string error;
-		if (!VansSceneRenderNodeBuilder::BuildScreenSpaceFeatureNodes(
-			scene, nativeDevice, error))
-		{
-			VANS_LOG_ERROR("[SceneBuild] Screen-space node build failed: " << error);
-			return failure(
-				VansSceneContentBuildFailure::ScreenSpaceNodeBuildFailed,
 				std::move(error));
 		}
 	}

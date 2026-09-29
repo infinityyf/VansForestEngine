@@ -21,6 +21,7 @@ struct VansPackagedAssetIndexRecord
 	std::string artifactFormat;
 	std::uint64_t sourceHash = 0;
 	std::uint64_t metaHash = 0;
+	std::uint32_t maxResidentDimension = 0;
 	bool missing = false;
 };
 

@@ -3,6 +3,7 @@
 
 #include "../../Common/CameraData.glsl"
 #include "../../Common/PcgSplineFields.glsl"
+#include "../../Weather/SurfaceWeather.glsl"
 
 layout(location = 0) in vec3 inWorldPos;
 layout(location = 1) in float inLinearDepth;
@@ -234,6 +235,10 @@ void main()
         finalNormal=normalize(mix(oceanNormal/max(dot(oceanNormal,base),1e-3),
             riverNormal/max(dot(riverNormal,base),1e-3),riverWeight));
     }
+    // Preserve the complete FFT/river/detail normal chain. Weather adds only
+    // rain ripple perturbation; ground puddle masks and flattening never enter
+    // the water material path.
+    finalNormal=SurfaceWeatherAddWaterRipple(finalNormal,inWorldXZ);
     float roughness = ComputeEffectiveRoughness();
     float foam = 0.0;
     outWaterNormal = vec4(finalNormal, roughness);

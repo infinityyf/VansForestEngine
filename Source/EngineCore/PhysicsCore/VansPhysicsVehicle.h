@@ -218,6 +218,7 @@ namespace VansEngine
         }
 
         bool IsValid(std::string& error) const;
+        PxReal EstimateStaticJounce(uint32_t wheelIndex, PxReal downwardGravity) const;
     };
 
     struct VansVehicleVisualBinding
@@ -285,14 +286,18 @@ namespace VansEngine
         // Access
         PxTransform GetTransform() const;
         PxRigidActor* GetActor() const { return m_State.physxActor.rigidBody; }
+        bool HasWheelRoadHit(uint32_t wheelIndex) const
+        {
+            return wheelIndex < PxVehicleLimits::eMAX_NB_WHEELS && m_State.roadGeomStates[wheelIndex].hitState;
+        }
 
-        // Returns the world-space transform of wheel at wheelIndex.
-        // Wheel local pose is combined with the vehicle body's world pose.
+        // Wheel local poses are relative to the center of mass, not the actor origin.
         PxTransform GetWheelWorldPose(uint32_t wheelIndex) const
         {
             if (!m_State.physxActor.rigidBody || wheelIndex >= PxVehicleLimits::eMAX_NB_WHEELS)
                 return PxTransform(PxIdentity);
-            const PxTransform bodyPose = m_State.physxActor.rigidBody->getGlobalPose();
+            const PxTransform bodyPose = m_State.physxActor.rigidBody->getGlobalPose() *
+                m_State.physxActor.rigidBody->getCMassLocalPose();
             return bodyPose * m_State.wheelLocalPoses[wheelIndex].localPose;
         }
 
@@ -303,7 +308,8 @@ namespace VansEngine
             if (m_Tuning.visualWheelRollSign >= 0.0f)
                 return GetWheelWorldPose(wheelIndex);
 
-            const PxTransform bodyPose = m_State.physxActor.rigidBody->getGlobalPose();
+            const PxTransform bodyPose = m_State.physxActor.rigidBody->getGlobalPose() *
+                m_State.physxActor.rigidBody->getCMassLocalPose();
             PxVehicleWheelRigidBody1dState wheelState = m_State.wheelRigidBody1dStates[wheelIndex];
             wheelState.rotationAngle = -wheelState.rotationAngle;
             const PxTransform localPose = PxVehicleComputeWheelLocalPose(

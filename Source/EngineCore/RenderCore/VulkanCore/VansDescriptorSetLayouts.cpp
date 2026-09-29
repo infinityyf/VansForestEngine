@@ -2,6 +2,7 @@
 #include "VansDescriptorSetLayouts.h"
 #include "VansVKDescriptorManager.h"
 #include "../ShadowCore/VansPunctualShadowTypes.h"
+#include "../VansMaterial.h"
 #include "../ReflectionProbeCore/VansReflectionProbePageLayout.h"
 #include <cassert>
 
@@ -179,6 +180,10 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
         {GLOBAL_BINDING_LIGHT_COOKIE_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 161, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {GLOBAL_BINDING_LIGHT_COOKIE_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {GLOBAL_BINDING_GRASS_ENERGY_LUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, IBL_STAGES, nullptr},
+		{GLOBAL_BINDING_SURFACE_WEATHER_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+		 GLOBAL_STAGES, nullptr},
+		{GLOBAL_BINDING_SURFACE_WEATHER_RIPPLE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+			 GLOBAL_STAGES, nullptr},
 		// binding 50: Bindless PBR textures (fixed max count, no variable descriptor)
 		{GLOBAL_BINDING_BINDLESS_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		 maxBindlessTextures, BINDLESS_TEX_STAGES, nullptr},
@@ -431,18 +436,45 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_DepthOfField(
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
-void VansDescriptorSetLayoutFactory::CreateAndAllocate_ScreenSpace(
-	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_GTAODepth(
+    VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{SCREEN_BINDING_NORMAL,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{SCREEN_BINDING_GBUFFER0,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{SCREEN_BINDING_GBUFFER1,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{SCREEN_BINDING_GBUFFER2,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{SCREEN_BINDING_DEPTH,       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{SCREEN_BINDING_SSAO_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+    std::vector<VkDescriptorSetLayoutBinding> bindings = {
+        { GTAO_DEPTH_POSITION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { GTAO_DEPTH_SOURCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { GTAO_DEPTH_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+    };
+    CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_GTAOMain(
+    VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets)
+{
+    std::vector<VkDescriptorSetLayoutBinding> bindings = {
+        { GTAO_MAIN_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { GTAO_MAIN_MATERIAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { GTAO_MAIN_POSITION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { GTAO_MAIN_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { GTAO_MAIN_RAW, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { GTAO_MAIN_EDGES, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+    };
+    CreateLayoutAndAllocateSets(bindings, outLayout, outSets, 1);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_GTAODenoise(
+    VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets)
+{
+    std::vector<VkDescriptorSetLayoutBinding> bindings = {
+        { GTAO_DENOISE_RAW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { GTAO_DENOISE_EDGES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { GTAO_DENOISE_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { GTAO_DENOISE_MATERIAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { GTAO_DENOISE_POSITION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { GTAO_DENOISE_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+    };
+    CreateLayoutAndAllocateSets(bindings, outLayout, outSets, 1);
 }
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGI(
@@ -588,16 +620,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_TemporalAA(
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
-void VansDescriptorSetLayoutFactory::CreateAndAllocate_BilateralFilter(
-	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{BILATERAL_BINDING_COLOR,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{BILATERAL_BINDING_DEPTH,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{BILATERAL_BINDING_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
-}
+
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZ(
 	std::vector<VkDescriptorSetLayout>& outLayouts, std::vector<VkDescriptorSet>& outSets, uint32_t mipCount)
@@ -837,13 +860,9 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_HairTexture(
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{HAIR_TEXTURE_BINDING_AO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{HAIR_TEXTURE_BINDING_SHIFT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{HAIR_TEXTURE_BINDING_FLOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{HAIR_TEXTURE_BINDING_ID, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{HAIR_TEXTURE_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+		{HAIR_TEXTURE_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
@@ -1194,36 +1213,56 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterComposite(
 }
 
 // ============================================================
-// Hair Composite Pass Set 1
-// HairComposite.frag：HairColor（RGB=lit hair，A=coverage/opacity）
+// Hair Debug Pass Set 1: optical depth, nearest depths, weighted color, display array
 // ============================================================
+bool VansDescriptorSetLayoutFactory::CreateAndAllocate_HairDebug(
+    VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets)
+{
+    const std::vector<VkDescriptorSetLayoutBinding> bindings = {
+        {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}
+    };
+    return CreateLayoutAndAllocateSets(bindings, outLayout, outSets, 1);
+}
+
+// Hair Composite Set 1: RGB = weighted radiance, A = weight; optical depth supplies coverage.
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_HairComposite(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
 		{HAIR_COMP_BINDING_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {HAIR_COMP_BINDING_OPTICAL_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
 // ============================================================
 // Hair Lighting Pass Set 1
-// HairVisibility.frag writes a per-pixel linked list; HairLighting.frag resolves it.
+// HairVisibility 收集近层深度，HairLighting 重绘发片并读取自身材质。
 // ============================================================
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_HairLighting(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{HAIR_LIGHTING_BINDING_OIT_HEAD, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+		{HAIR_LIGHTING_BINDING_LAYER_DEPTHS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{HAIR_LIGHTING_BINDING_OIT_NODES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		{HAIR_LIGHTING_BINDING_PUNCTUAL_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{HAIR_LIGHTING_BINDING_OIT_COUNTER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{HAIR_LIGHTING_BINDING_CASCADE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{HAIR_LIGHTING_BINDING_DEEP_OPACITY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		{HAIR_LIGHTING_BINDING_IES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {HAIR_LIGHTING_BINDING_GI_IRRADIANCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VANS_SSGI_MAX_GI_REGIONS, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {HAIR_LIGHTING_BINDING_GI_VISIBILITY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VANS_SSGI_MAX_GI_REGIONS, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {HAIR_LIGHTING_BINDING_GI_STATE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VANS_SSGI_MAX_GI_REGIONS, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {HAIR_LIGHTING_BINDING_GI_LAYOUT, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {HAIR_LIGHTING_BINDING_SKY_DIFFUSE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {HAIR_LIGHTING_BINDING_OPAQUE_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {DEFERRED_BINDING_AMBIENT_SKY_CACHE_X, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {DEFERRED_BINDING_AMBIENT_SKY_CACHE_Y, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {DEFERRED_BINDING_AMBIENT_SKY_CACHE_Z, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {DEFERRED_BINDING_AMBIENT_SKY_CACHE_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {HAIR_LIGHTING_BINDING_CASCADE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);

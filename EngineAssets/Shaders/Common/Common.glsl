@@ -16,10 +16,6 @@
 // IES 光照衰减：启用后点光源和聚光灯从 iesProfileTexture 采样方向衰减系数
 #define IES_PROFILE_ENABLED
 #define SH_SAMPLE_COUNT 1024
-#define SSAO_SAMPLE_COUNT 32
-#define SSAO_RADIUS 2.0
-#define SSAO_DEPTH_THRESHOLD 1.2
-#define SSAO_DEPHT_BIAS 0.04
 
 // ---------------------------------------------------------------------------
 // Material IDs for deferred shading (stored in G-Buffer)

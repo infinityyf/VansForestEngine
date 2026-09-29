@@ -60,7 +60,7 @@ bool VansAudioSourceBinding::Bind(
     m_Resource = resource;
     m_Voice = std::move(voice);
     m_SourceName = std::move(sourceName);
-    if (m_Voice->GetKind() == VansAudioVoiceKind::Streaming && m_Manager)
+    if (m_Manager)
         m_Manager->SuppressResourceAutoPlay(m_SourceName);
     return true;
 }
@@ -80,8 +80,7 @@ bool VansAudioSourceBinding::SwitchSource(const std::string& sourceName)
     m_Resource = resource;
     m_Voice = std::move(voice);
     m_SourceName = sourceName;
-    if (m_Voice->GetKind() == VansAudioVoiceKind::Streaming)
-        m_Manager->SuppressResourceAutoPlay(m_SourceName);
+    m_Manager->SuppressResourceAutoPlay(m_SourceName);
     return true;
 }
 

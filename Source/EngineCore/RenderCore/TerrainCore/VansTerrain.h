@@ -11,6 +11,7 @@
 #include "../../TerrainCore/VansTerrainAsset.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -38,8 +39,10 @@ namespace VansGraphics
         glm::ivec4 layerCountPacked;
         float tilingFactors[TERRAIN_MAX_LAYERS * 4];
         glm::vec4 heightfieldParams; // x=terrainSize, y=maxHeight, z=heightOffset, w=patchGridResolution
-        glm::vec4 riverWetnessParams; // x=albedoScale, y=roughness, z=detailNormalScale
     };
+
+    static_assert(sizeof(TerrainParamsGPU) == 160,
+        "Terrain params UBO size must match std140");
 
     struct alignas(16) TerrainTessellationParamsGPU
     {
@@ -102,6 +105,8 @@ namespace VansGraphics
         float GetTerrainSize() const { return m_TerrainSize; }
         float GetMaxHeight() const { return m_MaxHeight; }
         float GetHeightOffset() const { return m_HeightOffset; }
+		const Vans::VansTerrainWetSurfaceSettings& GetWetSurfaceSettings() const { return m_WetSurface; }
+		const Vans::VansTerrainPuddleSettings& GetPuddleSettings() const { return m_Puddle; }
 
         bool IsTessellationEnabled() const { return m_EnableTessellation; }
         float GetTessellationDistance() const { return m_TessellationDistance; }
@@ -126,7 +131,10 @@ namespace VansGraphics
         void SetHeightDetailEnabled(bool value);
         void SetHeightDetailStrength(float value);
         void SetHeightDetailFadeStart(float value);
-        void SetRiverWetnessResponse(float albedoScale, float roughness, float detailNormalScale);
+        void SetWetSurfaceResponse(
+            float albedoScale,
+            float roughness);
+        void SetPuddleResponse(const Vans::VansTerrainPuddleSettings& puddle);
 
         VkDescriptorSetLayout m_DescriptorSetLayout = VK_NULL_HANDLE;
         std::vector<VkDescriptorSet> m_DescriptorSets;
@@ -139,7 +147,6 @@ namespace VansGraphics
         TerrainInstanceData BuildInstanceData(const TerrainLodPatch& patch) const;
         void UpdateTessellationUBO();
         void UpdateHeightDetailUBO();
-        void UpdateRiverWetnessUBO();
 
         VansVKDevice* m_Device = nullptr;
         Vans::VansAssetGuid m_AssetGuid;
@@ -193,9 +200,8 @@ namespace VansGraphics
         bool m_EnableHeightDetail = true;
         float m_HeightDetailStrength = 0.03f;
         float m_HeightDetailFadeStart = 0.7f;
-        float m_RiverWetAlbedoScale = 0.72f;
-        float m_RiverWetRoughness = 0.18f;
-        float m_RiverWetDetailNormalScale = 0.70f;
+        Vans::VansTerrainWetSurfaceSettings m_WetSurface;
+        Vans::VansTerrainPuddleSettings m_Puddle;
 
         // A 33x33 regular grid is the conventional CDLOD patch topology. The
         // finest patch remains 16 world units wide, giving 0.5-unit vertices

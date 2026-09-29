@@ -102,7 +102,7 @@ void RegisterEngineShaders()
         "HairVisibility",
         "EngineAssets/Shaders/Hair/Visibility",
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        0, false, false, 0
+        0, false, false, 1, true
     });
 
     VansGraphics::VansShaderEntry hairCascadeShadow{
@@ -121,18 +121,25 @@ void RegisterEngineShaders()
         0, false
     });
 
-    reg.RegisterGraphicsShader("HairDeepOpacity", {
-        "HairDeepOpacity",
-        "EngineAssets/Shaders/Hair/DeepOpacity",
-        VK_FALSE, VK_FALSE, VK_COMPARE_OP_NEVER, VK_CULL_MODE_NONE,
-        0, false, false, 1, true
+
+
+    reg.RegisterGraphicsShader("HairDepthResolve", {
+        "HairDepthResolve", "EngineAssets/Shaders/Hair/DepthResolve",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_ALWAYS, VK_CULL_MODE_NONE,
+        0, false, false, 0
     });
 
     reg.RegisterGraphicsShader("HairLighting", {
         "HairLighting",
         "EngineAssets/Shaders/Hair/Lighting",
-        VK_FALSE, VK_FALSE, VK_COMPARE_OP_NEVER, VK_CULL_MODE_NONE,
-        0, false
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        0, false, false, 1, true
+    });
+
+    reg.RegisterGraphicsShader("HairLightingSky", {
+        "HairLightingSky", "EngineAssets/Shaders/Hair/LightingSky",
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        0, false, false, 1, true
     });
 
     reg.RegisterGraphicsShader("HairComposite", {
@@ -179,12 +186,7 @@ void RegisterEngineShaders()
         0, false, false, 1
     });
 
-    reg.RegisterGraphicsShader("SSAO", {
-        "SSAO",
-        "EngineAssets/Shaders/ScreenSpaceFeature/SSAO",
-        VK_FALSE, VK_FALSE, VK_COMPARE_OP_NEVER, VK_CULL_MODE_NONE,
-        0, false
-    });
+
 
     reg.RegisterGraphicsShader("Subsurface", {
         "Subsurface",
@@ -242,6 +244,30 @@ void RegisterEngineShaders()
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         16, true
     });
+
+	VansGraphics::VansShaderEntry rainStreak{
+		"RainStreak", "EngineAssets/Shaders/Weather",
+		VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS, VK_CULL_MODE_NONE,
+		0, false
+	};
+	rainStreak.explicitStageFiles = {
+		{ VK_SHADER_STAGE_VERTEX_BIT, "RainStreak.vert" },
+		{ VK_SHADER_STAGE_FRAGMENT_BIT, "RainStreak.frag" }
+	};
+	rainStreak.enablePremultipliedAlphaBlend = true;
+	reg.RegisterGraphicsShader("RainStreak", std::move(rainStreak));
+
+	VansGraphics::VansShaderEntry rainSplash{
+		"RainSplash", "EngineAssets/Shaders/Weather",
+		VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+		0, false
+	};
+	rainSplash.explicitStageFiles = {
+		{ VK_SHADER_STAGE_VERTEX_BIT, "RainSplash.vert" },
+		{ VK_SHADER_STAGE_FRAGMENT_BIT, "RainSplash.frag" }
+	};
+	rainSplash.enableAdditiveBlend = true;
+	reg.RegisterGraphicsShader("RainSplash", std::move(rainSplash));
 
     VansGraphics::VansShaderEntry ribbon{
         "ParticleRibbon", "EngineAssets/Shaders/ParticleRibbon",
@@ -374,6 +400,10 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("OcclusionHIZ", "EngineAssets/Shaders/HIZ_OCCLUSION");
     reg.RegisterComputeShader("OcclusionHIZSeed", "EngineAssets/Shaders/HIZ_OCCLUSION_SEED");
     reg.RegisterComputeShader("MainCameraHiZCull", "EngineAssets/Shaders/MainCameraHiZCull", sizeof(VansGraphics::VansMainCameraHiZCullPushConstants));
+    reg.RegisterComputeShader("GTAODepth", "EngineAssets/Shaders/GTAO/Depth", sizeof(VansGraphics::VansGTAOParameters));
+    reg.RegisterComputeShader("GTAOMain", "EngineAssets/Shaders/GTAO/Main", sizeof(VansGraphics::VansGTAOParameters));
+    reg.RegisterComputeShader("GTAODenoise", "EngineAssets/Shaders/GTAO/Denoise");
+	reg.RegisterComputeShaderFile("SurfaceWeatherRipple", "EngineAssets/Shaders/Weather", "SurfaceWeatherRipple.comp");
     reg.RegisterComputeShader("ScreenSpaceShadow", "EngineAssets/Shaders/ScreenSpaceShadow");
 	reg.RegisterComputeShader("CascadeShadowMinMaxSeed", "EngineAssets/Shaders/CascadeShadowMinMaxSeed");
 	reg.RegisterComputeShader("CascadeShadowMinMaxReduce", "EngineAssets/Shaders/CascadeShadowMinMaxReduce");
@@ -382,7 +412,6 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("SSRTrace", "EngineAssets/Shaders/SSR_TRACE");
     reg.RegisterComputeShader("SSRResolve", "EngineAssets/Shaders/SSR_RESOLVE");
     reg.RegisterComputeShader("SSRTemporalAA", "EngineAssets/Shaders/SSR_TEMPORALAA");
-    reg.RegisterComputeShader("BilateralFilter", "EngineAssets/Shaders/BilateralFilter", sizeof(VansGraphics::VansMaterialManager::BilateralFilterPushConst));
 	reg.RegisterComputeShaderFile("AtmosphereTransmittance", "EngineAssets/Shaders/Atmosphere", "TransmittanceLUT.comp");
 	reg.RegisterComputeShaderFile("AtmosphereMultiScattering", "EngineAssets/Shaders/Atmosphere", "MultiScatteringLUT.comp");
 	reg.RegisterComputeShaderFile("AtmosphereSkyView", "EngineAssets/Shaders/Atmosphere", "SkyViewLUT.comp");
@@ -397,6 +426,7 @@ void RegisterEngineShaders()
 	reg.RegisterComputeShaderFile("VolumetricCloudRayMarch", "EngineAssets/Shaders/Cloud", "CloudRayMarch.comp");
 	reg.RegisterComputeShaderFile("VolumetricCloudShadow", "EngineAssets/Shaders/Cloud", "CloudShadow.comp");
     reg.RegisterComputeShader("TileLightBuild", "EngineAssets/Shaders/TileLight");
+    reg.RegisterComputeShader("HairDebug", "EngineAssets/Shaders/Hair/Debug");
     reg.RegisterComputeShader("PunctualShadowDebug", "EngineAssets/Shaders/PunctualShadowDebug");
     reg.RegisterComputeShader("ExposureLuminance", "EngineAssets/Shaders/PostProcess/ExposureLuminance");
     reg.RegisterComputeShader("ExposureAdapt", "EngineAssets/Shaders/PostProcess/ExposureAdapt");
@@ -458,8 +488,9 @@ void RegisterEngineShaders()
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_HAIR, {
         { VansGraphics::VansPass::HAIR_VISIBILITY,  "HairVisibility" },
+        { VansGraphics::VansPass::HAIR_LIGHTING,    "HairLighting" },
+        { VansGraphics::VansPass::HAIR_LIGHTING_SKY, "HairLightingSky" },
         { VansGraphics::VansPass::SHADOW,           "HairShadow"     },
-        { VansGraphics::VansPass::HAIR_SHADOW,      "HairShadow"     },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "HairPunctualShadow" },
     });
 
@@ -489,9 +520,7 @@ void RegisterEngineShaders()
         { VansGraphics::VansPass::POST_PROCESS,     "Postprocess"    },
     });
 
-    reg.RegisterMaterialPasses(VansGraphics::VAN_SCREEN_SPACE_AO, {
-        { VansGraphics::VansPass::SCREEN_SPACE,     "SSAO"           },
-    });
+
 
     // Emissive: only participates in GBuffer, without shadow or velocity passes.
     reg.RegisterMaterialPasses(VansGraphics::VAN_EMISSIVE, {

@@ -98,6 +98,7 @@ struct VansTextureAssetImportSettings
 	bool mipmapped = false;
 	int channelCount = 0;
 	std::string precision = "low8";
+	std::uint32_t maxResidentDimension = 0;
 };
 
 struct VansAssetRecord

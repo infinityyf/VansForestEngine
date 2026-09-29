@@ -5,6 +5,8 @@
 #include <glm/glm.hpp>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include "VansPhysicsEvents.h"
 #include <string>
 #include "../VansNode.h"
 #include "../RuntimeCore/VansCharacterLocomotionResolver.h"
@@ -79,6 +81,8 @@ namespace VansEngine
 		// 已将 gameplay intent 与动画 Root Motion 合成为一条待碰撞位移；本节点
 		// 不解释 Motion Matching 状态或重新选择位移权威。
 		void SetMotionIntent(const Vans::VansCharacterMotionIntent& intent);
+		void SetMotionDynamics(const Vans::VansCharacterAccelerationModel& model) { m_Locomotion.SetDynamics(model); }
+		void SetFacingYaw(float yaw);
 		void AcquireGameplayMovementBlock();
 		void ReleaseGameplayMovementBlock();
 		bool IsGameplayMovementBlocked() const { return m_GameplayMovementBlockCount > 0; }
@@ -97,11 +101,15 @@ namespace VansEngine
 
         // ── 内部：提交 move() + 同步 Transform（由 UpdateCharControllerTransforms 调用）──
         // 调用方需已持有 SimulationMutex。
-        void FlushMoveAndSync();
+        VansCharacterMotionFlushResult FlushMoveAndSync();
 
         // ── 瞬移 ─────────────────────────────────────────────────────────
         // pos 为胶囊中心坐标（忽略 positionOffset）
         void SetPosition(const glm::vec3& pos);
+
+        // Resize the capsule cylinder while keeping its foot and Transform origin fixed.
+        // Caller holds SimulationMutex; growing fails if the target shape is obstructed.
+        bool ResizeCapsule(float cylinderHeight);
 
         // ── 状态查询 ──────────────────────────────────────────────────────
         glm::vec3 GetPosition() const;          // 返回胶囊中心坐标
@@ -130,6 +138,9 @@ namespace VansEngine
         const std::string& GetPendingFollowRagdollBone() const { return m_PendingFollowRagdollBone; }
         void ConsumePendingFollowRagdoll() { m_PendingFollowRagdoll = false; }
 
+    protected:
+        void OnDisable() override { DiscardPendingMove(); }
+
     private:
         struct NativeState;
 
@@ -147,6 +158,16 @@ namespace VansEngine
         glm::vec3                         m_PendingDisplacement = { 0.0f, 0.0f, 0.0f };
         float                             m_PendingDt           = 0.0f;
 		bool                              m_HasPendingMove      = false;
+		bool m_PendingModeledMotion = false;
+		bool m_PendingSubsteps = false;
+		bool m_FlushStarted = false;
+		glm::vec3 m_FlushStartPosition{0.0f};
+		struct PendingLanding
+		{
+			glm::vec3 velocity{0.0f};
+			float unusedTime = 0.0f;
+		};
+		std::optional<PendingLanding> m_PendingLanding;
 		Vans::VansCharacterLocomotionResolver m_Locomotion;
 		std::uint32_t                       m_GameplayMovementBlockCount = 0;
         // ── Ragdoll 接管 ───────────────────────────────────────────

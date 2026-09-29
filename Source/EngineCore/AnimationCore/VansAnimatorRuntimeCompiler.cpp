@@ -29,8 +29,20 @@ namespace VansGraphics
 			options.rigResolver(rigGuid, error);
 		if (!rigAsset)
 			return nullptr;
+		VansAnimationRigAsset physicalRig;
+		Skeleton physicalSkeleton;
+		if (!VansAnimationRigCompiler::BuildRuntimeSkeleton(
+			physicalRig, skeleton, physicalSkeleton, error))
+			return nullptr;
+		auto controller = std::make_unique<VansAnimationController>();
+		auto runtimeSkeleton = std::make_unique<Skeleton>();
+		if (!VansAnimationRigCompiler::BuildRuntimeSkeleton(
+			*rigAsset, physicalSkeleton, *runtimeSkeleton, error))
+			return nullptr;
+		controller->SetRuntimeSkeleton(std::move(runtimeSkeleton));
+		const Skeleton& compiledSkeleton = *controller->GetRuntimeSkeleton();
 		VansCompiledAnimationRig compiledRig;
-		if (!VansAnimationRigCompiler::Compile(*rigAsset, skeleton, compiledRig, error))
+		if (!VansAnimationRigCompiler::Compile(*rigAsset, compiledSkeleton, compiledRig, error))
 		{
 			error = "Animation Rig '" + rigGuid + "' failed compilation: " + error;
 			return nullptr;
@@ -45,11 +57,10 @@ namespace VansGraphics
 				return nullptr;
 			}
 			if (!VansAnimationClipLoader::LoadClipsFromRefs(
-				asset.clipRefs, clipResolver, &skeleton, clips, error))
+				asset.clipRefs, clipResolver, &physicalSkeleton, clips, error))
 				return nullptr;
 		}
 
-		auto controller = std::make_unique<VansAnimationController>();
 		controller->SetName(asset.name);
 		if (!controller->SetAnimationRig(
 			std::move(compiledRig), options.queryProfileResolver, error))
@@ -154,7 +165,7 @@ namespace VansGraphics
 		}
 		controller->EnableRootMotion(options.enableRootMotion);
 		controller->EnableDebugMetrics(options.enableDebugMetrics);
-		controller->Update(0.0f, skeleton);
+		controller->Update(0.0f, compiledSkeleton);
 		return controller;
 	}
 }

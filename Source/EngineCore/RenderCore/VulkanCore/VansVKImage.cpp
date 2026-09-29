@@ -91,34 +91,24 @@ namespace VansGraphics
         return view_type;
     }
 
-    // 判断深度格式是否附带 stencil 平面
-    static bool HasStencilComponent(VkFormat format)
+    VkImageAspectFlags VansVKImage::ConvertImageViewAspect(VkFormat format)
     {
-        return format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
-               format == VK_FORMAT_D24_UNORM_S8_UINT  ||
-               format == VK_FORMAT_D16_UNORM_S8_UINT;
-    }
-
-    VkImageAspectFlags VansVKImage::ConvertImageViewAspect(VkImageUsageFlags usage, VkFormat format)
-    {
-        VkImageAspectFlags aspect = 0;
-        if (usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
+        // 平面由格式决定，与 attachment、sampled 或 storage 等用途无关。
+        switch (format)
         {
-            aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
-            // 带 stencil 格式需要在 barrier aspect 中包含 stencil，
-            // 确保两个平面都能被 pipeline barrier 正确转换
-            if (HasStencilComponent(format))
-            {
-                aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
-            }
-            return aspect;
+        case VK_FORMAT_D16_UNORM:
+        case VK_FORMAT_X8_D24_UNORM_PACK32:
+        case VK_FORMAT_D32_SFLOAT:
+            return VK_IMAGE_ASPECT_DEPTH_BIT;
+        case VK_FORMAT_S8_UINT:
+            return VK_IMAGE_ASPECT_STENCIL_BIT;
+        case VK_FORMAT_D16_UNORM_S8_UINT:
+        case VK_FORMAT_D24_UNORM_S8_UINT:
+        case VK_FORMAT_D32_SFLOAT_S8_UINT:
+            return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        default:
+            return VK_IMAGE_ASPECT_COLOR_BIT;
         }
-        if (usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
-        {
-            aspect |= VK_IMAGE_ASPECT_COLOR_BIT;
-            return aspect;
-        }
-        return aspect;
     }
 
     bool VansVKImage::CreateVulkanImage(VkDevice& logical_device, VkExtent3D size, VkFormat format, uint32_t mip_num, uint32_t layer_num, VkImageType type, VkImageUsageFlags usage, VkSampleCountFlagBits samples, bool isCube, bool need_raw_Data, bool combined_sampler, VkSamplerAddressMode addressMode, bool comparisonSampler, VkCompareOp comparisonOp)
@@ -182,7 +172,7 @@ namespace VansGraphics
         //create image view
         VkImageViewType view_type = ConvertImageViewType(type, isCube, layer_num);
         // m_ImageAspect 包含所有平面（depth+stencil），用于 pipeline barrier 覆盖全部平面
-        m_ImageAspect = ConvertImageViewAspect(usage, format);
+        m_ImageAspect = ConvertImageViewAspect(format);
         // 采样 view 只能有单一 aspect：depth-stencil 图像的采样 view 只用 DEPTH_BIT，
         // 否则 Vulkan 验证层报错（combined aspect view 不可绑定为 sampler2D）
         VkImageAspectFlags viewAspect = m_ImageAspect;

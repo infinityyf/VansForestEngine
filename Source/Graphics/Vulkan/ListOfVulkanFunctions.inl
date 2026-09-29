@@ -26,6 +26,7 @@ GLOBAL_LEVEL_VULKAN_FUNCTION(vkCreateInstance)
 //instance level function , can be added by enable extensions
 INSTANCE_LEVEL_VULKAN_FUNCTION(vkEnumeratePhysicalDevices)
 INSTANCE_LEVEL_VULKAN_FUNCTION(vkGetPhysicalDeviceProperties)
+INSTANCE_LEVEL_VULKAN_FUNCTION(vkGetPhysicalDeviceFormatProperties)
 INSTANCE_LEVEL_VULKAN_FUNCTION(vkGetPhysicalDeviceFeatures)
 INSTANCE_LEVEL_VULKAN_FUNCTION(vkGetPhysicalDeviceMemoryProperties)
 INSTANCE_LEVEL_VULKAN_FUNCTION(vkGetPhysicalDeviceQueueFamilyProperties)

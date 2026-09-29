@@ -111,6 +111,7 @@ bool ResolveProjectRelativeAssetPathFromGuid(
 	const std::string& guidText,
 	VansAssetType expectedType,
 	const std::string& projectRoot,
+	const VansSceneAssetRecordResolver& resolveAssetRecord,
 	bool leadingSlash,
 	std::string& outPath,
 	std::string& outError)
@@ -129,7 +130,7 @@ bool ResolveProjectRelativeAssetPathFromGuid(
 		return false;
 	}
 
-	std::optional<VansAssetRecord> record = VansProjectManager::Get().FindAssetRecord(guid);
+	std::optional<VansAssetRecord> record = resolveAssetRecord(guid);
 	if (!record)
 	{
 		outError = "Timeline asset GUID is not indexed: " + guidText;
@@ -1474,6 +1475,7 @@ bool AppendAuthoringEntityToContentPlan(
 	const VansSerializedValue& entity,
 	VansSceneContentBuildPlan& plan,
 	const std::string& projectRoot,
+	const VansSceneAssetRecordResolver& resolveAssetRecord,
 	std::string& outError)
 {
 	if (entity.kind != VansSerializedValue::Kind::Object)
@@ -1578,6 +1580,7 @@ bool AppendAuthoringEntityToContentPlan(
 			objectConfig.timeline->timelineAssetGuid,
 			VansAssetType::Timeline,
 			projectRoot,
+			resolveAssetRecord,
 			true,
 			resolvedPath,
 			outError))
@@ -1596,6 +1599,7 @@ bool AppendAuthoringEntitiesToContentPlan(
 	const VansSerializedValue& entities,
 	VansSceneContentBuildPlan& plan,
 	const std::string& projectRoot,
+	const VansSceneAssetRecordResolver& resolveAssetRecord,
 	std::string& outError)
 {
 	if (entities.kind != VansSerializedValue::Kind::Array)
@@ -1608,7 +1612,8 @@ bool AppendAuthoringEntitiesToContentPlan(
 		plan.objects.objects.size() + entities.arrayItems.size());
 	for (const VansSerializedValue& entity : entities.arrayItems)
 	{
-		if (!AppendAuthoringEntityToContentPlan(entity, plan, projectRoot, outError))
+		if (!AppendAuthoringEntityToContentPlan(entity, plan, projectRoot,
+			resolveAssetRecord, outError))
 		{
 			if (outError.empty()) outError = "Invalid Scene entity";
 			return false;
@@ -1751,11 +1756,17 @@ bool VansSceneRuntimeProjection::ProjectAuthoringEntityFromSceneRoot(
 bool VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
 	const VansSerializedValue& entities,
 	const std::string& projectRoot,
+	const VansSceneAssetRecordResolver& resolveAssetRecord,
 	VansSceneContentBuildPlan& outPlan,
 	std::string& outError)
 {
 	outPlan = {};
 	outError.clear();
+	if (!resolveAssetRecord)
+	{
+		outError = "Runtime Scene projection requires an asset record resolver";
+		return false;
+	}
 	const SceneDiagnostics diagnostics = VansSceneSchema::ValidateEntityComponents(entities);
 	const auto diagnostic = std::find_if(
 		diagnostics.begin(), diagnostics.end(), [](const SceneDiagnostic& value)
@@ -1768,7 +1779,7 @@ bool VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
 		return false;
 	}
 	if (!AppendAuthoringEntitiesToContentPlan(
-		entities, outPlan, projectRoot, outError))
+		entities, outPlan, projectRoot, resolveAssetRecord, outError))
 	{
 		outPlan = {};
 		return false;
@@ -1830,7 +1841,9 @@ bool VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
 	}
 
 	if (!AppendAuthoringEntitiesToContentPlan(
-		*entities, outPlan, projectRoot, outError))
+		*entities, outPlan, projectRoot,
+		[](VansAssetGuid guid) { return VansProjectManager::Get().FindAssetRecord(guid); },
+		outError))
 	{
 		outPlan = {};
 		return false;

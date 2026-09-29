@@ -559,7 +559,9 @@ namespace
 		}
 		Vans::VansSceneContentBuildPlan contentPlan;
 		if (!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
-			*entities, projectRoot.generic_string(), contentPlan, error))
+			*entities, projectRoot.generic_string(),
+			[&database](Vans::VansAssetGuid guid) { return database.Find(guid); },
+			contentPlan, error))
 		{
 			std::cerr << "Could not project Scene for navigation: " << error << '\n';
 			return 1;

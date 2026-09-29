@@ -49,10 +49,19 @@ vec3 RiverWaveHeightGradient(vec2 worldXZ,float footprint,vec2 geometryFilter)
             if(frequencyWeight<=0)continue;
             float phase=dot(relative,component.xy)*component.z+component.w;
             float sine=sin(phase),cosine=cos(phase);
+            // A skewed wave profile concentrates curvature at the crest and
+            // leaves a broader trough.  Keep the analytic derivative so the
+            // refracted normal follows the sharper shape.
+            const float crestSharpness[3]=float[3](.45,.30,.18);
+            float sharpness=crestSharpness[band];
+            float normalization=1.0+0.5*sharpness;
+            float shapedWave=(sine+sharpness*(sine*sine-.5))/normalization;
+            float shapedSlope=cosine*(1.0+2.0*sharpness*sine)/normalization;
             // 按波数衰减短波高度，保留法线细节而不让细波斜率淹没主体。
             float amplitude=packet.w*bandStrength[band]*(carrier.z/component.z)*frequencyWeight;
-            wave.x+=amplitude*envelope*sine;
-            wave.yz+=amplitude*(envelopeGradient*sine+envelope*cosine*component.z*component.xy);
+            wave.x+=amplitude*envelope*shapedWave;
+            wave.yz+=amplitude*(envelopeGradient*shapedWave+
+                envelope*shapedSlope*component.z*component.xy);
         }
     }
     // 平滑限制叠加振幅，岸沿高差和水深共同约束，不让浪峰重新穿过岸边。

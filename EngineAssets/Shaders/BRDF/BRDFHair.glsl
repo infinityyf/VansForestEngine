@@ -1,128 +1,127 @@
 #ifndef VANS_BRDF_HAIR_GLSL
 #define VANS_BRDF_HAIR_GLSL
-
+// d'Eon/Chiang 圆柱纤维模型；公式参考 PBRT 4e §9.9。
+// 发片没有逐根纤维 h，使用三点 Gauss-Legendre 对横截面积分。
+// 返回 BSDF * |cos(theta_i)|，调用方不可再乘表面 NdotL。
 const float HAIR_PI = 3.14159265359;
-const float HAIR_TWO_PI = 6.28318530718;
-
-struct HairParams
-{
-    vec4 absorption;
-    vec4 shiftParams;
-};
-
 struct HairData
 {
-    vec3 positionWS;
-    vec3 normalWS;
     vec3 tangentWS;
     vec3 viewDirWS;
     vec3 albedo;
-    float coverage;
-    float roughnessR;
-    float roughnessTT;
-    float roughnessTRT;
-    float shift;
-    float ao;
-    HairParams params;
+    float longitudinalRoughness;
+    float azimuthalRoughness;
+    float cuticleTilt;
+    vec3 absorption;
+    vec4 variance;
+    vec4 sinOutgoing;
+    vec4 cosOutgoing;
+    float azimuthalScale;
+    float sinView;
+    float cosView;
 };
-
-struct HairLobes
+// Material/view terms are prepared once per surviving fragment, outside every light loop.
+void PrepareHairScattering(inout HairData hair)
 {
-    vec3 R;
-    vec3 TT;
-    vec3 TRT;
-    vec3 diffuse;
-};
-
-float HairSaturate(float v)
-{
-    return clamp(v, 0.0, 1.0);
+    float bm=hair.longitudinalRoughness, bn=hair.azimuthalRoughness;
+    float width=0.726*bm+0.812*bm*bm+3.7*pow(bm,20.0);
+    hair.variance=max(width*width,1e-5)*vec4(1.0,0.25,4.0,4.0);
+    hair.azimuthalScale=0.626657069*(0.265*bn+1.194*bn*bn+5.372*pow(bn,22.0));
+    float fit=5.969-0.215*bn+2.532*bn*bn-10.73*pow(bn,3.0)+5.574*pow(bn,4.0)+0.245*pow(bn,5.0);
+    vec3 logColor=log(clamp(hair.albedo,vec3(1e-4),vec3(1.0)))/fit;
+    hair.absorption=logColor*logColor;
+    hair.sinView=clamp(dot(hair.tangentWS,hair.viewDirWS),-1.0,1.0);
+    hair.cosView=sqrt(max(0.0,1.0-hair.sinView*hair.sinView));
+    vec4 shifts=hair.cuticleTilt*vec4(-2.0,1.0,4.0,0.0);
+    hair.sinOutgoing=hair.sinView*cos(shifts)+hair.cosView*sin(shifts);
+    hair.cosOutgoing=abs(hair.cosView*cos(shifts)-hair.sinView*sin(shifts));
 }
-
-float HairGaussian(float beta, float x)
+float HairLogI0(float x)
 {
-    float b = max(beta, 1e-3);
-    return exp(-(x * x) / (2.0 * b * b)) / max(sqrt(HAIR_TWO_PI) * b, 1e-3);
+    if (x > 12.0) return x - 0.5*log(2.0*HAIR_PI*x) + log(1.0 + 1.0/(8.0*x));
+    float sum=1.0, term=1.0;
+    for(int k=1;k<=16;++k) { term *= x*x/(4.0*float(k*k)); sum+=term; }
+    return log(sum);
 }
-
-float HairFresnel(float cosTheta)
+float HairM(float si,float ci,float so,float co,float variance)
 {
-    float f0 = 0.04;
-    float m = HairSaturate(1.0 - cosTheta);
-    return f0 + (1.0 - f0) * m * m * m * m * m;
+    float a=ci*co/variance, b=si*so/variance, inv=1.0/variance;
+    // log(2 v sinh(1/v)) 的稳定形式，同时覆盖小/大粗糙度。
+    float logDenom=log(variance)+inv+log(max(1.0-exp(-2.0*inv),1e-8));
+    return exp(HairLogI0(a)-b-logDenom);
 }
-
-vec3 HairAbsorptionFromAlbedo(vec3 albedo, float density)
+float HairN(float phi,float scale)
 {
-    return -log(clamp(albedo, vec3(0.02), vec3(0.98))) * max(density, 1e-3);
+    float d=mod(phi+HAIR_PI,2.0*HAIR_PI)-HAIR_PI;
+    float e=exp(-abs(d)/scale);
+    float normalization=(1.0-exp(-HAIR_PI/scale))/(1.0+exp(-HAIR_PI/scale));
+    return e/(scale*(1.0+e)*(1.0+e)*normalization);
 }
-
-float HairCylinderIrradiance(vec3 tangentWS, vec3 lightDirWS)
+float HairFresnel(float cosine)
 {
-    float tl = clamp(dot(normalize(tangentWS), normalize(lightDirWS)), -1.0, 1.0);
-    return sqrt(max(1.0 - tl * tl, 0.0));
+    const float eta=1.55;
+    float ct=sqrt(max(0.0,1.0-(1.0-cosine*cosine)/(eta*eta)));
+    float rs=(cosine-eta*ct)/max(cosine+eta*ct,1e-6);
+    float rp=(eta*cosine-ct)/max(eta*cosine+ct,1e-6);
+    return 0.5*(rs*rs+rp*rp);
 }
-
-vec2 HairOctEncode(vec3 n)
+vec3 EvaluateHairScattering(HairData hair,vec3 L)
 {
-    n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1e-5);
-    if (n.z < 0.0)
-        n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
-    return n.xy;
+    float si=clamp(dot(hair.tangentWS,L),-1.0,1.0);
+    float so=hair.sinView;
+    float ci=sqrt(max(0.0,1.0-si*si)), co=hair.cosView;
+    vec3 lp=L-si*hair.tangentWS, vp=hair.viewDirWS-so*hair.tangentWS;
+    float phi=atan(dot(hair.tangentWS,cross(vp,lp)),dot(vp,lp)+1e-10);
+    float scale=hair.azimuthalScale;
+    vec4 m;
+    for(int p=0;p<4;++p)
+        m[p]=HairM(si,ci,hair.sinOutgoing[p],hair.cosOutgoing[p],hair.variance[p]);
+    vec3 sigmaA=hair.absorption;
+    float cosT=sqrt(max(1e-6,1.0-so*so/(1.55*1.55)));
+    vec3 result=vec3(0.0);
+    const float offsets[3]=float[3](-0.7745966692,0.0,0.7745966692);
+    const float weights[3]=float[3](0.2777777778,0.4444444444,0.2777777778);
+    for(int q=0;q<3;++q)
+    {
+        float h=offsets[q], go=asin(h), gt=asin(h*co/sqrt(1.55*1.55-so*so));
+        float f=HairFresnel(co*sqrt(1.0-h*h));
+        vec3 tr=exp(-sigmaA*(2.0*cos(gt)/cosT));
+        vec3 a0=vec3(f), a1=(1.0-f)*(1.0-f)*tr, a2=a1*tr*f;
+        vec3 residual=a2*tr*f/max(vec3(1e-6),vec3(1.0)-tr*f);
+        result+=weights[q]*(m.x*a0*HairN(phi+2.0*go,scale)
+            +m.y*a1*HairN(phi-2.0*gt+2.0*go-HAIR_PI,scale)
+            +m.z*a2*HairN(phi-4.0*gt+2.0*go-2.0*HAIR_PI,scale)
+            +m.w*residual/(2.0*HAIR_PI));
+    }
+    return result;
 }
-
-vec3 HairOctDecode(vec2 e)
+// 未解析发群的间接光：方向性 R 反射 + 有效发色控制的低频体散射。
+// SigmaAFromReflectance 的输入是多次散射后的颜色，不能把由它反推的
+// 单纤维 TT 透射率当作发群反照率，否则深棕色会被抬成浅灰色。
+// 此处采用有界发群近似：R 占 F，体散射占 (1-F)*basecolor；白色保持单位能量。
+vec3 EvaluateHairEnvironment(HairData hair,vec3 position,vec3 normal)
 {
-    vec3 v = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
-    if (v.z < 0.0)
-        v.xy = (1.0 - abs(v.yx)) * vec2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0);
-    return normalize(v);
+    vec3 T=hair.tangentWS;
+    float so=hair.sinView, co=hair.cosView;
+    vec3 radial=hair.viewDirWS-T*so;
+    radial=dot(radial,radial)>1e-10?normalize(radial):normal;
+    vec3 ortho=normalize(cross(T,radial));
+    vec3 lowFrequency=0.5*(SampleHairLowFrequency(position,normal)+
+        SampleHairLowFrequency(position,-normal));
+    vec3 result=vec3(0.0);
+    const float offsets[3]=float[3](-0.7745966692,0.0,0.7745966692);
+    const float weights[3]=float[3](0.2777777778,0.4444444444,0.2777777778);
+    for(int q=0;q<3;++q)
+    {
+        float h=offsets[q], go=asin(h);
+        float f=HairFresnel(co*sqrt(1.0-h*h));
+        float si=clamp(-hair.sinOutgoing.x,-1.0,1.0);
+        float phi=-2.0*go;
+        vec3 L=T*si+sqrt(max(0.0,1.0-si*si))*(radial*cos(phi)+ortho*sin(phi));
+        float rough=max(hair.longitudinalRoughness,hair.azimuthalRoughness);
+        result+=weights[q]*(f*SampleHairEnvironmentRadiance(position,normal,L,rough)
+            +(1.0-f)*clamp(hair.albedo,vec3(0.0),vec3(1.0))*lowFrequency);
+    }
+    return result;
 }
-
-HairLobes EvaluateHairLobes(HairData hair, vec3 L)
-{
-    vec3 V = normalize(hair.viewDirWS);
-    vec3 T = normalize(hair.tangentWS);
-    vec3 N = normalize(hair.normalWS);
-
-    float shift = hair.shift * hair.params.shiftParams.x;
-    vec3 Ts = normalize(T + N * shift * 0.15);
-
-    float sinThetaL = clamp(dot(Ts, L), -1.0, 1.0);
-    float sinThetaV = clamp(dot(Ts, V), -1.0, 1.0);
-    float sinThetaH = 0.5 * (sinThetaL + sinThetaV);
-
-    float thetaD = 0.5 * abs(asin(sinThetaV) - asin(sinThetaL));
-    float cosThetaD = max(cos(thetaD), 0.05);
-
-    vec3 Lp = normalize(L - sinThetaL * Ts);
-    vec3 Vp = normalize(V - sinThetaV * Ts);
-    float cosPhi = clamp(dot(Lp, Vp), -1.0, 1.0);
-
-    float betaR = max(hair.roughnessR, 0.035);
-    float betaTT = max(hair.roughnessTT, 0.025);
-    float betaTRT = max(hair.roughnessTRT, 0.08);
-
-    float MR = HairGaussian(betaR, sinThetaH + sin(shift * 0.05));
-    float MTT = HairGaussian(betaTT, sinThetaH - sin(shift * 0.025));
-    float MTRT = HairGaussian(betaTRT, sinThetaH - sin(shift * 0.075));
-
-    float NR = 0.25 * sqrt(max(0.5 + 0.5 * cosPhi, 0.0));
-    float NTT = exp(-3.65 * cosPhi - 3.98);
-    float NTRT = NTT / HAIR_TWO_PI;
-
-    vec3 sigmaA = HairAbsorptionFromAlbedo(hair.albedo, hair.params.absorption.a);
-    vec3 absorptionTT = exp(-sigmaA * (0.5 / cosThetaD));
-    vec3 absorptionTRT = exp(-sigmaA * (0.8 / cosThetaD));
-
-    float F = HairFresnel(cosThetaD);
-
-    HairLobes lobes;
-    lobes.R = vec3(F) * MR * NR;
-    lobes.TT = absorptionTT * (1.0 - F) * (1.0 - F) * MTT * NTT;
-    lobes.TRT = absorptionTRT * F * (1.0 - F) * (1.0 - F) * MTRT * NTRT;
-    lobes.diffuse = hair.albedo * HairCylinderIrradiance(Ts, L) / HAIR_PI;
-    return lobes;
-}
-
 #endif

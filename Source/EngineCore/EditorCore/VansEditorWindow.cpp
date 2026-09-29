@@ -45,6 +45,7 @@
 #include "Windows/VansGAFDebuggerWindow.h"
 #include "Windows/VansClothProfileEditorWindow.h"
 #include "Windows/VansWaterWindow.h"
+#include "Windows/VansWeatherWindow.h"
 #include "Windows/VansTerrainWindow.h"
 #include "Windows/VansUIEditorWindow.h"
 #include "Windows/VansReflectionProbeWindow.h"
@@ -1150,6 +1151,7 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 	m_WindowRegistry.Add<VansUIEditorWindow>();
 	m_WindowRegistry.Add<VansClothProfileEditorWindow>();
 	m_WindowRegistry.Add<VansWaterWindow>();
+	m_WindowRegistry.Add<VansWeatherWindow>();
 	m_WindowRegistry.Add<VansTerrainWindow>();
 	m_WindowRegistry.Add<VansReflectionProbeWindow>();
 	m_WindowRegistry.Add<VansGIWindow>();

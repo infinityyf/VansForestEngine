@@ -671,6 +671,7 @@ namespace Vans::EditorAPI
 			bool mipmapped = false;
 			int channelCount = 0;
 			std::string precision = "low8";
+			std::uint32_t maxResidentDimension = 0;
 		};
 
 		bool found = false;
@@ -2941,9 +2942,14 @@ namespace Vans::EditorAPI
 		float lodBaseDistance = 0.0f;
 		float lodRangeRatio = 0.0f;
 		float morphStartRatio = 0.0f;
-		float riverWetAlbedoScale = 0.0f;
-		float riverWetRoughness = 0.0f;
-		float riverWetDetailNormalScale = 0.0f;
+		float wetAlbedoScale = 0.0f;
+		float wetRoughness = 0.0f;
+		float puddleNoiseScaleMeters = 0.0f;
+		float puddleNoiseDetailScale = 0.0f;
+		float puddleNoiseThreshold = 0.0f;
+		float puddleNoiseSoftness = 0.0f;
+		float puddleNoiseStrength = 0.0f;
+		float puddleNoiseSeed = 0.0f;
 	};
 
 	enum class TerrainBrushTool
@@ -3116,6 +3122,41 @@ namespace Vans::EditorAPI
 		std::vector<PointLightSettings> pointLights;
 		std::vector<SpotLightSettings> spotLights;
 		std::vector<RectLightSettings> rectLights;
+	};
+
+	struct RainWeatherSettingsSnapshot
+	{
+		bool available = false;
+		bool enabled = false;
+		float rainRateMmPerHour = 0.0f;
+		float fullIntensityRateMmPerHour = 25.0f;
+		float wettingHalfLifeSeconds = 4.0f;
+		float dryingHalfLifeSeconds = 120.0f;
+		float puddleFillHalfLifeSeconds = 45.0f;
+		float puddleDrainHalfLifeSeconds = 360.0f;
+		float windDirectionX = 0.35f;
+		float windDirectionZ = 0.94f;
+		float windSpeedMetersPerSecond = 2.0f;
+		float fallSpeedMetersPerSecond = 8.0f;
+		float maximumVisibleDistanceMeters = 45.0f;
+		float splashLifetimeSeconds = 0.12f;
+		float splashRadiusMeters = 0.09f;
+		float rippleScaleMeters = 20.0f;
+		float rippleStrength = 1.0f;
+
+		float normalizedIntensity = 0.0f;
+		float filmWetness = 0.0f;
+		float puddleFill = 0.0f;
+		// 仅用于一次运行时预览写入；不属于 Scene weather/rain 作者配置。
+		bool applyPuddleFillPreview = false;
+		std::uint32_t rainLayerCount = 0;
+		std::uint32_t maximumSplashCount = 0;
+	};
+
+	struct RainWeatherApplyResult
+	{
+		bool accepted = false;
+		std::string message;
 	};
 
 	struct PostProcessSettingsSnapshot

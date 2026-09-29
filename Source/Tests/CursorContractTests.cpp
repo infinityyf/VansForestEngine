@@ -247,7 +247,8 @@ bool RunCursorProjectContractTests()
     const char* fixtures[] = {
         "DemoHallProject/Tests/camera_controller_contract.lua",
         "DemoHallProject/Tests/camera_follow_contract.lua",
-        "DemoHallProject/Tests/camera_collision_stability.lua"
+        "DemoHallProject/Tests/camera_collision_stability.lua",
+        "DemoHallProject/Tests/vehicle_interaction_contract.lua"
     };
     for (const auto* fixture : fixtures)
     {

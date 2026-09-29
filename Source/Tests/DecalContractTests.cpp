@@ -104,7 +104,7 @@ bool TestDecalRenderingContract()
         if (!Check(source.path().extension() != ".comp", "Compute contract shader leaked into the decal graphics program")) return false;
     const auto renderPass = Read(root / "Source/EngineCore/RenderCore/VulkanCore/VansRenderPass.cpp");
     const auto begin = renderPass.find("void VansGraphics::VansRenderPassManager::SetupVansDecalRenderPass(");
-    const auto end = renderPass.find("void VansGraphics::VansRenderPassManager::SetupVansScreenSpaceEffectsPass(", begin);
+    const auto end = renderPass.find("void VansGraphics::VansRenderPassManager::SetupVansHairVisibilityPass(", begin);
     const auto decalPass = renderPass.substr(begin, end-begin);
     if (!Check(decalPass.find("m_NormalImage") == std::string::npos && decalPass.find("m_GBufferImage") == std::string::npos &&
         decalPass.find("VK_ATTACHMENT_LOAD_OP_CLEAR") != std::string::npos &&

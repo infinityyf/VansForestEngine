@@ -23,11 +23,20 @@ struct VansTerrainLayerAsset
 	float tiling = 64.0f;
 };
 
-struct VansTerrainRiverWetnessSettings
+struct VansTerrainPuddleSettings
+{
+	float scaleMeters = 18.0f;
+	float detailScale = 3.0f;
+	float threshold = 0.58f;
+	float softness = 0.12f;
+	float strength = 1.0f;
+	float seed = 0.0f;
+};
+
+struct VansTerrainWetSurfaceSettings
 {
 	float albedoScale = 0.72f;
 	float roughness = 0.18f;
-	float detailNormalScale = 0.70f;
 };
 
 struct VansTerrainAssetSettings
@@ -45,7 +54,8 @@ struct VansTerrainAssetSettings
 	bool heightDetailEnabled = true;
 	float heightDetailStrength = 0.03f;
 	float heightDetailFadeStart = 0.70f;
-	VansTerrainRiverWetnessSettings riverWetness;
+	VansTerrainWetSurfaceSettings wetSurface;
+	VansTerrainPuddleSettings puddle;
 };
 
 // 地形资产是编辑、运行时渲染和 Play 初始化共享的不可变数据快照。

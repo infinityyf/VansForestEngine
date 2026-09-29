@@ -1,0 +1,45 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../../Common/CameraData.glsl"
+layout(local_size_x=8, local_size_y=8) in;
+#include "../HairVisibilityData.glsl"
+layout(r32f,set=1,binding=0) uniform readonly image2D hairOpticalDepth;
+layout(set=1,binding=2) uniform sampler2D accumulation;
+layout(rgba8,set=1,binding=3) uniform writeonly image2DArray previews;
+
+vec3 DisplayColor(vec3 color)
+{
+    color=max(color,vec3(0));
+    return pow(color/(1.0+color),vec3(1.0/2.2));
+}
+void main()
+{
+    ivec2 p=ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size=imageSize(previews).xy;
+    if(any(greaterThanEqual(p,size))) return;
+    ivec2 sourceSize=imageSize(hairOpticalDepth);
+    ivec2 src=min(ivec2((vec2(p)+0.5)*vec2(sourceSize)/vec2(size)),sourceSize-1);
+    float tau=imageLoad(hairOpticalDepth,src).r;
+    float coverage=1.0-exp(-tau);
+    vec4 value=texelFetch(accumulation,src,0);
+    imageStore(previews,ivec3(p,0),vec4(vec3(coverage),1));
+    imageStore(previews,ivec3(p,1),vec4(vec3(clamp(tau/16.0,0.0,1.0)),1));
+    uint base=HairPixelBase(src,uint(sourceSize.x));
+    for(int layer=0;layer<int(HAIR_LAYER_COUNT);++layer)
+    {
+        uint bits=hairLayerDepths[base+uint(layer)];
+        float shade=0.0;
+        if(bits!=0xffffffffu)
+        {
+            vec2 ndc=(vec2(src)+0.5)/vec2(sourceSize)*2.0-1.0;
+            vec4 view=InverseProjectionMatrix*vec4(ndc,uintBitsToFloat(bits),1);
+            float distance=abs(view.z/view.w);
+            shade=0.1+0.9*clamp(log2(1.0+distance)/log2(1.0+FarPlane),0.0,1.0);
+        }
+        imageStore(previews,ivec3(p,layer+2),vec4(vec3(shade),1));
+    }
+    imageStore(previews,ivec3(p,5),vec4(vec3(value.a/(1.0+value.a)),1));
+    vec3 radiance=value.a>0.0001?value.rgb/value.a:vec3(0);
+    imageStore(previews,ivec3(p,6),vec4(DisplayColor(radiance),1));
+    imageStore(previews,ivec3(p,7),vec4(DisplayColor(radiance*coverage),1));
+}

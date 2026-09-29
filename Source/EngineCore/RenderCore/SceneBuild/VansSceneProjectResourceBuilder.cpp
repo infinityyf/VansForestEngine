@@ -48,7 +48,8 @@ VansTexture::TextureLoadDesc BuildTextureLoadDesc(
     int importChannel = 4,
     const std::string& addressMode = "repeat",
     const std::string& cookedPath = {},
-	bool retainRgba8Pixels = false)
+	bool retainRgba8Pixels = false,
+	std::uint32_t maxResidentDimension = 0)
 {
     VansTexture::TextureLoadDesc desc{};
     desc.path = path;
@@ -60,6 +61,7 @@ VansTexture::TextureLoadDesc BuildTextureLoadDesc(
     desc.importChannel = importChannel;
     desc.addressMode = ParseSamplerAddressMode(addressMode, VK_SAMPLER_ADDRESS_MODE_REPEAT);
 	desc.retainRgba8Pixels = retainRgba8Pixels;
+	desc.maxResidentDimension = maxResidentDimension;
     return desc;
 }
 
@@ -425,7 +427,8 @@ bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
                 sceneTexture.importChannel,
                 sceneTexture.addressMode,
                 resolved.artifactPath.string(),
-				sceneTexture.retainRgba8Pixels);
+				sceneTexture.retainRgba8Pixels,
+				sceneTexture.maxResidentDimension);
             auto pending = std::make_unique<PendingCookedTexture>();
             pending->texture = texture;
             pending->assetGuid = sceneTexture.assetGuid;
@@ -437,12 +440,20 @@ bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
                 ++cookedBatchPreparedCount;
                 continue;
             }
+			if (resolved.cookedOnly)
+			{
+				VANS_LOG_ERROR("[SceneResource] Required cooked texture is unavailable: "
+					<< sceneTexture.name);
+				delete texture;
+				return false;
+			}
             LoadTexture2DFromDesc(*texture, *vkDevice, desc);
             ++sourceFallbackCount;
             break;
         }
         case TEXTURE_CUBE:
-            texture->LoadCubeTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB);
+			texture->LoadCubeTexture(vkDevice->GetCommandBuffer(), texturePath, isSRGB,
+				sceneTexture.maxResidentDimension);
             break;
         default:
             break;
@@ -555,8 +566,10 @@ VansTexture* VansSceneProjectResourceBuilder::LoadOrGetTexture(VansScene& scene,
     texture->m_TextureType = TEXTURE_2D;
     std::string cookedPath;
 	std::string sourcePath = absPath;
+	std::uint32_t maxResidentDimension = 0;
 	if (const auto record = Vans::VansProjectManager::Get().FindAssetRecordByPath(std::filesystem::path(absPath)))
 	{
+		maxResidentDimension = record->textureImport.maxResidentDimension;
 		if (const auto cacheResult = EnsureEditorTextureArtifact(record->guid.ToString()))
 		{
 			if (cacheResult->HasArtifact())
@@ -570,7 +583,8 @@ VansTexture* VansSceneProjectResourceBuilder::LoadOrGetTexture(VansScene& scene,
 			sourcePath = record->sourcePath.string();
 	}
 	LoadTexture2DFromDesc(*texture, *vkDevice,
-		BuildTextureLoadDesc(sourcePath, isSRGB, true, true, "low8", 4, "repeat", cookedPath));
+		BuildTextureLoadDesc(sourcePath, isSRGB, true, true, "low8", 4, "repeat", cookedPath,
+			false, maxResidentDimension));
     texture->SetName(texName);
     scene.AddTextureAsset(texture);
 

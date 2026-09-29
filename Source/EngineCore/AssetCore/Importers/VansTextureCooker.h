@@ -64,7 +64,8 @@ public:
     static bool LoadArtifact(
         const std::filesystem::path& artifactPath,
         VansCookedTextureData& result,
-        std::string& error);
+        std::string& error,
+        std::uint32_t maxResidentDimension = 0);
 
 private:
     static bool IsEligible(const std::filesystem::path& sourcePath, const VansAssetMeta& meta);

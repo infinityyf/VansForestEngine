@@ -38,6 +38,8 @@ namespace VansEngine
 	{
 		std::uint32_t layerMask = 0xFFFFFFFFu;
 		std::uint32_t ignoredTransformId = (std::numeric_limits<std::uint32_t>::max)();
+		// -1 仅使用 layerMask；其余值同时应用项目的双向碰撞矩阵。
+		int collisionLayerIndex = -1;
 		bool includeStatic = true;
 		bool includeDynamic = true;
 		bool includeTriggers = true;
@@ -72,6 +74,18 @@ namespace VansEngine
 		VansPhysicsQueryFilter filter;
 	};
 
+	struct VansPhysicsCapsuleSweepRequest
+	{
+		glm::vec3 origin{0};
+		glm::vec3 direction{0,0,1};
+		glm::vec3 axis{0,1,0};
+		float distance=0;
+		float radius=0;
+		// 从胶囊中心到端点，包含端部半球半径。
+		float halfHeight=0;
+		VansPhysicsQueryFilter filter;
+	};
+
 	struct VansPhysicsSphereOverlapRequest
 	{
 		glm::vec3 center{ 0.0f };
@@ -85,6 +99,7 @@ namespace VansEngine
 		glm::vec3 normal{ 0.0f, 1.0f, 0.0f };
 		float distance = 0.0f;
 		const void* actorIdentity = nullptr;
+		bool initialOverlap = false;
 		std::uint32_t layerIndex = (std::numeric_limits<std::uint32_t>::max)();
 		std::uint32_t transformId = (std::numeric_limits<std::uint32_t>::max)();
 		std::string objectName;
@@ -118,6 +133,13 @@ namespace VansEngine
 			std::vector<VansPhysicsQueryHit>& hits);
 		static bool SweepSphereClosest(
 			const VansPhysicsSphereSweepRequest& request,
+			VansPhysicsQueryHit& hit);
+		static bool SweepCapsuleClosest(
+			const VansPhysicsCapsuleSweepRequest& request,
+			VansPhysicsQueryHit& hit);
+		// PhysicsCore 运动求解期间调用；调用方必须已持有 SimulationMutex。
+		static bool SweepCapsuleClosestLocked(
+			const VansPhysicsCapsuleSweepRequest& request,
 			VansPhysicsQueryHit& hit);
 		static void CastClosestBatch(
 			const std::vector<VansPhysicsShapeCastRequest>& requests,

@@ -4,6 +4,7 @@
 #include "VansVKDevice.h"
 #include "VansVKCommandBuffer.h"
 #include "../../AssetCore/Importers/VansTextureCooker.h"
+#include "../../AssetCore/VansTextureResidentMip.h"
 #include "../../Util/VansJobSystem.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
@@ -141,6 +142,68 @@ namespace VansGraphics
 			}
 		}
 		return dst;
+	}
+
+	static std::vector<uint8_t> DownsampleSourceMip(
+		const void* source, int width, int height, int channels, int bytesPerChannel)
+	{
+		const int nextWidth = std::max(1, width / 2);
+		const int nextHeight = std::max(1, height / 2);
+		std::vector<uint8_t> output(static_cast<size_t>(nextWidth) * nextHeight *
+			channels * bytesPerChannel);
+		const auto* input = static_cast<const uint8_t*>(source);
+		for (int y = 0; y < nextHeight; ++y)
+		{
+			for (int x = 0; x < nextWidth; ++x)
+			{
+				for (int channel = 0; channel < channels; ++channel)
+				{
+					const size_t outOffset =
+						(static_cast<size_t>(y) * nextWidth + x) * channels * bytesPerChannel +
+						channel * bytesPerChannel;
+					const auto sampleOffset = [&](int sx, int sy) {
+						return (static_cast<size_t>(std::min(sy, height - 1)) * width +
+							std::min(sx, width - 1)) * channels * bytesPerChannel +
+							channel * bytesPerChannel;
+					};
+					const size_t offsets[4] = {
+						sampleOffset(x * 2, y * 2), sampleOffset(x * 2 + 1, y * 2),
+						sampleOffset(x * 2, y * 2 + 1), sampleOffset(x * 2 + 1, y * 2 + 1)
+					};
+					if (bytesPerChannel == 1)
+					{
+						const unsigned sum = input[offsets[0]] + input[offsets[1]] +
+							input[offsets[2]] + input[offsets[3]];
+						output[outOffset] = static_cast<uint8_t>(sum >> 2);
+					}
+					else if (bytesPerChannel == 2)
+					{
+						unsigned sum = 0;
+						for (size_t offset : offsets)
+						{
+							uint16_t value = 0;
+							std::memcpy(&value, input + offset, sizeof(value));
+							sum += value;
+						}
+						const uint16_t value = static_cast<uint16_t>(sum >> 2);
+						std::memcpy(output.data() + outOffset, &value, sizeof(value));
+					}
+					else
+					{
+						float sum = 0.0f;
+						for (size_t offset : offsets)
+						{
+							float value = 0.0f;
+							std::memcpy(&value, input + offset, sizeof(value));
+							sum += value;
+						}
+						const float value = sum * 0.25f;
+						std::memcpy(output.data() + outOffset, &value, sizeof(value));
+					}
+				}
+			}
+		}
+		return output;
 	}
 
 	static size_t CalculateBlockCompressedDataSize(
@@ -882,6 +945,26 @@ namespace VansGraphics
 
 		if (loadDesc.importChannel != 0)
 			num_components = loadDesc.importChannel;
+		if (num_components < 1 || num_components > 4 ||
+			(bytes_per_channel != 1 && bytes_per_channel != 2 && bytes_per_channel != 4))
+		{
+			VANS_LOG_ERROR("[VansTexture] Unsupported source texture layout: " << loadDesc.path);
+			stbi_image_free(pixel_data);
+			return;
+		}
+		std::vector<uint8_t> residentPixels;
+		const void* uploadPixels = pixel_data;
+		const std::uint32_t firstMip = Vans::SelectTextureResidentMip(
+			static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
+			loadDesc.maxResidentDimension);
+		for (std::uint32_t mip = 0; mip < firstMip; ++mip)
+		{
+			residentPixels = DownsampleSourceMip(uploadPixels, width, height,
+				num_components, bytes_per_channel);
+			uploadPixels = residentPixels.data();
+			width = std::max(1, width / 2);
+			height = std::max(1, height / 2);
+		}
 
 		if (loadDesc.retainRgba8Pixels)
 		{
@@ -897,8 +980,8 @@ namespace VansGraphics
 			m_RetainedRgba8Image.width = width;
 			m_RetainedRgba8Image.height = height;
 			m_RetainedRgba8Image.pixels.assign(
-				static_cast<const std::uint8_t*>(pixel_data),
-				static_cast<const std::uint8_t*>(pixel_data) + pixelBytes);
+				static_cast<const std::uint8_t*>(uploadPixels),
+				static_cast<const std::uint8_t*>(uploadPixels) + pixelBytes);
 		}
 
 		m_TextureWidth = width;
@@ -906,7 +989,7 @@ namespace VansGraphics
 
 		// 2. 生成数据驱动上传请求：格式、压缩路径、mip 策略和数据大小集中在这里决定。
 		const TextureUploadRequest uploadRequest = BuildTextureUploadRequest(
-			pixel_data,
+			uploadPixels,
 			width, height,
 			loadDesc.isSRGB, loadDesc.useCompress, loadDesc.needMip,
 			loadDesc.precision,
@@ -925,7 +1008,8 @@ namespace VansGraphics
 	{
 		Vans::VansCookedTextureData cooked;
 		std::string error;
-		if (!Vans::VansTextureCooker::LoadArtifact(loadDesc.cookedPath, cooked, error))
+		if (!Vans::VansTextureCooker::LoadArtifact(loadDesc.cookedPath, cooked, error,
+			loadDesc.maxResidentDimension))
 		{
 			VANS_LOG_WARN("[VansTexture] Cooked texture unavailable, falling back to source: "
 				<< error);
@@ -1021,7 +1105,8 @@ namespace VansGraphics
 
 		Vans::VansCookedTextureData cooked;
 		std::string error;
-		if (!Vans::VansTextureCooker::LoadArtifact(loadDesc.cookedPath, cooked, error))
+		if (!Vans::VansTextureCooker::LoadArtifact(loadDesc.cookedPath, cooked, error,
+			loadDesc.maxResidentDimension))
 			return false;
 		VkFormat format = VK_FORMAT_UNDEFINED;
 		if (!ResolveCookedTextureFormat(cooked.format, loadDesc.isSRGB,
@@ -1087,7 +1172,7 @@ namespace VansGraphics
 		return true;
 	}
 
-	std::uint64_t VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_parent_path, bool isSRGB)
+	std::uint64_t VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_parent_path, bool isSRGB, std::uint32_t maxResidentDimension)
 	{
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		VkDevice device = vkDevice->GetLogicDevice();
@@ -1097,6 +1182,7 @@ namespace VansGraphics
 		bool imageCreated = false;
         uint64_t contentHash = 14695981039346656037ull;
         bool sourceHDR = false;
+        int sourceCubeWidth = 0, sourceCubeHeight = 0;
         int cubeWidth = 0, cubeHeight = 0;
 
 		for (int face = 0; face < 6; ++face)
@@ -1108,21 +1194,37 @@ namespace VansGraphics
                 ? static_cast<void*>(stbi_loadf(path.c_str(), &width, &height, &num_components, 4))
                 : static_cast<void*>(stbi_load(path.c_str(), &width, &height, &num_components, 4)), stbi_image_free);
             if (!pixels || width <= 0 || height <= 0 || width != height ||
-                (imageCreated && (hdr != sourceHDR || width != cubeWidth || height != cubeHeight)))
+                (imageCreated && (hdr != sourceHDR || width != sourceCubeWidth || height != sourceCubeHeight)))
                 throw std::runtime_error("Cubemap faces must be readable, square, equal-size and have consistent precision: " + path);
-            sourceHDR = hdr; cubeWidth = width; cubeHeight = height;
+            sourceHDR = hdr; sourceCubeWidth = width; sourceCubeHeight = height;
             num_components = 4;
+            std::vector<uint8_t> residentPixels;
+            const void* residentSource = pixels.get();
+            const std::uint32_t firstMip = Vans::SelectTextureResidentMip(
+                static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
+                maxResidentDimension);
+            for (std::uint32_t mip = 0; mip < firstMip; ++mip)
+            {
+                residentPixels = DownsampleSourceMip(residentSource, width, height, 4,
+                    hdr ? sizeof(float) : sizeof(uint8_t));
+                residentSource = residentPixels.data();
+                width = std::max(1, width / 2);
+                height = std::max(1, height / 2);
+            }
+            cubeWidth = width; cubeHeight = height;
             std::vector<uint16_t> linearHalf;
-            void* uploadPixels = pixels.get();
+            const void* uploadPixels = residentSource;
             if (hdr)
             {
-                const float* linear = static_cast<const float*>(pixels.get());
+                const auto* linearBytes = static_cast<const uint8_t*>(residentSource);
                 linearHalf.resize(size_t(width) * height * 4u);
                 for (size_t component = 0; component < linearHalf.size(); ++component)
                 {
-                    if (!std::isfinite(linear[component]) || std::abs(linear[component]) > 65504.0f)
+                    float value = 0.0f;
+                    std::memcpy(&value, linearBytes + component * sizeof(float), sizeof(float));
+                    if (!std::isfinite(value) || std::abs(value) > 65504.0f)
                         throw std::runtime_error("Cubemap radiance exceeds finite RGBA16F range: " + path);
-                    linearHalf[component] = glm::packHalf1x16(linear[component]);
+                    linearHalf[component] = glm::packHalf1x16(value);
                 }
                 uploadPixels = linearHalf.data();
             }
@@ -1145,7 +1247,7 @@ namespace VansGraphics
 
 			VkOffset3D offset = { 0, 0, 0 };
 			VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
-			if (!vkDevice->SetDeviceImageData(m_Image, command_buffer, uploadPixels, 0, static_cast<int>(dataSize), offset, extent, 0, face))
+			if (!vkDevice->SetDeviceImageData(m_Image, command_buffer, const_cast<void*>(uploadPixels), 0, static_cast<int>(dataSize), offset, extent, 0, face))
 			{
 				RecordTextureUploadFailure();
 				VANS_LOG_ERROR("Cube texture upload failed at face " << face << ": " << path);
@@ -1528,7 +1630,7 @@ namespace VansGraphics
 		return true;
 	}
 
-	bool VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, bool isCube, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode)
+	bool VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, bool isCube, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode, uint32_t mipLevelLimit)
 	{
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		if (!vkDevice || width <= 0 || height <= 0 || slice <= 0)
@@ -1545,6 +1647,8 @@ namespace VansGraphics
 
 		bool is3D = slice > 1;
 		int mipLevels = CalculateMipLevels(width, height, generateMip);
+        if (mipLevelLimit != 0)
+            mipLevels = static_cast<int>((std::min)(static_cast<uint32_t>(mipLevels), mipLevelLimit));
 
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, (uint32_t)slice };
 		if (!m_Image.CreateVulkanImage(device, extent, format, mipLevels, 1,

@@ -1,0 +1,128 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../../Common/CameraData.glsl"
+#include "../../Common/Common.glsl"
+#include "../../Grass/GrassScreenAO.glsl"
+#include "../GTAOCommon.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 1, binding = 0) uniform sampler2D normalInput;
+layout(set = 1, binding = 1) uniform sampler2D materialInput;
+layout(set = 1, binding = 2) uniform sampler2D positionInput;
+layout(set = 1, binding = 3) uniform sampler2D depthInput;
+layout(set = 1, binding = 4, rg16f) uniform writeonly image2D rawOutput;
+layout(set = 1, binding = 5, r32f) uniform writeonly image2D edgeOutput;
+
+float DepthAt(ivec2 p)
+{
+    ivec2 size = textureSize(depthInput, 0);
+    if (any(lessThan(p, ivec2(0))) || any(greaterThanEqual(p, size))) return 0.0;
+    return texelFetch(depthInput, p, 0).r;
+}
+
+vec4 CalculateEdges(ivec2 pixel, float depth)
+{
+    vec4 neighbours = vec4(DepthAt(pixel + ivec2(-1, 0)), DepthAt(pixel + ivec2(1, 0)),
+                           DepthAt(pixel + ivec2(0, -1)), DepthAt(pixel + ivec2(0, 1)));
+    vec4 delta = neighbours - depth;
+    vec2 slope = vec2(delta.y - delta.x, delta.w - delta.z) * 0.5;
+    vec4 adjusted = delta + vec4(slope.x, -slope.x, slope.y, -slope.y);
+    vec4 edges = clamp(1.25 - min(abs(delta), abs(adjusted)) / max(depth * 0.011, 0.002), 0.0, 1.0);
+    return edges * vec4(greaterThan(neighbours, vec4(0.0)));
+}
+
+float HorizonSample(vec2 uv, vec3 center, vec3 view, float baseline, float mip)
+{
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThanEqual(uv, vec2(1.0)))) return baseline;
+    int level = clamp(int(round(mip)), 0, gtaoParams.mipCount - 1);
+    ivec2 size = textureSize(depthInput, level);
+    ivec2 pixel = clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1);
+    float depth = texelFetch(depthInput, pixel, level).r;
+    if (depth <= 0.0) return baseline;
+    // Position and fetched depth must refer to exactly the same texel centre.
+    vec3 delta = GTAOViewPosition((vec2(pixel) + 0.5) / vec2(size), depth) - center;
+    float distance = length(delta);
+    if (distance <= 1e-6) return baseline;
+    float falloff = max(gtaoParams.radiusMeters * gtaoParams.falloffFraction, 1e-5);
+    float weight = clamp((gtaoParams.radiusMeters - distance) / falloff, 0.0, 1.0);
+    return mix(baseline, clamp(dot(delta / distance, view), -1.0, 1.0), weight);
+}
+
+float IntegrateGTAO(ivec2 pixel, float depth, vec3 normal)
+{
+    const float pi = 3.14159265358979323846;
+    ivec2 size = imageSize(rawOutput);
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec3 center = GTAOViewPosition(uv, depth * 0.99999);
+    vec3 view = normalize(-center);
+    vec3 n = normalize(mat3(ViewMatrix) * normal);
+    // Stable spatial stratification; temporal noise requires an explicit history consumer.
+    vec2 noise = vec2(RandomInterLeavedWithScale(vec2(pixel), 0.0),
+                      RandomInterLeavedWithScale(vec2(pixel) + vec2(17.0, 31.0), 1.0));
+    vec2 projectedRadius = gtaoParams.radiusMeters * abs(vec2(ProjectionMatrix[0][0], ProjectionMatrix[1][1])) * vec2(size) * 0.5 / depth;
+    float visibility = 0.0;
+    for (int slice = 0; slice < gtaoParams.sliceCount; ++slice)
+    {
+        float angle = (float(slice) + noise.x) * pi / float(gtaoParams.sliceCount);
+        vec2 direction = vec2(cos(angle), sin(angle));
+        vec3 sliceDirection = vec3(direction, 0.0);
+        vec3 orthogonal = sliceDirection - view * dot(sliceDirection, view);
+        vec3 axis = normalize(cross(orthogonal, view));
+        vec3 projectedNormal = n - axis * dot(n, axis);
+        float projectedLength = length(projectedNormal);
+        if (projectedLength <= 1e-6) continue;
+        float cosNormal = clamp(dot(projectedNormal, view) / projectedLength, 0.0, 1.0);
+        float normalAngle = sign(dot(orthogonal, projectedNormal)) * acos(cosNormal);
+        vec2 baseline = vec2(cos(normalAngle + pi * 0.5), cos(normalAngle - pi * 0.5));
+        vec2 horizon = baseline;
+        vec2 radiusOffset = direction * projectedRadius * vec2(1.0, -1.0);
+        float radiusPixels = length(radiusOffset);
+        if (radiusPixels < 1.0)
+        {
+            visibility += 1.0;
+            continue;
+        }
+        for (int step = 0; step < gtaoParams.stepsPerSide; ++step)
+        {
+            float jitter = fract(noise.y + float(slice + step * gtaoParams.stepsPerSide) * 0.6180339887498948);
+            float distance = pow((float(step) + jitter) / float(gtaoParams.stepsPerSide), gtaoParams.sampleDistributionPower);
+            vec2 offset = radiusOffset * min(1.0, max(distance, 1.3 / radiusPixels));
+            float mip = max(0.0, log2(max(length(offset), 1.0)) - gtaoParams.depthMipSamplingOffset);
+            horizon.x = max(horizon.x, HorizonSample(uv + offset / vec2(size), center, view, baseline.x, mip));
+            horizon.y = max(horizon.y, HorizonSample(uv - offset / vec2(size), center, view, baseline.y, mip));
+        }
+        float h0 = -acos(clamp(horizon.y, -1.0, 1.0));
+        float h1 = acos(clamp(horizon.x, -1.0, 1.0));
+        h0 = normalAngle + clamp(h0 - normalAngle, -pi * 0.5, pi * 0.5);
+        h1 = normalAngle + clamp(h1 - normalAngle, -pi * 0.5, pi * 0.5);
+        float arc0 = (cosNormal + 2.0 * h0 * sin(normalAngle) - cos(2.0 * h0 - normalAngle)) * 0.25;
+        float arc1 = (cosNormal + 2.0 * h1 * sin(normalAngle) - cos(2.0 * h1 - normalAngle)) * 0.25;
+        visibility += projectedLength * (arc0 + arc1);
+    }
+    return clamp(visibility / float(gtaoParams.sliceCount), 0.0, 1.0);
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, imageSize(rawOutput)))) return;
+    vec4 position = texelFetch(positionInput, pixel, 0);
+    vec3 normal = texelFetch(normalInput, pixel, 0).xyz;
+    if (position.w <= 0.0 || dot(normal, normal) < 0.25)
+    {
+        imageStore(rawOutput, pixel, vec4(1.0));
+        imageStore(edgeOutput, pixel, vec4(0.0));
+        return;
+    }
+    normal = normalize(normal);
+    vec2 visibility;
+    if (int(round(texelFetch(materialInput, pixel, 0).z)) == MATERIAL_ID_GRASS)
+    {
+        visibility = vec2(GrassHemisphereAO(positionInput, materialInput, position.xyz, normal),
+                          GrassHemisphereAO(positionInput, materialInput, position.xyz, -normal));
+    }
+    else
+        visibility = vec2(IntegrateGTAO(pixel, position.w, normal));
+    imageStore(rawOutput, pixel, vec4(visibility, 1.0, 1.0));
+    imageStore(edgeOutput, pixel, vec4(float(GTAOPackEdges(CalculateEdges(pixel, position.w)))));
+}

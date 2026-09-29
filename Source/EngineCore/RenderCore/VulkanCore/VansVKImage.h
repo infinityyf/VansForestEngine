@@ -59,7 +59,7 @@ namespace VansGraphics
 		VkImageViewType ConvertImageViewType(VkImageType type, bool isCube = false, int layer_num = 1);
 
 		// format 参数用于识别带 stencil 的深度格式（D32S8、D24S8 等）
-		VkImageAspectFlags ConvertImageViewAspect(VkImageUsageFlags usage, VkFormat format);
+		VkImageAspectFlags ConvertImageViewAspect(VkFormat format);
 
 	private:
 		VkExtent3D m_ImageDimention;

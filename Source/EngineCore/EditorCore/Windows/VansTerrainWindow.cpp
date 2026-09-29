@@ -256,18 +256,30 @@ void VansTerrainWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 				ImGui::SameLine();
 				ImGui::TextDisabled("%s.%c  %s", mapName, channel, layer.id.c_str());
 			}
-			ImGui::SeparatorText("River Wetness");
-			ImGui::TextDisabled("River splines define the wet area; terrain settings define its material response.");
+			ImGui::SeparatorText("Wet Surface");
+			ImGui::TextDisabled("Wet film changes albedo/roughness only. Accumulated water is a separate water-layer response.");
 			ImGui::BeginDisabled(!terrain.editable);
-			ImGui::SliderFloat("Wet albedo scale", &m_SettingsDraft.riverWetAlbedoScale, 0.0f, 1.0f, "%.2f");
+			ImGui::SliderFloat("Wet albedo scale", &m_SettingsDraft.wetAlbedoScale, 0.0f, 1.0f, "%.2f");
 			if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Linear-space color multiplier at full wetness.");
-			ImGui::SliderFloat("Wet roughness", &m_SettingsDraft.riverWetRoughness, 0.0f, 1.0f, "%.2f");
+			ImGui::SliderFloat("Wet roughness", &m_SettingsDraft.wetRoughness, 0.0f, 1.0f, "%.2f");
 			if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum target roughness. Already smoother layers remain unchanged.");
-			ImGui::SliderFloat("Wet detail normal", &m_SettingsDraft.riverWetDetailNormalScale, 0.0f, 1.0f, "%.2f");
+			ImGui::SeparatorText("Puddle Depth Field");
+			ImGui::DragFloat("Noise scale", &m_SettingsDraft.puddleNoiseScaleMeters, 0.25f, 0.25f, 256.0f, "%.2f m");
 			if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Micro-normal strength at full wetness; the heightfield normal is preserved.");
+			ImGui::SliderFloat("Noise detail scale", &m_SettingsDraft.puddleNoiseDetailScale, 1.01f, 8.0f, "%.2f");
+			if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
+			ImGui::SliderFloat("Puddle coverage threshold", &m_SettingsDraft.puddleNoiseThreshold, 0.0f, 1.0f, "%.2f");
+			if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lower values expose more of the Noise field as puddle area; higher values expose less.");
+			ImGui::SliderFloat("Puddle softness", &m_SettingsDraft.puddleNoiseSoftness, 0.001f, 0.5f, "%.3f");
+			if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Width of the continuous basin-depth transition; flood level grows and shrinks through this gradient.");
+			ImGui::SliderFloat("Puddle strength", &m_SettingsDraft.puddleNoiseStrength, 0.0f, 1.0f, "%.2f");
+			if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
+			ImGui::DragFloat("Noise seed", &m_SettingsDraft.puddleNoiseSeed, 1.0f, -65536.0f, 65536.0f, "%.0f");
+			if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
 			ImGui::EndDisabled();
 			ImGui::EndTabItem();
 		}

@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -43,6 +44,7 @@ void VansInstallLuaProjectSearchPath(
 namespace VansGraphics
 {
 class VansAnimationNode;
+struct VansAnimationEventSample;
 class VansCamera;
 class VansLightManager;
 class VansMaterialManager;
@@ -438,6 +440,10 @@ public:
 	int m_OnEnableRef = LUA_NOREF;
 	int m_OnDisableRef = LUA_NOREF;
 	int m_UpdateRef = LUA_NOREF;
+	int m_OnJumpRef = LUA_NOREF;
+	int m_OnLandedRef = LUA_NOREF;
+	int m_MovementUpdatedRef = LUA_NOREF;
+	int m_AnimationEventRef = LUA_NOREF;
 	int m_CollisionEnterRef = LUA_NOREF;
 	int m_CollisionExitRef = LUA_NOREF;
 	int m_TriggerEnterRef = LUA_NOREF;
@@ -449,6 +455,10 @@ public:
 	void Disable();
 	void Teardown();
 	void CallUpdate(float deltaTime);
+	void CallOnJump();
+	void CallOnLanded(const VansEngine::VansCharacterLandedEvent& event);
+	void CallOnMovementUpdated(const VansEngine::VansCharacterMovementUpdatedEvent& event);
+	void CallOnAnimationEvent(const VansGraphics::VansAnimationEventSample& event);
 	void CallOnCollisionEnter(const VansScriptPhysicsEventInfo& info);
 	void CallOnCollisionExit(const VansScriptPhysicsEventInfo& info);
 	void CallOnTriggerEnter(const VansScriptPhysicsEventInfo& info);
@@ -499,6 +509,7 @@ public:
 	void VansScriptUpdate();
 	void VansScriptUpdateNonCameraScripts();
 	void VansScriptUpdateCameraScripts();
+	void PublishAnimationEvents(const std::vector<VansGraphics::VansAnimationNode*>& nodes);
 
 	void SetScene(VansGraphics::VansScene* scene);
 	void AttachSceneWithoutRebuild(VansGraphics::VansScene* scene);
@@ -550,6 +561,9 @@ private:
 	bool ResolveRuntimeHandles(ScheduledScript& scheduled) const;
 	bool ResolveRuntimeHandles(ScriptEventSubscriber& subscriber) const;
 	void HandlePhysicsContactEvent(const VansEngine::VansPhysicsContactEvent& event);
+	void HandleCharacterJumpEvent(const VansEngine::VansCharacterJumpEvent& event);
+	void DispatchToEntityScripts(std::uint32_t transformID,
+		const std::function<void(VansLuaScriptComponent&)>& callback);
 	void DispatchEventToObject(
 		const VansEngine::VansPhysicsContactEvent& event,
 		std::uint32_t selfTransformID,

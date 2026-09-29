@@ -48,7 +48,8 @@ namespace VansGraphics
 				|| std::strcmp(passName, VansRenderPassNames::VolumetricCloud) == 0
 				|| std::strcmp(passName, VansRenderPassNames::HZB) == 0
 				|| std::strcmp(passName, VansRenderPassNames::RayTracing) == 0
-				|| std::strcmp(passName, VansRenderPassNames::GIData) == 0;
+				|| std::strcmp(passName, VansRenderPassNames::GIData) == 0
+                || std::strcmp(passName, VansRenderPassNames::GTAODenoise) == 0;
 		}
 
 		VansRenderPassNodeDesc MakeNodeDesc(
@@ -67,6 +68,11 @@ namespace VansGraphics
 			desc.enabled = VansRenderPassCatalog::IsPassEnabled(entry.condition, features);
 			desc.reads = entry.reads;
 			desc.writes = entry.writes;
+            if (features.hasHair && std::strcmp(entry.name, VansRenderPassNames::TransparentPostProcess) == 0)
+            {
+                desc.reads.push_back({ "HairLighting", VansRenderResourceUsage::SampledRead });
+                desc.reads.push_back({ "HairOpticalDepth", VansRenderResourceUsage::StorageRead });
+            }
 			for (auto& read : desc.reads)
 			{
 				read.resourceId = VansRenderGraphIntern::InternName(read.name);
@@ -116,17 +122,19 @@ namespace VansGraphics
 					{ { "PunctualShadowAtlas0", VansRenderResourceUsage::DepthStencilAttachmentWrite },
 					  { "PunctualShadowAtlas1", VansRenderResourceUsage::DepthStencilAttachmentWrite } },
 					{ "Point and spot shadows" } },
-				{ VansRenderPassNames::HairDeepOpacity, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
-					{ { "HairGeometry", VansRenderResourceUsage::SampledRead } },
-					{ { "HairDeepOpacity", VansRenderResourceUsage::ColorAttachmentWrite } },
-					{ "Hair deep opacity" } },
+
 				{ VansRenderPassNames::MainCameraHiZCull, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
 					{ { "OcclusionHZB", VansRenderResourceUsage::SampledRead },
 					  { "MainCameraCullObjects", VansRenderResourceUsage::StorageRead } },
 					{ { "MainCameraVisibilityReadback", VansRenderResourceUsage::StorageWrite } },
 					{ "Main camera HiZ occlusion culling" } },
+				{ VansRenderPassNames::SurfaceWeatherRipple, VansRenderQueueClass::Graphics, false, false, VansRenderPassCondition::Always,
+					{ { "RainRippleSeed", VansRenderResourceUsage::SampledRead } },
+					{ { "SurfaceWeatherRippleNormal", VansRenderResourceUsage::StorageWrite } },
+					{ "Shared rain ripple normal field" } },
 				{ VansRenderPassNames::GBuffer, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "SceneGeometry", VansRenderResourceUsage::SampledRead },
+					  { "SurfaceWeatherRippleNormal", VansRenderResourceUsage::SampledRead },
 					  { "VegetationDrawData", VansRenderResourceUsage::IndirectArgumentRead } },
 					{ { "Normal", VansRenderResourceUsage::ColorAttachmentWrite },
 					  { "GBuffer", VansRenderResourceUsage::ColorAttachmentWrite },
@@ -171,17 +179,23 @@ namespace VansGraphics
 					{ { "CascadeShadowMinMax", VansRenderResourceUsage::StorageWrite },
 					  { "ScreenSpaceShadow", VansRenderResourceUsage::StorageWrite } },
 					{ "Screen-space shadows" } },
-				{ VansRenderPassNames::ScreenSpaceEffects, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
-					{ { "Normal", VansRenderResourceUsage::SampledRead },
-					  { "GBuffer", VansRenderResourceUsage::SampledRead },
-					  { "Depth", VansRenderResourceUsage::SampledRead } },
-					{ { "SSAORaw", VansRenderResourceUsage::StorageWrite } },
-					{ "SSAO raw" } },
-				{ VansRenderPassNames::SSAOFilter, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
-					{ { "SSAORaw", VansRenderResourceUsage::SampledRead },
-					  { "Depth", VansRenderResourceUsage::SampledRead } },
-					{ { "SSAO", VansRenderResourceUsage::StorageWrite } },
-					{ "SSAO bilateral filter" } },
+                { VansRenderPassNames::GTAODepth, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
+                    { { "GBuffer2", VansRenderResourceUsage::SampledRead } },
+                    { { "GTAODepth", VansRenderResourceUsage::StorageWrite } }, { "GTAO depth prefilter" } },
+                { VansRenderPassNames::GTAOMain, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
+                    { { "Normal", VansRenderResourceUsage::SampledRead },
+                      { "GBuffer1", VansRenderResourceUsage::SampledRead },
+                      { "GBuffer2", VansRenderResourceUsage::SampledRead },
+                      { "GTAODepth", VansRenderResourceUsage::SampledRead } },
+                    { { "GTAORaw", VansRenderResourceUsage::StorageWrite },
+                      { "GTAOEdges", VansRenderResourceUsage::StorageWrite } }, { "GTAO horizon integration" } },
+                { VansRenderPassNames::GTAODenoise, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
+                    { { "GTAORaw", VansRenderResourceUsage::SampledRead },
+                      { "GTAOEdges", VansRenderResourceUsage::SampledRead },
+                      { "Normal", VansRenderResourceUsage::SampledRead },
+                      { "GBuffer1", VansRenderResourceUsage::SampledRead },
+                      { "GBuffer2", VansRenderResourceUsage::SampledRead } },
+                    { { "GTAO", VansRenderResourceUsage::StorageWrite } }, { "GTAO edge-aware denoise" } },
 				{ VansRenderPassNames::RayTracing, VansRenderQueueClass::Compute, false, true, VansRenderPassCondition::Always,
 					{ { "TLAS", VansRenderResourceUsage::AccelerationStructureBuildRead },
 					  { "GBuffer", VansRenderResourceUsage::SampledRead } },
@@ -246,7 +260,7 @@ namespace VansGraphics
 					  { "PreConvolvedSpecularEnvironment", VansRenderResourceUsage::SampledRead },
 					  { "SkySHCoefficients", VansRenderResourceUsage::StorageRead },
 					  { "HZB", VansRenderResourceUsage::SampledRead },
-					  { "SSAO", VansRenderResourceUsage::SampledRead },
+					  { "GTAO", VansRenderResourceUsage::StorageRead },
 					  { "ScreenSpaceShadow", VansRenderResourceUsage::SampledRead },
 					  { "GIData", VansRenderResourceUsage::SampledRead },
 					  { "SSR", VansRenderResourceUsage::SampledRead },
@@ -333,20 +347,55 @@ namespace VansGraphics
 					  { "LocalMediaOpticalDepth", VansRenderResourceUsage::SampledRead } },
 					{ { "SceneColor", VansRenderResourceUsage::StorageWrite } },
 					{ "Physical sky and participating media over opaque and water surfaces" } },
-				{ VansRenderPassNames::HairVisibility, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
-					{ { "HairGeometry", VansRenderResourceUsage::SampledRead } },
-					{ { "HairOIT", VansRenderResourceUsage::StorageWrite } },
-					{ "Hair visibility", "Hair OIT buffers" } },
-				{ VansRenderPassNames::HairLighting, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
-					{ { "HairOIT", VansRenderResourceUsage::StorageRead },
-					  { "GBuffer", VansRenderResourceUsage::SampledRead },
+				{ VansRenderPassNames::RainPrecipitation, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasRainPrecipitation,
+					{ { "GBuffer", VansRenderResourceUsage::SampledRead },
 					  { "PreConvolvedDiffuseEnvironment", VansRenderResourceUsage::SampledRead },
+					  { "PreConvolvedSpecularEnvironment", VansRenderResourceUsage::SampledRead },
+					  { "ReflectionProbeSpecular", VansRenderResourceUsage::SampledRead },
+					  { "TileLightLists", VansRenderResourceUsage::StorageRead },
+					  { "CascadeShadowDepth", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead },
+					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentRead } },
+					{ { "SceneColor", VansRenderResourceUsage::ColorAttachmentWrite } },
+					{ "Probe/sky and shadowed direct-lit rain streaks plus atlas splashes after atmosphere composition" } },
+				{ VansRenderPassNames::HairVisibility, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasHair,
+					{ { "HairGeometry", VansRenderResourceUsage::SampledRead },
+                      { "Depth", VansRenderResourceUsage::DepthStencilAttachmentRead } },
+					{ { "HairVisibilityData", VansRenderResourceUsage::StorageWrite },
+                      { "HairOpticalDepth", VansRenderResourceUsage::ColorAttachmentWrite } },
+					{ "Hair visibility", "Hair bounded depth layers" } },
+				{ VansRenderPassNames::HairDepthResolve, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasHair,
+                    { { "HairVisibilityData", VansRenderResourceUsage::StorageRead },
+                      { "Depth", VansRenderResourceUsage::DepthStencilAttachmentSampledRead } },
+                    { { "HairLayerDepth", VansRenderResourceUsage::DepthStencilAttachmentWrite } },
+                    { "Hair kth layer depth for early fragment rejection" } },
+                { VansRenderPassNames::HairLighting, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasHair,
+					{ { "CascadeShadowMap", VansRenderResourceUsage::SampledRead },
+                      { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
+                      { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
+                      { "TileLightLists", VansRenderResourceUsage::StorageRead },
+					  { "HairLayerDepth", VansRenderResourceUsage::DepthStencilAttachmentRead },
+					  { "PreConvolvedSpecularEnvironment", VansRenderResourceUsage::SampledRead },
+                      { "RayTracingGI", VansRenderResourceUsage::SampledRead },
+                      { "PreConvolvedDiffuseEnvironment", VansRenderResourceUsage::SampledRead },
+                      { "ReflectionProbeSpecular", VansRenderResourceUsage::SampledRead },
+                      { "AmbientSkyCacheX", VansRenderResourceUsage::SampledRead },
+                      { "AmbientSkyCacheY", VansRenderResourceUsage::SampledRead },
+                      { "AmbientSkyCacheZ", VansRenderResourceUsage::SampledRead },
 					  { "AtmosphereAerialScattering", VansRenderResourceUsage::SampledRead },
 					  { "AtmosphereAerialOpticalDepth", VansRenderResourceUsage::SampledRead },
 					  { "LocalMediaScattering", VansRenderResourceUsage::SampledRead },
 					  { "LocalMediaOpticalDepth", VansRenderResourceUsage::SampledRead } },
 					{ { "HairLighting", VansRenderResourceUsage::ColorAttachmentWrite } },
 					{ "Hair lighting" } },
+                { VansRenderPassNames::HairDebug, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasHair,
+                    { { "HairVisibilityData", VansRenderResourceUsage::StorageRead },
+                      { "HairOpticalDepth", VansRenderResourceUsage::StorageRead },
+                      { "HairLighting", VansRenderResourceUsage::SampledRead } },
+                    { { "HairDebugPreview", VansRenderResourceUsage::StorageWrite } },
+                    { "On-demand Hair intermediate previews" } },
 				{ VansRenderPassNames::DepthOfFieldPrepare, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
 					{ { "SceneColor", VansRenderResourceUsage::SampledRead } },
 					{ { "DepthOfField", VansRenderResourceUsage::StorageWrite } },
@@ -421,12 +470,16 @@ namespace VansGraphics
 			return true;
 		case VansRenderPassCondition::HasPunctualShadowJobs:
 			return features.hasPunctualShadowJobs;
-		case VansRenderPassCondition::HasWater:
+		case VansRenderPassCondition::HasHair:
+            return features.hasHair;
+        case VansRenderPassCondition::HasWater:
 			return features.hasWater;
 		case VansRenderPassCondition::HasDecal:
 			return features.hasDecal;
 		case VansRenderPassCondition::HasForwardOpaquePreAtmosphere:
 			return features.hasForwardOpaquePreAtmosphere;
+		case VansRenderPassCondition::HasRainPrecipitation:
+			return features.hasRainPrecipitation;
 		}
 
 		return true;
@@ -537,15 +590,27 @@ namespace VansGraphics
 			findPassIndex(VansRenderPassNames::WaterCompositePreAtmosphere);
 		const std::size_t atmosphereCompositeIndex =
 			findPassIndex(VansRenderPassNames::AtmosphereComposite);
+		const std::size_t rainPrecipitationIndex =
+			findPassIndex(VansRenderPassNames::RainPrecipitation);
 		if (!(waterPreComputeIndex < waterCompositeIndex &&
 			waterCompositeIndex < atmosphereCompositeIndex &&
-			atmosphereCompositeIndex < transparentIndex))
+			atmosphereCompositeIndex < rainPrecipitationIndex &&
+			rainPrecipitationIndex < transparentIndex))
 		{
 			outErrors.emplace_back(
-				"Water must resolve before atmosphere media while ordinary transparent rendering remains after atmosphere");
+				"Water must resolve before atmosphere media while rain and ordinary transparent rendering remain after atmosphere");
 		}
 
 		requireAccess(VansRenderPassNames::VegetationCompute, "VegetationDrawData", true);
+        if (!(findPassIndex(VansRenderPassNames::HairVisibility) < findPassIndex(VansRenderPassNames::HairDepthResolve) &&
+            findPassIndex(VansRenderPassNames::HairDepthResolve) < findPassIndex(VansRenderPassNames::HairLighting) &&
+            findPassIndex(VansRenderPassNames::HairLighting) < transparentIndex))
+            outErrors.emplace_back("Hair must resolve kth-layer depth before lighting and composite after lighting");
+        requireAccess(VansRenderPassNames::HairDepthResolve, "Depth", false);
+        requireAccess(VansRenderPassNames::HairDepthResolve, "HairVisibilityData", false);
+        requireAccess(VansRenderPassNames::HairDepthResolve, "HairLayerDepth", true);
+        requireAccess(VansRenderPassNames::HairLighting, "HairLayerDepth", false);
+        requireAccess(VansRenderPassNames::HairLighting, "RayTracingGI", false);
 		requireAccess(VansRenderPassNames::VegetationCompute, "OcclusionHZB", false);
 		requireAccess(VansRenderPassNames::CascadeShadow, "VegetationDrawData", false);
 		requireAccess(VansRenderPassNames::GBuffer, "VegetationDrawData", false);
@@ -572,16 +637,31 @@ namespace VansGraphics
 		requireAccess(VansRenderPassNames::VolumetricCloud, "Depth", false);
 		requireAccess(VansRenderPassNames::WaterCompositePreAtmosphere, "WaterGBuffer", false);
 		requireAccess(VansRenderPassNames::WaterCompositePreAtmosphere, "RawOpaqueSceneColor", true);
+		requireAccess(VansRenderPassNames::RainPrecipitation, "GBuffer", false);
+		requireAccess(VansRenderPassNames::RainPrecipitation, "PreConvolvedDiffuseEnvironment", false);
+		requireAccess(VansRenderPassNames::RainPrecipitation, "PreConvolvedSpecularEnvironment", false);
+		requireAccess(VansRenderPassNames::RainPrecipitation, "ReflectionProbeSpecular", false);
+		requireAccess(VansRenderPassNames::RainPrecipitation, "TileLightLists", false);
+		requireAccess(VansRenderPassNames::RainPrecipitation, "CascadeShadowDepth", false);
+		requireAccess(VansRenderPassNames::RainPrecipitation, "PunctualShadowAtlas0", false);
+		requireAccess(VansRenderPassNames::RainPrecipitation, "PunctualShadowAtlas1", false);
+		requireAccess(VansRenderPassNames::RainPrecipitation, "Depth", false);
+		requireAccess(VansRenderPassNames::RainPrecipitation, "SceneColor", true);
 		requireAccess(VansRenderPassNames::AtmosphereComposite, "CloudRadiance", false);
 		requireAccess(VansRenderPassNames::AtmosphereComposite, "CloudOpticalDepth", false);
 		requireAccess(VansRenderPassNames::AtmosphereComposite, "LocalMediaScattering", false);
 		requireAccess(VansRenderPassNames::AtmosphereComposite, "LocalMediaOpticalDepth", false);
 		requireAccess(VansRenderPassNames::AtmosphereComposite, "Depth", false);
 		requireAccess(VansRenderPassNames::AtmosphereComposite, "WaterGBuffer", false);
-		requireAccess(VansRenderPassNames::ScreenSpaceEffects, "SSAORaw", true);
-		requireAccess(VansRenderPassNames::SSAOFilter, "SSAORaw", false);
-		requireAccess(VansRenderPassNames::SSAOFilter, "SSAO", true);
-		requireAccess(VansRenderPassNames::RawOpaqueLighting, "SSAO", false);
+		requireAccess(VansRenderPassNames::GTAODepth, "GBuffer2", false);
+        requireAccess(VansRenderPassNames::GTAODepth, "GTAODepth", true);
+        requireAccess(VansRenderPassNames::GTAOMain, "GTAODepth", false);
+        requireAccess(VansRenderPassNames::GTAOMain, "GTAORaw", true);
+        requireAccess(VansRenderPassNames::GTAOMain, "GTAOEdges", true);
+        requireAccess(VansRenderPassNames::GTAODenoise, "GTAOEdges", false);
+		requireAccess(VansRenderPassNames::GTAODenoise, "GTAORaw", false);
+		requireAccess(VansRenderPassNames::GTAODenoise, "GTAO", true);
+		requireAccess(VansRenderPassNames::RawOpaqueLighting, "GTAO", false);
 		requireAccess(VansRenderPassNames::ScreenSpaceShadow, "CascadeShadowMinMax", true);
 		requireAccess(VansRenderPassNames::GIData, "HZB", false);
 		requireAccess(VansRenderPassNames::GIData, "GIData", true);

@@ -38,24 +38,69 @@ void main()
     vec3 flatViewNormal = normalize(mat3(params.viewMatrix) * vec3(0.0, 1.0, 0.0));
     vec2 normalDeviation = viewNormal.xy - flatViewNormal.xy;
     vec2 screenNormal = vec2(normalDeviation.x, -normalDeviation.y);
-
-    float aspect = float(size.x) / max(float(size.y), 1.0);
-    vec2 uvOffset = screenNormal * params.refractionParams.x * pow(thickness01, 0.65);
-    uvOffset.x /= max(aspect, 1e-5);
-
     vec2 baseUV = WaterPixelUV(pixel, size);
-    float edgeDistance = min(min(baseUV.x, 1.0 - baseUV.x), min(baseUV.y, 1.0 - baseUV.y));
-    float edgeFade = smoothstep(0.0,
-        max(params.refractionParams.x * params.refractionParams.w, 1.0 / float(size.y)),
-        edgeDistance);
-    vec2 refractedUV = clamp(baseUV + uvOffset * edgeFade, vec2(0.001), vec2(0.999));
-    ivec2 refractedPixel = WaterUVToPixel(refractedUV, textureSize(sceneGBuf2, 0));
-    float refractedDepth = texelFetch(sceneGBuf2, refractedPixel, 0).w;
-
+    float aspect = float(size.x) / max(float(size.y), 1.0);
+    float maxOffset = max(params.refractionParams.x, 0.0);
+    vec4 background = texelFetch(sceneGBuf2, pixel, 0);
+    bool submergedReceiver = SceneDepthValid(background.w) &&
+        background.w > surface.w + WaterDepthEpsilon(surface.w) &&
+        background.y < surface.y - 0.01;
     float maxCrossDistance = max(params.refractionParams.y, 0.01);
     float expectedDepth = surface.w + thickness01 * maxCrossDistance;
-    if (!SceneDepthValid(refractedDepth) || refractedDepth <= surface.w + WaterDepthEpsilon(surface.w))
-        refractedDepth = expectedDepth;
+    float refractedDepth = submergedReceiver ? background.w : expectedDepth;
+    vec2 uvOffset = vec2(0.0);
 
+    if (submergedReceiver && maxOffset > 0.0)
+    {
+        // Refract the camera ray into the water, then intersect it with the
+        // opaque receiver's height.  Shallow water retains its real projected
+        // parallax instead of losing almost all distortion to thickness / 8 m.
+        vec3 incident = normalize(surface.xyz - params.cameraPosition.xyz);
+        vec3 ray = refract(incident, worldNormal, 1.0 / max(params.surfaceParams.y, 1.01));
+        if (dot(incident, worldNormal) < -0.01 && ray.y < -0.01)
+        {
+            float travel = min((surface.y - background.y) / -ray.y, maxCrossDistance);
+            vec3 target = surface.xyz + ray * travel;
+            vec4 clip = params.projMatrix * params.viewMatrix * vec4(target, 1.0);
+            if (clip.w > 1e-5)
+            {
+                vec2 targetUV = WaterNDCToAttachmentUV(clip.xy / clip.w);
+                vec2 projectedOffset = targetUV - baseUV;
+                // Keep the existing inspector strength meaningful below the
+                // screen-space cap as well as at large viewing angles.
+                projectedOffset *= maxOffset / 0.025;
+                vec2 pixelAspectOffset = projectedOffset * vec2(aspect, 1.0);
+                float offsetLength = length(pixelAspectOffset);
+                if (offsetLength > maxOffset)
+                    projectedOffset *= maxOffset / offsetLength;
+                vec2 candidateUV = baseUV + projectedOffset;
+                if (all(greaterThan(candidateUV, vec2(0.001))) &&
+                    all(lessThan(candidateUV, vec2(0.999))))
+                {
+                    ivec2 candidatePixel = WaterUVToPixel(candidateUV, textureSize(sceneGBuf2, 0));
+                    vec4 candidate = texelFetch(sceneGBuf2, candidatePixel, 0);
+                    if (SceneDepthValid(candidate.w) &&
+                        candidate.w > surface.w + WaterDepthEpsilon(surface.w) &&
+                        candidate.y < surface.y - 0.01)
+                    {
+                        uvOffset = projectedOffset;
+                        refractedDepth = candidate.w;
+                    }
+                }
+            }
+        }
+    }
+    else if (!submergedReceiver)
+    {
+        // Open water has no opaque endpoint for a geometric intersection.
+        uvOffset = screenNormal * maxOffset * pow(thickness01, 0.65);
+        uvOffset.x /= max(aspect, 1e-5);
+    }
+
+    float edgeDistance = min(min(baseUV.x, 1.0 - baseUV.x), min(baseUV.y, 1.0 - baseUV.y));
+    float edgeFade = smoothstep(0.0,
+        max(maxOffset * params.refractionParams.w, 1.0 / float(size.y)),
+        edgeDistance);
+    vec2 refractedUV = clamp(baseUV + uvOffset * edgeFade, vec2(0.001), vec2(0.999));
     imageStore(refractionDataOut, pixel, vec4(refractedUV - baseUV, refractedDepth, 1.0));
 }

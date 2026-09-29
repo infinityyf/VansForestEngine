@@ -1,4 +1,6 @@
 #pragma once
+#include "AmbientOcclusionCore/VansGTAO.h"
+#include "../MaterialCore/VansHairMaterialParameters.h"
 #include "GICore/VansGIReceiverVisibility.h"
 #include "SkyLightingCore/VansSkyLighting.h"
 
@@ -183,13 +185,12 @@ namespace VansGraphics
 
 		static constexpr const char* POST_PROCESS     = "postProcess";      // post-processing
 
-		static constexpr const char* SCREEN_SPACE     = "screenSpace";      // SSAO / SSR etc.
 
 		static constexpr const char* HAIR_VISIBILITY  = "hairVisibility";
 
-		static constexpr const char* HAIR_SHADOW      = "hairShadow";
 
 		static constexpr const char* HAIR_LIGHTING    = "hairLighting";
+		static constexpr const char* HAIR_LIGHTING_SKY = "hairLightingSky";
 
 		static constexpr const char* HAIR_COMPOSITE   = "hairComposite";
 
@@ -214,6 +215,7 @@ namespace VansGraphics
 
 	class VansClothMaterial;
 	struct VansClothGPUParam;
+    struct VansHairParamsGPU;
 
 	class VansHairMaterial;
 
@@ -223,7 +225,6 @@ namespace VansGraphics
 
 	class VansDeferredMaterial;
 
-	class VansSSAOMaterial;
 
 	class VansEmissiveMaterial;
 
@@ -248,7 +249,6 @@ namespace VansGraphics
 
 		VAN_DEFERRED = 5,
 
-		VAN_SCREEN_SPACE_AO = 6,
 
 		VAN_SKIN = 9,
 
@@ -417,7 +417,9 @@ namespace VansGraphics
 
 	public:
 
-		static constexpr const char* RT_SSAO_RESULT = "Runtime.SSAO.Result";
+		static constexpr const char* RT_GTAO_RAW = "Runtime.GTAO.Raw";
+        static constexpr const char* RT_GTAO_DEPTH = "Runtime.GTAO.Depth";
+        static constexpr const char* RT_GTAO_EDGES = "Runtime.GTAO.Edges";
 
 		static constexpr const char* RT_SSGI_RESULT = "Runtime.SSGI.Result";
 		static constexpr const char* RT_SSGI_PROBE_CACHE_RADIANCE = "Runtime.SSGI.ProbeCacheRadiance";
@@ -463,25 +465,28 @@ namespace VansGraphics
 		static constexpr const char* RT_AMBIENT_SKY_CACHE_Y = "Runtime.AmbientSkyCache.Y";
 		static constexpr const char* RT_AMBIENT_SKY_CACHE_Z = "Runtime.AmbientSkyCache.Z";
 
-		static constexpr const char* RT_SSAO_FILTER_RESULT = "Runtime.SSAO.FilterResult";
+		static constexpr const char* RT_GTAO_RESULT = "Runtime.GTAO.Result";
+        VkDescriptorSetLayout m_GTAODepthSetLayout = VK_NULL_HANDLE;
+        std::vector<VkDescriptorSet> m_GTAODepthDescriptorSets;
+        VkDescriptorSetLayout m_GTAOMainSetLayout = VK_NULL_HANDLE;
+        std::vector<VkDescriptorSet> m_GTAOMainDescriptorSets;
+        VkDescriptorSetLayout m_GTAODenoiseSetLayout = VK_NULL_HANDLE;
+        std::vector<VkDescriptorSet> m_GTAODenoiseDescriptorSets;
+        VansComputeShader* m_GTAODepthShader = nullptr;
+        VansComputeShader* m_GTAOMainShader = nullptr;
+        VansComputeShader* m_GTAODenoiseShader = nullptr;
+        VansGTAOParameters m_GTAOParameters;
+
 
 		static constexpr const char* RT_RECT_LIGHT_EMISSIVE = "Runtime.RectLight.EmissiveArray";
 
-		static constexpr const char* RT_HAIR_VIS0           = "Runtime.Hair.Vis0";
 
-		static constexpr const char* RT_HAIR_VIS1           = "Runtime.Hair.Vis1";
 
-		static constexpr const char* RT_HAIR_VIS2           = "Runtime.Hair.Vis2";
 
-		static constexpr const char* RT_HAIR_VIS3           = "Runtime.Hair.Vis3";
 
-		static constexpr const char* RT_HAIR_DEPTH          = "Runtime.Hair.Depth";
 
-		static constexpr const char* RT_HAIR_COVERAGE       = "Runtime.Hair.Coverage";
 
-		static constexpr const char* RT_HAIR_COLOR          = "Runtime.Hair.Color";
 
-		static constexpr const char* RT_HAIR_DEEP_OPACITY   = "Runtime.Hair.DeepOpacity";
 
 
 
@@ -663,14 +668,13 @@ namespace VansGraphics
 
 
 
-		VkDescriptorSetLayout m_BilateralFilterSetLayout = VK_NULL_HANDLE;
 
-		std::vector<VkDescriptorSet> m_BilateralFilterDescriptorSets;
 
 
 
 		VansVKBuffer m_GlobalPBRDataBuffer;
 		VansVKBuffer m_GlobalClothDataBuffer;
+        VansVKBuffer m_GlobalHairDataBuffer;
 		VansVKBuffer m_GlobalTreeLeafDataBuffer;
 		VansVKBuffer m_GlobalSkinDataBuffer;
 
@@ -680,6 +684,7 @@ namespace VansGraphics
 
 		std::vector<VansBasePBRParam> m_GlobalPBRParamData;
 		std::vector<VansClothGPUParam> m_GlobalClothParamData;
+        std::vector<VansHairParamsGPU> m_GlobalHairParamData;
 		std::vector<VansTreeLeafParamsGPU> m_GlobalTreeLeafParamData;
 		std::vector<VansSkinGPUParam> m_GlobalSkinParamData;
 
@@ -857,29 +862,13 @@ namespace VansGraphics
 
 
 
-		struct BilateralFilterPushConst
-
-		{
-
-			float sigmaSpace;
-
-			float sigmaDepth;
-
-			int radius;
-
-			float depthThreshold;
-
-			int depthMode;
-
-		};
 
 
 
-		BilateralFilterPushConst m_BilateralFilterPushConstant;
 
 
 
-		VansComputeShader* m_BilateralFilterShader;
+
 
 
 
@@ -1345,27 +1334,17 @@ namespace VansGraphics
 	// ============================================================
 
 
-	// Textures: albedo+alpha, normal, roughness, AO, strand shift
+	// 发片纹理：basecolor、alpha、normal、roughness、AO、flow；参数经帧快照上传。
 
 	// ============================================================
 
-	struct alignas(16) VansHairParamsGPU
-
-	{
-
-		glm::vec4 absorption     = glm::vec4(0.35f, 0.22f, 0.12f, 1.0f);
-
-		glm::vec4 roughnessScale = glm::vec4(1.0f, 0.55f, 2.0f, 0.35f);
-
-		glm::vec4 shiftParams    = glm::vec4(1.0f, 1.0f, 1.5f, 0.25f);
-
-		glm::vec4 coverageParams = glm::vec4(0.35f, 1.5f, 0.25f, 1.0f);
-
-	};
-
-	static_assert(sizeof(VansHairParamsGPU) == sizeof(glm::vec4) * 4, "VansHairParamsGPU layout must match GLSL");
-
-
+    struct alignas(16) VansHairParamsGPU
+    {
+        glm::vec4 scattering; // 纵向/方位粗糙度、毛鳞片倾角（弧度）、法线强度
+        glm::vec4 coverage;   // 覆盖阈值、缩放、flow 强度、投影开关
+        glm::vec4 occlusion;  // AO 强度；其余分量为 ABI 填充
+    };
+    static_assert(sizeof(VansHairParamsGPU) == 48, "Hair material GPU ABI");
 
 	class VansHairMaterial : public VansMaterial
 
@@ -1387,19 +1366,14 @@ namespace VansGraphics
 
 		VansTexture* m_AOTexture          = nullptr;
 
-		VansTexture* m_ShiftTexture       = nullptr;
-
 		VansTexture* m_FlowTexture        = nullptr;
 
-		VansTexture* m_IDTexture          = nullptr;
 
 
+		Vans::VansHairMaterialParameters m_Params;
+        VansHairParamsGPU BuildGPUParams() const;
 
-		VansHairParamsGPU m_Params;
 
-		VansVKBuffer m_ParamsBuffer;
-
-		VkDevice m_ParamsDevice = VK_NULL_HANDLE;
 
 
 
@@ -1409,7 +1383,7 @@ namespace VansGraphics
 
 
 
-		void BuildHairDescriptors(VkDevice& device);
+		void BuildHairDescriptors(VansMaterialManager& materialManager);
 
 	};
 
@@ -1486,7 +1460,6 @@ namespace VansGraphics
 
 	class VansDeferredMaterial    : public VansMaterial {};
 
-	class VansSSAOMaterial        : public VansMaterial {};
 
 
 

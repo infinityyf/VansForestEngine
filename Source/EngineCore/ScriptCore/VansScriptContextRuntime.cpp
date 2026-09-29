@@ -8,6 +8,7 @@
 #include <Windows.h>
 #endif
 
+#include <cmath>
 #include <limits>
 
 #include "VansScriptContext.h"
@@ -18,6 +19,7 @@
 #include "../AICore/VansAIEvents.h"
 #include "../AnimationCore/VansAnimationController.h"
 #include "../AnimationCore/VansAnimationNode.h"
+#include "../AnimationCore/VansPoseMath.h"
 #include "../AudioCore/VansAudioBusSnapshotAsset.h"
 #include "../AudioCore/VansAudioDuckingRulesAsset.h"
 #include "../AudioCore/VansAudioManager.h"
@@ -30,6 +32,7 @@
 #include "../PhysicsCore/VansClothNode.h"
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansPhysicsQuery.h"
+#include "../PhysicsCore/VansCollisionLayerManager.h"
 #include "../PhysicsCore/VansRagdollSystem.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
@@ -1052,6 +1055,87 @@ int LuaComponentQueueMove(lua_State* L)
 	return 0;
 }
 
+int LuaComponentSetFacingYaw(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* cct = dynamic_cast<VansScriptCharacterControllerComponent*>(component);
+	const float yaw = static_cast<float>(luaL_checknumber(L, 2));
+	if (!std::isfinite(yaw)) return luaL_error(L, "facing yaw must be finite");
+	if (cct && cct->m_ControllerNode) cct->m_ControllerNode->SetFacingYaw(yaw);
+	return 0;
+}
+
+Vans::VansCharacterVelocityDynamics ReadVelocityDynamics(lua_State* L, int tableIndex)
+{
+	luaL_checktype(L, tableIndex, LUA_TTABLE);
+	Vans::VansCharacterVelocityDynamics value;
+	const auto read = [&](const char* name, float& output)
+	{
+		lua_getfield(L, tableIndex, name);
+		output = static_cast<float>(luaL_checknumber(L, -1));
+		lua_pop(L, 1);
+		if (!std::isfinite(output) || output < 0.0f)
+			luaL_error(L, "motion dynamics.%s must be finite and nonnegative", name);
+	};
+	read("max_acceleration", value.maxAcceleration);
+	read("friction", value.friction);
+	read("braking_deceleration", value.brakingDeceleration);
+	read("braking_friction_factor", value.brakingFrictionFactor);
+	read("braking_substep", value.brakingSubstep);
+	read("braking_stop_speed", value.brakingStopSpeed);
+	read("min_analog_speed", value.minAnalogSpeed);
+	read("acceleration_scale", value.accelerationScale);
+	read("low_speed_acceleration_boost", value.lowSpeedAccelerationBoost);
+	read("acceleration_boost_speed", value.accelerationBoostSpeed);
+	if (value.brakingSubstep < 0.001f || value.brakingSubstep > 1.0f)
+		luaL_error(L, "motion dynamics.braking_substep must be between 0.001 and 1 second");
+	return value;
+}
+
+Vans::VansCharacterAccelerationModel ReadMotionDynamics(lua_State* L, int tableIndex)
+{
+	luaL_checktype(L, tableIndex, LUA_TTABLE);
+	Vans::VansCharacterAccelerationModel model;
+	lua_getfield(L, tableIndex, "grounded");
+	model.grounded = ReadVelocityDynamics(L, lua_gettop(L));
+	lua_pop(L, 1);
+	lua_getfield(L, tableIndex, "airborne");
+	model.airborne = ReadVelocityDynamics(L, lua_gettop(L));
+	lua_pop(L, 1);
+	lua_getfield(L, tableIndex, "falling");
+	luaL_checktype(L, -1, LUA_TTABLE);
+	const int fallingIndex = lua_gettop(L);
+	lua_getfield(L, fallingIndex, "terminal_speed");
+	model.falling.terminalSpeed = static_cast<float>(luaL_checknumber(L, -1)); lua_pop(L, 1);
+	lua_getfield(L, fallingIndex, "max_time_step");
+	model.falling.maxTimeStep = static_cast<float>(luaL_checknumber(L, -1)); lua_pop(L, 1);
+	lua_getfield(L, fallingIndex, "max_iterations");
+	const lua_Integer iterations = luaL_checkinteger(L, -1); lua_pop(L, 1);
+	lua_getfield(L, fallingIndex, "max_apex_attempts");
+	const lua_Integer apexAttempts = luaL_checkinteger(L, -1); lua_pop(L, 1);
+	lua_getfield(L, fallingIndex, "split_at_apex");
+	luaL_checktype(L, -1, LUA_TBOOLEAN);
+	model.falling.splitAtApex = lua_toboolean(L, -1) != 0; lua_pop(L, 1);
+	if (!std::isfinite(model.falling.terminalSpeed) || model.falling.terminalSpeed < 0.0f ||
+		!std::isfinite(model.falling.maxTimeStep) || model.falling.maxTimeStep < 0.001f ||
+		model.falling.maxTimeStep > 1.0f || iterations < 1 || iterations > 32 ||
+		apexAttempts < 0 || apexAttempts > 8)
+		luaL_error(L, "invalid falling dynamics (terminal speed, timestep or iteration bounds)");
+	model.falling.maxIterations = static_cast<int>(iterations);
+	model.falling.maxApexAttempts = static_cast<int>(apexAttempts);
+	lua_pop(L, 1);
+	return model;
+}
+
+int LuaComponentSetMotionDynamics(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* cct = dynamic_cast<VansScriptCharacterControllerComponent*>(component);
+	const auto model = ReadMotionDynamics(L, 2);
+	if (cct && cct->m_ControllerNode) cct->m_ControllerNode->SetMotionDynamics(model);
+	return 0;
+}
+
 int LuaComponentSetMotionIntent(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
@@ -1071,6 +1155,11 @@ int LuaComponentSetMotionIntent(lua_State* L)
 	intent.gravity = static_cast<float>(luaL_optnumber(L, 8, 16.0));
 	// Optional final argument. Existing scripts retain filtered facing.
 	intent.immediateFacing = lua_toboolean(L, 9) != 0;
+	if (lua_gettop(L) >= 10 && !lua_isnil(L, 10))
+	{
+		const auto model = ReadMotionDynamics(L, 10);
+		intent.accelerationModel = model;
+	}
 	intent.valid = true;
 	cct->m_ControllerNode->SetMotionIntent(intent);
 	return 0;
@@ -1155,6 +1244,44 @@ int LuaComponentGetPosition(lua_State* L)
 		}
 	}
 	lua_pushnil(L);
+	return 1;
+}
+
+int LuaComponentGetCapsuleState(lua_State* L)
+{
+	auto* cct=dynamic_cast<VansScriptCharacterControllerComponent*>(CheckComponent(L,1)->component);
+	if(!cct||!cct->m_ControllerNode){lua_pushnil(L);return 1;}
+	const auto* node=cct->m_ControllerNode;
+	VansEngine::CharControllerProperties properties;
+	glm::vec3 center;
+	{
+		std::lock_guard<std::mutex> lock(VansEngine::VansPhysicsSystem::GetInstance().GetSimulationMutex());
+		center=node->GetPosition();
+		properties=node->GetProperties();
+	}
+	lua_createtable(L,0,7);
+	PushVec3(L,center);lua_setfield(L,-2,"center");
+	PushVec3(L,properties.m_UpDirection);lua_setfield(L,-2,"axis");
+	lua_pushnumber(L,properties.m_Radius);lua_setfield(L,-2,"radius");
+	lua_pushnumber(L,properties.m_Radius+.5f*properties.m_Height);lua_setfield(L,-2,"half_height");
+	lua_pushnumber(L,properties.m_SlopeLimit);lua_setfield(L,-2,"walkable_floor_cosine");
+	lua_pushstring(L,properties.m_LayerName.c_str());lua_setfield(L,-2,"collision_layer");
+	lua_pushinteger(L,node->GetTransformID());lua_setfield(L,-2,"transform_id");
+	return 1;
+}
+
+int LuaComponentResizeCapsule(lua_State* L)
+{
+	auto* cct = dynamic_cast<VansScriptCharacterControllerComponent*>(CheckComponent(L, 1)->component);
+	const float cylinderHeight = static_cast<float>(luaL_checknumber(L, 2));
+	bool resized = false;
+	if (cct && cct->m_ControllerNode)
+	{
+		auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+		std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+		resized = cct->m_ControllerNode->ResizeCapsule(cylinderHeight);
+	}
+	lua_pushboolean(L, resized);
 	return 1;
 }
 
@@ -1273,6 +1400,156 @@ int LuaComponentAnimGetCurveValue(lua_State* L)
 	return 1;
 }
 
+int LuaComponentAnimGetBoneComponentPosition(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	const char* boneName = luaL_checkstring(L, 2);
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	const auto pose = anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetFinalPoseView() : VansGraphics::VansSkeletonPoseView{};
+	if (!pose.IsValid())
+	{
+		lua_pushnil(L);
+		return 1;
+	}
+	const int boneIndex = pose.skeleton->FindBoneIndex(boneName);
+	if (boneIndex < 0)
+	{
+		lua_pushnil(L);
+		return 1;
+	}
+	const glm::vec3 position = glm::vec3((*pose.modelTransforms)[boneIndex][3]);
+	if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
+	{
+		lua_pushnil(L);
+		return 1;
+	}
+	PushVec3(L, position);
+	return 1;
+}
+
+int LuaComponentAnimGetBoneComponentTransform(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	const char* boneName = luaL_checkstring(L, 2);
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	const auto pose = anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetFinalPoseView() : VansGraphics::VansSkeletonPoseView{};
+	if (!pose.IsValid()) { lua_pushnil(L); return 1; }
+	const int boneIndex = pose.skeleton->FindBoneIndex(boneName);
+	if (boneIndex < 0) { lua_pushnil(L); return 1; }
+	VansGraphics::VansBoneTransform transform;
+	if (!VansGraphics::VansPoseMath::TryDecompose((*pose.modelTransforms)[boneIndex], transform))
+		{ lua_pushnil(L); return 1; }
+	lua_createtable(L, 0, 2);
+	PushVec3(L, transform.translation);
+	lua_setfield(L, -2, "position");
+	lua_createtable(L, 0, 4);
+	lua_pushnumber(L, transform.rotation.x); lua_setfield(L, -2, "x");
+	lua_pushnumber(L, transform.rotation.y); lua_setfield(L, -2, "y");
+	lua_pushnumber(L, transform.rotation.z); lua_setfield(L, -2, "z");
+	lua_pushnumber(L, transform.rotation.w); lua_setfield(L, -2, "w");
+	lua_setfield(L, -2, "rotation");
+	return 1;
+}
+
+int LuaComponentAnimGetBoneWorldPosition(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	const char* boneName = luaL_checkstring(L, 2);
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	const auto pose = anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetFinalPoseView() : VansGraphics::VansSkeletonPoseView{};
+	if (!pose.IsValid()) { lua_pushnil(L); return 1; }
+	const int boneIndex = pose.skeleton->FindBoneIndex(boneName);
+	if (boneIndex < 0) { lua_pushnil(L); return 1; }
+	if (!Vans::VansTransformStore::IsAllocated(anim->m_AnimNode->GetTransformID()))
+		{ lua_pushnil(L); return 1; }
+	const auto ownerWorld = Vans::VansTransformStore::Read(
+		anim->m_AnimNode->GetTransformID()).GetModelMatrix();
+	const glm::vec3 position = glm::vec3(ownerWorld *
+		(*pose.modelTransforms)[boneIndex][3]);
+	if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
+		{ lua_pushnil(L); return 1; }
+	PushVec3(L, position);
+	return 1;
+}
+
+int LuaComponentAnimWorldVectorToComponent(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	if (!anim || !anim->m_AnimNode) { lua_pushnil(L); return 1; }
+	if (!Vans::VansTransformStore::IsAllocated(anim->m_AnimNode->GetTransformID()))
+		{ lua_pushnil(L); return 1; }
+	const glm::vec3 world = ReadVec3(L, 2);
+	const glm::mat4 ownerWorld = Vans::VansTransformStore::Read(
+		anim->m_AnimNode->GetTransformID()).GetModelMatrix();
+	const float determinant = glm::determinant(ownerWorld);
+	if (!std::isfinite(determinant) || std::abs(determinant) < 1.0e-12f)
+		{ lua_pushnil(L); return 1; }
+	const glm::vec3 local = glm::vec3(glm::inverse(ownerWorld) * glm::vec4(world, 0.0f));
+	if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z))
+		{ lua_pushnil(L); return 1; }
+	PushVec3(L, local);
+	return 1;
+}
+
+int LuaComponentAnimWorldQuaternionToComponent(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	if (!anim || !anim->m_AnimNode
+		|| !Vans::VansTransformStore::IsAllocated(anim->m_AnimNode->GetTransformID()))
+		{ lua_pushnil(L); return 1; }
+	const int input = lua_absindex(L, 2);
+	luaL_checktype(L, input, LUA_TTABLE);
+	auto read = [&](const char* key) {
+		lua_getfield(L, input, key);
+		const float value = static_cast<float>(luaL_checknumber(L, -1));
+		lua_pop(L, 1);
+		return value;
+	};
+	const glm::quat world(read("w"), read("x"), read("y"), read("z"));
+	const float lengthSquared = glm::dot(world, world);
+	VansGraphics::VansBoneTransform owner;
+	const glm::mat4 ownerWorld = Vans::VansTransformStore::Read(
+		anim->m_AnimNode->GetTransformID()).GetModelMatrix();
+	if (!std::isfinite(lengthSquared) || lengthSquared <= 1.0e-12f
+		|| !VansGraphics::VansPoseMath::TryDecompose(ownerWorld, owner))
+		{ lua_pushnil(L); return 1; }
+	const glm::quat local = glm::normalize(
+		glm::inverse(owner.rotation) * glm::normalize(world) * owner.rotation);
+	lua_createtable(L, 0, 4);
+	lua_pushnumber(L, local.x); lua_setfield(L, -2, "x");
+	lua_pushnumber(L, local.y); lua_setfield(L, -2, "y");
+	lua_pushnumber(L, local.z); lua_setfield(L, -2, "z");
+	lua_pushnumber(L, local.w); lua_setfield(L, -2, "w");
+	return 1;
+}
+
+int LuaComponentAnimGetCheckpointBonePosition(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	const char* checkpoint = luaL_checkstring(L, 2);
+	const char* boneName = luaL_checkstring(L, 3);
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	const auto pose = anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetFinalPoseView() : VansGraphics::VansSkeletonPoseView{};
+	if (!pose.IsValid() || !anim->m_AnimNode->GetController())
+		{ lua_pushnil(L); return 1; }
+	const int boneIndex = pose.skeleton->FindBoneIndex(boneName);
+	glm::mat4 transform(1.0f);
+	if (boneIndex < 0 || !anim->m_AnimNode->GetController()->TryGetPoseCheckpointTransform(
+		checkpoint, boneIndex, transform))
+		{ lua_pushnil(L); return 1; }
+	const glm::vec3 position(transform[3]);
+	if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
+		{ lua_pushnil(L); return 1; }
+	PushVec3(L, position);
+	return 1;
+}
+
 int LuaComponentAnimGetStateName(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
@@ -1383,6 +1660,18 @@ int LuaComponentAnimPlaySlot(lua_State* L)
 	request.startTime = startTime;
 	request.blendIn = blendIn;
 	request.blendOut = blendOut;
+	request.blendOutTriggerTime = static_cast<float>(luaL_optnumber(L, 10, -1.0));
+	auto blendOption = [L](int argument) -> VansGraphics::VansSlotBlendOption
+	{
+		const std::string value = luaL_optstring(L, argument, "linear");
+		if (value == "linear") return VansGraphics::VansSlotBlendOption::Linear;
+		if (value == "cubic") return VansGraphics::VansSlotBlendOption::Cubic;
+		if (value == "hermite_cubic") return VansGraphics::VansSlotBlendOption::HermiteCubic;
+		luaL_error(L, "play_slot blend option must be linear, cubic or hermite_cubic");
+		return VansGraphics::VansSlotBlendOption::Linear;
+	};
+	request.blendInOption = blendOption(11);
+	request.blendOutOption = blendOption(12);
 	const auto handle = motionController->PlaySlot(slotId, request);
 	lua_pushinteger(L, static_cast<lua_Integer>(handle.value));
 	return 1;
@@ -1400,6 +1689,16 @@ int LuaComponentAnimStopSlot(lua_State* L)
 	const bool stopped = motionController
 		&& motionController->StopSlot(handle, blendOut, true);
 	lua_pushboolean(L, stopped ? 1 : 0);
+	return 1;
+}
+
+int LuaComponentAnimStopSlotById(lua_State* L)
+{
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(CheckComponent(L, 1)->component);
+	const char* slot = luaL_checkstring(L, 2);
+	const float blendOut = static_cast<float>(luaL_checknumber(L, 3));
+	auto* controller = anim && anim->m_AnimNode ? anim->m_AnimNode->GetCharacterMotionController() : nullptr;
+	lua_pushboolean(L, controller && controller->StopSlotById(slot, blendOut, true));
 	return 1;
 }
 
@@ -1456,6 +1755,24 @@ int LuaComponentAnimSetVector3(lua_State* L)
 	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
 	if (anim && anim->m_AnimNode && anim->m_AnimNode->GetController())
 		anim->m_AnimNode->GetController()->SetVector3(name, value);
+	return 0;
+}
+
+int LuaComponentAnimSetQuaternion(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	const char* name = luaL_checkstring(L, 2);
+	const float x = static_cast<float>(luaL_checknumber(L, 3));
+	const float y = static_cast<float>(luaL_checknumber(L, 4));
+	const float z = static_cast<float>(luaL_checknumber(L, 5));
+	const float w = static_cast<float>(luaL_checknumber(L, 6));
+	const float lengthSquared = x*x + y*y + z*z + w*w;
+	if (!std::isfinite(lengthSquared) || lengthSquared <= 1e-12f)
+		return luaL_error(L, "set_quaternion requires a finite nonzero quaternion");
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	if (anim && anim->m_AnimNode && anim->m_AnimNode->GetController())
+		anim->m_AnimNode->GetController()->SetQuaternion(name,
+			glm::normalize(glm::quat(w, x, y, z)));
 	return 0;
 }
 
@@ -3271,6 +3588,7 @@ void PushPhysicsHit(lua_State* L, const VansEngine::VansPhysicsQueryHit& hit)
 	lua_createtable(L, 0, 8);
 	lua_pushboolean(L, true);
 	lua_setfield(L, -2, "hit");
+	lua_pushboolean(L,hit.initialOverlap);lua_setfield(L,-2,"initial_overlap");
 	lua_pushnumber(L, hit.distance);
 	lua_setfield(L, -2, "distance");
 	PushVec3(L, hit.position);
@@ -3308,11 +3626,54 @@ void PushOverlapHit(lua_State* L, const VansEngine::VansPhysicsQueryHit& hit)
 
 int LuaPhysicsRaycast(lua_State* L)
 {
-	const glm::vec3 origin = ReadVec3(L, 1);
-	const int directionIndex = lua_istable(L, 1) ? 2 : 4;
-	glm::vec3 direction = ReadVec3(L, directionIndex);
-	const float maxDistance = static_cast<float>(
-		luaL_optnumber(L, lua_istable(L, directionIndex) ? directionIndex + 1 : directionIndex + 3, 10000.0));
+	VansEngine::VansPhysicsRaycastRequest request;
+	if (lua_istable(L, 1)) lua_getfield(L, 1, "origin");
+	else lua_pushnil(L);
+	const bool options = lua_istable(L, -1);
+	if (options)
+	{
+		request.origin = ReadVec3(L, -1);
+		lua_pop(L, 1);
+		lua_getfield(L, 1, "direction");
+		request.direction = ReadVec3(L, -1);
+		lua_pop(L, 1);
+		lua_getfield(L, 1, "distance");
+		request.distance = static_cast<float>(luaL_checknumber(L, -1));
+		lua_pop(L, 1);
+		lua_getfield(L, 1, "collision_layer");
+		if (!lua_isnil(L, -1))
+		{
+			const char* layer = luaL_checkstring(L, -1);
+			if (!VansEngine::VansCollisionLayerManager::Get().TryGetLayerIndex(
+				layer, request.filter.collisionLayerIndex))
+				return luaL_error(L, "Unknown collision layer: %s", layer);
+		}
+		lua_pop(L, 1);
+		lua_getfield(L, 1, "ignored_transform_id");
+		if (!lua_isnil(L, -1))
+			request.filter.ignoredTransformId = static_cast<std::uint32_t>(luaL_checkinteger(L, -1));
+		lua_pop(L, 1);
+		const auto boolean = [&](const char* key, bool& value)
+		{
+			lua_getfield(L, 1, key);
+			if (!lua_isnil(L, -1)) value = lua_toboolean(L, -1) != 0;
+			lua_pop(L, 1);
+		};
+		boolean("include_static", request.filter.includeStatic);
+		boolean("include_dynamic", request.filter.includeDynamic);
+		boolean("include_triggers", request.filter.includeTriggers);
+		boolean("include_controllers", request.filter.includeControllers);
+	}
+	else
+	{
+		lua_pop(L, 1);
+		request.origin = ReadVec3(L, 1);
+		const int directionIndex = lua_istable(L, 1) ? 2 : 4;
+		request.direction = ReadVec3(L, directionIndex);
+		request.distance = static_cast<float>(luaL_optnumber(L,
+			lua_istable(L, directionIndex) ? directionIndex + 1 : directionIndex + 3, 10000.0));
+	}
+	glm::vec3& direction = request.direction;
 	const float length = glm::length(direction);
 	if (length <= 0.0001f)
 	{
@@ -3321,10 +3682,6 @@ int LuaPhysicsRaycast(lua_State* L)
 	}
 	direction /= length;
 
-	VansEngine::VansPhysicsRaycastRequest request;
-	request.origin = origin;
-	request.direction = direction;
-	request.distance = maxDistance;
 	VansEngine::VansPhysicsQueryHit hit;
 	if (!VansEngine::VansPhysicsQuery::RaycastClosest(request, hit))
 	{
@@ -3332,6 +3689,41 @@ int LuaPhysicsRaycast(lua_State* L)
 		return 1;
 	}
 	PushPhysicsHit(L, hit);
+	return 1;
+}
+
+int LuaPhysicsSweepCapsule(lua_State* L)
+{
+	luaL_checktype(L,1,LUA_TTABLE);
+	VansEngine::VansPhysicsCapsuleSweepRequest request;
+	const auto vector=[&](const char* key,const glm::vec3& fallback,bool required)
+	{
+		lua_getfield(L,1,key);
+		if(required)luaL_checktype(L,-1,LUA_TTABLE);
+		const auto value=lua_isnil(L,-1)?fallback:ReadVec3(L,lua_gettop(L));lua_pop(L,1);return value;
+	};
+	const auto number=[&](const char* key){lua_getfield(L,1,key);const float value=static_cast<float>(luaL_checknumber(L,-1));lua_pop(L,1);return value;};
+	request.origin=vector("origin",glm::vec3(0),true);request.direction=vector("direction",glm::vec3(0),true);
+	request.axis=vector("axis",glm::vec3(0,1,0),false);
+	request.distance=number("distance");request.radius=number("radius");request.halfHeight=number("half_height");
+	lua_getfield(L,1,"collision_layer");
+	if(!lua_isnil(L,-1))
+	{
+		const char* layer=luaL_checkstring(L,-1);
+		if(!VansEngine::VansCollisionLayerManager::Get().TryGetLayerIndex(layer,request.filter.collisionLayerIndex))
+			return luaL_error(L,"Unknown collision layer: %s",layer);
+	}
+	lua_pop(L,1);
+	lua_getfield(L,1,"ignored_transform_id");
+	if(!lua_isnil(L,-1))request.filter.ignoredTransformId=static_cast<std::uint32_t>(luaL_checkinteger(L,-1));
+	lua_pop(L,1);
+	const auto boolean=[&](const char* key,bool& value){lua_getfield(L,1,key);if(!lua_isnil(L,-1))value=lua_toboolean(L,-1)!=0;lua_pop(L,1);};
+	boolean("include_static",request.filter.includeStatic);boolean("include_dynamic",request.filter.includeDynamic);
+	boolean("include_triggers",request.filter.includeTriggers);boolean("include_controllers",request.filter.includeControllers);
+	VansEngine::VansPhysicsQueryHit hit;
+	if(!VansEngine::VansPhysicsQuery::SweepCapsuleClosest(request,hit)){lua_pushnil(L);return 1;}
+	PushPhysicsHit(L,hit);
+	lua_pushnumber(L,hit.distance/request.distance);lua_setfield(L,-2,"fraction");
 	return 1;
 }
 
@@ -4096,7 +4488,8 @@ void VansLuaScriptComponent::ReleaseLuaRefs(lua_State* L)
 {
 	int* refs[] = {
 		&m_ModuleRef, &m_InstanceRef, &m_OnStartRef, &m_OnEnableRef, &m_OnDisableRef, &m_UpdateRef,
-		&m_CollisionEnterRef, &m_CollisionExitRef, &m_TriggerEnterRef, &m_TriggerExitRef
+		&m_CollisionEnterRef, &m_CollisionExitRef, &m_TriggerEnterRef, &m_TriggerExitRef, &m_OnJumpRef, &m_OnLandedRef,
+		&m_MovementUpdatedRef, &m_AnimationEventRef
 	};
 	for (int* ref : refs)
 	{
@@ -4195,6 +4588,10 @@ bool VansLuaScriptComponent::Instantiate()
 	CacheCallback(L, "on_enable", m_OnEnableRef);
 	CacheCallback(L, "on_disable", m_OnDisableRef);
 	CacheCallback(L, "on_update", m_UpdateRef);
+	CacheCallback(L, "on_jump", m_OnJumpRef);
+	CacheCallback(L, "on_landed", m_OnLandedRef);
+	CacheCallback(L, "on_movement_updated", m_MovementUpdatedRef);
+	CacheCallback(L, "on_animation_event", m_AnimationEventRef);
 	if (m_UpdateRef == LUA_NOREF)
 		CacheCallback(L, "update", m_UpdateRef);
 	CacheCallback(L, "on_collision_enter", m_CollisionEnterRef);
@@ -4314,6 +4711,88 @@ void VansLuaScriptComponent::OnDestroy()
 	Teardown();
 }
 
+void VansLuaScriptComponent::CallOnMovementUpdated(const VansEngine::VansCharacterMovementUpdatedEvent& event)
+{
+	if (!m_IsValid || m_State != VansLuaScriptState::Active || m_MovementUpdatedRef == LUA_NOREF) return;
+	lua_State* L = VansScriptContext::GetInstance()->GetLuaState();
+	LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, m_MovementUpdatedRef);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, m_InstanceRef);
+	lua_newtable(L);
+	lua_pushnumber(L, event.deltaTime); lua_setfield(L, -2, "delta_time");
+	PushVec3(L, event.position); lua_setfield(L, -2, "position");
+	PushVec3(L, event.velocity); lua_setfield(L, -2, "velocity");
+	if (event.motionVelocity)
+	{
+		PushVec3(L, *event.motionVelocity); lua_setfield(L, -2, "motion_velocity");
+	}
+	lua_pushinteger(L, event.simulationSteps); lua_setfield(L, -2, "simulation_steps");
+	lua_pushboolean(L, event.grounded); lua_setfield(L, -2, "grounded");
+	std::string error;
+	if (!ProtectedCall(L, 2, 0, error)) EnterFaultedState("on_movement_updated", error);
+}
+
+void VansLuaScriptComponent::CallOnLanded(const VansEngine::VansCharacterLandedEvent& event)
+{
+    if (!m_IsValid || m_State != VansLuaScriptState::Active || m_OnLandedRef == LUA_NOREF) return;
+    lua_State* L = VansScriptContext::GetInstance()->GetLuaState();
+    LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, m_OnLandedRef);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, m_InstanceRef);
+    lua_newtable(L);
+    PushVec3(L, event.position); lua_setfield(L, -2, "position");
+    PushVec3(L, event.velocity); lua_setfield(L, -2, "velocity");
+    PushVec3(L, event.normal); lua_setfield(L, -2, "normal");
+    std::string error;
+    if (!ProtectedCall(L, 2, 0, error)) EnterFaultedState("on_landed", error);
+}
+
+void VansLuaScriptComponent::CallOnJump()
+{
+	if (!m_IsValid || m_State != VansLuaScriptState::Active || m_OnJumpRef == LUA_NOREF) return;
+	lua_State* L = VansScriptContext::GetInstance()->GetLuaState();
+	LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, m_OnJumpRef);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, m_InstanceRef);
+	std::string error;
+	if (!ProtectedCall(L, 1, 0, error)) EnterFaultedState("on_jump", error);
+}
+
+void VansLuaScriptComponent::CallOnAnimationEvent(const VansGraphics::VansAnimationEventSample& event)
+{
+	if (!m_IsValid || m_State != VansLuaScriptState::Active || m_AnimationEventRef == LUA_NOREF) return;
+	lua_State* L = VansScriptContext::GetInstance()->GetLuaState();
+	LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, m_AnimationEventRef);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, m_InstanceRef);
+	lua_newtable(L);
+	lua_pushlstring(L, event.name.data(), event.name.size()); lua_setfield(L, -2, "name");
+	lua_pushnumber(L, event.sourceTime); lua_setfield(L, -2, "time");
+	lua_pushnumber(L, event.weight); lua_setfield(L, -2, "weight");
+	lua_pushinteger(L, event.loopIndex); lua_setfield(L, -2, "loop_index");
+	lua_pushboolean(L, event.forward); lua_setfield(L, -2, "forward");
+	// Stable IDs are strings so the Lua boundary preserves all 64 bits.
+	for (const auto& field : {std::pair<const char*, std::uint64_t>{"id", event.id},
+		{"clip_id", event.clipId}, {"source_node_id", event.sourceNodeId}, {"source_layer_id", event.sourceLayerId}})
+	{
+		const auto value = std::to_string(field.second);
+		lua_pushlstring(L, value.data(), value.size()); lua_setfield(L, -2, field.first);
+	}
+	std::visit([&](const auto& value)
+	{
+		using T = std::decay_t<decltype(value)>;
+		if constexpr (std::is_same_v<T, bool>) lua_pushboolean(L, value);
+		else if constexpr (std::is_same_v<T, std::int64_t>) lua_pushinteger(L, value);
+		else if constexpr (std::is_same_v<T, double>) lua_pushnumber(L, value);
+		else if constexpr (std::is_same_v<T, std::string>) lua_pushlstring(L, value.data(), value.size());
+		else if constexpr (std::is_same_v<T, glm::vec3>) PushVec3(L, value);
+		else lua_pushnil(L);
+	}, event.payload);
+	lua_setfield(L, -2, "value");
+	std::string error;
+	if (!ProtectedCall(L, 2, 0, error)) EnterFaultedState("on_animation_event", error);
+}
+
 void VansLuaScriptComponent::CallOnCollisionEnter(const VansScriptPhysicsEventInfo& info)
 {
 	if (!m_IsValid || m_State != VansLuaScriptState::Active || m_CollisionEnterRef == LUA_NOREF) return;
@@ -4397,6 +4876,23 @@ void VansScriptContext::VansScriptSetup()
 		},
 		Vans::VansEventLane::Physics,
 		0));
+	m_EventConnections.Add(Vans::VansEventBus::Get().Subscribe<VansEngine::VansCharacterJumpEvent>(
+		[this](const VansEngine::VansCharacterJumpEvent& event)
+		{
+			HandleCharacterJumpEvent(event);
+		}, Vans::VansEventLane::GameLogic));
+	m_EventConnections.Add(Vans::VansEventBus::Get().Subscribe<VansEngine::VansCharacterLandedEvent>(
+        [this](const VansEngine::VansCharacterLandedEvent& event)
+        {
+            DispatchToEntityScripts(event.transformID,
+                [&](VansLuaScriptComponent& component) { component.CallOnLanded(event); });
+        }, Vans::VansEventLane::GameLogic));
+	m_EventConnections.Add(Vans::VansEventBus::Get().Subscribe<VansEngine::VansCharacterMovementUpdatedEvent>(
+		[this](const VansEngine::VansCharacterMovementUpdatedEvent& event)
+		{
+			DispatchToEntityScripts(event.transformID,
+				[&](VansLuaScriptComponent& component) { component.CallOnMovementUpdated(event); });
+		}, Vans::VansEventLane::GameLogic));
 	RebuildScriptSchedule();
 	VANS_LOG("[LuaScript] Lua runtime initialized");
 }
@@ -4551,10 +5047,14 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "move", LuaComponentQueueMove },
 		{ "queue_move", LuaComponentQueueMove },
 		{ "set_motion_intent", LuaComponentSetMotionIntent },
+		{ "set_motion_dynamics", LuaComponentSetMotionDynamics },
+		{ "set_facing_yaw", LuaComponentSetFacingYaw },
 		{ "set_inputs", LuaComponentVehicleSetInputs },
 		{ "set_gear", LuaComponentVehicleSetGear },
 		{ "set_automatic_gear", LuaComponentVehicleSetAutomaticGear },
 		{ "get_position", LuaComponentGetPosition },
+		{ "get_capsule_state", LuaComponentGetCapsuleState },
+		{ "resize_capsule", LuaComponentResizeCapsule },
 		{ "set_position", LuaComponentSetPosition },
 		{ "sync_from_transform", LuaComponentSyncControllerFromTransform },
 		{ "is_grounded", LuaComponentIsGrounded },
@@ -4566,6 +5066,12 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "set_root_motion_enabled", LuaComponentAnimSetRootMotionEnabled },
 		{ "set_float", LuaComponentAnimSetFloat },
 		{ "get_curve_value", LuaComponentAnimGetCurveValue },
+		{ "get_bone_component_position", LuaComponentAnimGetBoneComponentPosition },
+		{ "get_bone_component_transform", LuaComponentAnimGetBoneComponentTransform },
+		{ "get_bone_world_position", LuaComponentAnimGetBoneWorldPosition },
+		{ "world_vector_to_component", LuaComponentAnimWorldVectorToComponent },
+		{ "world_quaternion_to_component", LuaComponentAnimWorldQuaternionToComponent },
+		{ "get_checkpoint_bone_position", LuaComponentAnimGetCheckpointBonePosition },
 		{ "get_state_name", LuaComponentAnimGetStateName },
 		{ "get_state_path", LuaComponentAnimGetStatePath },
 		{ "get_primary_clip", LuaComponentAnimGetPrimaryClip },
@@ -4575,9 +5081,11 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "restart_layer", LuaComponentAnimRestartLayer },
 		{ "play_slot", LuaComponentAnimPlaySlot },
 		{ "stop_slot", LuaComponentAnimStopSlot },
+		{ "stop_slot_by_id", LuaComponentAnimStopSlotById },
 		{ "get_slot_status", LuaComponentAnimGetSlotStatus },
 		{ "set_int", LuaComponentAnimSetInt },
 		{ "set_vector3", LuaComponentAnimSetVector3 },
+		{ "set_quaternion", LuaComponentAnimSetQuaternion },
 		{ "set_trigger", LuaComponentAnimSetTrigger },
 		{ "switch_graph_set", LuaComponentAnimSwitchGraphSet },
 		{ "get_active_graph_set", LuaComponentAnimGetActiveGraphSet },
@@ -4679,6 +5187,7 @@ void VansScriptContext::RegisterLuaBindings()
 	};
 	const luaL_Reg physicsQueryBindings[] = {
 		{ "raycast", LuaPhysicsRaycast },
+		{ "sweep_capsule", LuaPhysicsSweepCapsule },
 		{ "raycast_vec", LuaPhysicsRaycast },
 		{ "raycast_all", LuaPhysicsRaycastAll },
 		{ "overlap_sphere", LuaPhysicsOverlapSphere },
@@ -4984,6 +5493,48 @@ void VansScriptContext::UpdateScriptComponents(bool cameraScriptsOnly, bool skip
 		component->CallUpdate(deltaTime);
 		if (!scheduled.componentGuid.empty())
 			m_Scene->SyncRuntimeScriptComponentFromFacade(scheduled.componentGuid, *component);
+	}
+}
+
+void VansScriptContext::HandleCharacterJumpEvent(const VansEngine::VansCharacterJumpEvent& event)
+{
+	DispatchToEntityScripts(event.transformID,
+		[](VansLuaScriptComponent& component) { component.CallOnJump(); });
+}
+
+void VansScriptContext::PublishAnimationEvents(const std::vector<VansGraphics::VansAnimationNode*>& nodes)
+{
+	AssertLuaThread();
+	struct PendingEvent { std::uint32_t owner; std::string name; VansGraphics::VansAnimationEventSample sample; };
+	std::vector<PendingEvent> pending;
+	// Snapshot before calling scripts: callbacks may replace controllers or register scripts.
+	for (const auto* node : nodes)
+		if (node && m_EventSubscribers.count(node->GetTransformID()))
+			for (const auto& event : node->GetSampledEvents())
+				pending.push_back({node->GetTransformID(), std::string(event.name), event});
+	for (auto& event : pending)
+	{
+		event.sample.name = event.name;
+		DispatchToEntityScripts(event.owner, [&](VansLuaScriptComponent& script) { script.CallOnAnimationEvent(event.sample); });
+	}
+}
+
+void VansScriptContext::DispatchToEntityScripts(std::uint32_t transformID,
+	const std::function<void(VansLuaScriptComponent&)>& callback)
+{
+	AssertLuaThread();
+	auto it = m_EventSubscribers.find(transformID);
+	if (it == m_EventSubscribers.end()) return;
+	// Callbacks may register scripts and invalidate the source vector.
+	auto subscribers = it->second;
+	for (auto& subscriber : subscribers)
+	{
+		const auto current = m_EventSubscribers.find(transformID);
+		if (current == m_EventSubscribers.end()) break;
+		const bool registered = std::any_of(current->second.begin(), current->second.end(),
+			[&](const ScriptEventSubscriber& value) { return value.component == subscriber.component; });
+		if (registered && subscriber.component && ResolveRuntimeHandles(subscriber))
+			callback(*subscriber.component);
 	}
 }
 

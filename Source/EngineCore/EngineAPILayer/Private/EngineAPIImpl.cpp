@@ -1,4 +1,5 @@
 #include "../../SceneCore/VansSceneEnvironmentAuthoring.h"
+#include "../../SceneCore/VansSceneRainAuthoring.h"
 #include "../../AICore/VansAIWorld.h"
 #include "../../RenderCore/VansCameraControlArbiter.h"
 #include "../../ParticleCore/Authoring/VansParticleAuthoringSchema.h"
@@ -61,6 +62,7 @@
 #include "../../RenderCore/TerrainCore/VansTerrain.h"
 #include "../../RenderCore/WaterCore/VansWaterFFT.h"
 #include "../../RenderCore/WaterCore/VansWaterSystem.h"
+#include "../../RenderCore/WeatherCore/VansRainRenderSystem.h"
 #include "../../RenderCore/VulkanCore/VansMesh.h"
 #include "../../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../../RenderCore/VulkanCore/VansVKDescriptorManager.h"
@@ -3583,6 +3585,61 @@ namespace Vans::EditorAPI
 			settings.volumetricClouds = ToRuntimeCloudSettings(source.volumetricClouds);
 			return settings;
 		}
+
+		RainWeatherSettingsSnapshot ToAPIRainWeatherSettings(
+			const Vans::VansRainSettings& settings,
+			const Vans::VansRainState& state)
+		{
+			RainWeatherSettingsSnapshot snapshot;
+			snapshot.available = true;
+			snapshot.enabled = settings.enabled;
+			snapshot.rainRateMmPerHour = settings.rainRateMmPerHour;
+			snapshot.fullIntensityRateMmPerHour = settings.fullIntensityRateMmPerHour;
+			snapshot.wettingHalfLifeSeconds = settings.wettingHalfLifeSeconds;
+			snapshot.dryingHalfLifeSeconds = settings.dryingHalfLifeSeconds;
+			snapshot.puddleFillHalfLifeSeconds = settings.puddleFillHalfLifeSeconds;
+			snapshot.puddleDrainHalfLifeSeconds = settings.puddleDrainHalfLifeSeconds;
+			snapshot.windDirectionX = settings.windDirectionX;
+			snapshot.windDirectionZ = settings.windDirectionZ;
+			snapshot.windSpeedMetersPerSecond = settings.windSpeedMetersPerSecond;
+			snapshot.fallSpeedMetersPerSecond = settings.fallSpeedMetersPerSecond;
+			snapshot.maximumVisibleDistanceMeters = settings.maximumVisibleDistanceMeters;
+			snapshot.splashLifetimeSeconds = settings.splashLifetimeSeconds;
+			snapshot.splashRadiusMeters = settings.splashRadiusMeters;
+			snapshot.rippleScaleMeters = settings.rippleScaleMeters;
+			snapshot.rippleStrength = settings.rippleStrength;
+			snapshot.normalizedIntensity = state.normalizedIntensity;
+			snapshot.filmWetness = state.filmWetness;
+			snapshot.puddleFill = state.puddleFill;
+			snapshot.rainLayerCount =
+				VansGraphics::VansRainRenderSystem::RainLayerCount;
+			snapshot.maximumSplashCount =
+				VansGraphics::VansRainRenderSystem::MaximumSplashCount;
+			return snapshot;
+		}
+
+		Vans::VansRainSettings ToRuntimeRainWeatherSettings(
+			const RainWeatherSettingsSnapshot& snapshot)
+		{
+			Vans::VansRainSettings settings;
+			settings.enabled = snapshot.enabled;
+			settings.rainRateMmPerHour = snapshot.rainRateMmPerHour;
+			settings.fullIntensityRateMmPerHour = snapshot.fullIntensityRateMmPerHour;
+			settings.wettingHalfLifeSeconds = snapshot.wettingHalfLifeSeconds;
+			settings.dryingHalfLifeSeconds = snapshot.dryingHalfLifeSeconds;
+			settings.puddleFillHalfLifeSeconds = snapshot.puddleFillHalfLifeSeconds;
+			settings.puddleDrainHalfLifeSeconds = snapshot.puddleDrainHalfLifeSeconds;
+			settings.windDirectionX = snapshot.windDirectionX;
+			settings.windDirectionZ = snapshot.windDirectionZ;
+			settings.windSpeedMetersPerSecond = snapshot.windSpeedMetersPerSecond;
+			settings.fallSpeedMetersPerSecond = snapshot.fallSpeedMetersPerSecond;
+			settings.maximumVisibleDistanceMeters = snapshot.maximumVisibleDistanceMeters;
+			settings.splashLifetimeSeconds = snapshot.splashLifetimeSeconds;
+			settings.splashRadiusMeters = snapshot.splashRadiusMeters;
+			settings.rippleScaleMeters = snapshot.rippleScaleMeters;
+			settings.rippleStrength = snapshot.rippleStrength;
+			return settings;
+		}
 		PostProcessSettingsSnapshot ToAPIPostProcessSettings(
 			const VansGraphics::VansPostProcessProfile& source)
 		{
@@ -3790,6 +3847,92 @@ namespace Vans::EditorAPI
 			Vans::VansSceneEnvironmentSettingsConfig m_Settings;
 			Vans::VansSceneEnvironmentSettingsConfig m_Before;
 			bool m_HasBefore = false;
+		};
+
+		class SetRainWeatherSettingsCommand final : public IVansEditorRuntimeCommand
+		{
+		public:
+			SetRainWeatherSettingsCommand(
+				Vans::VansRainSettings settings,
+				std::optional<float> puddleFillPreview)
+				: m_Settings(std::move(settings))
+				, m_PuddleFillPreview(puddleFillPreview)
+			{
+			}
+
+			void Execute(EngineCommandContext& context) override
+			{
+				auto* scene = static_cast<VansGraphics::VansScene*>(context.GetScene());
+				if (!scene)
+					return;
+				if (!m_HasBefore)
+				{
+					m_Before = scene->GetRainSettings();
+					m_HasBefore = true;
+				}
+				if (m_PuddleFillPreview.has_value() && !m_HasBeforePuddleFill)
+				{
+					m_BeforePuddleFill = scene->GetRainState().puddleFill;
+					m_HasBeforePuddleFill = true;
+				}
+				std::string error;
+				if (!scene->ApplyRainSettings(m_Settings, error))
+					VANS_LOG_ERROR("[WeatherEditor] " << error);
+				if (m_PuddleFillPreview.has_value() &&
+					!scene->ApplyRainPuddleFill(*m_PuddleFillPreview, error))
+				{
+					VANS_LOG_ERROR("[WeatherEditor] " << error);
+				}
+			}
+
+			void Undo(EngineCommandContext& context) override
+			{
+				if (!m_HasBefore)
+					return;
+				auto* scene = static_cast<VansGraphics::VansScene*>(context.GetScene());
+				if (!scene)
+					return;
+				std::string error;
+				if (!scene->ApplyRainSettings(m_Before, error))
+					VANS_LOG_ERROR("[WeatherEditor] Undo failed: " << error);
+				if (m_HasBeforePuddleFill &&
+					!scene->ApplyRainPuddleFill(m_BeforePuddleFill, error))
+				{
+					VANS_LOG_ERROR("[WeatherEditor] Undo puddle fill failed: " << error);
+				}
+			}
+
+			std::string GetDescription() const override
+			{
+				return "Set rain weather settings";
+			}
+
+			bool CanMergeWith(const IVansEditorRuntimeCommand& other) const override
+			{
+				return dynamic_cast<const SetRainWeatherSettingsCommand*>(&other) != nullptr;
+			}
+
+			bool MergeWith(
+				const IVansEditorRuntimeCommand& other,
+				EngineCommandContext& context) override
+			{
+				const auto* next =
+					dynamic_cast<const SetRainWeatherSettingsCommand*>(&other);
+				if (!next)
+					return false;
+				m_Settings = next->m_Settings;
+				m_PuddleFillPreview = next->m_PuddleFillPreview;
+				Execute(context);
+				return true;
+			}
+
+		private:
+			Vans::VansRainSettings m_Settings;
+			Vans::VansRainSettings m_Before;
+			std::optional<float> m_PuddleFillPreview;
+			float m_BeforePuddleFill = 0.0f;
+			bool m_HasBefore = false;
+			bool m_HasBeforePuddleFill = false;
 		};
 	}
 
@@ -4054,6 +4197,7 @@ namespace Vans::EditorAPI
 		resolution.textureImport.mipmapped = record->textureImport.mipmapped;
 		resolution.textureImport.channelCount = record->textureImport.channelCount;
 		resolution.textureImport.precision = record->textureImport.precision;
+		resolution.textureImport.maxResidentDimension = record->textureImport.maxResidentDimension;
 		return resolution;
 	}
 
@@ -5983,10 +6127,10 @@ namespace Vans::EditorAPI
 			if (materialManager)
 			{
 				// 直接预览现有 AO 纹理，沿用 API 层的句柄缓存和资源失效处理。
-				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSAO_RESULT))
-					previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 168, "SSAO Raw (Half Resolution)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
-				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSAO_FILTER_RESULT))
-					previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 169, "SSAO Filtered (Deferred Input)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_GTAO_RAW))
+					previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 168, "GTAO Raw (Render Resolution)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_GTAO_RESULT))
+					previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 169, "GTAO Denoised (Deferred Input)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSR_RESULT))
 					previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 141, "SSR Resolve Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSGI_RESULT))
@@ -6030,8 +6174,19 @@ namespace Vans::EditorAPI
 
 		if (filter.category == "hair_debug")
 		{
-			previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 160, "Hair Color", renderPassManager->GetHairColor(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-			previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 161, "Hair Deep Opacity", renderPassManager->GetHairDeepOpacity(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+            const auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+            if (!device || !scene || !std::any_of(scene->GetHairRenderNodes().begin(), scene->GetHairRenderNodes().end(),
+                [](const VansGraphics::VansRenderNode* node) { return node && node->IsEnabled(); }))
+                return previews;
+            device->RequestHairDebugPreview();
+            auto* image = device->GetHairDebugPreview();
+            if (!image) return previews;
+            const char* names[] = { "Coverage (all fragments)", "Optical depth / 16", "Nearest depth (log distance)",
+                "Second depth (log distance)", "Third depth (log distance)", "Near-layer weight / (1 + weight)",
+                "Normalized radiance (display mapped)", "Premultiplied color (display mapped)" };
+            for (uint32_t i = 0; i < 8; ++i)
+                previews.push_back(BuildLayerImagePreview(*m_EditorPreviewRegistry, device, 460 + i,
+                    names[i], *image, i, 0, VK_IMAGE_LAYOUT_GENERAL));
 			return previews;
 		}
 
@@ -8040,7 +8195,10 @@ namespace Vans::EditorAPI
         { result.message = "Could not synchronize runtime entity creation with RenderThread"; return result; }
 		Vans::VansSceneContentBuildPlan buildPlan;
 		if (!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
-			entityArray, GetProjectRootPath(), buildPlan, result.message))
+			entityArray, GetProjectRootPath(),
+			[](Vans::VansAssetGuid guid)
+			{ return Vans::VansProjectManager::Get().FindAssetRecord(guid); },
+			buildPlan, result.message))
 		{
 			return result;
         }
@@ -10674,9 +10832,14 @@ namespace Vans::EditorAPI
 		snapshot.lodBaseDistance = settings.lodBaseDistance;
 		snapshot.lodRangeRatio = settings.lodRangeRatio;
 		snapshot.morphStartRatio = settings.morphStartRatio;
-		snapshot.riverWetAlbedoScale = settings.riverWetness.albedoScale;
-		snapshot.riverWetRoughness = settings.riverWetness.roughness;
-		snapshot.riverWetDetailNormalScale = settings.riverWetness.detailNormalScale;
+		snapshot.wetAlbedoScale = settings.wetSurface.albedoScale;
+		snapshot.wetRoughness = settings.wetSurface.roughness;
+		snapshot.puddleNoiseScaleMeters = settings.puddle.scaleMeters;
+		snapshot.puddleNoiseDetailScale = settings.puddle.detailScale;
+		snapshot.puddleNoiseThreshold = settings.puddle.threshold;
+		snapshot.puddleNoiseSoftness = settings.puddle.softness;
+		snapshot.puddleNoiseStrength = settings.puddle.strength;
+		snapshot.puddleNoiseSeed = settings.puddle.seed;
 		return snapshot;
 	}
 
@@ -10697,10 +10860,17 @@ namespace Vans::EditorAPI
 		terrain->SetLodBaseDistance(settings.lodBaseDistance);
 		terrain->SetLodRangeRatio(settings.lodRangeRatio);
 		terrain->SetMorphStartRatio(settings.morphStartRatio);
-		terrain->SetRiverWetnessResponse(
-			settings.riverWetAlbedoScale,
-			settings.riverWetRoughness,
-			settings.riverWetDetailNormalScale);
+		Vans::VansTerrainPuddleSettings puddle;
+		puddle.scaleMeters = settings.puddleNoiseScaleMeters;
+		puddle.detailScale = settings.puddleNoiseDetailScale;
+		puddle.threshold = settings.puddleNoiseThreshold;
+		puddle.softness = settings.puddleNoiseSoftness;
+		puddle.strength = settings.puddleNoiseStrength;
+		puddle.seed = settings.puddleNoiseSeed;
+		terrain->SetWetSurfaceResponse(
+			settings.wetAlbedoScale,
+			settings.wetRoughness);
+		terrain->SetPuddleResponse(puddle);
 	}
 
 	TerrainEditorOperationResult EngineAPIImpl::ApplyTerrainSettings(
@@ -10730,9 +10900,14 @@ namespace Vans::EditorAPI
 		updated.lodBaseDistance = settings.lodBaseDistance;
 		updated.lodRangeRatio = settings.lodRangeRatio;
 		updated.morphStartRatio = settings.morphStartRatio;
-		updated.riverWetness.albedoScale = settings.riverWetAlbedoScale;
-		updated.riverWetness.roughness = settings.riverWetRoughness;
-		updated.riverWetness.detailNormalScale = settings.riverWetDetailNormalScale;
+		updated.wetSurface.albedoScale = settings.wetAlbedoScale;
+		updated.wetSurface.roughness = settings.wetRoughness;
+		updated.puddle.scaleMeters = settings.puddleNoiseScaleMeters;
+		updated.puddle.detailScale = settings.puddleNoiseDetailScale;
+		updated.puddle.threshold = settings.puddleNoiseThreshold;
+		updated.puddle.softness = settings.puddleNoiseSoftness;
+		updated.puddle.strength = settings.puddleNoiseStrength;
+		updated.puddle.seed = settings.puddleNoiseSeed;
 		if (!session->ApplyDefinition(updated, error))
 		{
 			result.message = std::move(error);
@@ -11197,6 +11372,7 @@ namespace Vans::EditorAPI
 				request.srgb = false;
 				request.useCompress = record->textureImport.compressed;
 				request.needMip = record->textureImport.mipmapped;
+				request.maxResidentDimension = record->textureImport.maxResidentDimension;
 				request.precision = record->textureImport.precision;
 				request.importChannel = record->textureImport.channelCount;
 				request.addressMode = "clamp";
@@ -11388,6 +11564,7 @@ namespace Vans::EditorAPI
 				request.srgb = !record->textureImport.linear;
 				request.useCompress = record->textureImport.compressed;
 				request.needMip = record->textureImport.mipmapped;
+				request.maxResidentDimension = record->textureImport.maxResidentDimension;
 				request.precision = record->textureImport.precision;
 				request.importChannel = record->textureImport.channelCount;
 				request.addressMode = "repeat";
@@ -11577,6 +11754,60 @@ namespace Vans::EditorAPI
 	void EngineAPIImpl::ApplyLightingSettings(const LightingSettingsSnapshot& settings)
 	{
 		SubmitCommand(std::make_unique<SetLightingSettingsCommand>(settings));
+	}
+
+	RainWeatherSettingsSnapshot EngineAPIImpl::GetRainWeatherSettings() const
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene || !scene->IsSceneReady())
+			return {};
+		return ToAPIRainWeatherSettings(
+			scene->GetRainSettings(), scene->GetRainState());
+	}
+
+	RainWeatherApplyResult EngineAPIImpl::ApplyRainWeatherSettings(
+		const RainWeatherSettingsSnapshot& snapshot)
+	{
+		RainWeatherApplyResult result;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene || !scene->IsSceneReady())
+		{
+			result.message = "Scene rain runtime is unavailable";
+			return result;
+		}
+
+		Vans::VansRainSettings settings = ToRuntimeRainWeatherSettings(snapshot);
+		if (!Vans::ValidateRainSettings(settings, result.message))
+			return result;
+		if (snapshot.applyPuddleFillPreview &&
+			(!std::isfinite(snapshot.puddleFill) ||
+				snapshot.puddleFill < 0.0f || snapshot.puddleFill > 1.0f))
+		{
+			result.message = "Rain puddle-fill preview must be finite and within [0, 1]";
+			return result;
+		}
+
+		SubmitCommand(std::make_unique<SetRainWeatherSettingsCommand>(
+			std::move(settings),
+			snapshot.applyPuddleFillPreview
+				? std::optional<float>(snapshot.puddleFill)
+				: std::nullopt));
+		result.accepted = true;
+		result.message = "Runtime preview updated";
+		return result;
+	}
+
+	bool EngineAPIImpl::CommitRainWeatherSettings()
+	{
+		const RainWeatherSettingsSnapshot settings = GetRainWeatherSettings();
+		if (!settings.available)
+			return false;
+		const bool committed = CommitScenePropertyValue(
+			"/settings/weather/rain",
+			Vans::WriteSceneRainSettings(settings));
+		if (committed)
+			BreakCommandMergeGroup();
+		return committed;
 	}
 
 	PostProcessSettingsSnapshot EngineAPIImpl::GetPostProcessSettings() const

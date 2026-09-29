@@ -1,3 +1,4 @@
+#include "../EngineCore/GameplayComposition/VansSceneGameplayComposition.h"
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
 #include "../EngineCore/AssetCore/VansAssetObjectRepository.h"
 #include "NavigationAIContractTests.h"
@@ -12,6 +13,7 @@
 #include "../EngineCore/AssetCore/VansSkinProfile.h"
 #include "../EngineCore/AssetCore/VansSkeletalMeshImportSettings.h"
 #include "../EngineCore/AssetCore/Importers/VansTextureCooker.h"
+#include "../EngineCore/AssetCore/VansTextureResidentMip.h"
 #include "../EngineCore/AssetCore/Importers/Shader/VansShaderArtifactCache.h"
 #include "../EngineCore/AssetCore/Serialization/VansAssetMetaJsonCodec.h"
 #include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
@@ -34,9 +36,19 @@
 #include "../EngineCore/AudioCore/VansAudioSystem.h"
 #include "../EngineCore/AudioCore/VansAudioPreviewPlayer.h"
 #include "../EngineCore/AudioCore/VansAudioVirtualization.h"
+#include "../EngineCore/SceneCore/VansSceneResourcePlan.h"
 #include "../EngineCore/MediaCore/VansMediaDecodeSession.h"
 #include "../EngineCore/PhysicsCore/Storage/VansCollisionLayerStorage.h"
 #include "../EngineCore/PhysicsCore/VansCollisionLayerConfig.h"
+#include "../EngineCore/PhysicsCore/VansCollisionLayerManager.h"
+#include "../EngineCore/PhysicsCore/VansPhysics.h"
+#include "../EngineCore/PhysicsCore/VansPhysicsVehicle.h"
+#include "../EngineCore/PhysicsCore/VansTerrainPhysicsNode.h"
+#include "../EngineCore/PhysicsCore/VansPhysicsNativeAccess.h"
+#include "../EngineCore/PhysicsCore/VansPhysicsNode.h"
+#include "../EngineCore/PhysicsCore/VansPhysicsQuery.h"
+#include "../EngineCore/PhysicsCore/VansCharacterControllerNode.h"
+#include "../EngineCore/PhysicsCore/VansCharacterSweepSolver.h"
 #include "../EngineCore/PhysicsCore/VansClothMeshPrep.h"
 #include "../EngineCore/CameraCore/VansCameraCore.h"
 #include "../EngineCore/RenderCore/VansPostProcessProfile.h"
@@ -61,11 +73,13 @@
 #include "../EngineCore/RenderCore/VansCamera.h"
 #include "../EngineCore/RenderCore/VansMainCameraVisibility.h"
 #include "../EngineCore/RenderCore/VansScene.h"
+#include "../EngineCore/RenderCore/Animation/VansAnimationGpuBinding.h"
 #include "../EngineCore/RenderCore/VansRenderNode.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansMainCameraVisibilityState.h"
 #include "../EngineCore/RenderCore/VansRenderFrame.h"
 #include "../EngineCore/RenderCore/VansRenderSystem.h"
 #include "../EngineCore/RenderCore/WaterCore/VansWaterConfig.h"
+#include "../EngineCore/RenderCore/WaterCore/VansRiverWaveSimulation.h"
 #include "../EngineCore/RenderCore/TerrainCore/VansTerrainLod.h"
 #include "../EngineCore/TerrainCore/VansTerrainAsset.h"
 #include "../EngineCore/TerrainCore/VansTerrainBrush.h"
@@ -73,6 +87,7 @@
 #include "../EngineCore/TerrainCore/Serialization/VansTerrainImageCodec.h"
 #include "../EngineCore/AuthoringCore/Terrain/VansTerrainAuthoringSession.h"
 #include "../EngineCore/TerrainCore/VansTerrainSurfaceQuery.h"
+#include "../EngineCore/WeatherCore/VansRain.h"
 #include "../EngineCore/RenderCore/AtmosphereCore/VansAtmosphereMath.h"
 #include "../EngineCore/RenderCore/SceneBuild/VansSceneProjectResourceBuilder.h"
 #include "../EngineCore/RenderCore/SceneBuild/VansSceneAssembly.h"
@@ -88,6 +103,7 @@
 #include "../EngineCore/RuntimeCore/VansRuntimeFrameScheduler.h"
 #include "../EngineCore/RuntimeCore/VansFramePhase.h"
 #include "../EngineCore/RuntimeCore/VansThreadContract.h"
+#include "../EngineCore/AnimationCore/Procedural/VansProceduralGraphRuntime.h"
 #include "../EngineCore/EventCore/VansEventBus.h"
 #include "../EngineCore/Util/VansProfiler.h"
 #include "../EngineCore/Util/VansFileFingerprint.h"
@@ -107,6 +123,7 @@
 #include "../EngineCore/SceneCore/VansSceneEntityFactory.h"
 #include "../EngineCore/SceneCore/VansSceneSchema.h"
 #include "../EngineCore/SceneCore/VansSceneRenderSettingsConfigReader.h"
+#include "../EngineCore/SceneCore/VansSceneRainAuthoring.h"
 #include "../EngineCore/SceneCore/VansSceneDocumentLoader.h"
 #include "../EngineCore/SceneCore/Storage/VansSceneFileStorage.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineApplierRegistry.h"
@@ -217,6 +234,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <tuple>
 
 #if defined(_WIN32)
 #include <malloc.h>
@@ -3174,6 +3192,8 @@ bool TestEmptySceneEntityFactoryContract()
 	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
 		entities,
         "",
+        [](Vans::VansAssetGuid guid)
+        { return Vans::VansProjectManager::Get().FindAssetRecord(guid); },
         plan,
         error), error.c_str()))
     {
@@ -3241,6 +3261,8 @@ bool TestEmptySceneEntityFactoryContract()
     if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
         Vans::VansSerializedValue::Array({ animationEntity }),
         "C:/PackageRoot",
+        [](Vans::VansAssetGuid guid)
+        { return Vans::VansProjectManager::Get().FindAssetRecord(guid); },
         animationPlan,
         error), error.c_str()))
     {
@@ -3516,6 +3538,23 @@ bool TestLocalVolumetricFogRuntimePreviewProjectionContract()
 
 bool TestLocalVolumetricFogFieldDependencyContract()
 {
+	Vans::VansAssetMeta defaultTextureMeta;
+	std::uint32_t defaultCap = 1;
+	std::string capError;
+	if (!Expect(Vans::ReadTextureMaxResidentDimension(defaultTextureMeta, defaultCap, capError) &&
+		defaultCap == 0 &&
+		Vans::SelectTextureResidentMip(8192, 4096, 2048) == 2 &&
+		Vans::SelectTextureResidentMip(5000, 3000, 2048) == 2 &&
+		Vans::SelectTextureResidentMip(2048, 1024, 2048) == 0,
+		"Texture resident mip selection or default import setting is incorrect"))
+		return false;
+	defaultTextureMeta.SetSerializedSettings(Vans::VansSerializedValue::Object({
+		{ "maxResidentDimension", Vans::VansSerializedValue::Int(-1) }
+	}));
+	if (!Expect(!Vans::ReadTextureMaxResidentDimension(
+		defaultTextureMeta, defaultCap, capError),
+		"Negative texture resident mip cap was accepted"))
+		return false;
 	TemporaryDirectory temporary;
 	const fs::path assetsRoot = temporary.path / "Assets";
 	const fs::path artifactRoot = temporary.path / "Library" / "Artifacts";
@@ -3724,12 +3763,27 @@ bool TestLocalVolumetricFogFieldDependencyContract()
 		const Vans::VansTextureCookResult cook = Vans::VansTextureCooker::CookIfNeeded(
 			compactTexturePath, compactMetaPath, compactMeta, artifactRoot);
 		Vans::VansCookedTextureData loaded;
-		return cook.status == Vans::VansTextureCookStatus::Cooked &&
-			Vans::VansTextureCooker::LoadArtifact(cook.artifactPath, loaded, error) &&
-			loaded.format == expectedFormat && loaded.mips.size() == 2 &&
-			loaded.data.size() == expectedBytes &&
-			std::all_of(loaded.mips.begin(), loaded.mips.end(),
-				[](const Vans::VansCookedTextureMip& mip) { return mip.offset % 4u == 0u; });
+		if (cook.status != Vans::VansTextureCookStatus::Cooked ||
+			!Vans::VansTextureCooker::LoadArtifact(cook.artifactPath, loaded, error) ||
+			loaded.format != expectedFormat || loaded.mips.size() != 2 ||
+			loaded.data.size() != expectedBytes ||
+			!std::all_of(loaded.mips.begin(), loaded.mips.end(),
+				[](const Vans::VansCookedTextureMip& mip) { return mip.offset % 4u == 0u; }))
+			return false;
+		Vans::VansSerializedValue settings = compactMeta.SerializedSettingsSnapshot();
+		Vans::SetSerializedObjectField(settings, "maxResidentDimension",
+			Vans::VansSerializedValue::Int(1));
+		compactMeta.SetSerializedSettings(std::move(settings));
+		if (!Vans::VansAssetMetaStorage::SaveAtomic(compactMetaPath, compactMeta, error))
+			return false;
+		const Vans::VansTextureCookResult capOnlyCook = Vans::VansTextureCooker::CookIfNeeded(
+			compactTexturePath, compactMetaPath, compactMeta, artifactRoot);
+		Vans::VansCookedTextureData capped;
+		return capOnlyCook.status == Vans::VansTextureCookStatus::UpToDate &&
+			Vans::VansTextureCooker::LoadArtifact(cook.artifactPath, capped, error, 1) &&
+			capped.width == 1 && capped.height == 1 && capped.mips.size() == 1 &&
+			capped.mips.front().offset == 0 &&
+			capped.data.size() == static_cast<std::size_t>(importChannel);
 	};
 	if (!Expect(
 		verifyCompactFieldArtifact(
@@ -5159,6 +5213,189 @@ VansGraphics::VansAnimationClip BuildContractTurnClip(const std::string& name,
     return clip;
 }
 
+bool TestCharacterSubstepsContract()
+{
+    using namespace Vans;
+    VansCharacterMotionIntent intent;intent.valid=true;intent.moveInputLocal={1,0};intent.desiredSpeed=3.75f;
+    intent.gravity=9.8f;auto& model=intent.accelerationModel.emplace();
+    model.grounded.maxAcceleration=20;model.grounded.friction=4;
+    model.airborne.maxAcceleration=20;model.airborne.accelerationScale=.15f;
+    model.airborne.lowSpeedAccelerationBoost=2;model.airborne.accelerationBoostSpeed=.25f;
+    model.falling.terminalSpeed=40;model.falling.maxTimeStep=.05f;model.falling.maxIterations=8;
+    VansCharacterMotionStepper simulation;VansCharacterMotionStep step;
+    simulation.Begin(intent,{0,4.2f,0},false,.1f);
+    glm::vec3 displacement(0);
+    while(simulation.Next(step))
+    {
+        displacement+=step.displacement;
+        simulation.ApplyCollision(false,false,nullptr,0);
+    }
+    if(!Expect(simulation.GetStepCount()==2,"Airborne motion did not produce physical-size substeps") ||
+        !ExpectNear(displacement.x,.03f,1e-6f,"Airborne planar displacement did not use midpoint integration") ||
+        !ExpectNear(displacement.y,.371f,1e-6f,"Joint substeps changed ballistic trajectory") ||
+        !ExpectNear(simulation.GetVelocity().x,.6f,1e-6f,"Air boost was recomputed midway through Falling") ||
+        !ExpectNear(simulation.GetVelocity().y,3.22f,1e-6f,"Joint substeps lost vertical end speed"))return false;
+    simulation.Begin(intent,{},true,.1f);displacement={0,0,0};
+    while(simulation.Next(step)){displacement+=step.displacement;simulation.ApplyCollision(true,false,nullptr,0);}
+    if(!ExpectNear(displacement.x,.15f,1e-6f,"Ground displacement did not integrate each substep's end speed"))return false;
+    intent.desiredSpeed=1;model.airborne.maxAcceleration=6;model.airborne.accelerationScale=1;
+    model.airborne.lowSpeedAccelerationBoost=1;
+    simulation.Begin(intent,{.9f,0,0},false,.1f);displacement={0,0,0};
+    while(simulation.Next(step)){displacement+=step.displacement;simulation.ApplyCollision(false,false,nullptr,0);}
+    if(!ExpectNear(displacement.x,.0975f,1e-6f,"Planar cap was applied only at full-frame end"))return false;
+    simulation.Begin(intent,{},false,.1f);
+    if(!Expect(simulation.Next(step),"Collision fixture first step missing"))return false;
+    const auto first=step;
+    if(!Expect(!simulation.Next(step),"Stepper advanced without receiving collision feedback"))return false;
+    const glm::vec3 wall(-1,0,0);
+    simulation.ApplyCollision(false,false,&wall,1);
+    if(!ExpectNear(simulation.GetVelocity().x,0,1e-6f,"Wall contact did not remove inward velocity"))return false;
+    if(!Expect(simulation.Next(step),"Collision fixture next step missing") ||
+        !ExpectNear(step.displacement.x,first.displacement.x,1e-6f,"Next step ignored collision-resolved velocity"))return false;
+    simulation.ApplyCollision(true,false,nullptr,0);
+    model.falling.maxTimeStep=.1f;intent.desiredSpeed=10;
+    simulation.Begin(intent,{0,.49f,0},false,.2f);displacement={0,0,0};bool sawApex=false;
+    while(simulation.Next(step))
+    {
+        sawApex|=step.apex;displacement+=step.displacement;simulation.ApplyCollision(false,false,nullptr,0);
+    }
+    if(!Expect(sawApex,"Joint motion did not split the apex") ||
+        !ExpectNear(displacement.x,.12f,1e-6f,"Apex time refund changed planar acceleration displacement") ||
+        !ExpectNear(simulation.GetSimulatedTime(),.2f,1e-6f,"Apex simulation lost frame time"))return false;
+    const auto slope=CharacterAirSlide({1,-.1f,1},1,glm::normalize(glm::vec3(-1,1,0)));
+    if(!ExpectNear(slope.y,0,1e-6f,"Falling slide gained upward motion on slope") ||
+        !ExpectNear(slope.z,1,1e-6f,"Slope boost prevention lost wall-parallel displacement"))return false;
+    const auto limited=CharacterLimitAirControl({6,0,2},glm::normalize(glm::vec3(-1,1,0)),false);
+    if(!ExpectNear(limited.x,0,1e-6f,"Air control pushed into upward sloped wall") ||
+        !ExpectNear(limited.z,2,1e-6f,"Air control lost wall-parallel input"))return false;
+    const auto corner=CharacterTwoWallSlide({0,-2,3},.5f,{0,0,-1},{-1,0,0});
+    if(!ExpectNear(glm::length(corner-glm::vec3(0,-1,0)),0,1e-6f,"Two-wall corner did not retain crease motion"))return false;
+    // 命中后返还时间，但保留完整 Falling 子步算出的平面速度再执行 Walking。
+    simulation.Begin(intent,{0,-1,0},false,.1f);
+    if(!Expect(simulation.Next(step),"Landing refund first step missing"))return false;
+    simulation.ApplySweptCollision({.6f,0,0},true,.06f);
+    if(!ExpectNear(simulation.GetSimulatedTime(),.04f,1e-6f,"Landing did not refund hit remainder"))return false;
+    if(!Expect(simulation.Next(step)&&step.grounded,"Refunded landing time did not enter ground movement") ||
+        !ExpectNear(step.deltaTime,.06f,1e-6f,"Landing remainder changed duration"))return false;
+    simulation.ApplySweptCollision(step.velocity,true,0);
+    if(!ExpectNear(simulation.GetSimulatedTime(),.1f,1e-6f,"Landing refund lost total frame time"))return false;
+    // 接触前已积分的状态不重算，新的参数只影响返还的 Walking 时间。
+    intent.moveInputLocal={0,0};model.grounded.maxAcceleration=0;
+    model.grounded.friction=2;model.grounded.brakingDeceleration=0;
+    model.grounded.brakingFrictionFactor=0;model.grounded.brakingSubstep=.05f;
+    simulation.Begin(intent,{5,-1,0},false,.1f);
+    if(!Expect(simulation.Next(step),"Landing dynamics fixture step missing"))return false;
+    auto landingModel=model;landingModel.grounded.brakingFrictionFactor=3;
+    simulation.SetDynamics(landingModel);
+    landingModel.grounded.brakingFrictionFactor=0;
+    simulation.ApplySweptCollision({5,0,0},true,.04f);
+    if(!Expect(simulation.Next(step)&&step.grounded,"Landing dynamics continuation missing") ||
+        !ExpectNear(step.velocity.x,3.8f,1e-6f,"Contact dynamics were not copied into remaining ground integration") ||
+        !ExpectNear(step.displacement.x,.152f,1e-6f,"Landing dynamics applied to the wrong duration"))return false;
+    simulation.ApplySweptCollision(step.velocity,true,0);
+    std::cout<<"Character substeps midpoint/cap/boost/contact/apex/slide/landing-refund contracts passed"<<std::endl;
+    return true;
+}
+
+bool TestCharacterFallingContract()
+{
+    using namespace Vans;
+    VansCharacterFallingDynamics dynamics;
+    dynamics.terminalSpeed=40;dynamics.maxTimeStep=.05f;dynamics.maxIterations=8;
+    // 独立解析抛物线：无碰撞/未触及终端速度时，切分帧长不应改变轨迹。
+    for(float dt : {0.0f,1.0f/120,1.0f/60,.1f,.5f,1.0f})
+    {
+        const auto fall=IntegrateCharacterFalling(4.2f,9.8f,dt,dynamics);
+        if(!ExpectNear(fall.velocity,4.2f-9.8f*dt,2e-5f,"Ballistic end velocity disagrees with analytic trajectory") ||
+            !ExpectNear(fall.displacement,4.2f*dt-4.9f*dt*dt,2e-5f,"Ballistic midpoint trajectory disagrees with parabola") ||
+            !ExpectNear(fall.simulatedTime,dt,2e-6f,"Falling substeps dropped remaining frame time"))return false;
+    }
+    const auto apex=IntegrateCharacterFalling(4.2f,9.8f,.5f,dynamics);
+    if(!ExpectNear(apex.apexTime,4.2f/9.8f,2e-6f,"Apex substep failed to land at zero vertical speed"))return false;
+    dynamics.maxIterations=1;
+    const auto longFrame=IntegrateCharacterFalling(1,10,1,dynamics);
+    if(!ExpectNear(longFrame.displacement,-4,2e-6f,"Final allowed iteration discarded time after apex") ||
+        !Expect(longFrame.steps==2,"Apex time refund consumed the iteration budget"))return false;
+    dynamics.maxIterations=8;
+    const auto limited=IntegrateCharacterFalling(-39,10,.2f,dynamics);
+    if(!ExpectNear(limited.velocity,-40,2e-6f,"Terminal falling speed exceeded limit") ||
+        !ExpectNear(limited.displacement,-7.95f,2e-5f,"Terminal plateau did not integrate with source substeps"))return false;
+    const auto rising=IntegrateCharacterFalling(60,10,.1f,dynamics);
+    if(!ExpectNear(rising.velocity,59,2e-6f,"Terminal limit incorrectly clamped upward motion"))return false;
+    const auto noGravity=IntegrateCharacterFalling(-60,0,.1f,dynamics);
+    if(!ExpectNear(noGravity.velocity,-60,2e-6f,"Zero gravity created a terminal projection direction"))return false;
+    VansCharacterLocomotionResolver resolver;
+    VansCharacterMotionSettings settings;
+    VansCharacterMotionIntent intent;intent.accelerationModel.emplace();intent.accelerationModel->falling=dynamics;
+    intent.jumpRequested=true;intent.jumpSpeed=4.2f;intent.gravity=9.8f;resolver.SetIntent(intent);
+    if(!Expect(resolver.Prepare(.1f,settings,{},0,true,false),"Ballistic jump was not accepted"))return false;
+    const auto move=resolver.Resolve({},glm::quat(1,0,0,0),false,{},settings,glm::vec3(1),0);
+    if(!ExpectNear(move.displacementWorld.y,.371f,1e-6f,"Jump frame skipped gravity or used end-velocity displacement"))return false;
+    if(!ExpectNear(*resolver.ResolveVerticalContact(false,false),3.22f,1e-6f,"Ballistic state exposed average instead of end velocity"))return false;
+    if(!ExpectNear(*resolver.ResolveVerticalContact(false,true),0,1e-6f,"Ceiling failed to remove upward velocity"))return false;
+    resolver.Prepare(.1f,settings,{},0,false,false);
+    const auto afterCeiling=resolver.Resolve({},glm::quat(1,0,0,0),false,{},settings,glm::vec3(1),0);
+    if(!ExpectNear(afterCeiling.displacementWorld.y,-.049f,1e-6f,"Ceiling contact retained jump velocity"))return false;
+    if(!ExpectNear(*resolver.ResolveVerticalContact(true,false),0,1e-6f,"Ground contact retained falling velocity"))return false;
+    std::cout<<"Character falling analytic trajectory/apex/time budget/terminal/contact contracts passed"<<std::endl;
+    return true;
+}
+
+bool TestCharacterAccelerationContract()
+{
+    using namespace Vans;
+    std::ifstream input("D:/WorkSpace/ForestEngine/AnimationV2Project/Tools/ALS/reference/velocity_oracle.json");
+    if (!Expect(input.good(), "UE native velocity oracle missing")) return false;
+    const auto oracle = nlohmann::json::parse(input);
+    float maximumError = 0.0f;
+    for (const auto& row : oracle.at("samples"))
+    {
+        const auto f = [&](std::size_t i) { return row.at(i).get<float>(); };
+        VansCharacterVelocityDynamics p;
+        p.friction=f(5);p.brakingFrictionFactor=f(6);p.brakingDeceleration=f(7);
+        p.brakingSubstep=1.0f/33.0f;p.brakingStopSpeed=.1f;
+        const auto actual=IntegrateCharacterVelocity({f(0),0,f(1)},{f(2),0,f(3)},f(8),f(4),p);
+        const float error=glm::length(actual-glm::vec3(f(9),0,f(10)));
+        maximumError=(std::max)(maximumError,error);
+        if(!Expect(error<2.e-5f,"Generic velocity integrator differs from UE native CalcVelocity"))
+        {
+            std::cerr<<row.dump()<<" actual="<<actual.x<<","<<actual.z<<" error="<<error<<std::endl;
+            return false;
+        }
+    }
+    VansCharacterMotionSettings settings;
+    VansCharacterMotionIntent intent;intent.valid=true;intent.moveInputLocal={0,1};intent.desiredSpeed=3.75f;
+    VansCharacterAccelerationModel model;
+    model.grounded.maxAcceleration=20;model.grounded.friction=4;model.grounded.brakingDeceleration=12.5f;
+    model.grounded.brakingSubstep=1.0f/33;model.grounded.brakingStopSpeed=.1f;model.grounded.minAnalogSpeed=.25f;
+    model.airborne=model.grounded;model.airborne.friction=0;model.airborne.brakingDeceleration=0;
+    model.airborne.accelerationScale=.15f;model.airborne.lowSpeedAccelerationBoost=2;model.airborne.accelerationBoostSpeed=.25f;
+    intent.accelerationModel=model;
+    VansCharacterTrajectoryGenerator generator;
+    generator.Reset({0,0,0},0);
+    generator.Update(.1f,intent,settings,{0,0,0},0,true);
+    if(!ExpectNear(generator.GetPlannedVelocityWorld().z,2,1.e-5f,"Acceleration path retained half-life smoothing"))return false;
+    generator.RecordResolvedMotion(.1f,{0,0,.05f},{0,0,.5f},{0,0,2});
+    generator.Update(.1f,intent,settings,{0,0,.05f},0,true);
+    if(!ExpectNear(generator.GetPlannedVelocityWorld().z,2.5f,1.e-5f,"Acceleration path did not restart from collision-resolved velocity"))return false;
+    generator.Reset({0,0,0},0);intent.movementReferenceYaw=90;
+    generator.Update(.1f,intent,settings,{0,0,0},0,true);
+    if(!Expect(glm::length(generator.GetPlannedVelocityWorld()-glm::vec3(2,0,0))<1.e-5f,"Acceleration reference yaw was filtered"))return false;
+    generator.Reset({0,0,0},0);intent.movementReferenceYaw=0;
+    generator.Update(.1f,intent,settings,{0,0,0},0,false);
+    if(!ExpectNear(generator.GetPlannedVelocityWorld().z,.6f,1.e-5f,"Low-speed airborne acceleration boost missing"))return false;
+    generator.RecordResolvedMotion(.1f,{0,0,0},{0,0,.25f},{0,0,.6f});
+    generator.Update(.1f,intent,settings,{0,0,0},0,false);
+    if(!ExpectNear(generator.GetPlannedVelocityWorld().z,.55f,1.e-5f,"Airborne boost threshold must be strict"))return false;
+    intent.moveInputLocal={0,0};
+    generator.RecordResolvedMotion(.1f,{0,0,0},{0,0,3.75f},{0,0,3.75f});
+    generator.Update(.1f,intent,settings,{0,0,0},0,true);
+    if(!ExpectNear(generator.GetPlannedVelocityWorld().z,2.5f,1.e-5f,"No-input braking differs from constant deceleration"))return false;
+    std::cout<<"UE_NATIVE_VELOCITY_ORACLE_PASSED samples="<<oracle.at("samples").size()
+        <<" max_error="<<maximumError<<"; acceleration trajectory integration passed"<<std::endl;
+    return true;
+}
+
 bool TestCharacterTrajectoryGeneratorContract()
 {
 	const glm::vec3 rootMotionStartPosition(12.0f, 0.0f, -7.0f);
@@ -5295,7 +5532,8 @@ bool TestCharacterTrajectoryGeneratorContract()
 	jumpIntent.jumpSpeed = 5.5f;
 	jumpIntent.gravity = 16.0f;
 	locomotion.SetIntent(jumpIntent);
-	locomotion.Prepare(0.1f, settings, glm::vec3(0.0f), 0.0f, true, false);
+	if (!Expect(locomotion.Prepare(0.1f, settings, glm::vec3(0.0f), 0.0f, true, false),
+		"Grounded jump acceptance was not reported before animation")) return false;
 	Vans::VansLocomotionAuthority capsuleAuthority;
 	const Vans::VansCharacterLocomotionResult jumpFrame = locomotion.Resolve(
 		glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), false,
@@ -5309,6 +5547,22 @@ bool TestCharacterTrajectoryGeneratorContract()
 		"Locomotion resolver reused a consumed frame"))
 		return false;
 
+	if (!Expect(!locomotion.Prepare(0.1f, settings, glm::vec3(0), 0, true, false),
+		"Jump request was replayed without a new submission")) return false;
+	for (int rejection = 0; rejection < 5; ++rejection)
+	{
+		locomotion.Clear(glm::vec3(0), 0);
+		jumpIntent.jumpSpeed = rejection == 3 ? 0.0f :
+			(rejection == 4 ? std::numeric_limits<float>::quiet_NaN() : 5.5f);
+		locomotion.SetIntent(jumpIntent);
+		if (!Expect(!locomotion.Prepare(rejection == 0 ? 0.0f : 0.1f,
+			settings, glm::vec3(0), 0, rejection != 1, rejection == 2),
+			"Paused, airborne, blocked or invalid jump was accepted")) return false;
+	}
+	locomotion.Clear(glm::vec3(0), 0);
+	if (!Expect(!locomotion.Prepare(0.1f, settings, glm::vec3(0), 0, true, false),
+		"Absent intent reported a jump")) return false;
+	jumpIntent.jumpSpeed = 5.5f;
 	locomotion.ResetMotion(glm::vec3(3.0f, 0.0f, 2.0f), 45.0f);
 	jumpIntent.jumpRequested = false;
 	locomotion.SetIntent(jumpIntent);
@@ -7559,9 +7813,9 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
                 return false;
 			if (projectName == "AnimationV2Project" &&
 				iterator->path().filename() == "MainScene.json" && !Expect(
-				dependencies.requiredAssets.find("4dbe6fc1-88c9-4b06-82b5-e4c6c9f37005")
+				dependencies.requiredAssets.find("4dbe6fc1-88c9-4b06-82b5-e4c6c9f37006")
 					!= dependencies.requiredAssets.end(),
-				"AnimationV2 packaged dependency closure omitted the Survival Animation Rig"))
+				"AnimationV2 packaged dependency closure omitted the native ALS Animation Rig"))
 				return false;
 			if (projectName == "DemoHallProject")
 			{
@@ -9728,12 +9982,33 @@ bool TestAnimationAuthoringBoundaryContract()
 	AnimatorAssetData nodeCoverageAsset;
 	nodeCoverageAsset.name = "NodeTypeCoverage";
 	nodeCoverageAsset.animationRigGuid = "44444444-4444-4444-8444-444444444444";
+	for (const char* name : { "WeightA", "WeightB", "StateRate", "UpperBodyWeight" })
+	{
+		AnimatorParameter parameter;
+		parameter.name = name;
+		parameter.type = AnimatorParamType::Float;
+		parameter.floatVal = 1;
+		nodeCoverageAsset.parameters.push_back(parameter);
+	}
 	nodeCoverageAsset.clipRefs.push_back(
 		{ "Base", "11111111-1111-4111-8111-111111111111", "Animation/Base.vclip" });
 	auto nodeCoverageGraph = std::make_unique<VansAnimGraph>();
 	auto baseClip = std::make_unique<AnimGraphClipNode>();
 	baseClip->m_ClipName = "Base";
+	baseClip->m_AdditiveReferenceTime = .25f;
+	baseClip->m_AdditiveReferenceClip = "Base";
+	baseClip->m_AdditiveMode = VansAdditivePoseMode::MeshRotationLinear;
 	const int baseClipId = nodeCoverageGraph->AddNode(std::move(baseClip));
+	auto meshAdditive = std::make_unique<AnimGraphAdditiveBlendNode>();
+	meshAdditive->m_AdditiveMode = VansAdditivePoseMode::MeshRotationLinear; meshAdditive->m_UseParam = false;
+	const int meshAdditiveId = nodeCoverageGraph->AddNode(std::move(meshAdditive));
+	nodeCoverageGraph->AddLink(baseClipId, 0, meshAdditiveId, 0);
+	nodeCoverageGraph->AddLink(baseClipId, 0, meshAdditiveId, 1);
+	auto linearBlend = std::make_unique<AnimGraphBlendNode>();
+	linearBlend->m_LinearRotationBlend = true; linearBlend->m_UseParam = false;
+	const int linearBlendId = nodeCoverageGraph->AddNode(std::move(linearBlend));
+	nodeCoverageGraph->AddLink(baseClipId, 0, linearBlendId, 0);
+	nodeCoverageGraph->AddLink(meshAdditiveId, 0, linearBlendId, 1);
 	auto savePose = std::make_unique<AnimGraphSaveCachedPoseNode>();
 	savePose->m_CacheName = "BaseCache";
 	const int savePoseId = nodeCoverageGraph->AddNode(std::move(savePose));
@@ -9755,6 +10030,61 @@ bool TestAnimationAuthoringBoundaryContract()
 	layeredBlend->m_UseWeightParameter = true;
 	layeredBlend->m_ApplyAdditiveInput = true;
 	const int layeredBlendId = nodeCoverageGraph->AddNode(std::move(layeredBlend));
+	auto weighted = std::make_unique<AnimGraphMultiWayBlendNode>();
+	weighted->m_WeightParameters = { "WeightA", "WeightB" };
+	const int weightedId = nodeCoverageGraph->AddNode(std::move(weighted));
+	nodeCoverageGraph->AddLink(linearBlendId, 0, weightedId, 0);
+	nodeCoverageGraph->AddLink(layeredBlendId, 0, weightedId, 1);
+	auto grid = std::make_unique<AnimGraphBlendSpace2DNode>();
+	grid->m_XParamName = "WeightA"; grid->m_YParamName = "WeightB";
+	grid->m_SampleGrid.columns=grid->m_SampleGrid.rows=2;
+	grid->m_SampleGrid.cells={{{0,1}},{{1,1}},{{2,1}},{{3,1}}};
+	grid->m_CubicFilterWindowX = .58480352f; grid->m_CubicFilterWindowY = .73680627f;
+	grid->m_Samples = {{0,0},{1,0},{0,1},{1,1}};
+	const int gridId = nodeCoverageGraph->AddNode(std::move(grid));
+	for (int i = 0; i < 4; ++i) nodeCoverageGraph->AddLink(weightedId, 0, gridId, i);
+	auto stateMachine = std::make_unique<AnimGraphStateMachineNode>();
+	AnimatorState subgraphState;
+	subgraphState.name = "Subgraph";
+	subgraphState.poseNodeId = gridId;
+	subgraphState.speedParameter = "StateRate";
+	stateMachine->m_States.push_back(subgraphState);
+	subgraphState.name = "Other";
+	stateMachine->m_States.push_back(subgraphState);
+	stateMachine->m_DefaultStateName = "Subgraph";
+	AnimatorState conduitState; conduitState.name = "Route"; conduitState.conduit = true;
+	stateMachine->m_States.push_back(conduitState);
+	AnimatorTransition profiled;
+	profiled.fromState = "Subgraph";
+	profiled.toState = "Other";
+	profiled.blendCurve = { {0, 0, 0, 0}, {.5f, .5f, 2.708349f, 2.708349f}, {1, 1, 0, 0} };
+	profiled.boneBlendFactors = { {"foot_l", 2.0f} };
+	profiled.requireSourceFullyBlended = true;
+	profiled.matchAnyCondition = true;
+	profiled.durationScaleCurve = {{0,0,5.0f/3,5.0f/3},{1,1,5.0f/3,5.0f/3}};
+	stateMachine->m_Transitions.push_back(profiled);
+	AnimatorTransition inertial; inertial.fromState = "Other"; inertial.toState = "Subgraph";
+	inertial.inertialization = true; stateMachine->m_Transitions.push_back(inertial);
+	AnimatorTransition automatic; automatic.fromState="Other"; automatic.toState="Route";
+	automatic.automaticRemainingTime=true; stateMachine->m_Transitions.push_back(automatic);
+	const int coverageStateMachineId = nodeCoverageGraph->AddNode(std::move(stateMachine));
+	auto inertialization = std::make_unique<AnimGraphInertializationNode>();
+	inertialization->m_TeleportDistance = 4.5f;
+	const int inertializationId = nodeCoverageGraph->AddNode(std::move(inertialization));
+	nodeCoverageGraph->AddLink(coverageStateMachineId, 0, inertializationId, 0);
+	auto curveModifier=std::make_unique<AnimGraphModifyCurveNode>();
+	curveModifier->m_Mode=VansCurveModifyMode::Scale; curveModifier->m_Alpha=.4f;
+	curveModifier->m_AlphaParameter="WeightA";
+	curveModifier->m_Curves={{"TurnAmount",1.2f,"WeightB"},{"Other",.3f,""}};
+	const int curveModifierId=nodeCoverageGraph->AddNode(std::move(curveModifier));
+	nodeCoverageGraph->AddLink(inertializationId,0,curveModifierId,0);
+	auto boneScale=std::make_unique<AnimGraphComponentBoneScaleNode>();
+	boneScale->m_BoneName="spine_01";
+	boneScale->m_Scale={1.2f,1.1f,1.0f};
+	boneScale->m_Alpha=.65f;
+	boneScale->m_AlphaParameter="WeightA";
+	const int boneScaleId=nodeCoverageGraph->AddNode(std::move(boneScale));
+	nodeCoverageGraph->AddLink(curveModifierId,0,boneScaleId,0);
 	const int nodeCoverageOutputId = nodeCoverageGraph->AddNode(
 		VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
 	if (!Expect(baseClipId > 0 && savePoseId > 0 && usePoseId > 0
@@ -9762,7 +10092,7 @@ bool TestAnimationAuthoringBoundaryContract()
 		&& nodeCoverageGraph->AddLink(baseClipId, 0, savePoseId, 0) > 0
 		&& nodeCoverageGraph->AddLink(savePoseId, 0, layeredBlendId, 0) > 0
 		&& nodeCoverageGraph->AddLink(usePoseId, 0, layeredBlendId, 1) > 0
-		&& nodeCoverageGraph->AddLink(layeredBlendId, 0, nodeCoverageOutputId, 0) > 0,
+		&& nodeCoverageGraph->AddLink(boneScaleId, 0, nodeCoverageOutputId, 0) > 0,
 		"Failed to build complete animation node-type authoring fixture"))
 		return false;
 	AnimatorGraphAsset nodeCoverageGraphAsset;
@@ -9783,8 +10113,8 @@ bool TestAnimationAuthoringBoundaryContract()
 	nodeCoverageAsset.graphSets.push_back(std::move(nodeCoverageSet));
 	nlohmann::json nodeCoverageJson;
 	std::string nodeCoverageError;
-	if (!Expect(VansAnimatorIO::SerializeToJsonObject(
-		nodeCoverageAsset, nodeCoverageJson, nodeCoverageError), nodeCoverageError.c_str()))
+	const bool nodeCoverageSerialized = VansAnimatorIO::SerializeToJsonObject(nodeCoverageAsset, nodeCoverageJson, nodeCoverageError);
+	if (!Expect(nodeCoverageSerialized, nodeCoverageError.c_str()))
 		return false;
 	auto nodeCoverageDocument = Vans::EditorAPI::AnimationAuthoringBridge::DecodeAnimator(
 		nodeCoverageJson.dump());
@@ -10223,6 +10553,9 @@ bool TestAnimationClipPayloadMetadataRoundTripContract()
     source.rootMotion.extractRotation = false;
     source.rootMotion.extractScale = false;
 
+    skeleton.sourceSkeletonGuid = "00000000-0000-4000-8000-000000000901";
+    skeleton.bones[0].guid = "00000000-0000-4000-8000-000000000902";
+    skeleton.bones[0].canonicalPath = "root";
     const fs::path path = temporary.path / "payload_metadata.vclip";
     if (!Expect(VansAnimationClipIO::Save(path.string(), source, skeleton),
         "Animation clip payload metadata save failed"))
@@ -10252,6 +10585,3518 @@ bool TestAnimationClipPayloadMetadataRoundTripContract()
     return Expect(VansAnimationClipIO::Peek(path.string(), info)
         && info.curveCount == 1 && info.eventCount == 1 && info.syncMarkerCount == 1,
         "Animation clip payload metadata peek counts changed");
+}
+
+bool TestAnimationSyncGroupContract()
+{
+    using namespace VansGraphics;
+    Skeleton skeleton; skeleton.bones.resize(1); skeleton.bones[0].parentIndex = -1;
+    skeleton.bones[0].localTransform = glm::mat4(1);
+    std::unordered_map<std::string, VansAnimationClip> clips;
+    clips["A"] = BuildContractClip("A", 2, 0); clips["A"].duration = 2;
+    clips["B"] = BuildContractClip("B", 2, 0);
+    clips["A"].syncMarkers = {{11,.2f,"Left"},{12,1.2f,"Right"}};
+    clips["B"].syncMarkers = {{11,.3f,"Left"},{12,.8f,"Right"}};
+    clips["A"].events.push_back({101,1.7f,"A",true});
+    clips["B"].events.push_back({102,.05f,"B",true});
+    std::unordered_map<std::string, AnimatorParameter> parameters;
+    parameters["Alpha"].type = AnimatorParamType::Float; parameters["Alpha"].floatVal = .9f;
+    VansAnimGraph graph;
+    auto clipA = std::make_unique<AnimGraphClipNode>(); clipA->m_ClipName = "A"; clipA->m_SyncGroup = "Feet";
+    auto clipB = std::make_unique<AnimGraphClipNode>(); clipB->m_ClipName = "B"; clipB->m_SyncGroup = "Feet";
+    const int aId = graph.AddNode(std::move(clipA)), bId = graph.AddNode(std::move(clipB));
+    auto blend = std::make_unique<AnimGraphBlendNode>(); blend->m_ParamName = "Alpha"; blend->m_UseParam = true;
+    const int blendId = graph.AddNode(std::move(blend)), out = graph.AddNode(std::make_unique<AnimGraphOutputNode>());
+    graph.AddLink(aId, 0, blendId, 0); graph.AddLink(bId, 0, blendId, 1); graph.AddLink(blendId, 0, out, 0);
+    AnimGraphContext ctx; ctx.skeleton = &skeleton; ctx.clips = &clips; ctx.parameters = &parameters; ctx.deltaTime = .1f;
+    VansAnimGraphInstance instance(graph);
+    if (!Expect(instance.IsCompiled(), instance.GetCompileError().c_str())) return false;
+    auto pose = instance.EvaluateFrame(ctx);
+    auto snapshot = instance.CaptureRuntimeState();
+    if (!Expect(pose.valid && snapshot.syncGroups.at("Feet").leaderNode == bId,
+            "Sync leader selected by traversal instead of effective weight")
+        || !ExpectNear(snapshot.clipStates.at(bId).currentTime, .1f, 1e-6f, "Sync leader ticked twice")
+        || !ExpectNear(snapshot.clipStates.at(aId).currentTime-snapshot.clipStates.at(aId).previousTime, .2f, 1e-6f,
+            "Follower did not use leader marker interval")
+        || !Expect(pose.events.size() == 1 && pose.events[0].name == "B", "Sync follower emitted duplicate notify")) return false;
+    parameters["Alpha"].floatVal = .1f;
+    instance.EvaluateFrame(ctx); snapshot = instance.CaptureRuntimeState();
+    if (!Expect(snapshot.syncGroups.at("Feet").leaderNode == aId, "New highest-weight player did not become leader")
+        || !ExpectNear(snapshot.clipStates.at(aId).previousTime, 1.8f, 1e-5f, "Leader handoff lost marker phase")
+        || !ExpectNear(snapshot.clipStates.at(bId).currentTime-snapshot.clipStates.at(bId).previousTime, .05f, 1e-5f,
+            "Old leader kept advancing its own clock")) return false;
+    VansAnimGraphInstance restored(graph);
+    if (!Expect(restored.RestoreRuntimeState(snapshot), "Sync group snapshot restore failed")) return false;
+    instance.EvaluateFrame(ctx); restored.EvaluateFrame(ctx);
+    if (!ExpectNear(instance.CaptureRuntimeState().clipStates.at(aId).currentTime,
+        restored.CaptureRuntimeState().clipStates.at(aId).currentTime, 1e-6f, "Restored group lost active player history")) return false;
+    parameters["Alpha"].floatVal = 1;
+    instance.EvaluateFrame(ctx);
+    if (!Expect(!instance.CaptureRuntimeState().activeNodes.at(aId), "Zero-weight group member remained active")) return false;
+    parameters["Alpha"].floatVal = .1f;
+    instance.EvaluateFrame(ctx);
+    snapshot = instance.CaptureRuntimeState();
+    if (!Expect(snapshot.syncGroups.at("Feet").leaderNode == aId, "Reactivated player failed to join group")) return false;
+    clips["A"].syncMarkers.clear(); clips["B"].syncMarkers.clear(); instance.Reset();
+    parameters["Alpha"].floatVal = .9f;
+    instance.EvaluateFrame(ctx); snapshot = instance.CaptureRuntimeState();
+    if (!ExpectNear(snapshot.clipStates.at(aId).currentTime, .2f, 1e-6f, "Unmarked group did not synchronize by normalized time")) return false;
+    auto cached = graph.Clone();
+    const auto oldLinks = cached->GetLinks();
+    for (const auto& link : oldLinks) if (link.fromNodeId == aId) cached->RemoveLink(link.linkId);
+    auto save = std::make_unique<AnimGraphSaveCachedPoseNode>(); save->m_CacheName = "Locomotion";
+    auto use = std::make_unique<AnimGraphUseCachedPoseNode>(); use->m_CacheName = "Locomotion";
+    const int saveId = cached->AddNode(std::move(save)), useId = cached->AddNode(std::move(use));
+    cached->AddLink(aId, 0, saveId, 0); cached->AddLink(useId, 0, blendId, 0);
+    parameters["Alpha"].floatVal = .1f;
+    VansAnimGraphInstance cachedInstance(*cached);
+    if (!Expect(cachedInstance.IsCompiled(), cachedInstance.GetCompileError().c_str())) return false;
+    const auto cachedPose = cachedInstance.EvaluateFrame(ctx);
+    const auto cachedState = cachedInstance.CaptureRuntimeState();
+    if (!Expect(cachedPose.valid && cachedState.syncGroups.at("Feet").leaderNode == aId,
+        "Cached-pose consumer failed to propagate player weight")) return false;
+    cached->RemoveNode(blendId);
+    auto useAgain = std::make_unique<AnimGraphUseCachedPoseNode>(); useAgain->m_CacheName = "Locomotion";
+    const int useAgainId = cached->AddNode(std::move(useAgain));
+    auto multi = std::make_unique<AnimGraphMultiWayBlendNode>(); multi->m_WeightParameters = {"W0","W1","W2"};
+    const int multiId = cached->AddNode(std::move(multi));
+    for (const auto& name : {"W0","W1","W2"}) { parameters[name].type = AnimatorParamType::Float; parameters[name].floatVal = .3f; }
+    parameters["W2"].floatVal = .4f;
+    cached->AddLink(useId, 0, multiId, 0); cached->AddLink(useAgainId, 0, multiId, 1);
+    cached->AddLink(bId, 0, multiId, 2); cached->AddLink(multiId, 0, out, 0);
+    VansAnimGraphInstance reused(*cached);
+    if (!Expect(reused.IsCompiled(), reused.GetCompileError().c_str())) return false;
+    const auto reusedPose = reused.EvaluateFrame(ctx);
+    if (!Expect(reusedPose.valid && reused.CaptureRuntimeState().syncGroups.at("Feet").leaderNode == bId,
+        "Cached player weights were summed instead of taking the highest update context")) return false;
+
+    // A graph layer can follow a named group produced by another graph even
+    // when its own player has zero play rate and no direct primary clip.
+    VansAnimGraph leaderGraph, followerGraph;
+    auto leaderClip = std::make_unique<AnimGraphClipNode>();
+    leaderClip->m_ClipName = "A"; leaderClip->m_SyncGroup = "Feet";
+    const int leaderId = leaderGraph.AddNode(std::move(leaderClip));
+    const int leaderOut = leaderGraph.AddNode(std::make_unique<AnimGraphOutputNode>());
+    leaderGraph.AddLink(leaderId, 0, leaderOut, 0);
+    auto followerClip = std::make_unique<AnimGraphClipNode>();
+    followerClip->m_ClipName = "B"; followerClip->m_SyncGroup = "Feet"; followerClip->m_Speed = 0.0f;
+    const int followerId = followerGraph.AddNode(std::move(followerClip));
+    const int followerOut = followerGraph.AddNode(std::make_unique<AnimGraphOutputNode>());
+    followerGraph.AddLink(followerId, 0, followerOut, 0);
+    VansAnimGraphInstance leaderInstance(leaderGraph), followerInstance(followerGraph);
+    if (!Expect(leaderInstance.IsCompiled() && followerInstance.IsCompiled(),
+        "Cross-graph sync fixture did not compile")) return false;
+    leaderInstance.EvaluateFrame(ctx);
+    followerInstance.SetExternalSyncGroups(leaderInstance.GetActiveSyncGroups());
+    followerInstance.Evaluate(ctx);
+    if (!ExpectNear(followerInstance.CaptureRuntimeState().clipStates.at(followerId).currentTime,
+        .05f, 1e-6f, "Zero-rate cross-graph follower lost leader normalized phase")) return false;
+    leaderInstance.EvaluateFrame(ctx);
+    followerInstance.SetExternalSyncGroups(leaderInstance.GetActiveSyncGroups());
+    followerInstance.Evaluate(ctx);
+    return ExpectNear(followerInstance.CaptureRuntimeState().clipStates.at(followerId).currentTime,
+        .1f, 1e-6f, "Cross-graph follower failed to advance with leader");
+}
+
+bool TestPhysicsCapsuleQueryContract(bool includeRuntimeBinding=false)
+{
+    using namespace VansEngine;
+    bool nativeSweepEquivalent=true;
+    auto& physics=VansPhysicsSystem::GetInstance();
+    if(!Expect(physics.Initialize(),"Capsule query physics initialization failed"))return false;
+    std::vector<uint32_t> ids;
+    struct Cleanup
+    {
+        VansPhysicsSystem& physics;std::vector<uint32_t>& ids;
+        ~Cleanup(){physics.Shutdown();for(auto id:ids)Vans::VansTransformStore::Release(id);VansCollisionLayerManager::Get().ResetToDefaults();}
+    } cleanup{physics,ids};
+    VansCollisionLayerConfig config;config.ResetToDefaults();config.layerCount=3;
+    config.layerNames[0]="Floor";config.layerNames[1]="Actor";config.layerNames[2]="Excluded";
+    config.collisionMasks[0]=config.collisionMasks[1]=3;config.collisionMasks[2]=4;
+    VansCollisionLayerManager::Get().ApplyConfig(config);
+    const auto allocate=[&](glm::vec3 position)
+    {
+        const auto id=Vans::VansTransformStore::Allocate();ids.push_back(id);
+        auto transform=Vans::VansTransformStore::Read(id);transform.m_Position=position;
+        transform.m_Rotation=glm::vec3(0);transform.m_Scale=glm::vec3(1);Vans::VansTransformStore::Write(id,transform);return id;
+    };
+    const auto floorId=allocate({0,-.25f,0});
+    PhysicsNodeProperties properties;properties.enabled=true;properties.layerName="Floor";properties.boxExtents={10,.25f,10};
+    VansPhysicsNode floor;floor.Initialize(properties,floorId);
+    VansPhysicsCapsuleSweepRequest request;request.origin={0,3,0};request.direction={0,-1,0};
+    request.radius=.35f;request.halfHeight=.9f;request.distance=5;request.filter.collisionLayerIndex=1;
+    request.filter.includeTriggers=false;
+    VansPhysicsQueryHit hit;
+    if(!Expect(VansPhysicsQuery::SweepCapsuleClosest(request,hit)&&!hit.initialOverlap&&hit.transformId==floorId,"Capsule failed to hit floor")
+        || !ExpectNear(hit.distance,2.1f,1e-4f,"Capsule half height omitted hemisphere or used sphere")
+        || !ExpectNear(hit.normal.y,1,1e-5f,"Floor impact normal invalid"))return false;
+    {
+        auto shape=request;shape.origin={4,1.1f,4};
+        Vans::VansCharacterMotionStep step;step.deltaTime=.1f;
+        step.displacement={.1f,-.4f,0};step.velocity={1,-4,0};
+        VansCharacterSweepResult contact;
+        {std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+            contact=VansCharacterSweepSolver::AdvanceAirLocked(shape,step,.71f);}
+        const float distance=glm::length(step.displacement);
+        const float fraction=.5f-(.01f/distance+.001f);
+        if(!Expect(contact.grounded&&!contact.penetrating,"Swept movement failed to identify floor support") ||
+            !ExpectNear(contact.unusedTime,.1f*(1-fraction),2e-5f,"Landing lost exact swept remaining time") ||
+            !ExpectNear(contact.position.x,4+.1f*fraction,2e-5f,"Landing used full-step planar displacement") ||
+            !ExpectNear(contact.velocity.x,1,1e-6f,"Landing changed horizontal end speed"))return false;
+        const auto sideA=allocate({4.5f,2,4});const auto sideB=allocate({4,2,4.5f});
+        PhysicsNodeProperties a=properties,b=properties;a.boxExtents={.025f,2,2};b.boxExtents={2,2,.025f};
+        VansPhysicsNode wallA,wallB;wallA.Initialize(a,sideA);wallB.Initialize(b,sideB);
+        shape.origin={4,2,4};step.displacement={.4f,-.1f,.4f};step.velocity={4,-1,4};
+        {std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+            contact=VansCharacterSweepSolver::AdvanceAirLocked(shape,step,.71f);}
+        if(!Expect(contact.blocked&&!contact.grounded,"Corner fixture failed to hit two walls") ||
+            !ExpectNear(contact.velocity.x,0,2e-4f,"Corner retained inward X velocity") ||
+            !ExpectNear(contact.velocity.z,0,2e-4f,"Corner retained inward Z velocity") ||
+            !ExpectNear(contact.velocity.y,-1,2e-4f,"Corner removed downward crease velocity"))return false;
+        std::cout<<"Swept capsule landing-time and two-wall movement passed"<<std::endl;
+    }
+    request.axis={1,0,0};
+    if(!Expect(VansPhysicsQuery::SweepCapsuleClosest(request,hit),"Horizontal capsule failed")
+        || !ExpectNear(hit.distance,2.65f,1e-4f,"Capsule ignored authored axis"))return false;
+    request.axis={0,1,0};request.origin.y=.5f;
+    if(!Expect(VansPhysicsQuery::SweepCapsuleClosest(request,hit)&&hit.initialOverlap,"Initial penetration was not identified"))return false;
+    request.origin.y=3;request.halfHeight=.2f;
+    if(!Expect(!VansPhysicsQuery::SweepCapsuleClosest(request,hit),"Capsule accepted half height below radius"))return false;
+    request.halfHeight=.9f;request.origin.x=std::numeric_limits<float>::quiet_NaN();
+    if(!Expect(!VansPhysicsQuery::SweepCapsuleClosest(request,hit),"Capsule accepted nonfinite origin"))return false;
+    request.origin.x=0;
+    const auto selfId=allocate({0,3,0});CharControllerProperties controllerProperties;
+    controllerProperties.m_Radius=.35f;controllerProperties.m_Height=1.1f;controllerProperties.m_LayerName="Actor";
+    auto selfOwner=std::make_unique<VansCharacterControllerNode>();
+    auto& self=*selfOwner;
+    if(!Expect(self.Initialize(controllerProperties,selfId,{0,3,0}),"Self controller initialization failed"))return false;
+    {
+        std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+        if(!Expect(self.ResizeCapsule(.5f),"Crouch capsule resize failed") ||
+            !ExpectNear(self.GetPosition().y,2.7f,1e-5f,"Crouch did not preserve feet") ||
+            !ExpectNear(Vans::VansTransformStore::Read(selfId).m_Position.y,3.0f,1e-5f,
+                "Crouch changed character Transform origin"))return false;
+    }
+    const auto ceilingId=allocate({0,3.4f,0});
+    {
+        PhysicsNodeProperties ceilingProperties=properties;
+        ceilingProperties.boxExtents={1,.05f,1};
+        VansPhysicsNode ceiling;
+        ceiling.Initialize(ceilingProperties,ceilingId);
+        VansPhysicsRaycastRequest ceilingRay;
+        ceilingRay.origin={0,4,0};ceilingRay.direction={0,-1,0};ceilingRay.distance=1;
+        ceilingRay.filter.collisionLayerIndex=1;
+        ceilingRay.filter.includeControllers=false;
+        VansPhysicsQueryHit ceilingHit;
+        const bool ceilingVisible=VansPhysicsQuery::RaycastClosest(ceilingRay,ceilingHit);
+        if(!Expect(ceilingVisible && ceilingHit.transformId==ceilingId,
+            "Ceiling fixture was not queryable"))return false;
+        std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+        if(!Expect(!self.ResizeCapsule(1.1f),"Blocked standing enlarged the capsule") ||
+            !ExpectNear(self.GetProperties().m_Height,.5f,1e-5f,
+                "Blocked standing changed the capsule height"))return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+        if(!Expect(self.ResizeCapsule(1.1f),"Standing after ceiling removal failed") ||
+            !ExpectNear(self.GetPosition().y,3.0f,1e-5f,"Standing did not preserve feet") ||
+            !ExpectNear(Vans::VansTransformStore::Read(selfId).m_Position.y,3.0f,1e-5f,
+                "Standing changed character Transform origin"))return false;
+    }
+    if(!Expect(VansPhysicsQuery::SweepCapsuleClosest(request,hit)&&hit.transformId==selfId&&hit.initialOverlap,"Controller query lost owner identity"))return false;
+    request.filter.ignoredTransformId=selfId;
+    if(!Expect(VansPhysicsQuery::SweepCapsuleClosest(request,hit)&&hit.transformId==floorId,"Self controller exclusion failed"))return false;
+    const auto otherId=allocate({0,1,0});VansCharacterControllerNode other;
+    if(!Expect(other.Initialize(controllerProperties,otherId,{0,1,0}),"Other controller initialization failed"))return false;
+    if(!Expect(VansPhysicsQuery::SweepCapsuleClosest(request,hit)&&hit.transformId==otherId,"Ignoring self also removed other controllers"))return false;
+    request.filter.includeControllers=false;
+    const auto excludedId=allocate({0,1.5f,0});PhysicsNodeProperties excludedProperties=properties;
+    excludedProperties.layerName="Excluded";excludedProperties.boxExtents={1,.25f,1};
+    VansPhysicsNode excluded;excluded.Initialize(excludedProperties,excludedId);
+    if(!Expect(VansPhysicsQuery::SweepCapsuleClosest(request,hit)&&hit.transformId==floorId,"Collision matrix did not exclude incompatible layer"))return false;
+    request.filter.collisionLayerIndex=-1;
+    if(!Expect(VansPhysicsQuery::SweepCapsuleClosest(request,hit)&&hit.transformId==excludedId,"Unfiltered capsule failed to hit closest body"))return false;
+    request.filter.collisionLayerIndex=1;request.filter.includeStatic=false;
+    if(!Expect(!VansPhysicsQuery::SweepCapsuleClosest(request,hit),"Capsule ignored static filter"))return false;
+    VansScriptContext scripts;scripts.VansScriptSetup();
+    auto* lua=scripts.GetLuaState();
+    const char* code=R"lua(
+        local hit=vans.physics_query.sweep_capsule{origin={x=0,y=3,z=0},direction={x=0,y=-1,z=0},
+            radius=.35,half_height=.9,distance=5,collision_layer='Actor',include_controllers=false,include_triggers=false}
+        assert(hit and hit.hit and not hit.initial_overlap)
+        assert(math.abs(hit.distance-2.1)<.0001 and math.abs(hit.fraction-.42)<.0001)
+        local ray=vans.physics_query.raycast{origin={x=0,y=3,z=0},direction={x=0,y=-1,z=0},
+            distance=5,collision_layer='Actor',include_controllers=false,
+            include_triggers=false}
+        assert(ray and ray.hit and math.abs(ray.distance-3)<.0001 and ray.normal.y>.99)
+        local legacy=vans.physics_query.raycast({x=0,y=3,z=0},{x=0,y=-1,z=0},5)
+        assert(legacy and legacy.distance<=ray.distance)
+        assert(not pcall(vans.physics_query.raycast,{origin={x=0,y=3,z=0},
+            direction={x=0,y=-1,z=0},distance=5,collision_layer='Missing'}))
+        assert(not pcall(vans.physics_query.sweep_capsule,{origin={},direction={},radius=1,half_height=1,distance=5,collision_layer='Missing'}))
+    )lua";
+    const bool ok=luaL_dostring(lua,code)==LUA_OK;
+    if(!Expect(ok,ok?"":lua_tostring(lua,-1)))return false;
+    // Exercise the real CCT -> synchronous EventBus -> cached Lua callback path.
+    // Querying Physics inside the callback also detects publication under its mutex.
+    TemporaryDirectory jumpScript;
+    const auto jumpPath=jumpScript.path / "jump.lua";
+    {
+        std::ofstream file(jumpPath);
+        file << R"lua(return {on_jump=function(self)
+            jump_calls=(jump_calls or 0)+1
+            assert(vans.physics_query.sweep_capsule{origin={x=4,y=3,z=0},direction={x=0,y=-1,z=0},
+                radius=.35,half_height=.9,distance=5,collision_layer='Actor',include_controllers=false})
+        end, on_landed=function(self,event)
+            landed_calls=(landed_calls or 0)+1
+            assert(event.velocity.y<0 and event.normal.y>0)
+            assert(vans.physics_query.sweep_capsule{origin={x=4,y=3,z=0},direction={x=0,y=-1,z=0},
+                radius=.35,half_height=.9,distance=5,collision_layer='Actor',include_controllers=false})
+        end, on_movement_updated=function(self,event)
+            movement_calls=(movement_calls or 0)+1
+            assert(event.delta_time>0 and type(event.grounded)=='boolean')
+            movement_velocity_y=event.velocity.y
+            movement_grounded=event.grounded
+            assert(type(event.position.x)=='number' and type(event.velocity.z)=='number')
+            assert(vans.physics_query.sweep_capsule{origin={x=4,y=3,z=0},direction={x=0,y=-1,z=0},
+                radius=.35,half_height=.9,distance=5,collision_layer='Actor',include_controllers=false})
+        end})lua";
+    }
+    VansScriptObject jumpOwner;jumpOwner.m_TransformID=selfId;
+    auto* jumpComponent=new VansLuaScriptComponent();
+    jumpComponent->m_ScriptPath=jumpPath.string();jumpComponent->m_OwnerObject=&jumpOwner;
+    jumpOwner.AddComponent(jumpComponent);
+    if(!Expect(jumpComponent->Instantiate()&&scripts.RegisterScriptComponent(&jumpOwner,jumpComponent),
+        "Jump script could not be instantiated/registered"))return false;
+    const auto calls=[&](){lua_getglobal(lua,"jump_calls");const int count=static_cast<int>(lua_tointeger(lua,-1));lua_pop(lua,1);return count;};
+    VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
+    self.SetPosition({4,1,0});self.QueueMove({0,-.2f,0},.1f);
+    {std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());self.FlushMoveAndSync();}
+    if(!Expect(self.IsGrounded(),"Jump fixture did not contact floor"))return false;
+    Vans::VansCharacterMotionSettings motionSettings;Vans::VansCharacterMotionIntent jump;
+    jump.jumpRequested=true;
+    self.AcquireGameplayMovementBlock();self.SetMotionIntent(jump);self.PrepareLocomotion(.1f,motionSettings);
+    if(!Expect(calls()==0,"Movement-blocked CCT published a jump"))return false;
+    self.ReleaseGameplayMovementBlock();self.SetMotionIntent(jump);self.PrepareLocomotion(.1f,motionSettings);
+    if(!Expect(calls()==1&&jumpComponent->m_State==VansLuaScriptState::Active,
+        "Accepted CCT jump was not synchronously delivered to Lua"))return false;
+    self.PrepareLocomotion(.1f,motionSettings);
+    if(!Expect(calls()==1,"Consumed jump event was replayed"))return false;
+    Vans::VansEventBus::Get().PublishNow(VansCharacterJumpEvent{otherId});
+    if(!Expect(calls()==1,"Jump event reached a different owner"))return false;
+    jumpComponent->Disable();Vans::VansEventBus::Get().PublishNow(VansCharacterJumpEvent{selfId});
+    if(!Expect(calls()==1,"Disabled script received a jump"))return false;
+    jumpComponent->Enable();Vans::VansEventBus::Get().PublishNow(VansCharacterJumpEvent{selfId});
+    if(!Expect(calls()==2,"Reenabled script lost its jump callback"))return false;
+
+    Vans::VansEventBus::Get().PublishNow(VansCharacterLandedEvent{selfId,{4,1,0},{0,-2,0},{0,1,0}});
+    lua_getglobal(lua,"landed_calls");
+    const bool landedCallback=lua_tointeger(lua,-1)==1;lua_pop(lua,1);
+    if(!Expect(landedCallback&&jumpComponent->m_State==VansLuaScriptState::Active,"Landed callback/query dispatch failed"))return false;
+    if(includeRuntimeBinding)
+    {
+        auto& projectManager=Vans::VansProjectManager::Get();
+        struct ProjectCleanup
+        {
+            Vans::VansProjectManager& manager;
+            ~ProjectCleanup(){manager.CloseProject();}
+        } projectCleanup{projectManager};
+        Vans::VansProjectOpenRequest openRequest;
+        openRequest.m_ProjectRootPath="D:/WorkSpace/ForestEngine/AnimationV2Project";
+        openRequest.m_Options.m_UpdateRecentProjects=false;
+        openRequest.m_Options.m_ScanAssets=false;
+        if(!Expect(projectManager.OpenProject(openRequest).m_Opened,
+            "Could not load in-memory project dependencies for the Scene binding fixture"))return false;
+        VansCollisionLayerManager::Get().ApplyConfig(config);
+
+    // Use the actual Scene orchestration, not a hand-reordered test pipeline.
+    // RuntimeWorld 与节点均按正式 Scene 所有权清理，不依赖空场景析构。
+    {
+        using namespace VansGraphics;
+        auto animationController=std::make_unique<VansAnimationController>();
+        animationController->AddParameter("AfterMovement",AnimatorParamType::Float);
+        for(int i=0;i<2;++i)
+        {
+            auto clip=BuildContractClip(std::to_string(i),0,0);
+            clip.curves={{VansAnimationStableId("FrameValue"),"FrameValue",{{0,float(i)},{1,float(i)}}}};
+            animationController->AddClip(std::to_string(i),clip);
+    }
+        auto graph=std::make_unique<VansAnimGraph>();
+        auto blend=std::make_unique<AnimGraphBlendNode>();blend->m_ParamName="AfterMovement";
+        const auto blendId=graph->AddNode(std::move(blend));
+        for(int i=0;i<2;++i)
+        {
+            auto clip=std::make_unique<AnimGraphClipNode>();clip->m_ClipName=std::to_string(i);clip->m_RootMotion=false;
+            graph->AddLink(graph->AddNode(std::move(clip)),0,blendId,i);
+    }
+        const auto outputId=graph->AddNode(std::make_unique<AnimGraphOutputNode>());
+        graph->AddLink(blendId,0,outputId,0);std::string graphError;
+        if(!Expect(InstallTestBaseLayer(*animationController,std::move(graph),graphError),graphError.c_str()))return false;
+        auto animationOwner=std::make_unique<VansAnimationNode>("MovementPhaseContract");
+        auto& animation=*animationOwner;animation.SetSkeleton(BuildContractHumanoidSkeleton());
+        animation.SetTransformID(selfId);
+        if(!Expect(animation.SetController(std::move(animationController)),"Movement phase controller bind failed"))return false;
+        auto* controller=animation.GetController();
+        const auto frameValue=[&]()
+        {
+            for(const auto& curve:controller->GetSampledCurves())
+                if(curve.name=="FrameValue")return curve.value;
+            return -1.0f;
+        };
+        animation.Play(VansAnimationEvaluationPurpose::Gameplay);
+        VansScene scene;scene.RegisterCharacterControllerNode(selfOwner.release());
+        struct PhaseSceneCleanup
+        {
+            VansScene& scene;
+            ~PhaseSceneCleanup(){scene.UnloadScene(nullptr);}
+        } phaseSceneCleanup{scene};
+        std::string runtimeError;
+        if(!Expect(Vans::VansSceneGameplayComposition::InitializeActionRuntime(scene,runtimeError),runtimeError.c_str()))return false;
+        auto* runtime=scene.GetRuntimeWorld();
+        const auto entity=runtime->CreateEntity({"movement-phase-owner","MovementPhase",{},true});
+        runtime->AddComponent(entity,Vans::VansRuntimeComponentType_CharacterController,
+            Vans::VansRuntimeCharacterControllerComponent{&self},"movement-phase-cct");
+        runtime->AddComponent(entity,Vans::VansRuntimeComponentType_Animation,
+            Vans::VansRuntimeAnimationComponent{&animation},"movement-phase-animation");
+        if(!Expect(scene.RegisterAnimationRuntime(&animation,std::make_unique<VansAnimationGpuBinding>()),
+            "Movement phase animation registration failed"))return false;
+        animationOwner.release();
+        int updates=0;
+        auto connection=Vans::VansEventBus::Get().Subscribe<VansCharacterMovementUpdatedEvent>(
+            [&](const VansCharacterMovementUpdatedEvent& event)
+            {
+                if(event.transformID!=selfId)return;
+                ++updates;controller->SetFloat("AfterMovement",1);self.SetFacingYaw(37);
+            },Vans::VansEventLane::GameLogic);
+        motionSettings.driveMode=Vans::VansLocomotionDriveMode::Capsule;
+        animation.SetCharacterMotionSettings(motionSettings);
+        const auto before=animation.GetCurrentPlayTime();
+        scene.PrepareCharacterLocomotion(.1f);
+        if(!ExpectNear(animation.GetCurrentPlayTime(),before,1e-6f,"Capsule animation evaluated before Physics"))return false;
+        scene.UpdateCharControllerTransforms();
+        if(!Expect(updates==1&&jumpComponent->m_State==VansLuaScriptState::Active,
+            "Collision-resolved movement callback did not complete"))return false;
+        if(!ExpectNear(frameValue(),1,1e-6f,
+            "Capsule animation did not read this frame's movement callback"))return false;
+        if(!ExpectNear(Vans::VansTransformStore::Read(selfId).m_Rotation.y,37,1e-6f,
+            "Post-movement facing did not commit through CCT"))return false;
+        const auto prepared=animation.GetCurrentPlayTime();
+        animation.PrepareAnimationFrame({VansAnimationEvaluationPurpose::Gameplay,.1f});
+        if(!ExpectNear(animation.GetCurrentPlayTime(),prepared,1e-6f,"Deferred animation advanced twice"))return false;
+        controller->SetFloat("AfterMovement",0);
+        motionSettings.driveMode=Vans::VansLocomotionDriveMode::RootMotion;
+        animation.SetCharacterMotionSettings(motionSettings);
+        scene.PrepareCharacterLocomotion(.1f);
+        if(!ExpectNear(frameValue(),0,1e-6f,
+            "Root-motion animation lost its pre-movement evaluation"))return false;
+        const auto rootPrepared=animation.GetCurrentPlayTime();
+        scene.UpdateCharControllerTransforms();
+        animation.PrepareAnimationFrame({VansAnimationEvaluationPurpose::Gameplay,.1f});
+        if(!Expect(updates==2,"Root-driven movement result was not delivered")||
+            !ExpectNear(animation.GetCurrentPlayTime(),rootPrepared,1e-6f,"Root motion animation advanced twice"))return false;
+    }
+    // 通过正式 SceneAssembly 发布稳定实体/组件，再调用真实 Lua CCT 接口。
+    // 不伪造 userdata，也不绕过 RuntimeWorld 的句柄有效性检查。
+        std::ifstream sweepInput("D:/WorkSpace/ForestEngine/AnimationV2Project/Tools/ALS/reference/sweep_oracle.json");
+        if(!Expect(sweepInput.good(),"Native UE sweep oracle missing"))return false;
+        const auto sweepOracle=nlohmann::json::parse(sweepInput);
+        float maxPositionError=0,maxTimeError=0;std::size_t sweepFailures=0;
+        for(const auto& row:sweepOracle.at("samples"))
+        {
+            const auto vector=[&](const char* key){const auto& a=row.at(key);return glm::vec3(a[0].get<float>(),a[1].get<float>(),a[2].get<float>());};
+            auto shape=request;shape.origin=vector("start");shape.filter.includeStatic=true;
+            shape.filter.collisionLayerIndex=1;
+            Vans::VansCharacterMotionStep step;step.deltaTime=.1f;step.displacement=vector("delta");step.velocity=step.displacement/.1f;
+            if(shape.origin==glm::vec3(4,1,4))
+            {auto probe=shape;probe.direction=step.displacement;probe.distance=glm::length(step.displacement)+.0001f;
+                VansPhysicsQueryHit probeHit;const bool found=VansPhysicsQuery::SweepCapsuleClosest(probe,probeHit);
+                std::cerr.precision(10);std::cerr<<"ENDPOINT_PROBE delta="<<step.displacement.x<<","<<step.displacement.y<<" expect="<<row.at("blocking")<<" hit="<<found<<" distance="<<probeHit.distance<<" move="<<glm::length(step.displacement)<<std::endl;}
+            VansCharacterSweepResult actual;
+            {std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());actual=VansCharacterSweepSolver::AdvanceAirLocked(shape,step,.71f);}
+            const float positionError=glm::length(actual.position-vector("position"));
+            const float timeError=std::abs(actual.unusedTime-.1f*(1-row.at("time").get<float>()));
+            maxPositionError=(std::max)(maxPositionError,positionError);maxTimeError=(std::max)(maxTimeError,timeError);
+            if(!(actual.grounded==row.at("blocking").get<bool>()&&positionError<2e-5f&&timeError<2e-6f))
+            {++sweepFailures;std::cerr<<"UE_SWEEP_DIFFERENCE "<<row.dump()<<" actual="<<actual.position.x<<","<<actual.position.y<<","<<actual.position.z<<" timeError="<<timeError<<std::endl;}
+        }
+        std::cout<<"UE_NATIVE_SWEEP_ORACLE samples="<<sweepOracle.at("samples").size()<<" failures="<<sweepFailures<<" max_position_error="<<maxPositionError<<" max_time_error="<<maxTimeError<<std::endl;
+        nativeSweepEquivalent=Expect(sweepFailures==0,"Capsule first move differs from native UE sweep/pullback time");
+        TestRenderSystemDevice cameraDevice;
+        VansGraphics::VansCamera sceneCamera(&cameraDevice);
+        VansGraphics::VansScene scene;
+        scene.InjectCamera(&sceneCamera);
+        struct SceneCleanup
+        {
+            VansGraphics::VansScene& scene; VansScriptContext& scripts;
+            ~SceneCleanup()
+            {
+                scripts.AttachSceneWithoutRebuild(nullptr);
+                while (!scene.GetSceneObjects().empty())
+                    if (!scene.DestroyEntity(scene.GetSceneObjects().back())) break;
+                scene.UnloadScene(nullptr);
+            }
+        } sceneCleanup{scene,scripts};
+        Vans::VansSceneObjectBuildPlan plan;
+        auto& object=plan.objects.emplace_back();
+        object.name="AccelerationBinding";
+        object.entityGuid="40ef6e30-fd4e-40a7-aeca-012c00511201";
+        object.componentGuids={{"transform","40ef6e30-fd4e-40a7-aeca-012c00511202"},
+            {"charController","40ef6e30-fd4e-40a7-aeca-012c00511203"}};
+        object.transform.emplace();object.transform->position={-4,1,0};
+        auto& shape=object.physicsComponents.characterController.emplace();
+        shape.radius=.35f;shape.height=1.1f;shape.layer="Actor";
+        VkDevice device=VK_NULL_HANDLE;
+        const auto built=VansGraphics::VansSceneAssembly::BuildObjects(scene,device,plan,"");
+        if(!Expect(built.m_Built,built.m_Error.c_str()))return false;
+        scripts.AttachSceneWithoutRebuild(&scene);
+        auto* owner=scene.FindObjectByName("AccelerationBinding");
+        auto* component=owner?owner->GetComponent<VansScriptCharacterControllerComponent>():nullptr;
+        if(!Expect(component&&component->m_ControllerNode,"Scene CCT binding fixture missing"))return false;
+        auto& bound=*component->m_ControllerNode;
+        bound.QueueMove({0,-.2f,0},.1f);
+        {std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());bound.FlushMoveAndSync();}
+        if(!Expect(bound.IsGrounded(),"Scene CCT binding fixture did not contact floor"))return false;
+        const auto runLua=[&](const char* source)
+        {
+            const bool passed=luaL_dostring(lua,source)==LUA_OK;
+            return Expect(passed,passed?"":lua_tostring(lua,-1));
+        };
+        if(!runLua(R"lua(
+            binding_cct=assert(vans.find_object('AccelerationBinding'):get_cct_comp())
+            assert(binding_cct:resize_capsule(.5))
+            assert(math.abs(binding_cct:get_capsule_state().half_height-.6)<.00001)
+            assert(binding_cct:resize_capsule(1.1))
+            assert(math.abs(binding_cct:get_capsule_state().half_height-.9)<.00001)
+            assert(not binding_cct:resize_capsule(-1))
+            local function profile(accel,scale)
+                return {max_acceleration=accel,friction=4,braking_deceleration=12.5,
+                    braking_friction_factor=0,braking_substep=1/33,braking_stop_speed=.1,
+                    min_analog_speed=.25,acceleration_scale=scale,
+                    low_speed_acceleration_boost=2,acceleration_boost_speed=.25}
+            end
+            binding_model={grounded=profile(20,1),airborne=profile(20,.15),falling={
+                terminal_speed=40,max_time_step=.05,max_iterations=8,max_apex_attempts=2,split_at_apex=true}}
+            binding_model.airborne.friction=0
+            binding_model.airborne.braking_deceleration=0
+            function submit_binding(jump)
+                binding_cct:set_motion_intent({x=0,y=0,z=1},3.75,90,0,jump,4.2,9.8,false,binding_model)
+            end
+            submit_binding(false)
+            -- 已提交的值由 CCT 持有；脚本随后修改 table 不能改变本帧命令。
+            binding_model.grounded.max_acceleration=99
+        )lua"))return false;
+        bound.PrepareLocomotion(.1f,motionSettings);
+        if(!ExpectNear(bound.GetTrajectory().plannedVelocityWorld.x,2,1e-5f,
+            "Lua grounded dynamics were not copied into CCT intent"))return false;
+        if(!runLua(R"lua(
+            binding_model.grounded.max_acceleration=20
+            for _,bad in ipairs({-1,math.huge,0/0}) do
+                binding_model.airborne.friction=bad
+                assert(not pcall(submit_binding,false))
+            end
+            binding_model.airborne.friction=0
+            binding_model.airborne.braking_substep=0
+            assert(not pcall(submit_binding,false))
+            binding_model.airborne.braking_substep=1/33
+            binding_model.airborne.max_acceleration=nil
+            assert(not pcall(submit_binding,false))
+            binding_model.airborne.max_acceleration=20
+            binding_model.falling.max_iterations=0
+            assert(not pcall(submit_binding,false))
+            binding_model.falling.max_iterations=8
+            binding_model.falling.terminal_speed=math.huge
+            assert(not pcall(submit_binding,false))
+            binding_model.falling.terminal_speed=40
+            submit_binding(true)
+        )lua"))return false;
+        bound.PrepareLocomotion(.1f,motionSettings);
+        if(!ExpectNear(bound.GetTrajectory().plannedVelocityWorld.x,.6f,1e-5f,
+            "Accepted jump failed to use Lua airborne dynamics in the same frame"))return false;
+        const auto beforeJump=bound.GetPosition();
+        bound.ResolveLocomotion({},glm::quat(1,0,0,0),false,{},motionSettings,glm::vec3(1));
+        std::optional<VansCharacterMovementUpdatedEvent> ballisticEvent;
+        auto movementConnection=Vans::VansEventBus::Get().Subscribe<VansCharacterMovementUpdatedEvent>(
+            [&](const VansCharacterMovementUpdatedEvent& event)
+            {if(event.transformID==bound.GetTransformID())ballisticEvent=event;},Vans::VansEventLane::GameLogic);
+        ballisticEvent.reset();scene.UpdateCharControllerTransforms();
+        if(!Expect(ballisticEvent&&ballisticEvent->motionVelocity,"Modeled CCT failed to expose end velocity") ||
+            !Expect(ballisticEvent->simulationSteps==2,"CCT did not execute two physical substeps") ||
+            !ExpectNear(bound.GetPosition().x-beforeJump.x,.03f,3e-5f,"PhysX did not receive planar midpoint displacement") ||
+            !ExpectNear(bound.GetPosition().y-beforeJump.y,.371f,3e-5f,"PhysX did not receive midpoint jump displacement") ||
+            !ExpectNear(ballisticEvent->motionVelocity->x,.6f,2e-5f,"CCT event lost planar end velocity") ||
+            !ExpectNear(ballisticEvent->motionVelocity->y,3.22f,2e-5f,"CCT event did not expose ballistic end velocity") ||
+            !ExpectNear(ballisticEvent->velocity.y,3.71f,3e-4f,"CCT displacement velocity changed meaning"))return false;
+        // 真正的 PhysX 顶面接触必须清空模型上升速度，下一帧从零开始下落。
+        bound.SetPosition(beforeJump);bound.QueueMove({0,-.2f,0},.1f);
+        {std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());bound.FlushMoveAndSync();}
+        // 扫掠使用实际胶囊尺寸；让顶面处于第一子步的路径内。
+        const auto ceilingId=allocate({beforeJump.x,beforeJump.y+1.1f,beforeJump.z});
+        PhysicsNodeProperties ceilingProperties=properties;ceilingProperties.boxExtents={1,.05f,1};
+        VansPhysicsNode ceiling;ceiling.Initialize(ceilingProperties,ceilingId);
+        if(!runLua("submit_binding(true)"))return false;
+        bound.PrepareLocomotion(.1f,motionSettings);
+        bound.ResolveLocomotion({},glm::quat(1,0,0,0),false,{},motionSettings,glm::vec3(1));
+        ballisticEvent.reset();scene.UpdateCharControllerTransforms();
+        if(!Expect(ballisticEvent&&ballisticEvent->motionVelocity,"Ceiling contact lost modeled velocity") ||
+            !Expect(ballisticEvent->motionVelocity->y<0,"CCT did not fall during the remaining substep after a ceiling hit"))return false;
+        const float ceilingY=bound.GetPosition().y;
+        bound.PrepareLocomotion(.1f,motionSettings);
+        bound.ResolveLocomotion({},glm::quat(1,0,0,0),false,{},motionSettings,glm::vec3(1));
+        ballisticEvent.reset();scene.UpdateCharControllerTransforms();
+        if(!Expect(bound.GetPosition().y<ceilingY,"CCT continued pushing into ceiling after contact"))return false;
+        bound.SetPosition({-4,1,4});bound.QueueMove({0,-.2f,0},.1f);
+        {std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());bound.FlushMoveAndSync();}
+        const auto wallId=allocate({-3.53f,2,4});PhysicsNodeProperties wallProperties=properties;
+        wallProperties.boxExtents={.025f,2,1};VansPhysicsNode wallNode;wallNode.Initialize(wallProperties,wallId);
+        if(!runLua("submit_binding(false)"))return false;
+        bound.PrepareLocomotion(.1f,motionSettings);
+        bound.ResolveLocomotion({},glm::quat(1,0,0,0),false,{},motionSettings,glm::vec3(1));
+        ballisticEvent.reset();scene.UpdateCharControllerTransforms();
+        if(!Expect(ballisticEvent&&ballisticEvent->motionVelocity,"Wall contact lost motion result") ||
+            !ExpectNear(ballisticEvent->motionVelocity->x,0,1e-5f,"Wall contact retained velocity into the obstacle") ||
+            !Expect(ballisticEvent->velocity.x>0,"Wall fixture did not distinguish travel from end velocity"))return false;
+        int landedCount=0, landingAction=0;
+        bool landingOk=true;
+        const auto boundId=bound.GetTransformID();
+        auto landedConnection=Vans::VansEventBus::Get().Subscribe<VansCharacterLandedEvent>(
+            [&](const VansCharacterLandedEvent& event)
+            {
+                if(event.transformID!=boundId)return;
+                ++landedCount;
+                landingOk &= !bound.IsGrounded() && event.velocity.y<0 && event.velocity.x>0;
+                landingOk &= glm::length(bound.GetPosition()-event.position)<1e-6f;
+                VansPhysicsCapsuleSweepRequest query;
+                query.origin={-4,3,-4};query.direction={0,-1,0};query.distance=5;
+                query.radius=.35f;query.halfHeight=.9f;query.filter.includeControllers=false;
+                VansPhysicsQueryHit hit;
+                landingOk &= VansPhysicsQuery::SweepCapsuleClosest(query,hit);
+                if(landingAction==1) bound.SetPosition({-4,5,-4});
+                else if(landingAction==2) bound.SetEnabled(false);
+                else if(landingAction==3) landingOk &= scene.DestroyEntity(owner);
+                else
+                    landingOk &= runLua(R"lua(
+                        binding_model.grounded.max_acceleration=0
+                        binding_model.grounded.braking_deceleration=0
+                        binding_model.grounded.braking_friction_factor=100
+                        binding_cct:set_motion_dynamics(binding_model)
+                        binding_model.grounded.braking_friction_factor=0
+                    )lua");
+            },Vans::VansEventLane::GameLogic);
+        const auto runLanding=[&]()
+        {
+            bound.SetPosition({-4,1.1f,-4});
+            if(!runLua("submit_binding(false)"))return false;
+            scene.PrepareCharacterLocomotion(.3f);
+            ballisticEvent.reset();scene.UpdateCharControllerTransforms();
+            return landingOk;
+        };
+        if(!Expect(runLanding()&&landedCount==1,"Scene landing callback did not run before ground continuation") ||
+            !Expect(ballisticEvent&&ballisticEvent->motionVelocity,"Landing continuation lost movement result") ||
+            !ExpectNear(ballisticEvent->motionVelocity->x,0,1e-5f,"Landing callback dynamics did not affect remaining ground time") ||
+            !Expect(ballisticEvent->velocity.x>0,"Landing result lost displacement before contact"))return false;
+        landingAction=1;
+        if(!Expect(runLanding()&&landedCount==2,"Teleport landing callback missing") ||
+            !ExpectNear(bound.GetPosition().y,5,1e-5f,"Teleport callback continued stale landing motion") ||
+            !Expect(!ballisticEvent,"Teleport callback published stale frame movement"))return false;
+        landingAction=2;
+        if(!Expect(runLanding()&&landedCount==3,"Disable landing callback missing"))return false;
+        const auto disabledPosition=bound.GetPosition();
+        bound.SetEnabled(true);scene.UpdateCharControllerTransforms();
+        if(!ExpectNear(glm::length(bound.GetPosition()-disabledPosition),0,1e-6f,"Reenabled controller resumed cancelled landing"))return false;
+        if(!runLua("binding_cct:set_facing_yaw(73)"))return false;
+        if(!ExpectNear(Vans::VansTransformStore::Read(owner->m_TransformID).m_Rotation.y,73,1e-5f,
+            "Runtime-backed Lua facing write failed"))return false;
+        landingAction=3;
+        if(!Expect(runLanding()&&landedCount==4,"Destroy landing callback did not safely cancel continuation"))return false;
+        std::cout<<"Scene landing callback/dynamics copy/remaining-time/teleport/disable/destroy passed"<<std::endl;
+        if(!runLua("assert(not binding_cct:is_valid()); binding_cct:set_facing_yaw(1)"))return false;
+        std::cout<<"Runtime-backed Lua CCT dynamics/copy/validation/jump/facing/handle lifetime passed"<<std::endl;
+    }
+    jumpComponent->Teardown();
+    if(!Expect(jumpComponent->m_OnJumpRef==LUA_NOREF&&jumpComponent->m_OnLandedRef==LUA_NOREF&&jumpComponent->m_MovementUpdatedRef==LUA_NOREF,
+        "Movement callback reference survived teardown"))return false;
+    Vans::VansEventBus::Get().PublishNow(VansCharacterJumpEvent{selfId});
+    if(!Expect(calls()==2,"Unregistered script received a jump"))return false;
+    std::cout<<"Capsule query geometry/filter/Lua and CCT jump acceptance/event lifecycle passed"<<std::endl;
+    return nativeSweepEquivalent;
+}
+
+bool TestAnimationBakedGridContract()
+{
+    using namespace VansGraphics;
+    Skeleton skeleton;skeleton.bones.resize(1);skeleton.bones[0].parentIndex=-1;
+    skeleton.bones[0].localTransform=glm::mat4(1);skeleton.topologicalOrder={0};
+    std::unordered_map<std::string,VansAnimationClip> clips;
+    std::unordered_map<std::string,AnimatorParameter> parameters;
+    parameters["X"].type=parameters["Y"].type=AnimatorParamType::Float;
+    VansAnimGraph graph;auto grid=std::make_unique<AnimGraphBlendSpace2DNode>();auto* gridPtr=grid.get();
+    grid->m_XParamName="X";grid->m_YParamName="Y";grid->m_SynchronizeSamples=true;
+    grid->m_Samples={{0,0},{0,1},{0,-1},{-1,0},{1,0}};
+    auto& g=grid->m_SampleGrid;g.columns=g.rows=3;g.minX=g.minY=-1;g.maxX=g.maxY=1;
+    g.cells={{{3,.5f},{2,.5f}},{{2,1},{4,0},{0,0}},{{2,.5f},{4,.5f}},
+             {{0,0},{1,0},{3,1}},{{2,0},{4,0},{0,1}},{{2,0},{4,1},{0,0}},
+             {{1,.5f},{3,.5f}},{{0,0},{1,1},{3,0}},{{4,.5f},{1,.5f}}};
+    const int id=graph.AddNode(std::move(grid));
+    for(int i=0;i<5;++i)
+    {
+        const auto name=std::to_string(i);clips[name]=BuildContractClip(name,0,0);
+        clips[name].curves={{VansAnimationStableId(name),name,{{0,1},{1,1}}}};
+        auto clip=std::make_unique<AnimGraphClipNode>();clip->m_ClipName=name;clip->m_RootMotion=false;
+        graph.AddLink(graph.AddNode(std::move(clip)),0,id,i);
+    }
+    const int output=graph.AddNode(std::make_unique<AnimGraphOutputNode>());graph.AddLink(id,0,output,0);
+    nlohmann::json serialized,again;graph.SerializeToJsonObject(serialized);
+    auto copy=VansAnimGraph::DeserializeFromJsonObject(serialized);copy->SerializeToJsonObject(again);
+    if(!Expect(serialized==again,"Baked grid schema roundtrip lost weights or order"))return false;
+    AnimGraphContext ctx;ctx.skeleton=&skeleton;ctx.clips=&clips;ctx.parameters=&parameters;ctx.deltaTime=.01f;
+    struct Sample {float x,y;float weights[5];};
+    const Sample cases[]={{0,0,{1,0,0,0,0}},{0,1,{0,1,0,0,0}},{0,-1,{0,0,1,0,0}},
+        {-1,0,{0,0,0,1,0}},{1,0,{0,0,0,0,1}},{.5f,.5f,{.25f,.375f,0,0,.375f}},
+        {-.5f,.5f,{.25f,.375f,0,.375f,0}},{-.5f,-.5f,{.25f,0,.375f,.375f,0}},
+        {.5f,-.5f,{.25f,0,.375f,0,.375f}},{8,4,{0,.5f,0,0,.5f}}};
+    for(const auto& sample:cases)
+    {
+        parameters["X"].floatVal=sample.x;parameters["Y"].floatVal=sample.y;
+        VansAnimGraphInstance instance(*copy);if(!Expect(instance.IsCompiled(),instance.GetCompileError().c_str()))return false;
+        const auto pose=instance.EvaluateFrame(ctx);if(!Expect(pose.valid,"Baked grid returned invalid pose"))return false;
+        for(int i=0;i<5;++i)
+        {
+            const auto name=std::to_string(i);float weight=0;
+            for(const auto& curve:pose.curves)if(curve.name==name)weight=curve.value;
+            if(!ExpectNear(weight,sample.weights[i],1e-6f,"Baked grid weight differs from bilinear baked-cell result"))return false;
+        }
+    }
+    std::string error;
+    gridPtr->m_SampleGrid.cells[0][0].sampleIndex=5;
+    if(!Expect(!gridPtr->ValidateSampleGrid(error),"Grid accepted out of bounds sample"))return false;
+    gridPtr->m_SampleGrid.cells[0][0].sampleIndex=3;gridPtr->m_SampleGrid.cells[0][0].weight=.6f;
+    if(!Expect(!gridPtr->ValidateSampleGrid(error),"Grid accepted unnormalized cell"))return false;
+    VansAnimationFrameVector<VansBoneTransform> reference(1),target(1),result;
+    reference[0].rotation=glm::angleAxis(.7f,glm::vec3(1,0,0));
+    target[0].rotation=glm::angleAxis(2.1f,glm::vec3(0,1,0));
+    auto delta=target;
+    if(!Expect(VansPoseMath::MakeAdditiveDeltaPose(delta,reference,skeleton,VansAdditivePoseMode::LocalLinear)
+        && VansPoseMath::ApplyAdditiveDeltaPose(reference,delta,1,skeleton,result,VansAdditivePoseMode::LocalLinear),"Local linear additive rejected valid pose"))return false;
+    if(!ExpectNear(std::abs(glm::dot(result[0].rotation,target[0].rotation)),1,1e-6f,"Noncommuting local additive failed reconstruction"))return false;
+    auto q=target[0].rotation*glm::inverse(reference[0].rotation);if(q.w<0)q=-q;
+    const auto expected=glm::normalize((glm::quat(1,0,0,0)*.75f+q*.25f)*reference[0].rotation);
+    if(!Expect(VansPoseMath::ApplyAdditiveDeltaPose(reference,delta,.25f,skeleton,result,VansAdditivePoseMode::LocalLinear),"Partial local additive failed")
+        || !ExpectNear(std::abs(glm::dot(result[0].rotation,expected)),1,1e-6f,"Local additive used spherical or postmultiply rotation"))return false;
+    std::cout<<"Baked grid corners/quadrants/clamping, codec, validation and local additive rotation passed"<<std::endl;
+    return true;
+}
+
+bool TestAnimationModifyCurveContract()
+{
+    using namespace VansGraphics;
+    Skeleton skeleton; skeleton.bones.resize(1); skeleton.bones[0].parentIndex=-1;
+    skeleton.bones[0].localTransform=glm::mat4(1); skeleton.topologicalOrder={0};
+    std::unordered_map<std::string,VansAnimationClip> clips;
+    clips["Input"]=BuildContractClip("Input",2,1);
+    clips["Input"].curves={{VansAnimationStableId("Changed"),"Changed",{{0,2},{1,2}}},
+        {VansAnimationStableId("Unchanged"),"Unchanged",{{0,9},{1,9}}}};
+    clips["Input"].events.push_back({17,.1f,"Marker",{}});
+    std::unordered_map<std::string,AnimatorParameter> parameters;
+    parameters["Weight"].type=parameters["Factor"].type=AnimatorParamType::Float;
+    parameters["Weight"].floatVal=.25f; parameters["Factor"].floatVal=4;
+    VansAnimGraph graph;
+    auto clip=std::make_unique<AnimGraphClipNode>();clip->m_ClipName="Input";
+    const int sourceId=graph.AddNode(std::move(clip));
+    auto modifier=std::make_unique<AnimGraphModifyCurveNode>();
+    modifier->m_AlphaParameter="Weight";modifier->m_Curves={{"Changed",6,""},{"Missing",1,""}};
+    const int blendId=graph.AddNode(std::move(modifier));
+    auto scale=std::make_unique<AnimGraphModifyCurveNode>();
+    scale->m_Mode=VansCurveModifyMode::Scale;scale->m_Alpha=.5f;
+    scale->m_Curves={{"Changed",0,"Factor"},{"MissingScale",5,""}};
+    const int scaleId=graph.AddNode(std::move(scale));
+    const int out=graph.AddNode(std::make_unique<AnimGraphOutputNode>());
+    graph.AddLink(sourceId,0,blendId,0);graph.AddLink(blendId,0,scaleId,0);graph.AddLink(scaleId,0,out,0);
+    AnimGraphContext context;context.skeleton=&skeleton;context.clips=&clips;context.parameters=&parameters;context.deltaTime=.25f;
+    auto value=[](const AnimGraphPose& pose,const char* name)
+    {
+        auto found=std::find_if(pose.curves.begin(),pose.curves.end(),[&](const auto& c){return c.name==name && c.present;});
+        return found==pose.curves.end()?std::numeric_limits<float>::quiet_NaN():found->value;
+    };
+    for (const auto& sample:std::vector<std::pair<float,float>>{{.25f,7.5f},{-1.0f,5.0f},{2.0f,15.0f}})
+    {
+        parameters["Weight"].floatVal=sample.first;
+        VansAnimGraphInstance instance(graph);instance.EvaluateFrame(context);const auto pose=instance.EvaluateFrame(context);
+        if (!Expect(pose.valid,"Curve modifier returned invalid pose")
+            || !ExpectNear(value(pose,"Changed"),sample.second,1e-6f,"Curve Blend/Scale or Alpha clamp differs from source")
+            || !ExpectNear(value(pose,"Missing"),std::clamp(sample.first,0.0f,1.0f),1e-6f,"Missing curve did not start from zero")
+            || !ExpectNear(value(pose,"MissingScale"),0,1e-6f,"Scale created a nonzero absent curve")
+            || !ExpectNear(value(pose,"Unchanged"),9,1e-6f,"Modifier changed an unlisted curve")) return false;
+        VansAnimGraph baselineGraph;auto baselineClip=std::make_unique<AnimGraphClipNode>();baselineClip->m_ClipName="Input";
+        const int baselineClipId=baselineGraph.AddNode(std::move(baselineClip));
+        const int baselineOut=baselineGraph.AddNode(std::make_unique<AnimGraphOutputNode>());
+        baselineGraph.AddLink(baselineClipId,0,baselineOut,0);VansAnimGraphInstance baselineInstance(baselineGraph);
+        baselineInstance.EvaluateFrame(context);const auto baseline=baselineInstance.EvaluateFrame(context);
+        if (!ExpectNear(glm::length(pose.localPose[0].translation-baseline.localPose[0].translation),0,1e-6f,"Modifier changed bone translation")
+            || !ExpectNear(std::abs(glm::dot(pose.localPose[0].rotation,baseline.localPose[0].rotation)),1,1e-6f,"Modifier changed bone rotation")
+            || !ExpectNear(glm::length(pose.rootMotion.translation-baseline.rootMotion.translation),0,1e-6f,"Modifier changed root motion")
+            || !Expect(pose.events.size()==baseline.events.size() && !pose.events.empty() && pose.events[0].name=="Marker","Modifier lost animation events")) return false;
+    }
+    {
+        auto bones=BuildContractHumanoidSkeleton();
+        auto input=BuildContractClip("Scaled",0,0);
+        for(auto& key:input.boneKeyframes[0])key.scale={2,2,2};
+        std::unordered_map<std::string,VansAnimationClip> boneClips{{"Scaled",input}};
+        std::unordered_map<std::string,AnimatorParameter> boneParams;
+        boneParams["ScaleAlpha"].type=AnimatorParamType::Float;
+        VansAnimGraph boneGraph;
+        auto player=std::make_unique<AnimGraphClipNode>();player->m_ClipName="Scaled";
+        const int playerId=boneGraph.AddNode(std::move(player));
+        auto scaler=std::make_unique<AnimGraphComponentBoneScaleNode>();
+        scaler->m_BoneName="foot_l";scaler->m_Scale={1.4f,1.4f,1};scaler->m_AlphaParameter="ScaleAlpha";
+        const int scaleNodeId=boneGraph.AddNode(std::move(scaler));
+        const int outputId=boneGraph.AddNode(std::make_unique<AnimGraphOutputNode>());
+        boneGraph.AddLink(playerId,0,scaleNodeId,0);boneGraph.AddLink(scaleNodeId,0,outputId,0);
+        nlohmann::json before,after;boneGraph.SerializeToJsonObject(before);
+        auto restored=VansAnimGraph::DeserializeFromJsonObject(before);restored->SerializeToJsonObject(after);
+        if(!Expect(before==after,"Component bone scale authoring did not roundtrip"))return false;
+        AnimGraphContext boneContext;boneContext.skeleton=&bones;boneContext.clips=&boneClips;
+        boneContext.parameters=&boneParams;boneContext.deltaTime=0;
+        for(float alpha:{0.0f,.5f,1.0f})
+        {
+            boneParams["ScaleAlpha"].floatVal=alpha;
+            VansAnimGraphInstance instance(*restored);const auto pose=instance.EvaluateFrame(boneContext);
+            if(!Expect(pose.valid,"Component bone scale produced invalid pose")
+                ||!ExpectNear(pose.localPose[0].scale.x,2,1e-5f,"Component bone scale changed parent")
+                ||!ExpectNear(pose.localPose[2].scale.x,1+.4f*alpha,1e-5f,"Component bone scale X differs")
+                ||!ExpectNear(pose.localPose[2].scale.y,1+.4f*alpha,1e-5f,"Component bone scale Y differs")
+                ||!ExpectNear(pose.localPose[2].scale.z,1,1e-5f,"Component bone scale changed Z")
+                ||!ExpectNear(pose.localPose[3].scale.x,1,1e-5f,"Component bone scale changed other foot"))return false;
+        }
+    }
+    std::cout<<"ModifyCurve and component-space bone scale authoring/numeric contracts passed"<<std::endl;
+    return true;
+}
+
+bool TestAnimationConduitAndMeshAdditiveContract()
+{
+    using namespace VansGraphics;
+
+    // 大角度非中点权重能区分线性归一化与球面插值，包含反号四元数。
+    {
+        Skeleton blendSkeleton; blendSkeleton.bones.resize(1);
+        blendSkeleton.bones[0].parentIndex=-1; blendSkeleton.bones[0].localTransform=glm::mat4(1);
+        blendSkeleton.topologicalOrder={0};
+        std::unordered_map<std::string,VansAnimationClip> blendClips;
+        blendClips["A"]=BuildContractClip("A",0,0); blendClips["B"]=BuildContractClip("B",0,0);
+        const auto target=-glm::angleAxis(glm::radians(150.0f),glm::vec3(0,1,0));
+        for (auto& key:blendClips["B"].boneKeyframes[0]) key.rotation=target;
+        VansAnimGraph blendGraph;
+        for (const char* name:{"A","B"}) { auto n=std::make_unique<AnimGraphClipNode>(); n->m_ClipName=name; blendGraph.AddNode(std::move(n)); }
+        auto mix=std::make_unique<AnimGraphBlendNode>(); mix->m_UseParam=false; mix->m_FixedAlpha=.25f; mix->m_LinearRotationBlend=true;
+        const int mixId=blendGraph.AddNode(std::move(mix));
+        const int outId=blendGraph.AddNode(std::make_unique<AnimGraphOutputNode>());
+        blendGraph.AddLink(1,0,mixId,0); blendGraph.AddLink(2,0,mixId,1); blendGraph.AddLink(mixId,0,outId,0);
+        AnimGraphContext context; context.skeleton=&blendSkeleton; context.clips=&blendClips; context.deltaTime=0;
+        VansAnimGraphInstance blendInstance(blendGraph);
+        const auto pose=blendInstance.EvaluateFrame(context);
+        const float expectedAngle=2*std::atan2(.25f*std::sin(glm::radians(75.0f)),.75f+.25f*std::cos(glm::radians(75.0f)));
+        if (!Expect(pose.valid,"Linear blend did not evaluate")
+            || !ExpectNear(std::abs(glm::dot(pose.localPose[0].rotation,glm::angleAxis(expectedAngle,glm::vec3(0,1,0)))),1,1e-6f,"Linear blend rotation used slerp or incorrect quaternion hemisphere")) return false;
+        blendClips["Reference"]=BuildContractClip("Reference",0,0);
+        for (auto& key:blendClips["Reference"].boneKeyframes[0])
+        { key.rotation=glm::angleAxis(glm::radians(60.0f),glm::vec3(0,1,0)); key.position.y=.4f; }
+        for (auto& key:blendClips["B"].boneKeyframes[0]) key.position.y=1;
+        auto* deltaClip=static_cast<AnimGraphClipNode*>(blendGraph.GetNode(2));
+        deltaClip->m_AdditiveReferenceTime=0; deltaClip->m_AdditiveReferenceClip="Reference";
+        VansAnimGraphInstance referenceInstance(blendGraph);
+        const auto referencePose=referenceInstance.EvaluateFrame(context);
+        const float referenceAngle=2*std::atan2(.25f*std::sin(glm::radians(45.0f)),.75f+.25f*std::cos(glm::radians(45.0f)));
+        if (!Expect(referencePose.valid,"Explicit additive reference clip did not evaluate")
+            || !ExpectNear(referencePose.localPose[0].translation.y,.15f,1e-6f,"Additive clip sampled its own frame instead of explicit reference")
+            || !ExpectNear(std::abs(glm::dot(referencePose.localPose[0].rotation,glm::angleAxis(referenceAngle,glm::vec3(0,1,0)))),1,1e-6f,"Additive clip used incorrect reference rotation")) return false;
+    }
+    Skeleton skeleton; skeleton.bones.resize(2);
+    skeleton.bones[0].parentIndex=1; skeleton.bones[1].parentIndex=-1;
+    skeleton.topologicalOrder={1,0};
+    for (auto& bone:skeleton.bones) bone.localTransform=glm::mat4(1);
+    VansAnimationFrameVector<VansBoneTransform> reference(2), target(2), result;
+    reference[1].rotation=glm::angleAxis(.7f,glm::vec3(1,0,0)); reference[0].rotation=glm::angleAxis(.2f,glm::vec3(0,1,0));
+    reference[1].scale={2,3,4}; reference[0].translation={0,1,0};
+    target=reference; target[1].rotation=glm::angleAxis(1.1f,glm::vec3(0,1,0));
+    target[0].rotation=glm::angleAxis(.8f,glm::vec3(0,0,1)); target[0].translation={1,2,3}; target[0].scale={1.2f,.8f,1};
+    auto delta=target;
+    if (!Expect(VansPoseMath::MakeAdditiveDeltaPose(delta,reference,skeleton,VansAdditivePoseMode::MeshRotationLinear)
+        && VansPoseMath::ApplyAdditiveDeltaPose(reference,delta,1,skeleton,result,VansAdditivePoseMode::MeshRotationLinear),"Mesh rotation additive rejected valid topology")) return false;
+    for (int i=0;i<2;++i)
+        if (!ExpectNear(std::abs(glm::dot(result[i].rotation,target[i].rotation)),1,1e-6f,"Mesh rotation delta did not reconstruct target")
+            || !ExpectNear(glm::length(result[i].translation-target[i].translation),0,1e-6f,"Mesh additive incorrectly transformed local translation")
+            || !ExpectNear(glm::length(result[i].scale-target[i].scale),0,1e-6f,"Mesh additive lost local scale")) return false;
+    auto base=reference; base[1].rotation=glm::angleAxis(-.9f,glm::vec3(0,0,1)); base[1].scale={5,2,7};
+    if (!Expect(VansPoseMath::ApplyAdditiveDeltaPose(base,delta,.25f,skeleton,result,VansAdditivePoseMode::MeshRotationLinear),"Partial mesh additive failed")
+        || !ExpectNear(glm::length(result[0].translation-glm::vec3(.25f,1.25f,.75f)),0,1e-6f,"Additive translation depends on parent scale or rotation")) return false;
+    skeleton.bones.resize(1); skeleton.bones[0].parentIndex=-1;
+    skeleton.topologicalOrder={0};
+    std::unordered_map<std::string,VansAnimationClip> clips;
+    for (auto name:{"A","B","C"}) clips[name]=BuildContractClip(name,0,0);
+    std::unordered_map<std::string,AnimatorParameter> params;
+    params["Go"].type=params["Gate"].type=AnimatorParamType::Bool;
+    params["Go"].boolVal=false; params["Gate"].boolVal=true;
+    VansAnimGraph graph; auto machine=std::make_unique<AnimGraphStateMachineNode>();
+    machine->m_DefaultStateName="A"; machine->m_MaxTransitionsPerFrame=1;
+    for (auto name:{"A","B","C"}) { AnimatorState state; state.name=state.clipName=name; state.loop=false; machine->m_States.push_back(state); }
+    for (auto name:{"Route","Cycle"}) { AnimatorState state; state.name=name; state.conduit=true; if (state.name=="Route") state.entryConditionParameter="Gate"; machine->m_States.push_back(state); }
+    TransitionCondition go; go.paramName="Go"; go.op=CompareOp::Equal; go.boolVal=true;
+    auto edge=[&](const char* from,const char* to,float duration){AnimatorTransition t;t.fromState=from;t.toState=to;t.blendDuration=duration;return t;};
+    auto enter=edge("A","Route",9);enter.conditions.push_back(go);
+    auto routeCycle=edge("Route","Cycle",8),cycleBack=edge("Cycle","Route",7),routeB=edge("Route","B",.4f);
+    auto bc=edge("B","C",.3f);bc.automaticRemainingTime=true;
+    machine->m_Transitions={enter,routeCycle,cycleBack,routeB,bc};
+    const int id=graph.AddNode(std::move(machine)); const int output=graph.AddNode(std::make_unique<AnimGraphOutputNode>());graph.AddLink(id,0,output,0);
+    AnimGraphContext ctx;ctx.clips=&clips;ctx.parameters=&params;ctx.skeleton=&skeleton;ctx.deltaTime=.1f;
+    VansAnimGraphInstance instance(graph);instance.EvaluateFrame(ctx);params["Go"].boolVal=true;params["Gate"].boolVal=false;
+    instance.EvaluateFrame(ctx);
+    if (!Expect(instance.GetCurrentStateName()=="A","Failed conduit left machine stranded in route state")) return false;
+    params["Gate"].boolVal=true;instance.EvaluateFrame(ctx);
+    auto snap=instance.CaptureRuntimeState();const auto& state=snap.stateMachineStates.at(id);
+    if (!Expect(state.currentStateName=="B" && state.activeTransitions.size()==1,"Conduit hops consumed content-transition budget or failed cycle guard")
+        || !ExpectNear(state.activeTransitions[0].duration,.4f,1e-6f,"Conduit used intermediate edge duration")) return false;
+    // Force a known previous-player remaining time, preserving the real snapshot path.
+    snap.stateMachineStates[id].relevantClipRemaining["B"]=.22f;
+    if (!Expect(instance.RestoreRuntimeState(snap),"Conduit snapshot rejected")) return false;
+    instance.EvaluateFrame(ctx);snap=instance.CaptureRuntimeState();
+    if (!Expect(snap.stateMachineStates.at(id).currentStateName=="C","Automatic remaining-time rule did not fire")
+        || !ExpectNear(snap.stateMachineStates.at(id).activeTransitions.back().duration,.22f,1e-6f,"Automatic rule ignored frame overshoot duration adjustment")) return false;
+    std::cout << "Conduit routing, cycle/entry guards, automatic remaining time and mesh-rotation additive contracts passed" << std::endl;
+    return true;
+}
+
+bool TestAnimationInertializationContract()
+{
+    using namespace VansGraphics;
+    using Inertia = VansInertializationState;
+    // 独立端点/中点基准：静止五次曲线为 1-10t^3+15t^4-6t^5。
+    if (!ExpectNear(Inertia::Decay(1,0,.1f,1), .99144f, 1e-6f, "Inertia quintic sample incorrect")
+        || !ExpectNear(Inertia::Decay(1,0,.5f,1), .5f, 1e-6f, "Inertia midpoint incorrect")
+        || !ExpectNear(Inertia::Decay(-1,4,.5f,1), -Inertia::Decay(1,-4,.5f,1), 1e-6f, "Inertia sign symmetry incorrect")
+        || !ExpectNear(Inertia::Decay(1,10,.1f,1), .99144f, 1e-6f, "Inertia retained velocity away from target")
+        || !ExpectNear(Inertia::Decay(1,-20,.25f,1), 0, 1e-6f, "Inertia failed to shorten overshooting duration")) return false;
+    Skeleton skeleton; skeleton.bones.resize(1); skeleton.bones[0].parentIndex=-1;
+    skeleton.bones[0].localTransform=glm::mat4(1);
+    std::unordered_map<std::string,VansAnimationClip> clips;
+    for (int i=0;i<2;++i)
+    {
+        const std::string name=i==0?"A":"B"; clips[name]=BuildContractClip(name,0,0);
+        for (auto& key: clips[name].boneKeyframes[0])
+        {
+            key.position.y=float(i); key.scale=glm::vec3(1+float(i));
+            key.rotation=glm::angleAxis(glm::radians(90.0f*i),glm::vec3(0,1,0));
+        }
+    }
+    std::unordered_map<std::string,AnimatorParameter> parameters;
+    parameters["Go"].type=AnimatorParamType::Bool;
+    VansAnimGraph graph;
+    auto machine=std::make_unique<AnimGraphStateMachineNode>(); machine->m_DefaultStateName="A";
+    for (const auto& name:{"A","B"}) { AnimatorState state; state.name=state.clipName=name; machine->m_States.push_back(state); }
+    AnimatorTransition transition; transition.fromState="A"; transition.toState="B";
+    transition.blendDuration=1; transition.inertialization=true;
+    TransitionCondition condition; condition.paramName="Go"; condition.op=CompareOp::Equal; condition.boolVal=true;
+    transition.conditions.push_back(condition); machine->m_Transitions.push_back(transition);
+    const int machineId=graph.AddNode(std::move(machine));
+    auto scale=std::make_unique<AnimGraphSpeedScaleNode>(); scale->m_UseParam=false; scale->m_FixedSpeed=3;
+    const int scaleId=graph.AddNode(std::move(scale)); graph.AddLink(machineId,0,scaleId,0);
+    auto cache=std::make_unique<AnimGraphSaveCachedPoseNode>(); cache->m_CacheName="Movement";
+    const int writer=graph.AddNode(std::move(cache)); graph.AddLink(scaleId,0,writer,0);
+    auto read=std::make_unique<AnimGraphUseCachedPoseNode>(); read->m_CacheName="Movement";
+    const int reader=graph.AddNode(std::move(read));
+    const int first=graph.AddNode(std::make_unique<AnimGraphInertializationNode>());
+    const int second=graph.AddNode(std::make_unique<AnimGraphInertializationNode>());
+    graph.AddLink(writer,0,first,0); graph.AddLink(reader,0,second,0);
+    auto blend=std::make_unique<AnimGraphBlendNode>(); blend->m_UseParam=false; blend->m_FixedAlpha=.5f;
+    const int blendId=graph.AddNode(std::move(blend)); graph.AddLink(first,0,blendId,0); graph.AddLink(second,0,blendId,1);
+    const int output=graph.AddNode(std::make_unique<AnimGraphOutputNode>()); graph.AddLink(blendId,0,output,0);
+    AnimGraphContext ctx; ctx.skeleton=&skeleton; ctx.clips=&clips; ctx.parameters=&parameters; ctx.deltaTime=.1f;
+    VansAnimGraphInstance instance(graph);
+    if (!Expect(instance.IsCompiled(),instance.GetCompileError().c_str())) return false;
+    instance.EvaluateFrame(ctx); instance.EvaluateFrame(ctx); parameters["Go"].boolVal=true;
+    const auto pose=instance.EvaluateFrame(ctx); auto saved=instance.CaptureRuntimeState();
+    const auto& runtime=saved.stateMachineStates.at(machineId);
+    if (!Expect(pose.valid && runtime.currentStateName=="B" && runtime.activeTransitions.empty(),"Inertial transition retained source crossfade")
+        || !ExpectNear(runtime.stateTimes.at("A"),.6f,1e-6f,"Inertial source clock advanced after exit")
+        || !ExpectNear(pose.localPose[0].translation.y,.00856f,2e-6f,"Cached inertial request was lost or time-scaled")
+        || !ExpectNear(pose.localPose[0].scale.x,1.00856f,2e-6f,"Inertial scale residual incorrect")
+        || !ExpectNear(std::abs(glm::dot(pose.localPose[0].rotation,glm::angleAxis(glm::radians(90*.00856f),glm::vec3(0,1,0)))),1,1e-6f,"Inertial rotation residual incorrect")
+        || !Expect(saved.inertializationStates.at(first).active && saved.inertializationStates.at(second).active,"Skipped cached-pose branch lost inertia request")) return false;
+    VansAnimGraphInstance restored(graph);
+    if (!Expect(restored.RestoreRuntimeState(saved),"Inertia history snapshot rejected")) return false;
+    const auto next=instance.EvaluateFrame(ctx), replay=restored.EvaluateFrame(ctx);
+    if (!ExpectNear(next.localPose[0].translation.y,replay.localPose[0].translation.y,1e-7f,"Inertial history restore diverged")) return false;
+    saved.inertializationStates[first].current.bones[0].translation.x=std::numeric_limits<float>::quiet_NaN();
+    if (!Expect(!restored.RestoreRuntimeState(saved),"Non-finite inertia snapshot accepted")) return false;
+    instance.Reset(); parameters["Go"].boolVal=true;
+    if (!ExpectNear(instance.EvaluateFrame(ctx).localPose[0].translation.y,1,1e-6f,"First frame used stale inertia history")) return false;
+    // 单节点验证：最短请求、连续打断欠额、传送取消待启动请求及曲线残差。
+    Inertia state;
+    auto evaluate=[&](float target, float dt, float request, float worldY=0.0f)
+    {
+        VansPosePayload payload; payload.valid=true; payload.localPose.resize(1);
+        payload.localPose[0].translation.y=target;
+        payload.curves.push_back({17,"Weight",target+1,true});
+        state.deltaTime+=dt; if (request>=0) state.requests.push_back(request);
+        glm::mat4 world(1); world[3].y=worldY;
+        state.Evaluate(payload,world,3);
+        return payload;
+    };
+    evaluate(0,.1f,-1); evaluate(0,.1f,-1);
+    state.requests.push_back(2); const auto firstPose=evaluate(1,.1f,1);
+    if (!ExpectNear(state.duration,1,1e-6f,"Multiple inertia requests did not use shortest duration")
+        || !ExpectNear(firstPose.curves[0].value,1.00856f,2e-6f,"UE curve residual derivative contract changed")) return false;
+    evaluate(.5f,.1f,1);
+    if (!ExpectNear(state.duration,1,1e-6f,"First interruption incorrectly applied duration deficit")
+        || !ExpectNear(state.deficit,.8f,1e-6f,"Interrupted inertia deficit incorrect")) return false;
+    evaluate(.25f,.05f,1);
+    if (!ExpectNear(state.duration,.1f,2e-6f,"Repeated interruption did not reduce duration")) return false;
+    state={}; evaluate(0,.1f,-1); const auto teleported=evaluate(1,.1f,1,10);
+    if (!Expect(!state.active && state.current.deltaTime==0,"Teleport did not cancel pending inertia and velocity")
+        || !ExpectNear(teleported.localPose[0].translation.y,1,1e-6f,"Teleport retained stale offset")) return false;
+    VansAnimGraph missing;
+    auto noReceiver=std::make_unique<AnimGraphStateMachineNode>(); noReceiver->m_DefaultStateName="A";
+    for (const auto& name:{"A","B"}) { AnimatorState state; state.name=state.clipName=name; noReceiver->m_States.push_back(state); }
+    noReceiver->m_Transitions.push_back(transition);
+    const int source=missing.AddNode(std::move(noReceiver)); const int end=missing.AddNode(std::make_unique<AnimGraphOutputNode>());
+    missing.AddLink(source,0,end,0); VansAnimGraphInstance rejected(missing);
+    if (!Expect(!rejected.IsCompiled(),"Inertial transition accepted without downstream receiver")) return false;
+    std::cout << "UE inertialization numeric, cache routing, interruption, snapshot and teleport contracts passed" << std::endl;
+    return true;
+}
+
+bool TestAnimationTransitionStackContract()
+{
+    using namespace VansGraphics;
+    Skeleton skeleton; skeleton.bones.resize(1); skeleton.bones[0].parentIndex = -1;
+    skeleton.bones[0].localTransform = glm::mat4(1);
+    std::unordered_map<std::string, VansAnimationClip> clips;
+    std::unordered_map<std::string, AnimatorParameter> parameters;
+    parameters["Go"].type = parameters["Return"].type = AnimatorParamType::Bool;
+    VansAnimGraph graph;
+    auto machine = std::make_unique<AnimGraphStateMachineNode>();
+    machine->m_DefaultStateName = "A"; machine->m_MaxTransitionsPerFrame = 3; machine->m_LinearRotationBlend = true;
+    for (int i = 0; i < 3; ++i)
+    {
+        const std::string name(1, char('A' + i));
+        clips[name] = BuildContractClip(name, 0, 0);
+        for (auto& key : clips[name].boneKeyframes[0])
+        {
+            key.position.y = float(i * 10);
+            key.rotation = i == 0 ? glm::quat(1,0,0,0) : glm::angleAxis(glm::radians(120.0f),
+                i == 1 ? glm::vec3(1,0,0) : glm::vec3(0,1,0));
+        }
+        AnimatorState state; state.name = state.clipName = name; state.loop = false;
+        machine->m_States.push_back(state);
+    }
+    AnimatorTransition ab; ab.fromState = "A"; ab.toState = "B"; ab.blendDuration = .2f;
+    TransitionCondition go; go.paramName = "Go"; go.boolVal = true; go.op = CompareOp::Equal;
+    ab.conditions.push_back(go);
+    AnimatorTransition bc; bc.fromState = "B"; bc.toState = "C"; bc.blendDuration = 1;
+    AnimatorTransition ca; ca.fromState = "C"; ca.toState = "A"; ca.blendDuration = .5f;
+    go.paramName = "Return"; ca.conditions.push_back(go);
+    machine->m_Transitions = {ab, bc, ca};
+    const int machineId = graph.AddNode(std::move(machine));
+    const int output = graph.AddNode(std::make_unique<AnimGraphOutputNode>());
+    graph.AddLink(machineId, 0, output, 0);
+    AnimGraphContext ctx; ctx.skeleton = &skeleton; ctx.clips = &clips; ctx.parameters = &parameters; ctx.deltaTime = .1f;
+    VansAnimGraphInstance instance(graph);
+    if (!Expect(instance.IsCompiled(), instance.GetCompileError().c_str())) return false;
+    instance.EvaluateFrame(ctx);
+    parameters["Go"].boolVal = true;
+    const auto pose = instance.EvaluateFrame(ctx);
+    const auto snapshot = instance.CaptureRuntimeState();
+    const auto& runtime = snapshot.stateMachineStates.at(machineId);
+    const auto expectedRotation = glm::normalize(clips.at("A").boneKeyframes[0][0].rotation * .45f
+        + clips.at("B").boneKeyframes[0][0].rotation * .45f + clips.at("C").boneKeyframes[0][0].rotation * .1f);
+    if (!Expect(pose.valid && runtime.currentStateName == "C" && runtime.activeTransitions.size() == 2,
+            "Same-frame chained transition discarded its unfinished source")
+        || !ExpectNear(runtime.GetStateWeight("A"), .45f, 1e-6f, "Stack source weight incorrect")
+        || !ExpectNear(runtime.GetStateWeight("B"), .45f, 1e-6f, "Intermediate state weight incorrect")
+        || !ExpectNear(pose.localPose[0].translation.y, 6.5f, 1e-5f, "Sequential transition pose composition incorrect")
+        || !ExpectNear(std::abs(glm::dot(pose.localPose[0].rotation, expectedRotation)), 1, 1e-6f,
+            "Transition stack normalized an intermediate quaternion")
+        || !ExpectNear(runtime.stateTimes.at("B"), .1f, 1e-6f, "Shared intermediate state updated twice")) return false;
+    auto followerGraph = graph.Clone();
+    static_cast<AnimGraphStateMachineNode*>(followerGraph->GetNode(machineId))->m_Transitions.clear();
+    VansAnimGraphInstance follower(*followerGraph);
+    if (!Expect(follower.SynchronizePrimaryStateMachineFrom(instance, clips), "Stack state follower rejected source")) return false;
+    auto followerContext = ctx; followerContext.synchronizedStateFollower = true;
+    const auto followerPose = follower.EvaluateFrame(followerContext);
+    if (!Expect(followerPose.valid, "Stack follower pose invalid")
+        || !ExpectNear(followerPose.localPose[0].translation.y, 6.5f, 1e-5f, "Follower lost active transition stack")) return false;
+    VansAnimGraphInstance resumed(graph);
+    if (!Expect(resumed.RestoreRuntimeState(snapshot), "Stack snapshot rejected")) return false;
+    parameters["Go"].boolVal = false; parameters["Return"].boolVal = true;
+    const auto interruptedPose = instance.EvaluateFrame(ctx), resumedPose = resumed.EvaluateFrame(ctx);
+    const auto after = instance.CaptureRuntimeState().stateMachineStates.at(machineId);
+    if (!Expect(after.currentStateName == "A" && after.activeTransitions.size() == 2,
+            "Completed transition removal discarded newer transitions")
+        || !ExpectNear(after.activeTransitions.back().duration, .275f, 1e-6f,
+            "Interrupted return duration ignored existing target weight")
+        || !ExpectNear(after.stateTimes.at("A"), .3f, 1e-6f, "Interrupted return reset an active state")
+        || !ExpectNear(interruptedPose.localPose[0].translation.y, resumedPose.localPose[0].translation.y, 1e-6f,
+            "Restored transition stack diverged")) return false;
+    ctx.deltaTime = 1;
+    instance.EvaluateFrame(ctx);
+    if (!Expect(instance.CaptureRuntimeState().stateMachineStates.at(machineId).activeTransitions.empty(),
+        "Completed latest transition failed to clear older transitions")) return false;
+    auto firstFrame = graph.Clone();
+    auto* firstMachine = static_cast<AnimGraphStateMachineNode*>(firstFrame->GetNode(machineId));
+    firstMachine->m_SkipFirstUpdateTransition = true;
+    parameters["Go"].boolVal = true; parameters["Return"].boolVal = false; ctx.deltaTime = .1f;
+    VansAnimGraphInstance immediate(*firstFrame);
+    const auto immediatePose = immediate.EvaluateFrame(ctx);
+    if (!Expect(immediate.CaptureRuntimeState().stateMachineStates.at(machineId).activeTransitions.empty(),
+            "First-update skip retained an intermediate transition")
+        || !ExpectNear(immediatePose.localPose[0].translation.y, 20, 1e-6f,
+            "First-update skip did not follow the whole transition chain")) return false;
+    firstMachine->m_MaxTransitionsPerFrame = 1;
+    VansAnimGraphInstance limited(*firstFrame);
+    limited.EvaluateFrame(ctx);
+    if (!Expect(limited.CaptureRuntimeState().stateMachineStates.at(machineId).currentStateName == "B",
+        "Per-machine transition limit was ignored")) return false;
+    auto sphericalGraph = graph.Clone();
+    static_cast<AnimGraphStateMachineNode*>(sphericalGraph->GetNode(machineId))->m_LinearRotationBlend = false;
+    VansAnimGraphInstance spherical(*sphericalGraph);
+    parameters["Go"].boolVal = false; spherical.EvaluateFrame(ctx);
+    parameters["Go"].boolVal = true;
+    const auto sphericalPose = spherical.EvaluateFrame(ctx);
+    const auto expectedSpherical = glm::normalize(glm::slerp(glm::normalize(glm::slerp(
+        clips.at("A").boneKeyframes[0][0].rotation, clips.at("B").boneKeyframes[0][0].rotation, .5f)),
+        clips.at("C").boneKeyframes[0][0].rotation, .1f));
+    if (!ExpectNear(std::abs(glm::dot(sphericalPose.localPose[0].rotation, expectedSpherical)), 1, 1e-6f,
+        "Default spherical interpolation changed with ALS linear mode")) return false;
+    std::cout << "Animation transition stack contract passed" << std::endl;
+    return true;
+}
+
+bool TestAnimationAlphaAndNonloopGroupContract()
+{
+    using namespace VansGraphics;
+    Skeleton skeleton; skeleton.bones.resize(1); skeleton.bones[0].parentIndex=-1; skeleton.bones[0].localTransform=glm::mat4(1);
+    std::unordered_map<std::string,VansAnimationClip> clips;
+    clips["A"]=BuildContractClip("A",0,0); clips["A"].duration=2;
+    clips["B"]=BuildContractClip("B",10,0); clips["B"].duration=4;
+    std::unordered_map<std::string,AnimatorParameter> parameters;
+    parameters["Speed"].type=AnimatorParamType::Float; parameters["Speed"].floatVal=3.5f;
+    VansAnimGraph graph;
+    auto a=std::make_unique<AnimGraphClipNode>(); a->m_ClipName="A"; a->m_Loop=false; a->m_SyncGroup="Jump";
+    auto b=std::make_unique<AnimGraphClipNode>(); b->m_ClipName="B"; b->m_Loop=false; b->m_SyncGroup="Jump"; b->m_Speed=2;
+    const int aId=graph.AddNode(std::move(a)), bId=graph.AddNode(std::move(b));
+    auto blend=std::make_unique<AnimGraphBlendNode>(); blend->m_ParamName="Speed";
+    blend->m_MapAlpha=blend->m_InterpolateAlpha=true;
+    blend->m_AlphaInMin=2; blend->m_AlphaInMax=5;
+    blend->m_AlphaSpeedIncreasing=5; blend->m_AlphaSpeedDecreasing=2;
+    const int blendId=graph.AddNode(std::move(blend));
+    auto scale=std::make_unique<AnimGraphSpeedScaleNode>(); scale->m_UseParam=false; scale->m_FixedSpeed=3;
+    const int scaleId=graph.AddNode(std::move(scale)), out=graph.AddNode(std::make_unique<AnimGraphOutputNode>());
+    graph.AddLink(aId,0,blendId,0); graph.AddLink(bId,0,blendId,1); graph.AddLink(blendId,0,scaleId,0); graph.AddLink(scaleId,0,out,0);
+    AnimGraphContext ctx; ctx.skeleton=&skeleton; ctx.clips=&clips; ctx.parameters=&parameters; ctx.deltaTime=.1f;
+    VansAnimGraphInstance instance(graph);
+    if (!Expect(instance.IsCompiled(),instance.GetCompileError().c_str()) || !Expect(instance.EvaluateFrame(ctx).valid,"Nonloop group pose invalid")) return false;
+    auto snapshot=instance.CaptureRuntimeState();
+    if (!ExpectNear(snapshot.blendAlphaStates.at(blendId).value,.5f,1e-6f,"First mapped alpha should snap to input")
+        || !ExpectNear(snapshot.clipStates.at(aId).currentTime,.3f,1e-6f,"Nonloop leader missed first scaled delta")
+        || !ExpectNear(snapshot.clipStates.at(bId).currentTime,.6f,1e-6f,"Nonloop follower did not normalize by duration")) return false;
+    parameters["Speed"].floatVal=5; instance.EvaluateFrame(ctx); snapshot=instance.CaptureRuntimeState();
+    if (!ExpectNear(snapshot.blendAlphaStates.at(blendId).value,.75f,1e-6f,"Alpha interpolation must tick once with unscaled frame time")
+        || !Expect(snapshot.syncGroups.at("Jump").leaderNode==bId,"Nonloop leader weight switch failed")
+        || !ExpectNear(snapshot.clipStates.at(aId).currentTime,.6f,1e-6f,"Nonloop leader handoff lost phase")) return false;
+    VansAnimGraphInstance restored(graph);
+    if (!Expect(restored.RestoreRuntimeState(snapshot),"Alpha snapshot restore failed")) return false;
+    parameters["Speed"].floatVal=0; instance.EvaluateFrame(ctx); restored.EvaluateFrame(ctx);
+    const float expected=.75f+(-2.0f/3-.75f)*.2f;
+    if (!ExpectNear(instance.CaptureRuntimeState().blendAlphaStates.at(blendId).value,expected,1e-6f,"Mapping was clamped before interpolation")
+        || !ExpectNear(restored.CaptureRuntimeState().blendAlphaStates.at(blendId).value,expected,1e-6f,"Alpha snapshot resumed incorrectly")) return false;
+    parameters["Speed"].floatVal=100; instance.Reset(); instance.EvaluateFrame(ctx);
+    if (!ExpectNear(instance.CaptureRuntimeState().blendAlphaStates.at(blendId).value,98.0f/3,1e-5f,"Alpha history must retain unclamped mapped input")) return false;
+    for (int i=0;i<30;++i) instance.EvaluateFrame(ctx);
+    snapshot=instance.CaptureRuntimeState();
+    if (!ExpectNear(snapshot.clipStates.at(bId).currentTime,4,1e-6f,"Nonloop group wrapped at clip end")
+        || !ExpectNear(snapshot.clipStates.at(bId).previousTime,4,1e-6f,"Finished nonloop player kept generating intervals")) return false;
+    std::cout << "Alpha mapping/interpolation and nonloop group contract passed" << std::endl;
+    return true;
+}
+
+bool TestAnimationInitializationContract()
+{
+    using namespace VansGraphics;
+    Skeleton skeleton; skeleton.bones.resize(1); skeleton.bones[0].parentIndex = -1;
+    skeleton.bones[0].localTransform = glm::mat4(1);
+    std::unordered_map<std::string, VansAnimationClip> clips;
+    clips["Loop"] = BuildContractClip("Loop", 2, 0);
+    std::unordered_map<std::string, AnimatorParameter> parameters;
+    for (const auto& name : {"X", "Y", "Alpha"}) parameters[name].type = AnimatorParamType::Float;
+    parameters["State"].type = AnimatorParamType::Int;
+    VansAnimGraph graph;
+    auto grid = std::make_unique<AnimGraphBlendSpace2DNode>();
+    grid->m_XParamName = "X"; grid->m_YParamName = "Y";
+    grid->m_Samples = {{0,0},{1,0},{0,1},{1,1}};
+    grid->m_BilinearGrid = grid->m_SynchronizeSamples = true;
+    grid->m_CubicFilterWindowX = 1; grid->m_SyncGroup = "Feet";
+    const int gridId = graph.AddNode(std::move(grid));
+    for (int i = 0; i < 4; ++i)
+    {
+        auto clip = std::make_unique<AnimGraphClipNode>(); clip->m_ClipName = "Loop";
+        const int id = graph.AddNode(std::move(clip)); graph.AddLink(id, 0, gridId, i);
+    }
+    auto idle = std::make_unique<AnimGraphClipNode>(); idle->m_ClipName = "Loop";
+    const int idleId = graph.AddNode(std::move(idle));
+    auto blend = std::make_unique<AnimGraphBlendNode>(); blend->m_UseParam = true; blend->m_ParamName = "Alpha";
+    const int blendId = graph.AddNode(std::move(blend)), out = graph.AddNode(std::make_unique<AnimGraphOutputNode>());
+    graph.AddLink(gridId, 0, blendId, 0); graph.AddLink(idleId, 0, blendId, 1); graph.AddLink(blendId, 0, out, 0);
+    AnimGraphContext ctx; ctx.skeleton = &skeleton; ctx.clips = &clips; ctx.parameters = &parameters; ctx.deltaTime = .1f;
+    VansAnimGraphInstance weighted(graph);
+    weighted.EvaluateFrame(ctx);
+    parameters["X"].floatVal = 1; weighted.EvaluateFrame(ctx);
+    parameters["Alpha"].floatVal = 1; weighted.EvaluateFrame(ctx);
+    const auto dormant = weighted.CaptureRuntimeState();
+    if (!ExpectNear(dormant.clipStates.at(idleId).currentTime, .1f, 1e-6f,
+        "Newly relevant ungrouped player lost first-frame delta")) return false;
+    VansAnimGraphInstance restored(graph);
+    if (!Expect(restored.RestoreRuntimeState(dormant), "Dormant filter lifecycle snapshot rejected")) return false;
+    parameters["Alpha"].floatVal = 0; parameters["X"].floatVal = 0;
+    weighted.EvaluateFrame(ctx); restored.EvaluateFrame(ctx);
+    const auto resumed = weighted.CaptureRuntimeState().blendSpaceStates.at(gridId);
+    if (!ExpectNear(weighted.CaptureRuntimeState().clipStates.at(idleId).currentTime, .1f, 1e-6f,
+            "Inactive player incorrectly advanced using last frame's relevance")
+        || !ExpectNear(resumed.x.time, .3f, 1e-6f, "Weight recovery incorrectly reinitialized input filter")
+        || !Expect(resumed.x.output > 0 && resumed.x.output < 1, "Weight recovery discarded filter history")
+        || !ExpectNear(resumed.x.output, restored.CaptureRuntimeState().blendSpaceStates.at(gridId).x.output, 1e-6f,
+            "Snapshot forgot dormant player's initialization history")) return false;
+
+    auto machineGraph = graph.Clone(); machineGraph->RemoveNode(blendId); machineGraph->RemoveNode(idleId);
+    auto machine = std::make_unique<AnimGraphStateMachineNode>(); machine->m_DefaultStateName = "A";
+    for (int i = 0; i < 3; ++i)
+    {
+        AnimatorState state; state.name = std::string(1, char('A' + i)); state.poseNodeId = i == 1 ? -1 : gridId;
+        if (i == 1) { state.clipName = "Loop"; state.speed = 2; }
+        machine->m_States.push_back(state);
+        AnimatorTransition transition; transition.fromState = "*"; transition.toState = state.name;
+        transition.blendDuration = 0;
+        TransitionCondition condition; condition.paramName = "State"; condition.op = CompareOp::Equal; condition.intVal = i;
+        transition.conditions.push_back(condition); machine->m_Transitions.push_back(transition);
+    }
+    const int machineId = machineGraph->AddNode(std::move(machine)); machineGraph->AddLink(machineId, 0, out, 0);
+    VansAnimGraphInstance direct(*machineGraph);
+    if (!Expect(direct.IsCompiled(), direct.GetCompileError().c_str())) return false;
+    parameters["X"].floatVal = 1; parameters["State"].intVal = 0;
+    direct.EvaluateFrame(ctx); direct.EvaluateFrame(ctx);
+    parameters["State"].intVal = 1; direct.EvaluateFrame(ctx);
+    if (!ExpectNear(direct.CaptureRuntimeState().stateMachineStates.at(machineId).stateTimes.at("B"), .2f, 1e-6f,
+        "State clip first update failed to advance after initialization at its authored rate")) return false;
+    VansAnimGraphInstance follower(*machineGraph);
+    if (!Expect(follower.SynchronizePrimaryStateMachineFrom(direct, clips), "Staged state follower sync rejected")) return false;
+    auto followerContext = ctx; followerContext.synchronizedStateFollower = true;
+    if (!Expect(follower.EvaluateFrame(followerContext).valid, "Staged state follower first pose invalid")
+        || !Expect(follower.CaptureRuntimeState().stateMachineStates.at(machineId).currentStateName == "B",
+            "First initialization overwrote externally synchronized state")
+        || !ExpectNear(follower.CaptureRuntimeState().stateMachineStates.at(machineId).stateTimes.at("B"), .2f, 1e-6f,
+            "State follower advanced synchronized time twice")) return false;
+    parameters["State"].intVal = 0; direct.EvaluateFrame(ctx);
+    if (!ExpectNear(direct.CaptureRuntimeState().blendSpaceStates.at(gridId).x.time, .1f, 1e-6f,
+        "State reentry failed to initialize owned BlendSpace")) return false;
+    direct.EvaluateFrame(ctx);
+    parameters["State"].intVal = 2; direct.EvaluateFrame(ctx);
+    if (!ExpectNear(direct.CaptureRuntimeState().blendSpaceStates.at(gridId).x.time, .1f, 1e-6f,
+        "Directly shared node incorrectly behaved as a cached-pose initialization barrier")) return false;
+
+    // 返回仍在淡出的状态时，普通状态保留历史；AlwaysResetOnEntry 必须重置其拥有的子图。
+    for (const bool forceReset : {false, true})
+    {
+        auto interruptedGraph = machineGraph->Clone();
+        auto* interruptedMachine = static_cast<AnimGraphStateMachineNode*>(interruptedGraph->GetNode(machineId));
+        interruptedMachine->m_States[0].alwaysResetOnEntry = forceReset;
+        for (auto& transition : interruptedMachine->m_Transitions) transition.blendDuration = 1;
+        VansAnimGraphInstance interrupted(*interruptedGraph);
+        parameters["State"].intVal = 0;
+        interrupted.EvaluateFrame(ctx); interrupted.EvaluateFrame(ctx);
+        parameters["State"].intVal = 1; interrupted.EvaluateFrame(ctx);
+        VansAnimGraphInstance resume(*interruptedGraph);
+        if (!Expect(resume.RestoreRuntimeState(interrupted.CaptureRuntimeState()),
+            "Interrupted state-entry snapshot rejected")) return false;
+        parameters["State"].intVal = 0;
+        interrupted.EvaluateFrame(ctx); resume.EvaluateFrame(ctx);
+        const float expectedTime = forceReset ? .1f : .4f;
+        if (!ExpectNear(interrupted.CaptureRuntimeState().blendSpaceStates.at(gridId).x.time, expectedTime, 1e-6f,
+                "Active-state reentry ignored AlwaysResetOnEntry policy")
+            || !ExpectNear(resume.CaptureRuntimeState().blendSpaceStates.at(gridId).x.time, expectedTime, 1e-6f,
+                "Restored active-state reentry changed initialization policy")) return false;
+    }
+
+    auto cached = machineGraph->Clone();
+    auto save = std::make_unique<AnimGraphSaveCachedPoseNode>(); save->m_CacheName = "Shared";
+    auto use = std::make_unique<AnimGraphUseCachedPoseNode>(); use->m_CacheName = "Shared";
+    const int saveId = cached->AddNode(std::move(save)), useId = cached->AddNode(std::move(use));
+    cached->AddLink(gridId, 0, saveId, 0);
+    auto* cachedMachine = static_cast<AnimGraphStateMachineNode*>(cached->GetNode(machineId));
+    cachedMachine->m_States[0].poseNodeId = cachedMachine->m_States[2].poseNodeId = useId;
+    VansAnimGraphInstance guarded(*cached);
+    if (!Expect(guarded.IsCompiled(), guarded.GetCompileError().c_str())) return false;
+    parameters["State"].intVal = 0;
+    guarded.EvaluateFrame(ctx); guarded.EvaluateFrame(ctx);
+    parameters["State"].intVal = 2; guarded.EvaluateFrame(ctx);
+    if (!ExpectNear(guarded.CaptureRuntimeState().blendSpaceStates.at(gridId).x.time, .3f, 1e-6f,
+        "State change reset a continuously relevant cached pose")) return false;
+    parameters["State"].intVal = 1; guarded.EvaluateFrame(ctx);
+    VansAnimGraphInstance dormantCache(*cached);
+    if (!Expect(dormantCache.RestoreRuntimeState(guarded.CaptureRuntimeState()), "Dormant cache snapshot rejected")) return false;
+    parameters["State"].intVal = 0; guarded.EvaluateFrame(ctx); dormantCache.EvaluateFrame(ctx);
+    if (!ExpectNear(guarded.CaptureRuntimeState().blendSpaceStates.at(gridId).x.time, .1f, 1e-6f,
+            "Inactive cached pose incorrectly blocked state-entry initialization")
+        || !ExpectNear(dormantCache.CaptureRuntimeState().blendSpaceStates.at(gridId).x.time, .1f, 1e-6f,
+            "Restored inactive cache lost initialization guard state")) return false;
+    auto hiddenMachine = cached->Clone();
+    const auto outputLinks = hiddenMachine->GetLinks();
+    for (const auto& link : outputLinks) if (link.toNodeId == out) hiddenMachine->RemoveLink(link.linkId);
+    auto other = std::make_unique<AnimGraphClipNode>(); other->m_ClipName = "Loop";
+    const int otherId = hiddenMachine->AddNode(std::move(other));
+    auto gate = std::make_unique<AnimGraphBlendNode>(); gate->m_UseParam = true; gate->m_ParamName = "Alpha";
+    const int gateId = hiddenMachine->AddNode(std::move(gate));
+    hiddenMachine->AddLink(machineId, 0, gateId, 0); hiddenMachine->AddLink(otherId, 0, gateId, 1);
+    hiddenMachine->AddLink(gateId, 0, out, 0);
+    VansAnimGraphInstance reactivation(*hiddenMachine);
+    if (!Expect(reactivation.IsCompiled(), reactivation.GetCompileError().c_str())) return false;
+    parameters["Alpha"].floatVal = 0; parameters["State"].intVal = 2;
+    reactivation.EvaluateFrame(ctx); reactivation.EvaluateFrame(ctx);
+    parameters["Alpha"].floatVal = 1; reactivation.EvaluateFrame(ctx);
+    parameters["State"].intVal = -1; parameters["Alpha"].floatVal = 0; reactivation.EvaluateFrame(ctx);
+    const auto reactivated = reactivation.CaptureRuntimeState();
+    if (!Expect(reactivated.stateMachineStates.at(machineId).currentStateName == "A",
+            "Newly relevant state machine failed to reenter its default state")
+        || !ExpectNear(reactivated.blendSpaceStates.at(gridId).x.time, .1f, 1e-6f,
+            "State-machine reinitialization failed to reach inactive cache")) return false;
+    std::cout << "Animation initialization lifecycle contract passed" << std::endl;
+    return true;
+}
+
+bool TestAnimationBlendSpaceClockContract()
+{
+    using namespace VansGraphics;
+    Skeleton skeleton;
+    skeleton.bones.resize(1); skeleton.bones[0].parentIndex = -1;
+    skeleton.bones[0].localTransform = glm::mat4(1);
+    std::unordered_map<std::string, AnimatorParameter> parameters;
+    parameters["X"].type = parameters["Y"].type = AnimatorParamType::Float;
+    parameters["X"].floatVal = .25f;
+    std::unordered_map<std::string, VansAnimationClip> clips;
+    VansAnimGraph graph;
+    auto grid = std::make_unique<AnimGraphBlendSpace2DNode>();
+    grid->m_XParamName = "X"; grid->m_YParamName = "Y";
+    grid->m_BilinearGrid = grid->m_SynchronizeSamples = true;
+    grid->m_StartPosition = .4f; grid->m_Samples = {{0,0},{1,0},{0,1},{1,1}};
+    const int gridId = graph.AddNode(std::move(grid));
+    int ids[4];
+    const float durations[] = {2,1,4,2};
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto name = std::to_string(i);
+        clips[name] = BuildContractClip(name, 2, 0);
+        clips[name].duration = durations[i];
+        auto node = std::make_unique<AnimGraphClipNode>();
+        node->m_ClipName = name; node->m_Speed = i == 2 ? .5f : 1;
+        ids[i] = graph.AddNode(std::move(node));
+        graph.AddLink(ids[i], 0, gridId, i);
+    }
+    clips["0"].syncMarkers = {{11,.2f,"Left"},{12,1.2f,"Right"}};
+    clips["1"].syncMarkers = {{11,.3f,"Left"},{12,.8f,"Right"}};
+    clips["0"].events.push_back({101,.9f,"LeaderStep",true});
+    clips["1"].events.push_back({102,.65f,"FollowerStep",true});
+    auto scale = std::make_unique<AnimGraphSpeedScaleNode>();
+    scale->m_FixedSpeed = 2; scale->m_UseParam = false;
+    const int scaleId = graph.AddNode(std::move(scale));
+    const int outputId = graph.AddNode(std::make_unique<AnimGraphOutputNode>());
+    graph.AddLink(gridId, 0, scaleId, 0); graph.AddLink(scaleId, 0, outputId, 0);
+    nlohmann::json serialized, roundtrip;
+    graph.SerializeToJsonObject(serialized);
+    auto copy = VansAnimGraph::DeserializeFromJsonObject(serialized);
+    copy->SerializeToJsonObject(roundtrip);
+    if (!Expect(serialized == roundtrip, "Synchronized BlendSpace authoring fields lost")) return false;
+    VansAnimGraphInstance instance(graph);
+    if (!Expect(instance.IsCompiled(), instance.GetCompileError().c_str())) return false;
+    AnimGraphContext context;
+    context.skeleton = &skeleton; context.clips = &clips; context.parameters = &parameters; context.deltaTime = .1f;
+    auto pose = instance.EvaluateFrame(context);
+    auto snapshot = instance.CaptureRuntimeState();
+    if (!Expect(pose.valid && pose.events.size() == 1 && pose.events[0].name == "LeaderStep",
+            "BlendSpace must generate only highest-weight sample notifies")
+        || !ExpectNear(pose.events[0].weight, 1, 1e-6f, "Notify inherited sample weight instead of player weight")
+        || !ExpectNear(snapshot.clipStates.at(ids[0]).previousTime, .8f, 1e-6f, "Initial phase ignored")
+        || !ExpectNear(snapshot.clipStates.at(ids[0]).currentTime, 1, 1e-6f, "Initial frame player rate incorrect")
+        || !ExpectNear(snapshot.clipStates.at(ids[1]).currentTime, .7f, 1e-6f, "Follower marker phase differs")) return false;
+    parameters["X"].floatVal = .75f;
+    instance.EvaluateFrame(context);
+    snapshot = instance.CaptureRuntimeState();
+    if (!ExpectNear(snapshot.clipStates.at(ids[1]).previousTime, .7f, 1e-6f, "New leader discarded follower phase")
+        || !ExpectNear(snapshot.clipStates.at(ids[1]).currentTime, .9f, 1e-6f, "New leader rate incorrect")
+        || !ExpectNear(snapshot.clipStates.at(ids[0]).currentTime, 1.4f, 1e-6f, "Old leader did not become marker follower")) return false;
+    VansAnimGraphInstance restored(graph);
+    if (!Expect(restored.RestoreRuntimeState(snapshot), "Sample clock snapshot restore failed")) return false;
+    context.deltaTime = 1.1f;
+    const auto a = instance.EvaluateFrame(context), b = restored.EvaluateFrame(context);
+    snapshot = instance.CaptureRuntimeState();
+    const auto restoredSnapshot = restored.CaptureRuntimeState();
+    if (!Expect(a.valid && b.valid, "Multi-loop synchronization failed")
+        || !ExpectNear(snapshot.clipStates.at(ids[0]).currentTime - snapshot.clipStates.at(ids[0]).previousTime,
+            4.4f, 1e-5f, "Multiple loops lost in marker interval")) return false;
+    for (int i = 0; i < 2; ++i)
+        if (!ExpectNear(snapshot.clipStates.at(ids[i]).currentTime, restoredSnapshot.clipStates.at(ids[i]).currentTime,
+            1e-6f, "Restore changed synchronized clock on first frame")) return false;
+    context.deltaTime = 0;
+    pose = instance.EvaluateFrame(context);
+    if (!Expect(pose.events.empty(), "Zero delta repeated BlendSpace events")) return false;
+    context.deltaTime = -.2f;
+    instance.EvaluateFrame(context);
+    snapshot = instance.CaptureRuntimeState();
+    if (!ExpectNear(snapshot.clipStates.at(ids[0]).currentTime - snapshot.clipStates.at(ids[0]).previousTime,
+        -.8f, 1e-5f, "Reverse playback lost marker interval")) return false;
+    clips["0"].syncMarkers.clear(); clips["1"].syncMarkers.clear();
+    instance.Reset(); parameters["X"].floatVal = .25f; parameters["Y"].floatVal = .5f; context.deltaTime = .1f;
+    instance.EvaluateFrame(context);
+    snapshot = instance.CaptureRuntimeState();
+    const float expected = .4f + .2f / 4.125f;
+    for (int i = 0; i < 4; ++i)
+        if (!ExpectNear(snapshot.clipStates.at(ids[i]).currentTime / durations[i], expected,
+            1e-6f, "Unmarked samples did not use rate-adjusted weighted length")) return false;
+    auto invalid = graph.Clone();
+    static_cast<AnimGraphClipNode*>(invalid->GetNode(ids[0]))->m_Loop = false;
+    VansAnimGraphInstance rejected(*invalid);
+    if (!Expect(!rejected.IsCompiled(), "Synchronized sample accepted an incompatible nonlooping clock")) return false;
+    invalid = graph.Clone();
+    const auto links = invalid->GetLinks();
+    for (const auto& link : links) if (link.toNodeId == outputId) invalid->RemoveLink(link.linkId);
+    const int sharedBlend = invalid->AddNode(std::make_unique<AnimGraphBlendNode>());
+    invalid->AddLink(scaleId, 0, sharedBlend, 0);
+    invalid->AddLink(ids[0], 0, sharedBlend, 1);
+    invalid->AddLink(sharedBlend, 0, outputId, 0);
+    VansAnimGraphInstance shared(*invalid);
+    return Expect(!shared.IsCompiled(), "Synchronized sample clock allowed a second owner");
+}
+
+bool TestAnimationBlendSpaceFilterContract()
+{
+    using namespace VansGraphics;
+    VansAnimGraphInputFilterState fir;
+    if (!ExpectNear(fir.Update(1, 0, 1), 0, 1e-6f, "Cubic filter advanced without delta time")) return false;
+    fir.Update(0, .25f, 1);
+    if (!ExpectNear(fir.Update(1, .25f, 1), 64.0f/127, 1e-6f, "Cubic history coefficient incorrect")
+        || !ExpectNear(fir.Update(1, .25f, 1), 127.0f/183, 1e-6f, "Cubic history accumulation incorrect")
+        || !ExpectNear(fir.Update(.5f, 1.1f, 1), .5f, 1e-6f, "Expired cubic samples retained")
+        || !ExpectNear(fir.Update(.7f, 0, 0), .7f, 1e-6f, "Disabled filter must pass input")) return false;
+    fir = {};
+    float ramp = 0;
+    for (int i = 1; i <= 50; ++i) ramp = fir.Update(float(i), .01f, 1);
+    // Closed-form weighted ramp exercises history growth past ten slots.
+    const double s3 = std::pow(49.0*50/2, 2);
+    const double s4 = 49.0*50*99*(3*49*49+3*49-1)/30;
+    const float rampExpected = float((1275 - 1e-6*(50*s3-s4))/(50-1e-6*s3));
+    if (!ExpectNear(ramp, rampExpected, .00003f, "Cubic filter history growth changed coefficients")) return false;
+    Skeleton skeleton;
+    skeleton.bones.resize(1);
+    skeleton.bones[0].parentIndex = -1;
+    skeleton.bones[0].localTransform = glm::mat4(1);
+    std::unordered_map<std::string, AnimatorParameter> parameters;
+    for (const char* name : {"X","Y","Sample"}) parameters[name].type = AnimatorParamType::Float;
+    parameters["Y"].floatVal = parameters["Sample"].floatVal = .5f;
+    std::unordered_map<std::string, VansAnimationClip> clips;
+    VansAnimGraph graph;
+    auto grid = std::make_unique<AnimGraphBlendSpace2DNode>();
+    grid->m_XParamName = "X"; grid->m_YParamName = "Y";
+    grid->m_BilinearGrid = true; grid->m_CubicFilterWindowX = 1;
+    grid->m_Samples = {{0,0},{1,0},{0,1},{1,1}};
+    const int gridId = graph.AddNode(std::move(grid));
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto name = std::to_string(i);
+        clips[name] = BuildContractClip(name, i == 3 ? 8.0f : i*2.0f, 0);
+        auto clip = std::make_unique<AnimGraphClipNode>();
+        clip->m_ClipName = name; clip->m_SampleTimeParameter = "Sample";
+        graph.AddLink(graph.AddNode(std::move(clip)), 0, gridId, i);
+    }
+    auto scale = std::make_unique<AnimGraphSpeedScaleNode>();
+    scale->m_FixedSpeed = 3; scale->m_UseParam = false;
+    const int scaleId = graph.AddNode(std::move(scale));
+    const int outputId = graph.AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
+    graph.AddLink(gridId, 0, scaleId, 0); graph.AddLink(scaleId, 0, outputId, 0);
+    AnimGraphContext context;
+    context.skeleton = &skeleton; context.clips = &clips; context.parameters = &parameters;
+    context.deltaTime = .25f;
+    VansAnimGraphInstance instance(graph);
+    auto pose = instance.EvaluateFrame(context);
+    if (!Expect(pose.valid, "Filtered grid graph invalid") || !ExpectNear(pose.localPose[0].translation.y, 1, 1e-6f, "Grid first input incorrect")) return false;
+    parameters["X"].floatVal = 1;
+    pose = instance.EvaluateFrame(context);
+    if (!ExpectNear(pose.localPose[0].translation.y, 1 + 1.5f*64/127, 1e-5f,
+        "Bilinear/filter calculation incorrectly scaled by playback rate")) return false;
+    const auto snapshot = instance.CaptureRuntimeState();
+    VansAnimGraphInstance restored(graph);
+    if (!Expect(restored.RestoreRuntimeState(snapshot), "Filter history snapshot restore failed")) return false;
+    parameters["X"].floatVal = .2f;
+    const auto a = instance.EvaluateFrame(context), b = restored.EvaluateFrame(context);
+    if (!ExpectNear(a.localPose[0].translation.y, b.localPose[0].translation.y, 1e-6f, "Filter history changed on restore")) return false;
+    instance.Reset();
+    context.deltaTime = .01f;
+    pose = instance.EvaluateFrame(context);
+    return ExpectNear(pose.localPose[0].translation.y, 1.3f, 1e-6f, "Reset did not discard filter history");
+}
+
+bool TestAnimationMultiWayBlendContract()
+{
+    using namespace VansGraphics;
+    VansAnimationFrameVector<VansPosePayload> poses(3);
+    const glm::quat q0 = glm::angleAxis(glm::radians(15.0f), glm::vec3(1, 0, 0));
+    const glm::quat q1 = glm::angleAxis(glm::radians(110.0f), glm::vec3(0, 1, 0));
+    const glm::quat q2 = -glm::angleAxis(glm::radians(70.0f), glm::vec3(0, 0, 1));
+    const glm::quat rotations[] = { q0, q1, q2 };
+    for (size_t i = 0; i < poses.size(); ++i)
+    {
+        poses[i].valid = true;
+        poses[i].localPose.push_back({ glm::vec3(float(i)), rotations[i], glm::vec3(float(i + 1)) });
+        poses[i].nodeTransforms.push_back({0, "Attached", "/Attached", VansPoseMath::Compose(poses[i].localPose[0])});
+    }
+    poses[0].curves.push_back({ 500, "OnlyFirst", 8.0f, true });
+    poses[0].events.push_back({});
+    poses[0].events[0].name = "Footstep";
+    poses[0].rootMotion.valid = true;
+    poses[0].rootMotion.translation = glm::vec3(4.0f, 0.0f, 0.0f);
+    VansAnimationFrameVector<float> weights{ 0.25f, 0.25f, 0.5f };
+    const auto mixed = VansPosePayloadMixer::BlendWeighted(poses, weights);
+    const glm::quat expected = glm::normalize(q0 * 0.25f + q1 * 0.25f - q2 * 0.5f);
+    VansBoneTransform attached;
+    if (!Expect(mixed.nodeTransforms.size() == 1 && VansPoseMath::TryDecompose(mixed.nodeTransforms[0].modelTransform, attached),
+        "Weighted scene node transform invalid")) return false;
+    if (!Expect(mixed.valid, "MultiWay payload invalid")
+        || !ExpectNear(mixed.localPose[0].translation.x, 1.25f, 1e-5f, "MultiWay translation weights")
+        || !ExpectNear(mixed.localPose[0].scale.x, 2.25f, 1e-5f, "MultiWay scale weights")
+        || !ExpectNear(std::abs(glm::dot(attached.rotation, expected)), 1.0f, 1e-6f, "Scene node rotation differs from multi-way skeleton blend")
+        || !ExpectNear(std::abs(glm::dot(mixed.localPose[0].rotation, expected)), 1.0f, 1e-6f,
+            "MultiWay must accumulate quaternion components before normalizing")
+        || !ExpectNear(mixed.curves[0].value, 2.0f, 1e-5f, "Missing curves must contribute zero")
+        || !ExpectNear(mixed.events[0].weight, 0.25f, 1e-5f, "Event source weight lost")
+        || !ExpectNear(mixed.rootMotion.translation.x, 1.0f, 1e-5f, "Root motion must include missing-source identity")) return false;
+
+    Skeleton skeleton;
+    skeleton.bones.resize(1);
+    skeleton.bones[0].parentIndex = -1;
+    skeleton.bones[0].localTransform = glm::mat4(1.0f);
+    std::unordered_map<std::string, VansAnimationClip> clips;
+    std::unordered_map<std::string, AnimatorParameter> parameters;
+    VansAnimGraph graph;
+    auto multi = std::make_unique<AnimGraphMultiWayBlendNode>();
+    multi->m_WeightParameters = { "A", "B", "C" };
+    const int blendId = graph.AddNode(std::move(multi));
+    const int outputId = graph.AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
+    graph.AddLink(blendId, 0, outputId, 0);
+    for (int i = 0; i < 3; ++i)
+    {
+        const auto name = std::string(1, char('A' + i));
+        parameters[name].type = AnimatorParamType::Float;
+        parameters[name].floatVal = float(i + 1);
+        clips[name] = BuildContractClip(name, float((i + 1) * 2), 0.0f);
+        auto clip = std::make_unique<AnimGraphClipNode>(); clip->m_ClipName = name;
+        graph.AddLink(graph.AddNode(std::move(clip)), 0, blendId, i);
+    }
+    AnimGraphContext context;
+    context.skeleton = &skeleton; context.clips = &clips; context.parameters = &parameters;
+    VansAnimGraphInstance instance(graph);
+    instance.Evaluate(context);
+    context.deltaTime = 0.5f;
+    auto sampled = instance.EvaluateFrame(context);
+    if (!Expect(sampled.valid, "MultiWay graph failed")
+        || !ExpectNear(sampled.localPose[0].translation.y, 14.0f / 6.0f, 1e-5f, "Graph did not normalize weights")) return false;
+    for (auto& pair : parameters) pair.second.floatVal = 0.0f;
+    sampled = instance.EvaluateFrame(context);
+    if (!Expect(sampled.valid && sampled.curves.empty() && sampled.events.empty(), "Zero weight must produce reference pose")
+        || !ExpectNear(sampled.localPose[0].translation.y, 0.0f, 1e-5f, "Zero weight reference pose incorrect")) return false;
+    nlohmann::json serialized; graph.SerializeToJsonObject(serialized);
+    const auto decoded = VansAnimGraph::DeserializeFromJsonObject(serialized);
+    const auto cloned = graph.Clone();
+    for (const auto* definition : { decoded.get(), cloned.get() })
+        if (!Expect(definition && static_cast<const AnimGraphMultiWayBlendNode*>(definition->GetNode(blendId))->m_WeightParameters
+            == std::vector<std::string>({ "A", "B", "C" }), "MultiWay weights lost in clone/serialization")) return false;
+    return true;
+}
+
+bool TestALSNativeDirectionGraphContract()
+{
+    using namespace VansGraphics;
+    fs::path workspace = fs::current_path();
+    for (int depth = 0; depth < 8 && !fs::exists(workspace / "AnimationV2Project"); ++depth)
+        workspace = workspace.parent_path();
+    const auto project = workspace / "AnimationV2Project";
+    AnimatorAssetData asset;
+    if (!Expect(VansAnimatorIO::Load((project / "Assets/Characters/ALS/Animation/ALSMannequin.vanimator").string(), asset),
+        "ALS native animator load failed")) return false;
+    std::unordered_map<std::string, VansAnimationClip> clips;
+    Skeleton skeleton;
+    for (const auto& ref : asset.clipRefs)
+    {
+        Skeleton clipSkeleton;
+        if (!Expect(VansAnimationClipIO::Load((project / ref.pathHint).string(), clips[ref.name], clipSkeleton),
+            "ALS native clip failed to load")) return false;
+        for (const auto& curve : clips[ref.name].curves)
+            if (!Expect(curve.id == VansAnimationStableId(curve.name),
+                "ALS curve identity must be stable across clips; per-clip indices collide")) return false;
+        for (const auto& marker : clips[ref.name].syncMarkers)
+            if (!Expect(marker.id == VansAnimationStableId(marker.name), "ALS marker identity mismatch")) return false;
+        if (skeleton.bones.empty()) skeleton = std::move(clipSkeleton);
+    }
+    if (!Expect(skeleton.bones.size() == 68 && clips.size() == 125, "ALS native rig/clip coverage changed")) return false;
+    nlohmann::json canonical;
+    std::string canonicalError;
+    if (!Expect(VansAnimatorIO::SerializeToJsonObject(asset, canonical, canonicalError), canonicalError.c_str())) return false;
+    const auto document = Vans::EditorAPI::AnimationAuthoringBridge::DecodeAnimator(canonical.dump());
+    if (!Expect(document.success && document.document, "ALS editor DTO decode failed")) return false;
+    const auto encoded = Vans::EditorAPI::AnimationAuthoringBridge::EncodeAnimator(*document.document);
+    if (!Expect(encoded.success && nlohmann::json::parse(encoded.canonicalJson) == canonical,
+        "ALS editor DTO lost sample clock/rate/phase authoring")) return false;
+    VansAnimationRigAsset rigAsset;
+    VansCompiledAnimationRig compiledRig;
+    std::string rigError;
+    if (!Expect(VansAnimationRigStorage::Load(
+        project / "Assets/AnimationRigs/ALS_Mannequin.vanimrig", rigAsset, rigError)
+        && VansAnimationRigCompiler::Compile(rigAsset, skeleton, compiledRig, rigError),
+        rigError.c_str())) return false;
+    VansAnimatorRuntimeCompileOptions runtimeOptions;
+    runtimeOptions.enableTargetPostProcess = true;
+    runtimeOptions.rigResolver = [&rigAsset](const std::string&, std::string&)
+    { return std::make_shared<VansAnimationRigAsset>(rigAsset); };
+    runtimeOptions.queryProfileResolver = [](const std::string&, std::uint32_t& mask, std::string&)
+    { mask = 1u; return true; };
+    const auto clipResolver = [&project](const AnimatorClipRef& ref,
+        std::shared_ptr<const VansAnimationClipAsset>& output, std::string& error)
+    {
+        auto loaded = std::make_shared<VansAnimationClipAsset>();
+        if (!VansAnimationClipIO::Load((project / ref.pathHint).string(),
+            loaded->clip, loaded->skeleton))
+        { error = "Failed to load ALS clip " + ref.name; return false; }
+        output = std::move(loaded);
+        return true;
+    };
+    const auto maskResolver = [&project](const VansAnimationLayerDefinition& layer,
+        std::shared_ptr<const VansBoneMaskAsset>& output, std::string& error)
+    {
+        if (layer.maskPathHint.empty()) { output.reset(); return true; }
+        auto loaded = std::make_shared<VansBoneMaskAsset>();
+        if (!VansBoneMaskStorage::Load(project / layer.maskPathHint, *loaded, error))
+            return false;
+        output = std::move(loaded);
+        return true;
+    };
+    auto runtimeController = VansAnimatorRuntimeCompiler::Compile(
+        asset, skeleton, clipResolver, maskResolver, runtimeOptions, rigError);
+    if (!Expect(runtimeController != nullptr, rigError.c_str())) return false;
+    const Skeleton* runtimeSkeleton = runtimeController->GetRuntimeSkeleton();
+    if (!Expect(runtimeSkeleton && runtimeSkeleton->bones.size() == 79
+        && runtimeSkeleton->virtualBoneLinks.size() == 11
+        && runtimeSkeleton->FindBoneIndex("VB Curves") >= 0
+        && runtimeSkeleton->FindBoneIndex("VB LHS_ik_hand_gun") >= 0,
+        "ALS runtime compiler did not bind all 11 project virtual bones")) return false;
+    for (const auto& [region, virtualName] : std::vector<std::pair<std::string, std::string>>{
+            { "Curves", "VB Curves" }, { "Hand_L", "VB LHS_ik_hand_gun" },
+            { "Hand_R", "VB RHS_ik_hand_gun" } })
+    {
+        VansBoneMaskAsset maskAsset;
+        if (!Expect(VansBoneMaskStorage::Load(project / "Assets/Characters/ALS/Animation"
+            / ("ALS_Layer_" + region + ".vbonemask"), maskAsset, rigError),
+            rigError.c_str())) return false;
+        const VansCompiledBoneMask compiled = VansBoneMaskCompiler::Compile(
+            maskAsset, *runtimeSkeleton);
+        if (!Expect(compiled.valid
+            && compiled.weights[static_cast<std::size_t>(runtimeSkeleton->FindBoneIndex(virtualName))] == 1.0f,
+            "ALS virtual-bone LayeredBoneBlend branch did not compile")) return false;
+    }
+    runtimeController->Play();
+    runtimeController->Update(1.0f / 60.0f, *runtimeSkeleton);
+    const auto& virtualGlobals = runtimeController->GetCachedGlobalTransforms();
+    const int footTarget = runtimeSkeleton->FindBoneIndex("VB foot_target_l");
+    const int physicalFoot = runtimeSkeleton->FindBoneIndex("ik_foot_l");
+    if (!Expect(virtualGlobals.size() == 79 && footTarget >= 0 && physicalFoot >= 0
+        && glm::length(glm::vec3(virtualGlobals[footTarget][3]
+            - virtualGlobals[physicalFoot][3])) < 1e-4f,
+        "ALS sampled virtual foot target did not reach its physical target")) return false;
+    VansAnimationNode virtualNode("ALS_VirtualBoneContract");
+    virtualNode.SetSkeleton(skeleton);
+    if (!Expect(virtualNode.SetController(std::move(runtimeController))
+        && virtualNode.GetSkeleton().bones.size() == 79,
+        "ALS animation node did not adopt the compiled virtual skeleton")) return false;
+    const auto footGraph = std::find_if(asset.graphs.begin(), asset.graphs.end(),
+        [](const auto& entry) { return entry.id == "graph-target-post-process"; });
+    if (!Expect(footGraph != asset.graphs.end(), "ALS Foot IK graph missing")) return false;
+    VansProceduralGraphRuntime footRuntime;
+    const auto resolveGround = [](const std::string&, std::uint32_t& mask, std::string&)
+    { mask = 1u; return true; };
+    if (!Expect(footRuntime.Configure(*footGraph->graph, compiledRig, resolveGround, rigError),
+        rigError.c_str())) return false;
+    const auto* footCheckpoint = static_cast<const AnimGraphPoseCheckpointNode*>(
+        footGraph->graph->GetNode(2));
+    if (!Expect(footCheckpoint && footCheckpoint->GetType() == VansAnimGraphNodeType::PoseCheckpoint
+        && footCheckpoint->m_CheckpointId == "ALS_PreFootIK"
+        && footCheckpoint->m_Bones == std::vector<std::string>{"ik_foot_l","ik_foot_r"},
+        "ALS pre-IK virtual target snapshot is not configured")) return false;
+    std::vector<glm::mat4> bindLocal;
+    for (const auto& bone : skeleton.bones) bindLocal.push_back(bone.localTransform);
+    std::vector<glm::mat4> bindModel;
+    VansAnimationFrameVector<VansBoneTransform> bindFrame;
+    if (!Expect(VansPoseMath::BuildModelTransforms(bindLocal,skeleton,bindModel)
+        && VansPoseMath::FromMatrices(bindLocal,bindFrame),
+        "ALS bind pose could not enter Foot IK graph")) return false;
+    std::vector<VansBoneTransform> bindPose(bindFrame.begin(),bindFrame.end());
+    const int leftIk = skeleton.FindBoneIndex("ik_foot_l");
+    VansBoneTransform leftBase;
+    if (!Expect(leftIk >= 0 && VansPoseMath::TryDecompose(bindModel[leftIk],leftBase),
+        "ALS left IK foot missing from imported skeleton")) return false;
+    struct FootParams {glm::vec3 position;glm::quat rotation;glm::vec3 offset;
+        glm::quat rotationOffset;float curve;} footParams{
+        leftBase.translation+glm::vec3(.12f,0,0),leftBase.rotation,{0,0,-5.0f},
+        glm::quat(std::cos(glm::radians(15.0f)),std::sin(glm::radians(15.0f)),0,0),1.0f};
+    VansProceduralParameterAccessor footAccessor;
+    footAccessor.context=&footParams;
+    footAccessor.readFloat=[](const void*,const std::string& name,float& value)
+    { value = name == "FootLock_L_Alpha" || name == "PelvisAlpha" ? 1.0f : 0.0f; return true; };
+    footAccessor.readVector3=[](const void* data,const std::string& name,glm::vec3& value)
+    { if (name == "FootLock_L_Location")
+      { value=static_cast<const FootParams*>(data)->position;return true; }
+      if (name == "PelvisOffset") {value={0,-.05f,0};return true;}
+      if (name == "FootOffset_L_Location")
+      {value=static_cast<const FootParams*>(data)->offset;return true;}
+      if (name == "FootOffset_R_Location") {value={0,0,0};return true;}
+      return false; };
+    footAccessor.readQuaternion=[](const void* data,const std::string& name,glm::quat& value)
+    { if (name == "FootLock_L_Rotation")
+      {value=static_cast<const FootParams*>(data)->rotation;return true;}
+      if (name == "FootOffset_L_Rotation")
+      {value=static_cast<const FootParams*>(data)->rotationOffset;return true;}
+      if (name == "FootOffset_R_Rotation")
+      {value=glm::quat(1,0,0,0);return true;}
+      return false; };
+    footAccessor.curveContext=&footParams;
+    footAccessor.readCurve=[](const void* data,const std::string& name,float& value)
+    {value=name == "Enable_FootIK_L" || name == "Enable_FootIK_R"
+        ? static_cast<const FootParams*>(data)->curve : 0.0f;return true;};
+    VansAnimationExternalInputSnapshot footInput;
+    std::vector<VansWorldQueryRequest> footQueries;
+    std::vector<VansBoneTransform> footOutput;
+    bool footNeedsResolve=false;
+    if (!Expect(footRuntime.Prepare(1.0f/60,bindPose,{2,3,4,5,6,9,7},footAccessor,
+        footInput,footQueries,footOutput,footNeedsResolve,rigError),rigError.c_str())) return false;
+    if (footNeedsResolve)
+    {
+        std::vector<VansWorldQueryResult> misses;
+        for (const auto& query:footQueries) {VansWorldQueryResult miss;miss.requestId=query.requestId;misses.push_back(miss);}
+        if (!Expect(footRuntime.Resolve(misses,footOutput,rigError),rigError.c_str())) return false;
+    }
+    glm::mat4 preFoot(1.0f);
+    if (!Expect(footRuntime.TryGetCheckpointTransform("ALS_PreFootIK",leftIk,preFoot)
+        && glm::length(glm::vec3(preFoot[3])-leftBase.translation)<1e-5f,
+        "ALS virtual-foot checkpoint did not preserve the pre-lock pose")) return false;
+    std::vector<glm::mat4> solvedLocal;
+    VansAnimationFrameVector<VansBoneTransform> solvedFrame;
+    solvedFrame.assign(footOutput.begin(),footOutput.end());
+    VansPoseMath::ToMatrices(solvedFrame,solvedLocal);
+    std::vector<glm::mat4> solvedModel;
+    if (!Expect(VansPoseMath::BuildModelTransforms(solvedLocal,skeleton,solvedModel)
+        && glm::length(glm::vec3(solvedModel[leftIk][3])-footParams.position)<1e-4f,
+        "ALS FootLock did not modify the real IK bone after its target snapshot")) return false;
+    const int pelvisIndex=skeleton.FindBoneIndex("pelvis");
+    if (!Expect(pelvisIndex>=0 &&
+        glm::length(glm::vec3(solvedModel[pelvisIndex][3])-
+            (glm::vec3(bindModel[pelvisIndex][3])+glm::vec3(0,-.05f,0)))<1e-4f,
+        "ALS source pelvis offset did not modify the production post-process pose")) return false;
+    const auto& footDebug=footRuntime.GetDebugRecords();
+    const auto leftGoal=std::find_if(footDebug.begin(),footDebug.end(),
+        [](const VansProceduralDebugRecord& record){return record.nodeId==6;});
+    if (!Expect(leftGoal!=footDebug.end() && leftGoal->goal.valid
+        && glm::length(leftGoal->goal.positionModel-(footParams.position+footParams.offset))<1e-4f
+        && std::abs(glm::dot(leftGoal->goal.rotationModel,
+            footParams.rotationOffset*footParams.rotation))>1.0f-1e-5f,
+        "ALS foot offset did not reach the captured IK goal")) return false;
+    const int leftCalf=skeleton.FindBoneIndex("calf_l");
+    if (!Expect(leftCalf>=0 && leftGoal->goal.hasPoleTarget
+        && glm::length(leftGoal->goal.poleTargetModel-
+            (glm::vec3(bindModel[leftCalf][3])+glm::vec3(0,-.05f,0)
+                +glm::quat_cast(bindModel[leftCalf])*
+                glm::vec3(20,30,0)))<1e-3f,
+        "ALS virtual knee target did not follow the calf pose and authored offset")) return false;
+    footParams.curve=0.5f;
+    if (!Expect(footRuntime.Prepare(1.0f/60,bindPose,{2,3,4,5,6,9,7},footAccessor,
+        footInput,footQueries,footOutput,footNeedsResolve,rigError)
+        && !footNeedsResolve,rigError.c_str())) return false;
+    const auto& halfDebug=footRuntime.GetDebugRecords();
+    const auto halfGoal=std::find_if(halfDebug.begin(),halfDebug.end(),
+        [](const VansProceduralDebugRecord& record){return record.nodeId==6;});
+    if (!Expect(halfGoal!=halfDebug.end() && halfGoal->goal.valid
+        && std::abs(halfGoal->goal.positionWeight-.5f)<1e-5f
+        && glm::length(halfGoal->goal.positionModel-
+            (footParams.position+footParams.offset*.5f))<1e-4f
+        && std::abs(glm::dot(halfGoal->goal.rotationModel,
+            glm::slerp(glm::quat(1,0,0,0),footParams.rotationOffset,.5f)
+                *footParams.rotation))>1.0f-1e-5f,
+        "ALS Enable_FootIK curve must weight the virtual offset and Limb IK separately")) return false;
+    auto found = std::find_if(asset.graphs.begin(), asset.graphs.end(), [](const auto& graph) { return graph.id == "graph-als-base"; });
+    if (!Expect(found != asset.graphs.end(), "ALS base graph missing")) return false;
+    auto graph = found->graph->Clone();
+    const auto* direction = static_cast<const AnimGraphStateMachineNode*>(graph->GetNode(10));
+    if (!Expect(direction && direction->GetType() == VansAnimGraphNodeType::StateMachine
+        && direction->m_States.size() == 6 && direction->m_Transitions.size() == 24,
+        "ALS direction topology missing")) return false;
+    const auto routeOutput = [&](int source)
+    {
+        const auto links = graph->GetLinks();
+        for (const auto& link : links)
+            if (link.toNodeId == graph->GetOutputNodeId()) graph->RemoveLink(link.linkId);
+        graph->AddLink(source, 0, graph->GetOutputNodeId(), 0);
+        std::unordered_set<int> reachable;
+        std::function<void(int)> visit = [&](int id)
+        {
+            if (!reachable.insert(id).second) return;
+            for (const auto& link : graph->GetLinks()) if (link.toNodeId == id) visit(link.fromNodeId);
+            const auto* node = graph->GetNode(id);
+            if (node->GetType() == VansAnimGraphNodeType::UseCachedPose)
+                for (const auto& [writerId, writer] : graph->GetNodes())
+                    if (writer->GetType() == VansAnimGraphNodeType::SaveCachedPose
+                        && static_cast<const AnimGraphSaveCachedPoseNode*>(writer.get())->m_CacheName
+                            == static_cast<const AnimGraphUseCachedPoseNode*>(node)->m_CacheName) visit(writerId);
+            if (node->GetType() == VansAnimGraphNodeType::StateMachine)
+                for (const auto& state : static_cast<const AnimGraphStateMachineNode*>(node)->m_States)
+                    if (state.poseNodeId >= 0) visit(state.poseNodeId);
+        };
+        visit(graph->GetOutputNodeId());
+        std::vector<int> remove;
+        for (const auto& pair : graph->GetNodes())
+            if (!reachable.count(pair.first) && pair.second->GetType() != VansAnimGraphNodeType::Entry) remove.push_back(pair.first);
+        for (int id : remove) graph->RemoveNode(id);
+        // Stop 姿态的隔离图裁去外层 Main Grounded；Gait=0 时 Detail 不读取这条权重条件。
+        if(graph->GetNode(8050) && !graph->GetNode(500))
+            for(auto& transition:static_cast<AnimGraphStateMachineNode*>(graph->GetNode(8050))->m_Transitions)
+                for(auto& condition:transition.conditions)
+                    if(condition.source==AnimatorConditionSource::MachineWeight && condition.machineNodeId==500)
+                        condition.machineNodeId=-1;
+        if(graph->GetNode(8050))
+        {
+            for(const auto& link:graph->GetLinks())
+                if(link.toNodeId==graph->GetOutputNodeId())graph->RemoveLink(link.linkId);
+            const int inert=graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Inertialization));
+            graph->AddLink(source,0,inert,0);graph->AddLink(inert,0,graph->GetOutputNodeId(),0);
+        }
+    };
+    routeOutput(10);
+    std::unordered_map<std::string, AnimatorParameter> parameters;
+    for (const auto& parameter : asset.parameters) parameters[parameter.name] = parameter;
+    parameters["VelocityBlendF"].floatVal = .35f;
+    parameters["VelocityBlendB"].floatVal = .15f;
+    parameters["VelocityBlendL"].floatVal = .2f;
+    parameters["VelocityBlendR"].floatVal = .3f;
+    parameters["StrideBlend"].floatVal = 1;
+    parameters["WalkRunBlend"].floatVal = 0;
+    parameters["StandingPlayRate"].floatVal = 1;
+    parameters["SprintUnmaskedWeight"].floatVal = 1;
+    parameters["StrideBlend"].floatVal = .63f;
+    parameters["WalkRunBlend"].floatVal = .42f;
+    AnimGraphContext context;
+    context.skeleton = &skeleton; context.clips = &clips; context.parameters = &parameters;
+    context.deltaTime = 1.0f/60;
+    const auto overlayGraph = std::find_if(asset.graphs.begin(), asset.graphs.end(),
+        [](const auto& entry) {return entry.id == "graph-als-upper-body";});
+    if (!Expect(overlayGraph != asset.graphs.end(), "ALS upper-body overlay graph missing")) return false;
+    const auto* rifleMachine = static_cast<const AnimGraphStateMachineNode*>(overlayGraph->graph->GetNode(4090));
+    if (!Expect(rifleMachine && rifleMachine->GetType() == VansAnimGraphNodeType::StateMachine
+        && rifleMachine->m_States.size() == 3 && rifleMachine->m_Transitions.size() == 4,
+        "ALS Rifle Relaxed/Ready/Aiming source machine missing")) return false;
+    const auto readyToRelaxed = std::find_if(rifleMachine->m_Transitions.begin(), rifleMachine->m_Transitions.end(),
+        [](const auto& transition) {return transition.fromState == "Ready" && transition.toState == "Relaxed";});
+    if (!Expect(readyToRelaxed != rifleMachine->m_Transitions.end()
+        && readyToRelaxed->conditions.size() == 2
+        && readyToRelaxed->boneBlendFactors.size() == 15,
+        "ALS Rifle Ready-to-Relaxed curve/time gate or QuickFeet profile missing")) return false;
+    parameters["OverlayState"].intVal = 1;
+    parameters["OverlayOverrideState"].intVal = 0;
+    parameters["RotationMode"].intVal = 2;
+    parameters["BasePose_N"].floatVal = 1;
+    parameters["BasePose_CLF"].floatVal = 0;
+    VansAnimGraphInstance rifleOverlay(*overlayGraph->graph);
+    bool reachedAiming = false;
+    for (int frame = 0; frame < 90; ++frame)
+    {
+        context.deltaTime = 1.0f / 60;
+        const auto pose = rifleOverlay.EvaluateFrame(context);
+        const auto snapshot = rifleOverlay.CaptureRuntimeState();
+        if (!Expect(pose.valid && pose.localPose.size() == skeleton.bones.size()
+            && snapshot.stateMachineStates.count(4090) == 1,
+            "ALS Rifle aiming child state failed to evaluate")) return false;
+        reachedAiming |= snapshot.stateMachineStates.at(4090).currentStateName == "Aiming";
+    }
+    if (!Expect(reachedAiming, "ALS Rifle RotationMode did not reach Aiming")) return false;
+    parameters["RotationMode"].intVal = 1;
+    bool leftAiming = false;
+    for (int frame = 0; frame < 90; ++frame)
+    {
+        context.deltaTime = 1.0f / 60;
+        const auto pose = rifleOverlay.EvaluateFrame(context);
+        if (!Expect(pose.valid, "ALS Rifle aiming-out blend failed to evaluate")) return false;
+        leftAiming |= rifleOverlay.CaptureRuntimeState().stateMachineStates.at(4090).currentStateName != "Aiming";
+    }
+    if (!Expect(leftAiming, "ALS Rifle aiming-out transition did not execute")) return false;
+    struct RifleRelaxedCase { float gait; float crouch; float air; float land;
+        const char* clip; float time; };
+    constexpr RifleRelaxedCase rifleCases[] = {
+        {0,0,0,0,"ALS_Props_M4A1_Poses",0.0f},
+        {1,0,0,0,"ALS_Props_M4A1_Poses",.04f},
+        {2,0,0,0,"ALS_Props_M4A1_Run_F_Arms",0.0f},
+        {3,0,0,0,"ALS_Props_M4A1_Sprint_F_Arms",0.0f},
+        {0,1,0,0,"ALS_Props_M4A1_Poses",.21f},
+        {0,0,1,0,"ALS_Props_M4A1_Poses",.31f},
+        {0,0,1,1,"ALS_Props_M4A1_Poses",.34f},
+    };
+    for (const auto& source : rifleCases)
+    {
+        parameters["OverlayState"].intVal = 1;
+        parameters["RotationMode"].intVal = 1;
+        parameters["Weight_Gait"].floatVal = source.gait;
+        parameters["BasePose_N"].floatVal = 1.0f - source.crouch;
+        parameters["BasePose_CLF"].floatVal = source.crouch;
+        parameters["Weight_InAir"].floatVal = source.air;
+        parameters["LandPrediction"].floatVal = source.land;
+        parameters["VelocityBlendF"].floatVal = 1.0f;
+        parameters["VelocityBlendB"].floatVal = 0.0f;
+        parameters["VelocityBlendL"].floatVal = 0.0f;
+        parameters["VelocityBlendR"].floatVal = 0.0f;
+        parameters["RelativeAccelerationForward"].floatVal = 0.0f;
+        VansAnimGraphInstance overlay(*overlayGraph->graph);
+        context.deltaTime = 0;
+        const auto actual = overlay.EvaluateFrame(context);
+        VansAnimationSampleRequest request;
+        request.currentTime = request.previousTime = source.time;
+        VansPosePayload expected;
+        if (!Expect(VansAnimationSampler::Sample(clips.at(source.clip), skeleton, request, expected)
+            && actual.valid && actual.localPose.size() == expected.localPose.size(),
+            "ALS Rifle Relaxed source sample failed")) return false;
+        for (size_t bone = 0; bone < expected.localPose.size(); ++bone)
+            if (!Expect(glm::length(actual.localPose[bone].translation-expected.localPose[bone].translation)<1e-4f
+                && glm::length(actual.localPose[bone].scale-expected.localPose[bone].scale)<1e-4f
+                && std::abs(glm::dot(actual.localPose[bone].rotation,expected.localPose[bone].rotation))>1.0f-1e-5f,
+                "ALS Rifle Relaxed gait/stance/air source pose mismatch")) return false;
+    }
+    std::cout << "ALS Rifle Relaxed: seven 68-bone gait/stance/air source poses passed\n";
+    parameters["HasMovement"].boolVal = false;
+    struct WeaponOverlayCase { int state; int machine; const char* clip;
+        float walkTime; float sprintTime; float crouchTime; };
+    constexpr WeaponOverlayCase weaponCases[] = {
+        {2,5890,"ALS_Props_Bow_Poses",.04f,.11f,.28f},
+        {3,6190,"ALS_Props_Pistol_1H_Poses",.04f,.06f,.201f},
+        {7,7390,"ALS_Props_Pistol_2H_Poses",.04f,.08f,.24f},
+    };
+    for (const auto& weapon : weaponCases)
+    {
+        const auto* machine = static_cast<const AnimGraphStateMachineNode*>(overlayGraph->graph->GetNode(weapon.machine));
+        if (!Expect(machine && machine->GetType() == VansAnimGraphNodeType::StateMachine
+            && machine->m_States.size() == 3 && machine->m_Transitions.size() == 6,
+            "ALS Bow/Pistol source child state machine missing")) return false;
+        for (int variant = 0; variant < 4; ++variant)
+        {
+            parameters["OverlayState"].intVal = weapon.state;
+            parameters["OverlayOverrideState"].intVal = 0;
+            parameters["RotationMode"].intVal = 1;
+            parameters["Weight_Gait"].floatVal = variant == 1 ? 1.0f : variant == 2 ? 3.0f : 0.0f;
+            parameters["BasePose_N"].floatVal = variant == 3 ? 0.0f : 1.0f;
+            parameters["BasePose_CLF"].floatVal = variant == 3 ? 1.0f : 0.0f;
+            VansAnimGraphInstance overlay(*overlayGraph->graph);
+            context.deltaTime = 0;
+            const auto actual = overlay.EvaluateFrame(context);
+            VansAnimationSampleRequest request;
+            request.currentTime = request.previousTime = variant == 1 ? weapon.walkTime
+                : variant == 2 ? weapon.sprintTime : variant == 3 ? weapon.crouchTime : 0.0f;
+            VansPosePayload expected;
+            if (!Expect(VansAnimationSampler::Sample(clips.at(weapon.clip), skeleton, request, expected)
+                && actual.valid && actual.localPose.size() == expected.localPose.size(),
+                "ALS Bow/Pistol Relaxed source evaluator failed")) return false;
+            for (size_t bone = 0; bone < expected.localPose.size(); ++bone)
+                if (!Expect(glm::length(actual.localPose[bone].translation-expected.localPose[bone].translation)<1e-4f
+                    && glm::length(actual.localPose[bone].scale-expected.localPose[bone].scale)<1e-4f
+                    && std::abs(glm::dot(actual.localPose[bone].rotation,expected.localPose[bone].rotation))>1.0f-1e-5f,
+                    "ALS Bow/Pistol Relaxed gait or crouch source pose mismatch")) return false;
+        }
+        parameters["Weight_Gait"].floatVal = 0;
+        parameters["BasePose_N"].floatVal = 1;
+        parameters["BasePose_CLF"].floatVal = 0;
+        parameters["RotationMode"].intVal = 2;
+        VansAnimGraphInstance overlay(*overlayGraph->graph);
+        bool aiming = false;
+        for (int frame = 0; frame < 120; ++frame)
+        {
+            context.deltaTime = 1.0f/60;
+            if (!Expect(overlay.EvaluateFrame(context).valid,
+                "ALS Bow/Pistol aiming transition pose invalid")) return false;
+            aiming |= overlay.CaptureRuntimeState().stateMachineStates.at(weapon.machine).currentStateName == "Aiming";
+        }
+        if (!Expect(aiming, "ALS Bow/Pistol failed to reach Aiming")) return false;
+        parameters["RotationMode"].intVal = 1;
+        bool ready = false;
+        for (int frame = 0; frame < 120; ++frame)
+        {
+            context.deltaTime = 1.0f/60;
+            if (!Expect(overlay.EvaluateFrame(context).valid,
+                "ALS Bow/Pistol aiming-out transition pose invalid")) return false;
+            ready |= overlay.CaptureRuntimeState().stateMachineStates.at(weapon.machine).currentStateName == "Ready";
+        }
+        if (!Expect(ready, "ALS Bow/Pistol failed to return to Ready")) return false;
+        struct ExitCase { float elapsed; bool curveGate; bool moving; int gait;
+            int movementState; bool expectExit; };
+        constexpr ExitCase exitCases[] = {
+            {2.9f,true,false,1,1,false},
+            {3.1f,false,false,1,1,false},
+            {3.1f,true,false,1,1,true},
+            {3.1f,false,true,1,1,true},
+            {.1f,false,false,2,1,true},
+            {.1f,false,false,1,2,true},
+        };
+        for (const auto& rule : exitCases)
+        {
+            parameters["OverlayState"].intVal = weapon.state;
+            parameters["RotationMode"].intVal = 1;
+            parameters["Gait"].intVal = rule.gait;
+            parameters["MovementState"].intVal = rule.movementState;
+            parameters["IsMoving"].boolVal = rule.moving;
+            parameters["RotationAmountZero"].boolVal = rule.curveGate;
+            parameters["WeaponTransitionEnabled"].boolVal = rule.curveGate;
+            VansAnimGraphInstance routed(*overlayGraph->graph);
+            context.deltaTime = 0;
+            if (!Expect(routed.EvaluateFrame(context).valid,
+                "ALS Bow/Pistol Ready exit setup failed")) return false;
+            auto snapshot = routed.CaptureRuntimeState();
+            auto& state = snapshot.stateMachineStates.at(weapon.machine);
+            state.currentStateName = "Ready";
+            state.currentStateElapsedTime = rule.elapsed;
+            state.activeTransitions.clear();
+            state.firstUpdate = false;
+            if (!Expect(routed.RestoreRuntimeState(snapshot)
+                && routed.EvaluateFrame(context).valid,
+                "ALS Bow/Pistol Ready exit snapshot failed")) return false;
+            const auto current = routed.CaptureRuntimeState().stateMachineStates.at(weapon.machine).currentStateName;
+            if (!Expect((current == "Relaxed") == rule.expectExit,
+                "ALS Bow/Pistol Ready exit time/curve/movement gate differs from source")) return false;
+        }
+    }
+    parameters["Gait"].intVal = 1;
+    parameters["MovementState"].intVal = 1;
+    parameters["IsMoving"].boolVal = false;
+    parameters["WeaponTransitionEnabled"].boolVal = false;
+    std::cout << "ALS Bow/Pistol: 12 source Relaxed poses, six aiming routes and 18 Ready-exit gates passed\n";
+    for (const auto& source : std::vector<std::tuple<int, const char*, float>>{
+        {6,"ALS_Props_Box_Poses",.75f}, {8,"ALS_Props_Barrel_Poses",.25f}})
+    {
+        const auto [state, clipName, motionAlpha] = source;
+        for (int variant = 0; variant < 3; ++variant)
+        {
+            const float poseTime = variant == 0 ? 0.0f : variant == 1 ? .04f : .08f;
+            parameters["OverlayState"].intVal = state;
+            parameters["OverlayOverrideState"].intVal = 0;
+            parameters["Weight_Gait"].floatVal = variant == 1 ? 1.0f : 0.0f;
+            parameters["BasePose_N"].floatVal = variant == 2 ? 0.0f : 1.0f;
+            parameters["BasePose_CLF"].floatVal = variant == 2 ? 1.0f : 0.0f;
+            VansAnimGraphInstance overlay(*overlayGraph->graph);
+            context.deltaTime = 0;
+            const auto first = overlay.EvaluateFrame(context);
+            VansAnimationSampleRequest request;
+            request.currentTime = request.previousTime = poseTime;
+            VansPosePayload base;
+            if (!Expect(VansAnimationSampler::Sample(clips.at(clipName), skeleton, request, base)
+                && first.valid && first.localPose.size() == base.localPose.size(),
+                "ALS Box/Barrel default branch did not evaluate")) return false;
+            const auto comparePose = [&](const auto& actual, const auto& expected) {
+                for (std::size_t bone = 0; bone < actual.size(); ++bone)
+                    if (glm::length(actual[bone].translation-expected[bone].translation)>1e-4f
+                        || glm::length(actual[bone].scale-expected[bone].scale)>1e-4f
+                        || std::abs(glm::dot(actual[bone].rotation,expected[bone].rotation))<1.0f-1e-5f)
+                        return false;
+                return true;
+            };
+            if (!Expect(comparePose(first.localPose, base.localPose),
+                "ALS Box/Barrel gait or stance sample differs from source evaluator")) return false;
+            request.currentTime = request.previousTime = .25f;
+            VansPosePayload motion;
+            if (!Expect(VansAnimationSampler::Sample(clips.at("ALS_N_SecondaryMotion"), skeleton, request, motion),
+                "ALS secondary motion source clip failed to sample")) return false;
+            request.currentTime = request.previousTime = 0;
+            VansPosePayload reference;
+            VansAnimationSampler::Sample(clips.at("ALS_N_SecondaryMotion"), skeleton, request, reference);
+            if (!Expect(VansPoseMath::MakeAdditiveDeltaPose(motion.localPose, reference.localPose,
+                    skeleton, VansAdditivePoseMode::LocalLinear), "ALS secondary motion delta failed")) return false;
+            VansAnimationFrameVector<VansBoneTransform> expected;
+            if (!Expect(VansPoseMath::ApplyAdditiveDeltaPose(base.localPose, motion.localPose,
+                    motionAlpha, skeleton, expected, VansAdditivePoseMode::LocalLinear),
+                    "ALS Box/Barrel authored additive failed")) return false;
+            context.deltaTime = .25f;
+            const auto later = overlay.EvaluateFrame(context);
+            if (!Expect(later.valid && later.localPose.size() == expected.size()
+                && comparePose(later.localPose, expected),
+                "ALS Box/Barrel secondary motion differs from authored additive chain")) return false;
+        }
+    }
+    std::cout << "ALS Box/Barrel: six source gait/stance samples and weighted secondary motion passed\n";
+    struct StanceOverlayCase { int state; const char* clip; float motionAlpha; };
+    constexpr StanceOverlayCase stanceCases[] = {
+        {0,"ALS_StanceVariation_Normal",.75f},
+        {9,"ALS_StanceVariation_Masculine",1.0f},
+        {10,"ALS_StanceVariation_Feminine",.5f},
+        {11,"ALS_StanceVariation_Injured",.5f},
+        {12,"ALS_StanceVariation_HandsTied",.5f},
+    };
+    for (const auto& source : stanceCases)
+    for (int variant = 0; variant < 5; ++variant)
+    {
+        constexpr float sampleTimes[] = {0.0f,.04f,.07f,.06f,0.0f};
+        parameters["OverlayState"].intVal = source.state;
+        parameters["OverlayOverrideState"].intVal = 0;
+        parameters["Weight_Gait"].floatVal = variant == 1 ? 1.0f : 0.0f;
+        parameters["BasePose_N"].floatVal = variant == 2 ? 0.0f : 1.0f;
+        parameters["BasePose_CLF"].floatVal = variant == 2 ? 1.0f : 0.0f;
+        parameters["Weight_InAir"].floatVal = variant >= 3 ? 1.0f : 0.0f;
+        parameters["LandPrediction"].floatVal = variant == 4 ? 1.0f : 0.0f;
+        VansAnimGraphInstance overlay(*overlayGraph->graph);
+        context.deltaTime = 0;
+        const auto first = overlay.EvaluateFrame(context);
+        VansAnimationSampleRequest request;
+        request.currentTime = request.previousTime = sampleTimes[variant];
+        VansPosePayload base;
+        if (!Expect(VansAnimationSampler::Sample(clips.at(source.clip), skeleton, request, base)
+            && first.valid && first.localPose.size() == base.localPose.size(),
+            "ALS stance overlay source evaluator failed")) return false;
+        const auto comparePose = [&](const auto& actual, const auto& expected) {
+            for (std::size_t bone = 0; bone < actual.size(); ++bone)
+                if (glm::length(actual[bone].translation-expected[bone].translation)>1e-4f
+                    || glm::length(actual[bone].scale-expected[bone].scale)>1e-4f
+                    || std::abs(glm::dot(actual[bone].rotation,expected[bone].rotation))<1.0f-1e-5f)
+                    return false;
+            return true;
+        };
+        if (!Expect(comparePose(first.localPose, base.localPose),
+            "ALS stance overlay gait/crouch/air/prediction sample differs from source")) return false;
+        request.currentTime = request.previousTime = .25f;
+        VansPosePayload motion;
+        VansAnimationSampler::Sample(clips.at("ALS_N_SecondaryMotion"), skeleton, request, motion);
+        request.currentTime = request.previousTime = 0;
+        VansPosePayload reference;
+        VansAnimationSampler::Sample(clips.at("ALS_N_SecondaryMotion"), skeleton, request, reference);
+        VansAnimationFrameVector<VansBoneTransform> expected;
+        if (!Expect(VansPoseMath::MakeAdditiveDeltaPose(motion.localPose, reference.localPose,
+                skeleton, VansAdditivePoseMode::LocalLinear)
+            && VansPoseMath::ApplyAdditiveDeltaPose(base.localPose, motion.localPose,
+                source.motionAlpha, skeleton, expected, VansAdditivePoseMode::LocalLinear),
+            "ALS stance overlay secondary motion reference failed")) return false;
+        context.deltaTime = .25f;
+        const auto later = overlay.EvaluateFrame(context);
+        if (!Expect(later.valid && later.localPose.size() == expected.size()
+            && comparePose(later.localPose, expected),
+            "ALS stance overlay secondary motion differs from source additive")) return false;
+    }
+    std::cout << "ALS Stance Overlays: 25 gait/crouch/air/prediction source poses and additive motion passed\n";
+    parameters["OverlayState"].intVal = 0;
+    parameters["Weight_InAir"].floatVal = 1;
+    parameters["LandPrediction"].floatVal = 0;
+    parameters["RotationMode"].intVal = 1;
+    parameters["AimSweepTime"].floatVal = 0;
+    VansAnimGraphInstance predictionOverlay(*overlayGraph->graph);
+    context.deltaTime = 0;
+    predictionOverlay.EvaluateFrame(context);
+    parameters["LandPrediction"].floatVal = 1;
+    context.deltaTime = .01f;
+    predictionOverlay.EvaluateFrame(context);
+    const auto rising = predictionOverlay.CaptureRuntimeState().blendAlphaStates.at(2009).value;
+    parameters["LandPrediction"].floatVal = 0;
+    predictionOverlay.EvaluateFrame(context);
+    const auto fallingAlpha = predictionOverlay.CaptureRuntimeState().blendAlphaStates.at(2009).value;
+    if (!ExpectNear(rising, .2f, 1e-5f, "ALS overlay LandPrediction 20/s rise differs from source")
+        || !ExpectNear(fallingAlpha, .19f, 1e-5f, "ALS overlay LandPrediction 5/s fall differs from source")) return false;
+    struct PropOverlayCase { int state; const char* poseClip; const char* aimClip; const char* crouchedAimClip; const char* referenceClip; };
+    constexpr PropOverlayCase propCases[] = {
+        {4,"ALS_Props_Torch_Poses","ALS_Props_Torch_Aim_Sweep","ALS_Props_Torch_Aim_Sweep_Crouched","ALS_Props_Torch_Poses_NoCurves"},
+        {5,"ALS_Props_Binoculars_Poses","ALS_Props_Binoculars_Aim_Sweep","ALS_Props_Binoculars_Aim_Sweep_Crouched","ALS_Props_Binoculars_Poses_NoCurves"},
+    };
+    const auto samePose = [](const auto& actual, const auto& expected) {
+        if (actual.size() != expected.size()) return false;
+        for (std::size_t bone = 0; bone < actual.size(); ++bone)
+            if (glm::length(actual[bone].translation-expected[bone].translation)>1e-4f
+                || glm::length(actual[bone].scale-expected[bone].scale)>1e-4f
+                || std::abs(glm::dot(actual[bone].rotation,expected[bone].rotation))<1.0f-1e-5f)
+                return false;
+        return true;
+    };
+    for (const auto& prop : propCases)
+    {
+        const std::vector<std::pair<float, float>> normalSamples = prop.state == 4
+            ? std::vector<std::pair<float,float>>{{0.0f,0.0f},{1.0f,.05f},{0.0f,.15f}}
+            : std::vector<std::pair<float,float>>{{0.0f,0.0f},{1.0f,.04f},{3.0f,.06f},{0.0f,.15f}};
+        for (std::size_t variant = 0; variant < normalSamples.size(); ++variant)
+        {
+            parameters["OverlayState"].intVal = prop.state;
+            parameters["OverlayOverrideState"].intVal = 0;
+            parameters["RotationMode"].intVal = 1;
+            parameters["Weight_Gait"].floatVal = normalSamples[variant].first;
+            const bool crouched = variant == normalSamples.size()-1;
+            parameters["BasePose_N"].floatVal = crouched ? 0 : 1;
+            parameters["BasePose_CLF"].floatVal = crouched ? 1 : 0;
+            VansAnimGraphInstance overlay(*overlayGraph->graph);
+            context.deltaTime = 0;
+            const auto actual = overlay.EvaluateFrame(context);
+            VansAnimationSampleRequest request;
+            request.currentTime = request.previousTime = normalSamples[variant].second;
+            VansPosePayload expected;
+            if (!Expect(VansAnimationSampler::Sample(clips.at(prop.poseClip), skeleton, request, expected)
+                && actual.valid && samePose(actual.localPose, expected.localPose),
+                "ALS prop normal gait/stance differs from source pose sheet")) return false;
+        }
+        for (int crouched = 0; crouched < 2; ++crouched)
+        {
+            parameters["OverlayState"].intVal = prop.state;
+            parameters["OverlayOverrideState"].intVal = 0;
+            parameters["RotationMode"].intVal = 2;
+            parameters["Weight_Gait"].floatVal = 0;
+            parameters["BasePose_N"].floatVal = crouched ? 0 : 1;
+            parameters["BasePose_CLF"].floatVal = crouched ? 1 : 0;
+            parameters["AimSweepTime"].floatVal = .5f;
+            VansAnimGraphInstance overlay(*overlayGraph->graph);
+            context.deltaTime = 0;
+            overlay.EvaluateFrame(context);
+            context.deltaTime = .3f;
+            const auto actual = overlay.EvaluateFrame(context);
+            VansAnimationSampleRequest request;
+            request.loop = false;
+            request.currentTime = request.previousTime = crouched ? .18f : .08f;
+            VansPosePayload base;
+            VansAnimationSampler::Sample(clips.at(prop.poseClip), skeleton, request, base);
+            request.currentTime = request.previousTime = .5f;
+            VansPosePayload aim;
+            VansAnimationSampler::Sample(clips.at(crouched ? prop.crouchedAimClip : prop.aimClip), skeleton, request, aim);
+            request.currentTime = request.previousTime = crouched ? .2f : .1f;
+            VansPosePayload aimReference;
+            VansAnimationSampler::Sample(clips.at(prop.referenceClip), skeleton, request, aimReference);
+            VansAnimationFrameVector<VansBoneTransform> aimedPose;
+            if (!Expect(VansPoseMath::MakeAdditiveDeltaPose(aim.localPose, aimReference.localPose,
+                    skeleton, VansAdditivePoseMode::MeshRotationLinear)
+                && VansPoseMath::ApplyAdditiveDeltaPose(base.localPose, aim.localPose, 1,
+                    skeleton, aimedPose, VansAdditivePoseMode::MeshRotationLinear),
+                "ALS prop mesh-space Aim Sweep could not be reconstructed")) return false;
+            request.currentTime = request.previousTime = .3f;
+            request.loop = true;
+            VansPosePayload motion;
+            VansAnimationSampler::Sample(clips.at("ALS_N_SecondaryMotion"), skeleton, request, motion);
+            request.currentTime = request.previousTime = 0;
+            VansPosePayload motionReference;
+            VansAnimationSampler::Sample(clips.at("ALS_N_SecondaryMotion"), skeleton, request, motionReference);
+            VansAnimationFrameVector<VansBoneTransform> expected;
+            if (!Expect(VansPoseMath::MakeAdditiveDeltaPose(motion.localPose, motionReference.localPose,
+                    skeleton, VansAdditivePoseMode::LocalLinear)
+                && VansPoseMath::ApplyAdditiveDeltaPose(aimedPose, motion.localPose, .5f,
+                    skeleton, expected, VansAdditivePoseMode::LocalLinear)
+                && actual.valid, "ALS prop rotation-mode aim chain failed")) return false;
+            if (!Expect(samePose(actual.localPose, expected),
+                "ALS prop rotation-mode aim or IdleAdditive differs from source chain")) return false;
+        }
+        parameters["OverlayState"].intVal = prop.state;
+        parameters["OverlayOverrideState"].intVal = 0;
+        parameters["RotationMode"].intVal = 1;
+        parameters["BasePose_N"].floatVal = 1;
+        parameters["BasePose_CLF"].floatVal = 0;
+        context.deltaTime = 1.0f/60;
+        VansAnimGraphInstance rotation(*overlayGraph->graph);
+        rotation.EvaluateFrame(context);
+        rotation.EvaluateFrame(context);
+        parameters["RotationMode"].intVal = 2;
+        rotation.EvaluateFrame(context);
+        const int modeNode = 3000 + prop.state * 100 + 90;
+        auto runtime = rotation.CaptureRuntimeState().stateMachineStates.at(modeNode);
+        if (!Expect(runtime.currentStateName == "Aiming" && runtime.activeTransitions.size() == 1,
+            "ALS prop aiming rotation branch did not transition")
+            || !ExpectNear(runtime.activeTransitions.front().duration, .2f, 1e-5f,
+                "ALS prop aiming rotation blend duration differs from source")) return false;
+        context.deltaTime = .25f;
+        rotation.EvaluateFrame(context);
+        parameters["RotationMode"].intVal = 1;
+        context.deltaTime = 1.0f/60;
+        rotation.EvaluateFrame(context);
+        runtime = rotation.CaptureRuntimeState().stateMachineStates.at(modeNode);
+        if (!Expect(runtime.currentStateName == "Normal" && runtime.activeTransitions.size() == 1,
+            "ALS prop normal rotation branch did not transition")
+            || !ExpectNear(runtime.activeTransitions.front().duration, .75f, 1e-5f,
+                "ALS prop normal rotation blend duration differs from source")) return false;
+    }
+    std::cout << "ALS Torch/Binoculars: seven normal samples and four mesh-space Aim Sweep chains passed\n";
+    struct OverlayOverrideCase { int state; int overrideState; const char* clip; float time; };
+    constexpr OverlayOverrideCase overrideCases[] = {
+        {1,1,"ALS_Props_M4A1_Poses",.37f}, {1,2,"ALS_Props_M4A1_Poses",.31f}, {1,3,"ALS_Props_M4A1_Poses",.25f},
+        {2,1,"ALS_Props_Bow_Poses",0}, {2,2,"ALS_Props_Bow_Poses",.11f}, {2,3,"ALS_Props_Bow_Poses",.28f},
+        {3,1,"ALS_Props_Pistol_1H_Poses",.11f}, {3,2,"ALS_Props_Pistol_1H_Poses",.11f}, {3,3,"ALS_Props_Pistol_1H_Poses",.24f},
+        {4,1,"ALS_Props_Torch_Poses",0}, {4,2,"ALS_Props_Torch_Poses",0}, {4,3,"ALS_Props_Torch_Poses",.14f},
+        {5,1,"ALS_Props_Binoculars_Poses",0}, {5,2,"ALS_Props_Binoculars_Poses",0}, {5,3,"ALS_Props_Binoculars_Poses",.14f},
+        {6,1,"ALS_Props_Box_Poses",0}, {6,2,"ALS_Props_Box_Poses",0}, {6,3,"ALS_Props_Box_Poses",.08f},
+        {7,1,"ALS_Props_Pistol_2H_Poses",.11f}, {7,2,"ALS_Props_Pistol_2H_Poses",.08f}, {7,3,"ALS_Props_Pistol_2H_Poses",.24f},
+    };
+    for (const auto& testCase : overrideCases)
+    {
+        parameters["OverlayState"].intVal = testCase.state;
+        parameters["OverlayOverrideState"].intVal = testCase.overrideState;
+        VansAnimGraphInstance overlay(*overlayGraph->graph);
+        context.deltaTime = 0;
+        overlay.EvaluateFrame(context);
+        context.deltaTime = .6f;
+        const auto actual = overlay.EvaluateFrame(context);
+        VansAnimationSampleRequest request;
+        request.previousTime = request.currentTime = testCase.time;
+        VansPosePayload expected;
+        if (!Expect(VansAnimationSampler::Sample(clips.at(testCase.clip), skeleton, request, expected)
+            && actual.valid && actual.localPose.size() == expected.localPose.size(),
+            "ALS OverlayOverrideState branch did not evaluate")) return false;
+        for (std::size_t bone = 0; bone < actual.localPose.size(); ++bone)
+            if (!Expect(glm::length(actual.localPose[bone].translation - expected.localPose[bone].translation) < 1e-4f
+                && glm::length(actual.localPose[bone].scale - expected.localPose[bone].scale) < 1e-4f
+                && std::abs(glm::dot(actual.localPose[bone].rotation, expected.localPose[bone].rotation)) > 1.0f-1e-5f,
+                "ALS override pose differs from authored SequenceEvaluator time")) return false;
+        const auto checkCurve = [&](const char* name, float value)
+        {
+            const auto found = std::find_if(actual.curves.begin(), actual.curves.end(),
+                [name](const auto& curve) { return curve.name == name && curve.present; });
+            return Expect(found != actual.curves.end() && std::abs(found->value-value) < 1e-5f,
+                "ALS override ModifyCurve value differs from authored branch");
+        };
+        if (testCase.state == 1 && testCase.overrideState == 2
+            && (!checkCurve("Layering_Arm_L_Add", 0) || !checkCurve("Layering_Arm_R_Add", 0))) return false;
+        if (testCase.state == 2 && testCase.overrideState == 2
+            && !checkCurve("Layering_Arm_L_Add", .5f)) return false;
+        if (testCase.state == 4 && testCase.overrideState == 2
+            && !checkCurve("Layering_Arm_L_Add", 0)) return false;
+        if (testCase.state == 6 && testCase.overrideState == 1
+            && (!checkCurve("Layering_Spine_Add", .5f) || !checkCurve("Layering_Head_Add", .5f))) return false;
+    }
+    std::cout << "ALS Overlay Overrides: 21 authored pose/time branches match native clip sampling after transitions\n";
+    for (const auto& switchCase : std::vector<std::tuple<int, float, bool>>{
+        {1,.3f,false}, {4,.2f,true}, {5,.2f,true}})
+    {
+        const auto [overlayState, duration, inertial] = switchCase;
+        parameters["OverlayState"].intVal = overlayState;
+        parameters["OverlayOverrideState"].intVal = 0;
+        context.deltaTime = 1.0f/60;
+        VansAnimGraphInstance overlay(*overlayGraph->graph);
+        overlay.EvaluateFrame(context);
+        overlay.EvaluateFrame(context);
+        parameters["OverlayOverrideState"].intVal = 1;
+        const auto changed = overlay.EvaluateFrame(context);
+        const auto runtime = overlay.CaptureRuntimeState();
+        const auto& machine = runtime.stateMachineStates.at(1000 + overlayState);
+        if (!Expect(changed.valid && machine.currentStateName == "Override 1",
+            "ALS override did not select the authored target state")) return false;
+        if (inertial)
+        {
+            if (!Expect(machine.activeTransitions.empty()
+                && runtime.inertializationStates.at(20).active,
+                "ALS prop override did not use inertialization")
+                || !ExpectNear(runtime.inertializationStates.at(20).duration, duration, 1e-5f,
+                    "ALS prop override inertialization duration differs from source")) return false;
+        }
+        else if (!Expect(machine.activeTransitions.size() == 1,
+            "ALS weapon override did not start Hermite crossfade")
+            || !ExpectNear(machine.activeTransitions.front().duration, duration, 1e-5f,
+                "ALS weapon override crossfade duration differs from source")) return false;
+    }
+    parameters["OverlayState"].intVal = 0;
+    parameters["OverlayOverrideState"].intVal = 0;
+    parameters["Weight_Gait"].floatVal = 0;
+    parameters["BasePose_N"].floatVal = 1;
+    parameters["BasePose_CLF"].floatVal = 0;
+    parameters["Weight_InAir"].floatVal = 0;
+    parameters["LandPrediction"].floatVal = 0;
+    parameters["RotationMode"].intVal = 1;
+    parameters["AimSweepTime"].floatVal = 0;
+    context.deltaTime = 1.0f/60;
+    const auto verifySampleMarkers = [&](const VansAnimGraphInstance& instance)
+    {
+        const auto snapshot = instance.CaptureRuntimeState();
+        VansAnimationSyncState expected;
+        for (const auto& [id, state] : snapshot.blendSpaceStates)
+        {
+            if (state.markerLeader < 0 || !snapshot.activeNodes.at(id)) continue;
+            for (int sample : state.activeSamples)
+            {
+                const auto* node = static_cast<const AnimGraphClipNode*>(graph->GetInputNode(id, sample));
+                const auto& clip = clips.at(node->m_ClipName);
+                if (clip.syncMarkers.empty()) continue;
+                VansAnimationSampleRequest request;
+                request.currentTime = request.previousTime = snapshot.clipStates.at(node->GetNodeId()).currentTime;
+                VansPosePayload sampled;
+                if (!VansAnimationSampler::Sample(clip, skeleton, request, sampled)) return false;
+                if (!expected.valid) expected = sampled.sync;
+                else if (!Expect(sampled.sync.markerId == expected.markerId && sampled.sync.nextMarkerId == expected.nextMarkerId,
+                    "ALS samples disagree on active foot markers")
+                    || !ExpectNear(sampled.sync.phase, expected.phase, .0001f,
+                        "ALS native Walk/Run/Pose samples disagree on marker phase")) return false;
+            }
+        }
+        for (int id : {610, 611})
+        {
+            const auto active = snapshot.activeNodes.find(id);
+            if (active == snapshot.activeNodes.end() || !active->second) continue;
+            const auto* node = static_cast<const AnimGraphClipNode*>(graph->GetNode(id));
+            const auto& clip = clips.at(node->m_ClipName);
+            VansAnimationSampleRequest request;
+            request.currentTime = request.previousTime = snapshot.clipStates.at(id).currentTime;
+            VansPosePayload sampled;
+            if (!VansAnimationSampler::Sample(clip, skeleton, request, sampled)) return false;
+            if (!expected.valid) expected = sampled.sync;
+            else if (!Expect(sampled.sync.markerId == expected.markerId && sampled.sync.nextMarkerId == expected.nextMarkerId,
+                "Sprint and WalkRun disagree on group foot markers")
+                || !ExpectNear(sampled.sync.phase, expected.phase, .0001f, "Sprint/Impulse group phase mismatch")) return false;
+        }
+        return true;
+    };
+    parameters["FYaw"].floatVal = 11.0f;
+    parameters["BYaw"].floatVal = 22.0f;
+    parameters["RYaw"].floatVal = 33.0f;
+    parameters["LYaw"].floatVal = 44.0f;
+    parameters["FeetUncrossed"].boolVal = false;
+    const std::array<std::pair<std::string, float>, 6> standingYawCases{{
+        {"Move F", 11.0f}, {"Move B", 22.0f}, {"Move RF", 33.0f},
+        {"Move RB", 33.0f}, {"Move LF", 44.0f}, {"Move LB", 44.0f}
+    }};
+    for (const auto& [stateName, expectedYaw] : standingYawCases)
+    {
+        parameters["MovementDirection"].intVal = stateName == "Move F" ? 0 :
+            stateName == "Move B" ? 3 : stateName.find('R') != std::string::npos ? 1 : 2;
+        VansAnimGraphInstance instance(*graph);
+        if (!Expect(instance.IsCompiled(), instance.GetCompileError().c_str())
+            || !Expect(instance.PlayState(stateName), "ALS standing yaw state cannot be activated")) return false;
+        const auto pose = instance.EvaluateFrame(context);
+        const auto yawCurve = std::find_if(pose.curves.begin(), pose.curves.end(),
+            [](const auto& curve) { return curve.name == "YawOffset" && curve.present; });
+        if (!Expect(pose.valid && yawCurve != pose.curves.end(), "ALS standing YawOffset curve missing")
+            || !ExpectNear(yawCurve->value, expectedYaw, .0001f,
+                "ALS standing state did not write its source yaw parameter")) return false;
+    }
+    for (const auto& transition : direction->m_Transitions)
+    {
+        for (const auto& factor : transition.boneBlendFactors)
+            if (!Expect(skeleton.boneNameToIndex.count(factor.first) == 1, "ALS blend profile references missing native bone")) return false;
+        parameters["MovementDirection"].intVal = transition.fromState == "Move F" ? 0 :
+            transition.fromState == "Move B" ? 3 : transition.fromState.find("R") != std::string::npos ? 1 : 2;
+        parameters["Feet_Crossing"].floatVal = 1;
+        parameters["FeetUncrossed"].boolVal = false;
+        parameters["HipOrientation_Bias"].floatVal = 0;
+        parameters["HipBiasAbs"].floatVal = 0;
+        VansAnimGraphInstance instance(*graph);
+        if (!Expect(instance.IsCompiled(), instance.GetCompileError().c_str())) return false;
+        if (!Expect(instance.PlayState(transition.fromState), "ALS source state cannot be activated")) return false;
+        if (!Expect(instance.EvaluateFrame(context).valid, "ALS source state initialization failed")) return false;
+        for (const auto& condition : transition.conditions)
+        {
+            auto& parameter = parameters.at(condition.paramName);
+            if (parameter.type == AnimatorParamType::Int) parameter.intVal = condition.intVal;
+            else if (parameter.type == AnimatorParamType::Bool) parameter.boolVal = condition.boolVal;
+            else parameter.floatVal = condition.floatVal + (condition.op == CompareOp::Greater ? .1f :
+                condition.op == CompareOp::Less ? -.1f : 0);
+        }
+        auto pose = instance.EvaluateFrame(context);
+        const auto runtime = instance.CaptureRuntimeState().stateMachineStates.at(10);
+        const bool tookTransition = std::any_of(runtime.activeTransitions.begin(), runtime.activeTransitions.end(),
+            [&](const auto& active){return active.previousStateName==transition.fromState && active.nextStateName==transition.toState;});
+        if (!tookTransition) std::cerr << "Direction transition " << transition.fromState << " -> " << transition.toState
+            << " instead reached " << runtime.currentStateName << std::endl;
+        if (!Expect(pose.valid && pose.localPose.size() == 68, "ALS native direction produced invalid pose")
+            || !Expect(tookTransition, "ALS authored transition is unreachable")) return false;
+        // 原生方向状态进入事件驱动胯部，指定转换开始事件驱动 Pivot。
+        const std::string hipsNotify="Hips "+transition.toState.substr(5);
+        const auto hasNotify=[&](const std::string& name){return std::any_of(pose.events.begin(),pose.events.end(),
+            [&](const auto& event){return event.name==name&&event.weight==1.0f;});};
+        if(!Expect(hasNotify(hipsNotify),"ALS direction entry did not emit native Hips notification"))return false;
+        if(!transition.startEvent.empty()&&!Expect(hasNotify(transition.startEvent),
+            "ALS direction transition start notification missing"))return false;
+        for (int frame = 0; frame < 60; ++frame)
+        {
+            pose = instance.EvaluateFrame(context);
+            if (frame % 10 == 0 && !verifySampleMarkers(instance)) return false;
+            for (const auto& bone : pose.localPose)
+                if (!Expect(std::isfinite(bone.translation.x) && std::isfinite(bone.rotation.w),
+                    "ALS native direction produced nonfinite transform")) return false;
+        }
+    }
+    routeOutput(613);
+    VansAnimGraphInstance sprint(*graph);
+    if (!Expect(sprint.IsCompiled(), sprint.GetCompileError().c_str())) return false;
+    parameters["Gait"].intVal = 0;
+    if (!Expect(sprint.EvaluateFrame(context).valid, "Initial WalkRun before Sprint is invalid")) return false;
+    parameters["Gait"].intVal = 2;
+    parameters["RelativeAccelerationForward"].floatVal = .5f;
+    parameters["SprintCycleWeight"].floatVal = .5f;
+    parameters["SprintImpulseWeight"].floatVal = .5f;
+    for (int i = 0; i < 30; ++i)
+    {
+        const auto pose = sprint.EvaluateFrame(context);
+        if (!pose.valid)
+        {
+            const auto failed = sprint.CaptureRuntimeState();
+            std::cerr << "Sprint invalid at frame " << i << " state " << failed.stateMachineStates.at(613).currentStateName
+                << " alpha " << failed.stateMachineStates.at(613).GetStateWeight("Sprint") << " groups " << failed.syncGroups.size() << std::endl;
+        }
+        if (!Expect(pose.valid, "ALS sprint pose invalid") || !verifySampleMarkers(sprint)) return false;
+    }
+    auto sprintState = sprint.CaptureRuntimeState();
+    if (!Expect(sprintState.stateMachineStates.at(613).currentStateName == "Sprint"
+        && sprintState.clipStates.count(610) && sprintState.clipStates.count(611),
+        "ALS Sprint and Impulse clips are not reachable")) return false;
+    parameters["SprintCycleWeight"].floatVal = .2f;
+    parameters["SprintImpulseWeight"].floatVal = .8f;
+    if (!Expect(sprint.EvaluateFrame(context).valid, "Impulse leadership produced invalid pose") || !verifySampleMarkers(sprint)
+        || !Expect(sprint.CaptureRuntimeState().syncGroups.at("Locomotion").leaderNode == 611,
+            "ALS Sprint Impulse cannot lead when its effective weight dominates")) return false;
+    parameters["Gait"].intVal = 1;
+    for (int i = 0; i < 30; ++i)
+        if (!Expect(sprint.EvaluateFrame(context).valid, "ALS sprint exit pose invalid") || !verifySampleMarkers(sprint)) return false;
+    if (!Expect(sprint.CaptureRuntimeState().stateMachineStates.at(613).currentStateName == "WalkRun",
+        "ALS sprint exit is not reachable")) return false;
+    // 完整生产Base图：左右脚选择、连续Walk/Run、非循环同步及实际Clip结束门槛。
+    graph = found->graph->Clone();
+    parameters["Grounded"].boolVal = false;
+    parameters["MovementState"].intVal = 2;
+    parameters["Jumped"].boolVal = true;
+    parameters["Speed"].floatVal = 3.5f;
+    for (float foot : {-1.0f, 0.0f}) for (float rate : {1.2f, 1.5f})
+    {
+        parameters["Feet_Position"].floatVal = foot;
+        parameters["JumpPlayRate"].floatVal = rate;
+        VansAnimGraphInstance air(*graph);
+        if (!Expect(air.IsCompiled(), air.GetCompileError().c_str())) return false;
+        const int walk = foot < 0 ? 700 : 703, run = walk+1, mixed = walk+2;
+        const std::string selected = foot < 0 ? "Jump Left Foot" : "Jump Right Foot";
+        bool reachedLoop = false, reachedFlail = false;
+        float previousFootTime = 0;
+        for (int frame = 0; frame < 110; ++frame)
+        {
+            const auto pose = air.EvaluateFrame(context);
+            const auto snapshot = air.CaptureRuntimeState();
+            if (!Expect(pose.valid && pose.localPose.size()==68, "Native nested Jump pose invalid")) return false;
+            const auto& runtime = snapshot.stateMachineStates.at(712);
+            if (frame==0 && !Expect(runtime.currentStateName==selected && runtime.activeTransitions.empty(),
+                "Jump entry failed to select foot immediately without first-update blending")) return false;
+            if (runtime.currentStateName==selected)
+            {
+                if (!ExpectNear(snapshot.blendAlphaStates.at(mixed).value,.5f,1e-6f,"Jump did not continuously mix Walk/Run at 350 cm/s")
+                    || !ExpectNear(snapshot.clipStates.at(walk).currentTime,snapshot.clipStates.at(run).currentTime,1e-6f,
+                        "Nonlooping Jump group samples drifted")) return false;
+                previousFootTime=snapshot.clipStates.at(walk).currentTime;
+            }
+            else
+            {
+                const float duration=clips.at(foot<0 ? "ALS_N_JumpWalk_LF" : "ALS_N_JumpWalk_RF").duration;
+                if (!ExpectNear(previousFootTime,duration,1e-6f,"Jump exited before relevant Clip finished")) return false;
+            }
+            reachedLoop |= std::any_of(runtime.activeTransitions.begin(),runtime.activeTransitions.end(),
+                [](const auto& active){return active.previousStateName=="Jump Loop";});
+            reachedFlail |= runtime.currentStateName=="Flail";
+            if (!runtime.activeTransitions.empty())
+            {
+                if (!Expect(runtime.activeTransitions.size()==1 && runtime.currentStateName=="Flail"
+                        && runtime.activeTransitions.front().previousStateName=="Jump Loop",
+                    "Inertial foot-to-loop retained an outgoing crossfade")
+                    || !Expect(!snapshot.activeNodes.at(walk) && snapshot.activeNodes.at(706),
+                        "Inertial source player kept updating after the state switch")) return false;
+            }
+            if (snapshot.activeNodes.count(707) && snapshot.activeNodes.at(707))
+            {
+                const auto& clock=snapshot.clipStates.at(707);
+                // Flail is the heavier player after the 1 s blend has passed its midpoint.
+                if (snapshot.syncGroups.at("Flail").leaderNode==707
+                    && !ExpectNear(clock.currentTime-clock.previousTime,context.deltaTime*1.2f,2e-6f,
+                        "Flail inherited JumpPlayRate instead of fixed source rate")) return false;
+            }
+        }
+        if (!Expect(reachedLoop && reachedFlail,"Jump child graph cannot reach Loop/Flail")) return false;
+    }
+    parameters["Jumped"].boolVal=false;
+    parameters["MovementState"].intVal=2; parameters["Grounded"].boolVal=false;
+    parameters["FallSpeed"].floatVal=-7.5f; parameters["FallSpeedAbs"].floatVal=7.5f;
+    VansAnimGraphInstance falling(*graph);
+    if (!Expect(falling.EvaluateFrame(context).valid && falling.CaptureRuntimeState().stateMachineStates.at(13).currentStateName=="Fall",
+        "MainMovement failed to route a ledge fall through conduits")) return false;
+    if (!ExpectNear(falling.CaptureRuntimeState().blendAlphaStates.at(732).value,.75f,1e-6f,"Fall speed mapping incorrect")
+        || !ExpectNear(falling.CaptureRuntimeState().blendAlphaStates.at(734).value,.1f,1e-6f,"Fall-to-flail mapping incorrect")) return false;
+    for (bool moving : {false,true})
+    {
+        VansAnimGraphInstance landing(*graph); parameters["MovementState"].intVal=2; parameters["Grounded"].boolVal=false;
+        landing.EvaluateFrame(context);
+        parameters["MovementState"].intVal=1; parameters["Grounded"].boolVal=true;
+        parameters["HasMovementInput"].boolVal=moving;
+        parameters["Rotate_L"].boolVal=parameters["Rotate_R"].boolVal=false; parameters["Speed"].floatVal=0;
+        if (!Expect(landing.EvaluateFrame(context).valid,"Landing pose invalid")
+            || !Expect(landing.CaptureRuntimeState().stateMachineStates.at(13).currentStateName==(moving?"Land Movement":"Land"),
+                "UE equal-priority transition order did not select correct landing branch")) return false;
+        parameters["HasMovementInput"].boolVal=false;
+        bool returned=false;
+        for (int i=0;i<180;++i)
+        {
+            if (!Expect(landing.EvaluateFrame(context).valid,"Landing completion pose invalid")) return false;
+            if (landing.CaptureRuntimeState().stateMachineStates.at(13).currentStateName=="Grounded") { returned=true; break; }
+        }
+        if (!Expect(returned,"Land remaining-time rule failed to return to Grounded")) return false;
+    }
+    for (const auto& name:{"Grounded","Jump","Fall","Land","Land Movement"})
+    {
+        const bool airborne=std::string(name)=="Jump" || std::string(name)=="Fall";
+        parameters["MovementState"].intVal=airborne?2:1;parameters["Grounded"].boolVal=!airborne;
+        parameters["Jumped"].boolVal=std::string(name)=="Jump";
+        parameters["LandPrediction"].floatVal=0;parameters["Stance"].intVal=0;
+        parameters["HasMovementInput"].boolVal=false;parameters["Speed"].floatVal=0;
+        VansAnimGraphInstance instance(*graph);instance.EvaluateFrame(context);auto snapshot=instance.CaptureRuntimeState();
+        snapshot.stateMachineStates[13].currentStateName=name;
+        snapshot.stateMachineStates[13].activeTransitions.clear();snapshot.inertializationStates.clear();
+        if (!Expect(instance.RestoreRuntimeState(snapshot),"State curve fixture could not restore")) return false;
+        const auto pose=instance.EvaluateFrame(context);
+        std::vector<std::string> names=airborne?std::vector<std::string>{"BasePose_N","Weight_InAir"}
+            :std::vector<std::string>{"Enable_FootIK_L","Enable_FootIK_R"};
+        if (std::string(name)=="Land") {names.push_back("FootLock_L");names.push_back("FootLock_R");}
+        if (std::string(name)=="Land" || std::string(name)=="Land Movement") names.push_back("BasePose_N");
+        if (!Expect(pose.valid,"Native state curve output invalid")) return false;
+        for (const auto& curveName:names)
+        {
+            const auto found=std::find_if(pose.curves.begin(),pose.curves.end(),[&](const auto& c){return c.name==curveName && c.present;});
+            const auto message=std::string("MainMovement ")+name+" lost required source curve "+curveName;
+            if (!Expect(found!=pose.curves.end(),message.c_str())
+                || !ExpectNear(found->value,1,1e-5f,"MainMovement used serialized zero instead of exposed pin value")) return false;
+        }
+    }
+    for (bool jumpPrediction:{false,true})
+    {
+        parameters["MovementState"].intVal=2;parameters["Grounded"].boolVal=false;
+        parameters["Jumped"].boolVal=jumpPrediction;parameters["LandPrediction"].floatVal=1;
+        parameters["FallSpeed"].floatVal=-10;
+        VansAnimGraphInstance predicted(*graph);const auto pose=predicted.EvaluateFrame(context);
+        VansAnimationSampleRequest request;request.previousTime=request.currentTime=0;request.loop=false;
+        VansPosePayload reference;VansAnimationSampler::Sample(clips.at("ALS_N_Land_Heavy"),skeleton,request,reference);
+        if (!Expect(pose.valid && pose.localPose.size()==reference.localPose.size(),"Prediction pose invalid")) return false;
+        for (size_t bone=0;bone<pose.localPose.size();++bone)
+            if (!ExpectNear(glm::length(pose.localPose[bone].translation-reference.localPose[bone].translation),0,2e-5f,"Jump/Fall prediction failed to replace base with time-zero landing pose")
+                || !ExpectNear(std::abs(glm::dot(pose.localPose[bone].rotation,reference.localPose[bone].rotation)),1,2e-5f,"Jump/Fall prediction landing rotation differs")) return false;
+    }
+    // 两条实际子图分别与原始五个 Pose/参考 Clip 的独立数学计算比对。
+    const char* leanNames[]={"ALS_N_Falling_LeanPose_0","ALS_N_Falling_LeanPose_F",
+        "ALS_N_Falling_LeanPose_B","ALS_N_Falling_LeanPose_L","ALS_N_Falling_LeanPose_R"};
+    struct LeanCase{float x,y;float weights[5];};
+    const LeanCase leanCases[]={{0,0,{1,0,0,0,0}},{1,0,{0,0,0,0,1}},{-1,0,{0,0,0,1,0}},
+        {0,1,{0,1,0,0,0}},{0,-1,{0,0,1,0,0}},{.5f,.5f,{.25f,.375f,0,0,.375f}},
+        {-.5f,-.5f,{.25f,0,.375f,.375f,0}}};
+    parameters["LandPrediction"].floatVal=0;parameters["FallSpeed"].floatVal=-7.5f;
+    for(bool jump:{false,true})for(const auto& sample:leanCases)
+    {
+        parameters["LeanLR"].floatVal=sample.x;parameters["LeanFB"].floatVal=sample.y;
+        parameters["Jumped"].boolVal=jump;parameters["MovementState"].intVal=2;parameters["Grounded"].boolVal=false;
+        const int firstId=jump?770:760;
+        auto leanGraph=graph->Clone();const int output=leanGraph->GetOutputNodeId();
+        std::vector<int> removed;
+        for(const auto& [id,node]:leanGraph->GetNodes())if(id!=output&&(id<firstId||id>firstId+6))removed.push_back(id);
+        for(int id:removed)leanGraph->RemoveNode(id);
+        auto referenceNode=std::make_unique<AnimGraphClipNode>();referenceNode->m_ClipName="ALS_N_FallLoop";
+        referenceNode->m_SampleTimeParameter="PoseSampleTime";referenceNode->m_RootMotion=false;
+        const int referenceId=leanGraph->AddNode(std::move(referenceNode));
+        leanGraph->AddLink(referenceId,0,firstId+6,0);leanGraph->AddLink(firstId+6,0,output,0);
+        VansAnimGraphInstance full(*leanGraph);
+        if(!Expect(full.IsCompiled(),full.GetCompileError().c_str()))return false;
+        AnimGraphPose fullPose;
+        for(int frame=0;frame<3;++frame)fullPose=full.EvaluateFrame(context);
+        if(!Expect(fullPose.valid,"Native Lean returned invalid pose"))return false;
+        const auto snapshot=full.CaptureRuntimeState();
+        VansAnimationSampleRequest request;request.loop=false;
+        VansPosePayload reference;VansAnimationSampler::Sample(clips.at("ALS_N_FallLoop"),skeleton,request,reference);
+        VansPosePayload poses[5];
+        for(int i=0;i<5;++i)if(sample.weights[i]>0)
+        {
+            request.previousTime=request.currentTime=snapshot.clipStates.at((jump?770:760)+i).currentTime;
+            VansAnimationSampler::Sample(clips.at(leanNames[i]),skeleton,request,poses[i]);
+        }
+        for(size_t bone=0;bone<skeleton.bones.size();++bone)
+        {
+            glm::quat rotation(0,0,0,0),first(1,0,0,0);bool found=false;
+            glm::vec3 translation(0),scale(0);
+            for(int i=0;i<5;++i)if(sample.weights[i]>0)
+            {
+                const auto& pose=poses[i].localPose[bone];const auto& ref=reference.localPose[bone];
+                auto delta=glm::normalize(pose.rotation*glm::inverse(ref.rotation));
+                if(!found){first=delta;found=true;}if(glm::dot(first,delta)<0)delta=-delta;
+                rotation+=delta*sample.weights[i];translation+=(pose.translation-ref.translation)*sample.weights[i];
+                scale+=(pose.scale/ref.scale)*sample.weights[i];
+            }
+            const auto& before=reference.localPose[bone];const auto& actual=fullPose.localPose[bone];
+            const auto expectedRotation=glm::normalize(glm::normalize(rotation)*before.rotation);
+            if(!ExpectNear(std::abs(glm::dot(actual.rotation,expectedRotation)),1,2e-5f,"Native Lean delta rotation/order differs")
+                || !ExpectNear(glm::length(actual.translation-before.translation-translation),0,2e-5f,"Native Lean local translation differs")
+                || !ExpectNear(glm::length(actual.scale-before.scale*scale),0,2e-5f,"Native Lean local scale differs"))return false;
+        }
+    }
+    parameters["LeanLR"].floatVal=parameters["LeanFB"].floatVal=0;
+    std::cout << "ALS nested Jump: 440 source-rig pose frames; landing/curves/prediction and 14 native Lean pose comparisons passed" << std::endl;
+
+    // 源 NotMoving 图：固定姿态 -> 脚锁覆盖 -> 姿态专属 Slot -> RotationScale。
+    parameters.clear();
+    for (const auto& parameter : asset.parameters) parameters[parameter.name] = parameter;
+    const auto curveValue = [](const AnimGraphPose& pose, const char* name)
+    {
+        const auto curve = std::find_if(pose.curves.begin(), pose.curves.end(),
+            [&](const auto& value) { return value.name == name && value.present; });
+        return curve == pose.curves.end() ? 0.0f : curve->value;
+    };
+    std::unordered_map<std::string, VansSlotPoseInputs> slotPayloads;
+    context.slotPayloads = &slotPayloads;
+    int idleCases = 0;
+    for (int stance = 0; stance < 2; ++stance)
+    {
+        graph = found->graph->Clone(); routeOutput(31 + stance);
+        const std::string slotName = stance ? "(CLF) Turn/Rotate" : "(N) Turn/Rotate";
+        const std::string otherSlot = stance ? "(N) Turn/Rotate" : "(CLF) Turn/Rotate";
+        VansAnimationSampleRequest request; request.loop = false;
+        VansPosePayload idlePose, turnPose;
+        if (!Expect(VansAnimationSampler::Sample(clips.at(stance ? "ALS_CLF_Pose" : "ALS_N_Pose"),
+                skeleton, request, idlePose), "Idle reference sampling failed")) return false;
+        request.previousTime = request.currentTime = .2f;
+        if (!Expect(VansAnimationSampler::Sample(clips.at(stance ? "ALS_CLF_TurnIP_R90" : "ALS_N_TurnIP_R90"),
+                skeleton, request, turnPose), "Turn reference sampling failed")) return false;
+        // 注入可区分的曲线值，验证混合顺序；骨骼仍用真实源动画采样。
+        turnPose.curves.clear();
+        for (const auto& value : {std::pair<const char*, float>{"RotationAmount", 2.0f},
+                {"FootLock_L", .2f}, {"FootLock_R", .4f}, {"Enable_Transition", 0.0f}})
+            turnPose.curves.push_back({VansAnimationStableId(value.first), value.first, value.second, true});
+        for (float weight : {0.0f, .25f, 1.0f}) for (float scale : {0.0f, .5f, 1.6f})
+        {
+            parameters["RotationScale"].floatVal = scale;
+            slotPayloads.clear(); turnPose.sourceWeight = weight; slotPayloads[slotName].poses = {turnPose};
+            VansAnimGraphInstance idle(*graph);
+            if (!Expect(idle.IsCompiled(), idle.GetCompileError().c_str())) return false;
+            for (int frame = 0; frame < 4; ++frame)
+            {
+                const auto pose = idle.EvaluateFrame(context);
+                if (!Expect(pose.valid, "NotMoving pose invalid")
+                    || !ExpectNear(curveValue(pose, "RotationAmount"), 2*weight*scale, 1e-5f, "RotationScale must follow Slot blending")
+                    || !ExpectNear(curveValue(pose, "FootLock_L"), 1-.8f*weight, 1e-5f, "Left foot lock must precede Slot blending")
+                    || !ExpectNear(curveValue(pose, "FootLock_R"), 1-.6f*weight, 1e-5f, "Right foot lock must precede Slot blending")
+                    || !ExpectNear(curveValue(pose, "Enable_Transition"), 1-weight, 1e-5f, "Turn clip must override transition-enable curve")) return false;
+                for (size_t bone = 0; bone < skeleton.bones.size(); ++bone)
+                {
+                    const auto& base = idlePose.localPose[bone]; const auto& turn = turnPose.localPose[bone];
+                    const auto rotation = glm::normalize(base.rotation*(1-weight)
+                        + turn.rotation*(glm::dot(base.rotation, turn.rotation)<0 ? -weight : weight));
+                    if (!ExpectNear(glm::length(pose.localPose[bone].translation
+                            - (base.translation*(1-weight)+turn.translation*weight)), 0, 1e-5f,
+                            "Idle evaluator/Slot translation differs from fixed source pose blend")
+                        || !ExpectNear(std::abs(glm::dot(pose.localPose[bone].rotation, rotation)),
+                            1, 1e-6f, "Slot must normalize weighted quaternion components")
+                        || !ExpectNear(glm::length(pose.localPose[bone].scale
+                            - (base.scale*(1-weight)+turn.scale*weight)), 0, 1e-5f,
+                            "Slot scale differs from source pose blend")) return false;
+                }
+                ++idleCases;
+            }
+        }
+        slotPayloads.clear(); turnPose.sourceWeight = 1; slotPayloads[otherSlot].poses = {turnPose};
+        VansAnimGraphInstance isolated(*graph);
+        const auto pose = isolated.EvaluateFrame(context);
+        if (!Expect(pose.valid, "Opposite stance slot isolation invalid")
+            || !ExpectNear(curveValue(pose, "RotationAmount"), 0, 1e-5f, "Opposite stance turn leaked into idle")
+            || !ExpectNear(curveValue(pose, "FootLock_L"), 1, 1e-5f, "Opposite stance turn changed foot lock")) return false;
+    }
+    // Grounded Slot 位于地面缓存内，空中分支不能被未结束的地面播放覆盖。
+    graph = found->graph->Clone(); routeOutput(19);
+    parameters.clear(); for (const auto& parameter : asset.parameters) parameters[parameter.name] = parameter;
+    VansAnimationSampleRequest groundRequest;
+    VansPosePayload groundSlot;
+    if (!VansAnimationSampler::Sample(clips.at("ALS_N_Pose"), skeleton, groundRequest, groundSlot)) return false;
+    groundSlot.curves.push_back({VansAnimationStableId("SlotScopeProbe"), "SlotScopeProbe", 7, true});
+    groundSlot.sourceWeight = 1;
+    slotPayloads.clear(); slotPayloads["slot-als-transition"].poses = {groundSlot};
+    for (bool airborne : {false, true})
+    {
+        parameters["MovementState"].intVal = airborne ? 2 : 1;
+        parameters["Grounded"].boolVal = !airborne;
+        parameters["Jumped"].boolVal = false;
+        VansAnimGraphInstance scope(*graph);
+        const auto pose = scope.EvaluateFrame(context);
+        if (!Expect(pose.valid, "Grounded Slot scope pose invalid")
+            || !ExpectNear(curveValue(pose, "SlotScopeProbe"), airborne ? 0.0f : 7.0f, 1e-5f,
+                "Grounded Slot must affect grounded cache only")) return false;
+    }
+    // Main Grounded 入口读取上一帧曲线，而不是直接读取当前站蹲输入。
+    slotPayloads.clear();
+    graph = found->graph->Clone(); routeOutput(19);
+    parameters.clear(); for(const auto& p:asset.parameters) parameters[p.name]=p;
+    parameters["MovementState"].intVal=1; parameters["Grounded"].boolVal=true;
+    context.deltaTime=.05f;
+    const auto groundedState=[](const VansAnimGraphInstance& instance)
+    { return instance.CaptureRuntimeState().stateMachineStates.at(500).currentStateName; };
+    for (float baseCurve : {.4999f,.5f})
+    {
+        parameters["BasePose_CLF"].floatVal=baseCurve;
+        parameters["Stance"].intVal=baseCurve<.5f?1:0;
+        parameters["CanChangeStance"].boolVal=false;
+        VansAnimGraphInstance entry(*graph);
+        const auto pose=entry.EvaluateFrame(context);
+        const bool crouched=baseCurve>=.5f;
+        if (!Expect(pose.valid && groundedState(entry)==(crouched?"(CLF) Crouching LF":"(N) Standing"),
+                "Grounded entry used requested stance instead of previous BasePose curve")
+            || !ExpectNear(curveValue(pose,crouched?"BasePose_CLF":"BasePose_N"),1,1e-6f,
+                "Grounded stance did not set source base curve")) return false;
+        entry.EvaluateFrame(context);
+        if (!Expect(groundedState(entry)==(crouched?"(CLF) Crouching LF":"(N) Standing"),
+            "Movement action conduit failed to block stance change")) return false;
+    }
+    for (int from=0;from<2;++from)
+    {
+        parameters["BasePose_CLF"].floatVal=static_cast<float>(from);
+        parameters["Stance"].intVal=from;
+        parameters["CanChangeStance"].boolVal=true;
+        parameters["ShouldMove"].boolVal=false;
+        VansAnimGraphInstance stationary(*graph);
+        stationary.EvaluateFrame(context);
+        parameters["Stance"].intVal=1-from;
+        stationary.EvaluateFrame(context);
+        const int clipId=from?561:562;
+        if (!Expect(groundedState(stationary)==(from?"(CLF)->(N) Transition":"(N)->(CLF) Transition"),
+                "Stationary stance change did not select source transition take")
+            || !ExpectNear(stationary.CaptureRuntimeState().clipStates.at(clipId).currentTime,.06f,1e-6f,
+                "Stance clip did not start at source 1.2 playback rate")) return false;
+        const char* destination=from?"(N) Standing":"(CLF) Crouching LF";
+        int frames=0;
+        while(groundedState(stationary)!=destination && frames++<100)
+        {
+            const auto pose=stationary.EvaluateFrame(context);
+            if(!pose.valid) return false;
+            // 惯性过渡结束后的实际图输出，应等于源站蹲片段在 1.2 倍时钟下的 68 骨骼姿态。
+            if(frames>=7 && groundedState(stationary)!=destination)
+            {
+                VansAnimationSampleRequest request; request.loop=false;
+                request.currentTime=request.previousTime=stationary.CaptureRuntimeState().clipStates.at(clipId).currentTime;
+                VansPosePayload reference;
+                if(!VansAnimationSampler::Sample(clips.at(from?"ALS_CLF_to_N":"ALS_N_to_CLF"),skeleton,request,reference))return false;
+                for(std::size_t bone=0;bone<pose.localPose.size();++bone)
+                    if(!ExpectNear(glm::length(pose.localPose[bone].translation-reference.localPose[bone].translation),0,2e-5f,
+                            "Grounded transition output differs from source clip translation")
+                        ||!ExpectNear(std::abs(glm::dot(pose.localPose[bone].rotation,reference.localPose[bone].rotation)),1,2e-5f,
+                            "Grounded transition output differs from source clip rotation")
+                        ||!ExpectNear(glm::length(pose.localPose[bone].scale-reference.localPose[bone].scale),0,2e-5f,
+                            "Grounded transition output differs from source clip scale"))return false;
+            }
+        }
+        if(!Expect(frames<100,"Stance transition never completed from relevant clip time"))return false;
+        // 有移动输入时经同一 Conduit 直接进入目标姿态，使用 ChangeStance 曲线。
+        parameters["Stance"].intVal=from;
+        parameters["ShouldMove"].boolVal=true;
+        VansAnimGraphInstance moving(*graph); moving.EvaluateFrame(context);
+        parameters["Stance"].intVal=1-from;
+        moving.EvaluateFrame(context);
+        if(!Expect(groundedState(moving)==destination,"Moving stance change incorrectly played a stationary take"))return false;
+        const auto runtime=moving.CaptureRuntimeState().stateMachineStates.at(500);
+        if(!Expect(!runtime.activeTransitions.empty(),"Moving stance change lost crossfade")
+            ||!ExpectNear(runtime.activeTransitions.back().duration,.5f,1e-6f,"Moving stance change duration differs from source")
+            ||!Expect(runtime.activeTransitions.back().blendCurve.size()==3,"Moving stance change lost custom curve keys"))return false;
+        // UE 原生 ChangeStance.get_float_value(0.1)，来自独立导出的 2001 点对照。
+        if(!ExpectNear(runtime.GetStateWeight(destination),.01130673103f,2e-7f,
+            "Moving stance blend weight differs from native ChangeStance curve"))return false;
+    }
+    parameters["BasePose_CLF"].floatVal=1;parameters["Stance"].intVal=0;
+    parameters["ShouldMove"].boolVal=false;parameters["GroundedEntryState"].intVal=1;
+    VansAnimGraphInstance rollEntry(*graph);
+    const auto rollPose=rollEntry.EvaluateFrame(context);
+    if(!Expect(rollPose.valid&&groundedState(rollEntry)=="From Roll","Roll entry did not outrank BasePose routing")
+        ||!ExpectNear(curveValue(rollPose,"FootLock_L"),1,1e-6f,"Roll entry foot curve missing")
+        ||!ExpectNear(rollEntry.CaptureRuntimeState().clipStates.at(563).currentTime,1.5f,1e-6f,
+            "Roll entry evaluator sampled the wrong source time"))return false;
+    rollEntry.EvaluateFrame(context);
+    if(!Expect(groundedState(rollEntry)=="(N) Standing","Explicit evaluator was excluded from automatic transition relevancy"))return false;
+    std::cout << "ALS Main Grounded: curve-selected entry, stance gates, both stationary/moving routes and Roll evaluator passed" << std::endl;
+    // 四个 Rotate 子图：真实源片段、速率、曲线缩放、循环释放及方向切换。
+    graph=found->graph->Clone();routeOutput(19);
+    for(int stance=0;stance<2;++stance)
+    for(int side=0;side<2;++side)
+    for(float rate:{1.15f,3.0f})
+    {
+        parameters.clear();for(const auto& p:asset.parameters)parameters[p.name]=p;
+        parameters["MovementState"].intVal=1;parameters["Grounded"].boolVal=true;
+        parameters["BasePose_CLF"].floatVal=static_cast<float>(stance);parameters["Stance"].intVal=stance;
+        parameters["RotateRate"].floatVal=rate;
+        const char* flag=side?"Rotate_R":"Rotate_L";
+        const char* selected=side?"RotateRight":"RotateLeft";
+        const int machineId=stance?520:510,clipId=(stance?580:570)+side*3;
+        const std::string clipName=std::string("ALS_")+(stance?"CLF":"N")+"_Rotate_"+(side?"R90":"L90");
+        context.deltaTime=.025f;VansAnimGraphInstance rotating(*graph);rotating.EvaluateFrame(context);
+        parameters[flag].boolVal=true;
+        for(int frame=0;frame<32;++frame)
+        {
+            const auto pose=rotating.EvaluateFrame(context);
+            const auto snapshot=rotating.CaptureRuntimeState();
+            if(!Expect(pose.valid && snapshot.stateMachineStates.at(machineId).currentStateName==selected,
+                "Rotate graph did not hold the requested direction"))return false;
+            if(frame>=16)
+            {
+                const auto clock=snapshot.clipStates.at(clipId);
+                VansAnimationSampleRequest request;request.loop=true;request.previousTime=clock.previousTime;request.currentTime=clock.currentTime;
+                VansPosePayload expected;
+                if(!VansAnimationSampler::Sample(clips.at(clipName),skeleton,request,expected))return false;
+                for(std::size_t bone=0;bone<pose.localPose.size();++bone)
+                    if(!ExpectNear(glm::length(pose.localPose[bone].translation-expected.localPose[bone].translation),0,2e-5f,"Rotate source bone translation differs")
+                        ||!ExpectNear(std::abs(glm::dot(pose.localPose[bone].rotation,expected.localPose[bone].rotation)),1,2e-5f,"Rotate source bone rotation differs")
+                        ||!ExpectNear(glm::length(pose.localPose[bone].scale-expected.localPose[bone].scale),0,2e-5f,"Rotate source bone scale differs"))return false;
+                if(!ExpectNear(curveValue(pose,"RotationAmount"),curveValue(expected,"RotationAmount")*rate,2e-5f,
+                    "RotateRate did not scale RotationAmount exactly once"))return false;
+            }
+        }
+        const float phase=VansAnimationSampler::ResolveSampleTime(rotating.CaptureRuntimeState().clipStates.at(clipId).currentTime,0,clips.at(clipName).duration,true);
+        parameters[flag].boolVal=false;rotating.EvaluateFrame(context);
+        if(!ExpectNear(rotating.CaptureRuntimeState().clipStates.at(clipId).currentTime,
+            std::min(phase+context.deltaTime*rate,clips.at(clipName).duration),2e-5f,
+            "Rotate release did not finish current cycle at source rate"))return false;
+        int frames=0;
+        while(rotating.CaptureRuntimeState().stateMachineStates.at(machineId).currentStateName!= "NotMoving" && frames++<200)
+            rotating.EvaluateFrame(context);
+        if(!Expect(frames<200,"Rotate automatic time-remaining exit never completed"))return false;
+        parameters[flag].boolVal=true;
+        for(int f=0;f<20;++f)rotating.EvaluateFrame(context);
+        parameters[flag].boolVal=false;parameters[side?"Rotate_L":"Rotate_R"].boolVal=true;
+        rotating.EvaluateFrame(context);
+        if(!Expect(rotating.CaptureRuntimeState().stateMachineStates.at(machineId).currentStateName==(side?"RotateLeft":"RotateRight"),
+            "Rotate opposite-direction transition failed"))return false;
+        parameters["ShouldMove"].boolVal=true;parameters["Rotate_L"].boolVal=false;parameters["Rotate_R"].boolVal=false;
+        rotating.EvaluateFrame(context);
+        if(!Expect(rotating.CaptureRuntimeState().stateMachineStates.at(machineId).currentStateName=="Moving",
+            "Rotate moving interrupt did not traverse source NotMoving route"))return false;
+    }
+    std::cout << "ALS RotateInPlace: four 68-bone source poses at two rates, curve scaling, release and direction/movement interruption passed" << std::endl;
+    // Stop 的脚位分区与固定采样来自源图；不把移动姿态自身当作 Plant 参考。
+    auto componentRotations=[&](const VansPosePayload& pose)
+    {
+        std::vector<glm::quat> result(skeleton.bones.size());
+        for(int bone:skeleton.topologicalOrder)
+        {
+            const int parent=skeleton.bones[bone].parentIndex;
+            result[bone]=glm::normalize(parent<0?pose.localPose[bone].rotation:result[parent]*pose.localPose[bone].rotation);
+        }
+        return result;
+    };
+    auto inLeg=[&](int bone,char side)
+    {
+        const std::string suffix(1,side);
+        for(int current=bone;current>=0;current=skeleton.bones[current].parentIndex)
+            if(skeleton.bones[current].name=="thigh_"+suffix || skeleton.bones[current].name=="ik_foot_"+suffix)return true;
+        return false;
+    };
+    auto verifyStopPose=[&](const VansPosePayload& actual,const VansPosePayload& base,const VansPosePayload* planted,char side)
+    {
+        if(!Expect(actual.localPose.size()==skeleton.bones.size() && base.localPose.size()==skeleton.bones.size()
+            && (!planted || planted->localPose.size()==skeleton.bones.size()),"Stop pose comparison requires complete local poses"))
+        {
+            std::cerr << "actual=" << actual.localPose.size() << " base=" << base.localPose.size()
+                << " planted=" << (planted?planted->localPose.size():0) << std::endl;
+            return false;
+        }
+        const auto actualRot=componentRotations(actual),baseRot=componentRotations(base);
+        const auto plantRot=planted?componentRotations(*planted):baseRot;
+        for(int bone=0;bone<static_cast<int>(skeleton.bones.size());++bone)
+        {
+            const bool selected=planted && (inLeg(bone,side) || (side=='a'&&(inLeg(bone,'l')||inLeg(bone,'r'))));
+            const auto& expected=selected?planted->localPose[bone]:base.localPose[bone];
+            if(!ExpectNear(glm::length(actual.localPose[bone].translation-expected.translation),0,3e-5f,"Stop must retain local translation semantics")
+                ||!ExpectNear(glm::length(actual.localPose[bone].scale-expected.scale),0,3e-5f,"Stop local scale differs")
+                ||!ExpectNear(std::abs(glm::dot(actualRot[bone],selected?plantRot[bone]:baseRot[bone])),1,3e-5f,
+                    "Stop selected leg component rotation differs from source pose"))return false;
+        }
+        return true;
+    };
+    graph=found->graph->Clone();routeOutput(9001);
+    auto baseGraph=std::move(graph);
+    graph=found->graph->Clone();routeOutput(40);
+    int stopCases=0;
+    for(float foot:{-1.0f,-.5f,-.4999f,-.0001f,0.0f,.0001f,.4999f,.5f,1.0f})
+    for(int hips=0;hips<6;++hips)
+    for(int direction=0;direction<4;++direction)
+    {
+        parameters.clear();for(const auto& p:asset.parameters)parameters[p.name]=p;
+        parameters["Feet_Position"].floatVal=foot;parameters["TrackedHipsDirection"].intVal=hips;
+        parameters["StandingPlayRate"].floatVal=1;
+        const char* weights[]={"VelocityBlendF","VelocityBlendB","VelocityBlendL","VelocityBlendR"};
+        for(int i=0;i<4;++i)parameters[weights[i]].floatVal=i==direction?1.0f:0.0f;
+        VansAnimGraphInstance stop(*graph),base(*baseGraph);VansPosePayload actual,reference;
+        if(!Expect(stop.IsCompiled()&&base.IsCompiled(),"Stop source comparison graphs must compile"))
+        {
+            std::cerr<<"Stop graph: "<<stop.GetCompileError()<<" / base: "<<base.GetCompileError()<<std::endl;
+            return false;
+        }
+        std::vector<std::string> stopNotifications;
+        context.deltaTime=.05f;
+        for(int i=0;i<3;++i)
+        {
+            actual=stop.EvaluateFrame(context);reference=base.EvaluateFrame(context);
+            for(const auto& event:actual.events) if(event.sourceNodeId==40) stopNotifications.emplace_back(event.name);
+        }
+        const bool plant=foot!=0 && std::abs(foot)<.5f,left=foot<0;
+        const std::string expectedState=foot==0?"Pre-Stop":std::string(plant?"Plant ":"Lock ")+(left?"Left Foot":"Right Foot");
+        const std::vector<std::string> expectedNotifications=foot==0?std::vector<std::string>{}:
+            std::vector<std::string>{left?"->N Stop L":"->N Stop R"};
+        if(stopNotifications!=expectedNotifications)
+        {
+            std::cerr<<"Stop notify foot="<<foot<<" hips="<<hips<<" dir="<<direction
+                <<" poseValid="<<actual.valid<<" state="<<stop.CaptureRuntimeState().stateMachineStates.at(40).currentStateName
+                <<" allEvents=";
+            for(const auto& event:actual.events)std::cerr<<" ["<<event.name<<"@"<<event.sourceNodeId<<"]";
+            std::cerr<<" actual=";
+            for(const auto& notification:stopNotifications)std::cerr<<" ["<<notification<<"]";
+            std::cerr<<" expected=";for(const auto& notification:expectedNotifications)std::cerr<<" ["<<notification<<"]";
+            std::cerr<<std::endl;
+        }
+        if(!Expect(stopNotifications==expectedNotifications,"Stop must dispatch exactly one selected-foot state entry notification"))return false;
+        if(!Expect(actual.valid && reference.valid && stop.CaptureRuntimeState().stateMachineStates.at(40).currentStateName==expectedState,
+            "Stop foot threshold/conduit selection differs from source"))
+        {
+            std::cerr << "foot=" << foot << " hips=" << hips << " direction=" << direction
+                << " actualValid=" << actual.valid << " baseValid=" << reference.valid
+                << " state=" << stop.CaptureRuntimeState().stateMachineStates.at(40).currentStateName
+                << " expected=" << expectedState << std::endl;
+            return false;
+        }
+        VansPosePayload planted;
+        if(plant)
+        {
+            const char* suffix=direction==0?"F":direction==1?"B":direction==2?(hips==5?"LB":"LF"):(hips==3?"RB":"RF");
+            float time=left?.133f:.7f;
+            if(direction==2)time=left?(hips==5?.133f:.2f):.8f;
+            if(direction==3)time=left?.233f:(hips==3?.7f:.766f);
+            VansAnimationSampleRequest request;request.loop=false;request.currentTime=request.previousTime=time;
+            if(!VansAnimationSampler::Sample(clips.at(std::string("ALS_N_Walk_")+suffix),skeleton,request,planted))return false;
+        }
+        if(!verifyStopPose(actual,reference,plant?&planted:nullptr,left?'l':'r'))return false;
+        if(foot!=0 && !ExpectNear(curveValue(actual,left?"FootLock_L":"FootLock_R"),1,1e-6f,"Stop selected foot lock missing"))return false;
+        ++stopCases;
+    }
+    graph=found->graph->Clone();routeOutput(9003);baseGraph=std::move(graph);
+    graph=found->graph->Clone();routeOutput(540);
+    parameters.clear();for(const auto& p:asset.parameters)parameters[p.name]=p;
+    parameters["CrouchingPlayRate"].floatVal=1;
+    VansAnimGraphInstance crouchStop(*graph),crouchBase(*baseGraph);
+    if(!Expect(crouchStop.IsCompiled() && crouchBase.IsCompiled(),"Crouched Stop reference graphs must compile"))
+    {
+        std::cerr << crouchStop.GetCompileError() << " / " << crouchBase.GetCompileError() << std::endl;
+        return false;
+    }
+    const auto crouchActual=crouchStop.EvaluateFrame(context),crouchReference=crouchBase.EvaluateFrame(context);
+    VansAnimationSampleRequest crouchRequest;crouchRequest.loop=false;VansPosePayload crouchPlant;
+    if(!VansAnimationSampler::Sample(clips.at("ALS_CLF_WalkPose"),skeleton,crouchRequest,crouchPlant)
+        ||!verifyStopPose(crouchActual,crouchReference,&crouchPlant,'a')
+        ||!ExpectNear(curveValue(crouchActual,"FootLock_L"),1,1e-6f,"Crouch Stop left foot lock missing")
+        ||!ExpectNear(curveValue(crouchActual,"FootLock_R"),1,1e-6f,"Crouch Stop right foot lock missing"))return false;
+    std::cout<<"ALS Stop: "<<stopCases<<" foot/hips/direction source pose cases and crouched bilateral leg replacement passed"<<std::endl;
+    context.slotPayloads = nullptr;
+    std::cout << "ALS NotMoving: " << idleCases << " stance/weight/scale pose frames; opposite-stance and grounded Slot isolation passed" << std::endl;
+
+    const auto* detailMachine=static_cast<const AnimGraphStateMachineNode*>(found->graph->GetNode(8050));
+    if(!Expect(detailMachine && detailMachine->m_MaxTransitionsPerFrame==1 && !detailMachine->m_SkipFirstUpdateTransition,
+        "Locomotion Detail must retain the UE one-transition-per-frame and first-update blend settings"))return false;
+    // 四个源 Detail 分支：独立起播时刻/同步组/速度，四方向加性姿态按原始骨数据计算。
+    int detailCases=0;
+    const std::array<std::array<float,4>,5> detailWeights{{{{1,0,0,0}},{{0,1,0,0}},{{0,0,1,0}},{{0,0,0,1}},{{.1f,.2f,.3f,.4f}}}};
+    for(int branch=0;branch<4;++branch)for(const auto& weights:detailWeights)
+    {
+        const int firstId=8010+branch*6;auto detail=found->graph->Clone();const int out=detail->GetOutputNodeId();
+        std::vector<int> remove;for(const auto& [id,node]:detail->GetNodes())
+            if(id!=out&&(id<firstId||id>firstId+5))remove.push_back(id);
+        for(int id:remove)detail->RemoveNode(id);
+        auto base=std::make_unique<AnimGraphClipNode>();base->m_ClipName="ALS_N_Pose";base->m_SampleTime=0;
+        const int baseId=detail->AddNode(std::move(base));detail->AddLink(baseId,0,firstId+5,0);detail->AddLink(firstId+5,0,out,0);
+        const char* params[]={"VelocityBlendF","VelocityBlendB","VelocityBlendL","VelocityBlendR"};
+        for(int i=0;i<4;++i)parameters[params[i]].floatVal=weights[i];
+        VansAnimGraphInstance instance(*detail);context.deltaTime=.02f;
+        if(!Expect(instance.IsCompiled(),instance.GetCompileError().c_str()))return false;
+        VansAnimationSampleRequest request;request.loop=false;VansPosePayload basePose,referencePose;
+        VansAnimationSampler::Sample(clips.at("ALS_N_Pose"),skeleton,request,basePose);
+        VansAnimationSampler::Sample(clips.at("ALS_N_Run_BasePose"),skeleton,request,referencePose);
+        for(int frame=0;frame<8;++frame)
+        {
+            const auto actual=instance.EvaluateFrame(context);
+            if(!Expect(actual.valid,"Locomotion Detail produced invalid pose"))return false;
+            const float start=branch<2?.25f:branch==2?.1f:.15f;
+            const float time=start+(frame+1)*.02f*1.25f;
+            VansPosePayload samples[4];const char* names[]={"ALS_N_LocoDetail_Accel_F","ALS_N_LocoDetail_Accel_B","ALS_N_LocoDetail_Accel_L","ALS_N_LocoDetail_Accel_R"};
+            const auto snapshot=instance.CaptureRuntimeState();
+            for(int i=0;i<4;++i)if(weights[i]>0)
+            {
+                if(!ExpectNear(snapshot.clipStates.at(firstId+i).currentTime,time,2e-6f,"Detail start/rate/sync timing differs from source"))return false;
+                request.previousTime=request.currentTime=time;
+                if(!VansAnimationSampler::Sample(clips.at(names[i]),skeleton,request,samples[i]))return false;
+            }
+            for(size_t bone=0;bone<skeleton.bones.size();++bone)
+            {
+                glm::quat rotation(0,0,0,0),first(1,0,0,0);bool seen=false;glm::vec3 translation(0),scale(0);
+                const auto& ref=referencePose.localPose[bone];const auto& before=basePose.localPose[bone];
+                for(int i=0;i<4;++i)if(weights[i]>0)
+                {
+                    const auto& sample=samples[i].localPose[bone];auto delta=glm::normalize(sample.rotation*glm::inverse(ref.rotation));
+                    if(!seen){first=delta;seen=true;}if(glm::dot(first,delta)<0)delta=-delta;
+                    rotation+=delta*weights[i];translation+=(sample.translation-ref.translation)*weights[i];scale+=(sample.scale/ref.scale)*weights[i];
+                }
+                if(!ExpectNear(glm::length(actual.localPose[bone].translation-before.translation-translation),0,2e-5f,"Detail additive translation mismatch")
+                    ||!ExpectNear(std::abs(glm::dot(actual.localPose[bone].rotation,glm::normalize(glm::normalize(rotation)*before.rotation))),1,2e-5f,"Detail additive rotation mismatch")
+                    ||!ExpectNear(glm::length(actual.localPose[bone].scale-before.scale*scale),0,2e-5f,"Detail additive scale mismatch"))return false;
+            }
+            ++detailCases;
+        }
+    }
+    std::cout<<"ALS Locomotion Detail: "<<detailCases<<" source 68-bone additive poses and clip start/rate/sync checks passed"<<std::endl;
+
+    struct DetailRuleCase { const char* from;const char* expected;int gait;float gaitCurve,mainWeight,detailWeight,elapsed,remaining;bool pivot; };
+    const DetailRuleCase detailRules[]={
+        {"(N) Walking","(N) Walking",0,0,1,1,0,1,false},
+        {"(N) Walking","(N) Running",1,2,.999997f,1,0,1,false},
+        {"(N) Walking","(N) Walk->Run",2,2,1,1,0,1,false},
+        {"(N) Walking","(N) Run Start",1,2,1,.999997f,0,1,false},
+        {"(N) Running","(N) Walking",0,1.199f,1,1,0,1,false},
+        {"(N) Running","(N) Running",0,1.2f,1,1,0,1,false},
+        {"(N) Running","First Pivot",0,0,1,1,0,1,true},
+        {"First Pivot","First Pivot",1,2,1,1,.1f,1,true},
+        {"First Pivot","Second Pivot",1,2,1,1,.10001f,1,true},
+        {"Second Pivot","First Pivot",1,2,1,1,.10001f,1,true},
+        {"First Pivot","(N) Running",1,2,1,1,.2f,0,false},
+        {"Second Pivot","(N) Running",1,2,1,1,.2f,0,false},
+        {"(N) Walk->Run","(N) Running",1,2,1,1,.2f,0,false},
+        {"(N) Run Start","(N) Running",1,2,1,1,.2f,0,false}};
+    for(const auto& test:detailRules)
+    {
+        auto detail=found->graph->Clone();
+        parameters["Gait"].intVal=0;parameters["Pivot"].boolVal=false;context.deltaTime=0;
+        VansAnimGraphInstance instance(*detail);
+        if(!Expect(instance.IsCompiled(),instance.GetCompileError().c_str())||!instance.EvaluateFrame(context).valid)return false;
+        auto snapshot=instance.CaptureRuntimeState();auto& machine=snapshot.stateMachineStates[8050];
+        machine.currentStateName=test.from;machine.activeTransitions.clear();machine.firstUpdate=false;
+        machine.recordedWeight=test.detailWeight;machine.currentStateElapsedTime=test.elapsed;
+        machine.relevantClipRemaining[test.from]=test.remaining;
+        auto& movement=snapshot.stateMachineStates[13];movement.currentStateName="Grounded";
+        movement.activeTransitions.clear();movement.firstUpdate=false;
+        auto& main=snapshot.stateMachineStates[500];main.currentStateName="(N) Standing";
+        main.activeTransitions.clear();main.firstUpdate=false;main.recordedWeight=test.mainWeight;
+        auto& standing=snapshot.stateMachineStates[510];standing.currentStateName="Moving";
+        standing.activeTransitions.clear();standing.firstUpdate=false;
+        if(!instance.RestoreRuntimeState(snapshot))return false;
+        parameters["Gait"].intVal=test.gait;parameters["Weight_Gait"].floatVal=test.gaitCurve;
+        parameters["Pivot"].boolVal=test.pivot;parameters["ShouldMove"].boolVal=true;
+        const auto pose=instance.EvaluateFrame(context);const auto current=instance.CaptureRuntimeState().stateMachineStates.at(8050).currentStateName;
+        if(current!=test.expected)std::cerr<<"Detail rule "<<test.from<<" expected "<<test.expected<<" got "<<current<<std::endl;
+        if(!Expect(pose.valid&&current==test.expected,"Source locomotion-detail transition rule/order mismatch"))return false;
+    }
+    std::cout<<"ALS Locomotion Detail: 14 transition boundary/priority/Conduit cases passed"<<std::endl;
+
+    graph=found->graph->Clone();
+    routeOutput(8176);
+    const auto* crouched=static_cast<const AnimGraphStateMachineNode*>(graph->GetNode(8160));
+    if(!Expect(crouched&&crouched->m_States.size()==6&&crouched->m_Transitions.size()==24,
+        "ALS crouched source direction machine missing"))return false;
+    context.deltaTime=1.0f/60;
+    parameters["StrideBlend"].floatVal=1;
+    parameters["CrouchingPlayRate"].floatVal=1;
+    parameters["DiagonalScaleAmount"].floatVal=.6f;
+    parameters["LeanLR"].floatVal=.25f;
+    parameters["LeanFB"].floatVal=-.5f;
+    for(const auto& transition:crouched->m_Transitions)
+    {
+        for(const auto& [bone,factor]:transition.boneBlendFactors)
+            if(!Expect(skeleton.boneNameToIndex.count(bone)==1&&std::isfinite(factor),
+                "ALS crouched change-direction profile references invalid bone"))return false;
+        parameters["MovementDirection"].intVal=transition.fromState=="Move F"?0:
+            transition.fromState=="Move B"?3:
+            transition.fromState.find('R')!=std::string::npos?1:2;
+        parameters["FeetUncrossed"].boolVal=false;
+        parameters["HipOrientation_Bias"].floatVal=0;
+        parameters["HipBiasAbs"].floatVal=1;
+        VansAnimGraphInstance instance(*graph);
+        if(!Expect(instance.IsCompiled(),instance.GetCompileError().c_str()))return false;
+        if(!Expect(instance.PlayState(transition.fromState),"ALS crouched source state cannot be activated"))return false;
+        if(!Expect(instance.EvaluateFrame(context).valid,"ALS crouched source state initialization failed"))return false;
+        for(const auto& condition:transition.conditions)
+        {
+            auto& parameter=parameters.at(condition.paramName);
+            if(parameter.type==AnimatorParamType::Int)parameter.intVal=condition.intVal;
+            else if(parameter.type==AnimatorParamType::Bool)parameter.boolVal=condition.boolVal;
+            else parameter.floatVal=condition.floatVal+(condition.op==CompareOp::Greater?.1f:
+                condition.op==CompareOp::Less?-.1f:0);
+        }
+        const auto pose=instance.EvaluateFrame(context);
+        const auto runtime=instance.CaptureRuntimeState().stateMachineStates.at(8160);
+        const bool took=std::any_of(runtime.activeTransitions.begin(),runtime.activeTransitions.end(),
+            [&](const auto& active){return active.previousStateName==transition.fromState
+                &&active.nextStateName==transition.toState;});
+        if(!took)std::cerr<<"CLF transition "<<transition.fromState<<" -> "<<transition.toState
+            <<" instead reached "<<runtime.currentStateName<<std::endl;
+        if(!Expect(pose.valid&&pose.localPose.size()==68&&took,
+            "ALS crouched source transition did not produce 68-bone pose"))return false;
+        const std::string hips="Hips "+transition.toState.substr(5);
+        if(!Expect(std::any_of(pose.events.begin(),pose.events.end(),
+            [&](const auto& event){return event.name==hips;}),
+            "ALS crouched direction entry notification missing"))return false;
+        if(!transition.startEvent.empty()&&!Expect(std::any_of(pose.events.begin(),pose.events.end(),
+            [&](const auto& event){return event.name==transition.startEvent;}),
+            "ALS crouched transition start notification missing"))return false;
+        for(int frame=0;frame<12;++frame)
+        {
+            const auto follow=instance.EvaluateFrame(context);
+            if(!Expect(follow.valid&&follow.localPose.size()==68,
+                "ALS crouched source cycle or lean became invalid"))return false;
+            for(const auto& bone:follow.localPose)
+                if(!Expect(std::isfinite(bone.translation.x)&&std::isfinite(bone.rotation.w)
+                    &&std::isfinite(bone.scale.x),"ALS crouched pose has nonfinite transform"))return false;
+        }
+    }
+    graph=found->graph->Clone();
+    routeOutput(8160);
+    parameters["FYaw"].floatVal=37;
+    parameters["MovementDirection"].intVal=0;
+    parameters["VelocityBlendF"].floatVal=1;
+    parameters["VelocityBlendB"].floatVal=0;
+    parameters["VelocityBlendL"].floatVal=0;
+    parameters["VelocityBlendR"].floatVal=0;
+    VansAnimGraphInstance yawOutput(*graph);
+    const auto yawPose=yawOutput.EvaluateFrame(context);
+    const auto yawCurve=std::find_if(yawPose.curves.begin(),yawPose.curves.end(),
+        [](const auto& curve){return curve.name=="YawOffset"&&curve.present;});
+    if(!Expect(yawPose.valid&&yawCurve!=yawPose.curves.end(),
+        "ALS crouched source YawOffset curve missing")
+        ||!ExpectNear(yawCurve->value,37,.0001f,
+        "ALS crouched source FYaw did not overwrite YawOffset"))return false;
+    graph=found->graph->Clone();
+    routeOutput(8163);
+    parameters["MovementDirection"].intVal=0;
+    parameters["VelocityBlendF"].floatVal=1;
+    parameters["VelocityBlendB"].floatVal=0;
+    parameters["VelocityBlendL"].floatVal=0;
+    parameters["VelocityBlendR"].floatVal=0;
+    parameters["LeanLR"].floatVal=0;
+    parameters["LeanFB"].floatVal=0;
+    context.deltaTime=0;
+    parameters["DiagonalScaleAmount"].floatVal=0;
+    VansAnimGraphInstance unscaled(*graph);
+    const auto original=unscaled.EvaluateFrame(context);
+    parameters["DiagonalScaleAmount"].floatVal=1;
+    VansAnimGraphInstance fullyScaled(*graph);
+    const auto scaled=fullyScaled.EvaluateFrame(context);
+    if(!Expect(original.valid&&scaled.valid,"ALS crouched component-scale endpoint invalid"))return false;
+    VansAnimationFrameVector<glm::mat4> originalModel,scaledModel;
+    if(!Expect(VansPoseMath::BuildModelTransforms(original.localPose,skeleton,originalModel)
+        &&VansPoseMath::BuildModelTransforms(scaled.localPose,skeleton,scaledModel),
+        "ALS crouched component-scale model conversion failed"))return false;
+    VansBoneTransform originalFoot,scaledFoot;
+    const auto footRoot=static_cast<size_t>(skeleton.boneNameToIndex.at("ik_foot_root"));
+    if(!Expect(VansPoseMath::TryDecompose(originalModel[footRoot],originalFoot)
+        &&VansPoseMath::TryDecompose(scaledModel[footRoot],scaledFoot),
+        "ALS crouched component-scale foot root decomposition failed"))return false;
+    if(!ExpectNear(scaledFoot.scale.x,originalFoot.scale.x*1.4f,.0001f,
+        "ALS crouched source foot-root X scale mismatch")
+        ||!ExpectNear(scaledFoot.scale.y,originalFoot.scale.y*1.4f,.0001f,
+        "ALS crouched source foot-root Y scale mismatch")
+        ||!ExpectNear(scaledFoot.scale.z,originalFoot.scale.z,.0001f,
+        "ALS crouched source foot-root Z scale mismatch"))return false;
+    graph=found->graph->Clone();
+    routeOutput(500);
+    context.deltaTime=1.0f/60;
+    parameters["GroundedEntryState"].intVal=0;
+    parameters["BasePose_CLF"].floatVal=1;
+    parameters["Stance"].intVal=1;
+    parameters["ShouldMove"].boolVal=true;
+    parameters["CanChangeStance"].boolVal=true;
+    parameters["FeetUncrossed"].boolVal=false;
+    parameters["HipBiasAbs"].floatVal=1;
+    parameters["MovementDirection"].intVal=0;
+    VansAnimGraphInstance crouchedGrounded(*graph);
+    if(!Expect(crouchedGrounded.IsCompiled(),crouchedGrounded.GetCompileError().c_str()))return false;
+    for(int frame=0;frame<45;++frame)
+    {
+        const auto pose=crouchedGrounded.EvaluateFrame(context);
+        if(!Expect(pose.valid&&pose.localPose.size()==68,
+            "ALS Main Grounded to crouched cycle produced invalid pose"))return false;
+    }
+    const auto groundedSnapshot=crouchedGrounded.CaptureRuntimeState();
+    if(!Expect(groundedSnapshot.stateMachineStates.at(500).currentStateName=="(CLF) Crouching LF"
+        &&groundedSnapshot.stateMachineStates.at(520).currentStateName=="Moving"
+        &&groundedSnapshot.stateMachineStates.count(8160)==1
+        &&groundedSnapshot.activeNodes.at(8176),
+        "ALS Main Grounded did not reach the authored crouched cycle chain"))return false;
+    std::cout<<"ALS crouched cycle: six states, 24 ordered transitions and 68-bone stride/scale/lean poses passed"<<std::endl;
+
+    return true;
+}
+
+bool TestAnimationStateNotificationContract()
+{
+    using namespace VansGraphics;
+    Skeleton skeleton;skeleton.bones.resize(2);skeleton.bones[0].name="root";
+    skeleton.bones[0].parentIndex=-1;skeleton.bones[0].localTransform=glm::mat4(1);
+    skeleton.bones[1].name="probe";skeleton.bones[1].parentIndex=0;
+    skeleton.bones[1].localTransform=glm::mat4(1);skeleton.bones[1].localTransform[3]=glm::vec4(0,0,1,1);
+    skeleton.boneNameToIndex["root"]=0;skeleton.boneNameToIndex["probe"]=1;
+    skeleton.topologicalOrder={0,1};
+    std::unordered_map<std::string,VansAnimationClip> clips{{"Pose",BuildContractClip("Pose",0,0)}};
+    std::unordered_map<std::string,AnimatorParameter> parameters;
+    parameters["Target"].type=AnimatorParamType::Int;
+    VansAnimGraph graph;
+    auto machine=std::make_unique<AnimGraphStateMachineNode>();machine->m_DefaultStateName="A";
+    for(const char* name:{"A","B","C"})
+    {
+        AnimatorState state;state.name=name;state.clipName="Pose";
+        state.enteredEvent=state.name+".enter";state.leftEvent=state.name+".leave";
+        state.fullyBlendedEvent=state.name+".full";machine->m_States.push_back(state);
+    }
+    for(int i=0;i<2;++i)
+    {
+        AnimatorTransition edge;edge.fromState=i?"B":"A";edge.toState=i?"C":"B";edge.blendDuration=.5f;
+        edge.startEvent=edge.fromState+edge.toState+".start";edge.endEvent=edge.fromState+edge.toState+".end";
+        edge.interruptEvent=edge.fromState+edge.toState+".interrupt";
+        TransitionCondition condition;condition.paramName="Target";condition.intVal=i+1;condition.op=CompareOp::Equal;
+        edge.conditions.push_back(condition);machine->m_Transitions.push_back(edge);
+    }
+    const int machineId=graph.AddNode(std::move(machine));
+    auto slotNode=std::make_unique<AnimGraphSlotNode>();slotNode->m_SlotId="notify-slot";
+    const int slotNodeId=graph.AddNode(std::move(slotNode));
+    const int output=graph.AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
+    graph.AddLink(machineId,0,slotNodeId,0);graph.AddLink(slotNodeId,0,output,0);
+    AnimGraphContext context;context.skeleton=&skeleton;context.clips=&clips;context.parameters=&parameters;
+    auto names=[](const VansPosePayload& pose){std::vector<std::string> result;for(const auto& e:pose.events)result.emplace_back(e.name);return result;};
+    auto check=[&](const VansPosePayload& pose,std::initializer_list<const char*> expected)
+    {std::vector<std::string> values;for(const auto* s:expected)values.emplace_back(s);return Expect(names(pose)==values,"State lifecycle notification order/replay differs");};
+    for(bool staged:{false,true})
+    {
+        auto variant=graph.Clone();auto* node=static_cast<AnimGraphStateMachineNode*>(variant->GetNode(machineId));
+        node->m_MaxTransitionsPerFrame=staged?3:1;
+        VansAnimGraphInstance instance(*variant);parameters["Target"].intVal=0;context.deltaTime=0;
+        if(!check(instance.EvaluateFrame(context),{"A.enter"})||!check(instance.EvaluateFrame(context),{}))return false;
+        parameters["Target"].intVal=1;context.deltaTime=.1f;
+        if(!check(instance.EvaluateFrame(context),{"A.leave","B.enter","AB.start"}))return false;
+        auto saved=instance.CaptureRuntimeState();VansAnimGraphInstance restored(*variant);
+        if(!restored.RestoreRuntimeState(saved))return false;
+        parameters["Target"].intVal=2;
+        if(!check(restored.EvaluateFrame(context),{"AB.interrupt","B.leave","C.enter","BC.start"}))return false;
+        context.deltaTime=.5f;
+        if(!check(restored.EvaluateFrame(context),{"BC.end","C.full"})||!check(restored.EvaluateFrame(context),{}))return false;
+        node->m_SkipFirstUpdateTransition=true;node->m_MaxTransitionsPerFrame=3;
+        VansAnimGraphInstance initial(*variant);parameters["Target"].intVal=1;context.deltaTime=0;
+        if(!check(initial.EvaluateFrame(context),{"A.enter","A.leave","B.enter"}))return false;
+    }
+    // 通用运行时条件读取上帧权重和未缩放秒数；精确边界及快照恢复不能提前跳转。
+    for (bool weightQuery : {false,true})
+    {
+        auto variant=graph.Clone();auto* node=static_cast<AnimGraphStateMachineNode*>(variant->GetNode(machineId));
+        node->m_Transitions.resize(1);auto& condition=node->m_Transitions[0].conditions[0];
+        condition.paramName.clear();condition.source=weightQuery?AnimatorConditionSource::MachineWeight:AnimatorConditionSource::StateElapsedTime;
+        condition.op=weightQuery?CompareOp::Equal:CompareOp::Greater;condition.floatVal=weightQuery?1.0f:.1f;
+        node->m_Transitions[0].blendDuration=0;
+        VansAnimGraphInstance instance(*variant);context.deltaTime=.1f;
+        if(!check(instance.EvaluateFrame(context),{"A.enter"}))return false;
+        auto saved=instance.CaptureRuntimeState();auto& machine=saved.stateMachineStates.at(machineId);
+        if(!ExpectNear(machine.currentStateElapsedTime,.1f,1e-6f,"State elapsed timer missing"))return false;
+        if(weightQuery)machine.recordedWeight=.999997f;
+        VansAnimGraphInstance restored(*variant);if(!restored.RestoreRuntimeState(saved))return false;
+        context.deltaTime=.001f;
+        if(!check(restored.EvaluateFrame(context),{}))return false;
+        context.deltaTime=0;
+        if(!check(restored.EvaluateFrame(context),{"A.leave","B.enter","AB.start","AB.end","B.full"}))return false;
+    }
+    // 起播位置初始化一次，随后正常推进；不发出被跳过区间中的事件。
+    {
+        auto clipGraph=std::make_unique<VansAnimGraph>();auto player=std::make_unique<AnimGraphClipNode>();
+        player->m_ClipName="Pose";player->m_StartPosition=.25f;player->m_Speed=1.25f;player->m_Loop=false;player->m_SyncGroup="Start";
+        const int id=clipGraph->AddNode(std::move(player));
+        const int out=clipGraph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));clipGraph->AddLink(id,0,out,0);
+        VansAnimGraphInstance instance(*clipGraph);context.deltaTime=.1f;
+        AnimationClipEvent early;early.name="before";early.time=.1f;
+        AnimationClipEvent late;late.name="after";late.time=.3f;clips.at("Pose").events={early,late};
+        if(!check(instance.EvaluateFrame(context),{"after"}))return false;
+        if(!ExpectNear(instance.CaptureRuntimeState().clipStates.at(id).currentTime,.375f,1e-6f,"Clip start position/rate lost"))return false;
+        auto saved=instance.CaptureRuntimeState();VansAnimGraphInstance restored(*clipGraph);if(!restored.RestoreRuntimeState(saved))return false;
+        if(!restored.EvaluateFrame(context).valid)return false;
+        if(!ExpectNear(restored.CaptureRuntimeState().clipStates.at(id).currentTime,.5f,1e-6f,"Clip start position was reapplied"))return false;
+        clips.at("Pose").events.clear();
+    }
+    // Actual controller -> node -> ScriptCore callback path, including post-evaluation Slot requests.
+    auto controller=std::make_unique<VansAnimationController>();controller->AddClip("Pose",clips.at("Pose"));
+    controller->AddParameter("Target",AnimatorParamType::Int);
+    controller->AddParameter("TestQuat",AnimatorParamType::Quaternion);std::string error;
+    if(!Expect(InstallTestBaseLayer(*controller,graph.Clone(),error),error.c_str()))return false;
+    VansAnimationSlotDefinition slot;slot.id="notify-slot";slot.name="Notify Slot";slot.layerId="layer-base";
+    const bool slotsConfigured=controller->SetSlots({slot},error);
+    if(!Expect(slotsConfigured,error.c_str()))return false;
+    VansAnimationNode animation("StateEventContract");animation.SetSkeleton(skeleton);
+    if(!animation.SetController(std::move(controller)))return false;
+    auto& projectManager=Vans::VansProjectManager::Get();
+    struct ProjectCleanup { Vans::VansProjectManager& manager;~ProjectCleanup(){manager.CloseProject();} } projectCleanup{projectManager};
+    Vans::VansProjectOpenRequest openRequest;openRequest.m_ProjectRootPath="D:/WorkSpace/ForestEngine/AnimationV2Project";
+    openRequest.m_Options.m_UpdateRecentProjects=false;openRequest.m_Options.m_ScanAssets=false;
+    if(!Expect(projectManager.OpenProject(openRequest).m_Opened,"Could not load notification fixture project dependencies"))return false;
+    TestRenderSystemDevice cameraDevice;
+    VansCamera sceneCamera(&cameraDevice);
+    VansScene scene;
+    scene.InjectCamera(&sceneCamera);
+    VansScriptContext scripts;scripts.VansScriptSetup();scripts.AttachSceneWithoutRebuild(&scene);TemporaryDirectory temp;
+    struct FixtureDetach { VansScene& scene;VansScriptContext& scripts;
+        ~FixtureDetach(){scripts.AttachSceneWithoutRebuild(nullptr);scene.UnloadScene(nullptr);} } detach{scene,scripts};
+    Vans::VansSceneObjectBuildPlan plan;Vans::VansSceneObjectBuildConfig object;
+    object.entityGuid="notify-owner";object.name="Notify Owner";object.transform=Vans::VansSceneTransformConfig{};
+    plan.objects.push_back(object);VkDevice device=VK_NULL_HANDLE;
+    const auto built=VansSceneAssembly::BuildObjects(scene,device,plan,"");
+    if(!Expect(built.m_Built,built.m_Error.c_str()))return false;
+    const auto path=temp.path/"animation_event.lua";
+    {std::ofstream file(path);file<<R"lua(return {on_animation_event=function(self,event)
+        notify_calls=(notify_calls or 0)+1
+        assert(event.name=='A.enter' and event.clip_id=='0' and event.weight==1)
+        assert(type(event.id)=='string' and type(event.source_node_id)=='string')
+        local anim=self:get_object():get_anim_comp()
+        local root=anim:get_bone_component_position('root')
+        assert(root and math.abs(root.x)<1e-6 and math.abs(root.y)<1e-6 and math.abs(root.z)<1e-6)
+        local probe=anim:get_bone_component_position('probe')
+        assert(probe and math.abs(probe.x)<1e-6 and math.abs(probe.y)<1e-6 and math.abs(probe.z-1)<1e-6)
+        assert(anim:get_bone_component_position('missing_bone')==nil)
+        local transform=anim:get_bone_component_transform('probe')
+        assert(transform and math.abs(transform.position.z-1)<1e-6)
+        assert(transform.rotation and math.abs(transform.rotation.w-1)<1e-6)
+        assert(anim:get_bone_component_transform('missing_bone')==nil)
+        local worldProbe=anim:get_bone_world_position('probe')
+        assert(worldProbe and math.abs(worldProbe.y-.01)<1e-6 and math.abs(worldProbe.z)<1e-6)
+        assert(anim:get_bone_world_position('missing_bone')==nil)
+        local componentVector=anim:world_vector_to_component({x=0,y=.1,z=0})
+        assert(componentVector and math.abs(componentVector.z-10)<1e-5)
+        local componentRotation=anim:world_quaternion_to_component(
+            {x=0,y=math.sqrt(.5),z=0,w=math.sqrt(.5)})
+        assert(componentRotation and math.abs(componentRotation.z-math.sqrt(.5))<1e-5
+            and math.abs(componentRotation.w-math.sqrt(.5))<1e-5)
+        assert(anim:get_checkpoint_bone_position('missing_checkpoint','probe')==nil)
+        anim:set_quaternion('TestQuat',0,0,0,2)
+        notify_handle=anim:play_slot('notify-slot','Pose',false,1,0,.25,.2,.2,0,
+            'hermite_cubic','cubic')
+    end})lua";}
+    auto& owner=*scene.FindObjectByGuid("notify-owner");animation.SetTransformID(owner.m_TransformID);
+    auto ownerTransform=Vans::VansTransformStore::Read(owner.m_TransformID);
+    ownerTransform.m_Rotation={-90,0,0};ownerTransform.m_Scale={.01f,.01f,.01f};
+    Vans::VansTransformStore::Write(owner.m_TransformID,ownerTransform);
+    auto* wrapper=new VansScriptAnimationComponent();wrapper->m_AnimNode=&animation;
+    wrapper->m_ComponentName="Animation";wrapper->m_ComponentGuid="notify-animation";owner.AddComponent(wrapper);
+    auto* script=new VansLuaScriptComponent();script->m_ScriptPath=path.string();script->m_OwnerObject=&owner;
+    script->m_ComponentName="LuaScript";script->m_ComponentGuid="notify-script";owner.AddComponent(script);
+    auto* world=scene.GetRuntimeWorld();const auto entity=world->Entities().FindByGuid(owner.m_EntityGuid);
+    world->AddComponent(entity,Vans::VansRuntimeComponentType_Animation,Vans::VansRuntimeAnimationComponent{&animation},wrapper->m_ComponentGuid);
+    world->AddComponent(entity,Vans::VansRuntimeComponentType_Script,Vans::VansRuntimeScriptComponent{},script->m_ComponentGuid);
+    if(!Expect(script->Instantiate()&&scripts.RegisterScriptComponent(&owner,script),"Animation event callback registration failed"))return false;
+    auto* runtime=animation.GetController();runtime->Play();runtime->Update(.1f,skeleton);
+    scripts.PublishAnimationEvents({&animation});auto* lua=scripts.GetLuaState();
+    lua_getglobal(lua,"notify_calls");int calls=static_cast<int>(lua_tointeger(lua,-1));lua_pop(lua,1);
+    lua_getglobal(lua,"notify_handle");VansSlotPlaybackHandle handle{static_cast<std::uint64_t>(lua_tointeger(lua,-1))};lua_pop(lua,1);
+    if(!Expect(calls==1&&script->m_State==VansLuaScriptState::Active&&handle,"State event failed to reach live Lua Slot request"))return false;
+    if(!ExpectNear(runtime->GetQuaternion("TestQuat").w,1.0f,1e-6f,
+        "Generic Lua quaternion parameter was not normalized"))return false;
+    if(!ExpectNear(runtime->GetSlotStatus(handle).playbackTime,.25f,1e-6f,"Notification request advanced during event delivery"))return false;
+    runtime->Update(.05f,skeleton);scripts.PublishAnimationEvents({&animation});
+    if(!ExpectNear(runtime->GetSlotStatus(handle).weight,.15625f,1e-6f,
+        "Live Lua Slot request lost its HermiteCubic blend option"))return false;
+    lua_getglobal(lua,"notify_calls");calls=static_cast<int>(lua_tointeger(lua,-1));lua_pop(lua,1);
+    if(!Expect(calls==1,"State event replayed on subsequent animation frame"))return false;
+    if(!Expect(runtime->StopSlotById("notify-slot",.2f,true),"Slot-wide stop failed"))return false;
+    std::cout<<"State notifications: entry/exit, interruption/completion, initial skip, snapshot, staged/ordinary and live Lua Slot dispatch passed"<<std::endl;
+    return true;
+}
+
+bool TestAnimationTransitionProfileContract()
+{
+    using namespace VansGraphics;
+    Skeleton skeleton;
+    skeleton.bones.resize(1);
+    skeleton.bones[0].name = "root";
+    skeleton.bones[0].parentIndex = -1;
+    skeleton.bones[0].localTransform = glm::mat4(1);
+    skeleton.boneNameToIndex["root"] = 0;
+    std::unordered_map<std::string, VansAnimationClip> clips;
+    clips["A"] = BuildContractClip("A", 0, 0);
+    clips["B"] = BuildContractClip("B", 16, 0);
+    std::unordered_map<std::string, AnimatorParameter> parameters;
+    parameters["Sample"].type = AnimatorParamType::Float;
+    parameters["Sample"].floatVal = .5f;
+    parameters["Go"].type = AnimatorParamType::Bool;
+    for (bool custom : {false, true})
+    {
+        VansAnimGraph graph;
+        auto machine = std::make_unique<AnimGraphStateMachineNode>();
+        machine->m_LinearRotationBlend = true;
+        machine->m_DefaultStateName = "A";
+        for (const char* name : {"A", "B"})
+        {
+            auto clip = std::make_unique<AnimGraphClipNode>();
+            clip->m_ClipName = name;
+            clip->m_SampleTimeParameter = "Sample";
+            AnimatorState state;
+            state.name = name;
+            state.poseNodeId = graph.AddNode(std::move(clip));
+            machine->m_States.push_back(state);
+        }
+        AnimatorTransition transition;
+        transition.fromState = "A";
+        transition.toState = "B";
+        transition.blendDuration = 1;
+        transition.blendCurve = {{0,0,0,0},{1,1,0,0}};
+        if (custom) transition.blendCurve.insert(transition.blendCurve.begin()+1, {.5f,.5f,2.708349f,2.708349f});
+        transition.boneBlendFactors["root"] = 2;
+        TransitionCondition condition;
+        condition.paramName = "Go";
+        condition.op = CompareOp::Equal;
+        condition.boolVal = true;
+        transition.conditions.push_back(condition);
+        machine->m_Transitions.push_back(transition);
+        transition.fromState = "B";
+        transition.toState = "A";
+        transition.requireSourceFullyBlended = true;
+        transition.conditions[0].boolVal = false;
+        machine->m_Transitions.push_back(transition);
+        const int machineId = graph.AddNode(std::move(machine));
+        auto playbackRate = std::make_unique<AnimGraphSpeedScaleNode>();
+        playbackRate->m_UseParam = false; playbackRate->m_FixedSpeed = 3;
+        const int rateId = graph.AddNode(std::move(playbackRate));
+        const int output = graph.AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
+        graph.AddLink(machineId, 0, rateId, 0);
+        graph.AddLink(rateId, 0, output, 0);
+        VansAnimGraphInstance instance(graph);
+        AnimGraphContext context;
+        context.skeleton = &skeleton; context.clips = &clips; context.parameters = &parameters;
+        parameters["Go"].boolVal = false;
+        instance.EvaluateFrame(context);
+        parameters["Go"].boolVal = true;
+        context.deltaTime = .25f;
+        const auto pose = instance.EvaluateFrame(context);
+        // Independent cubic polynomials at t=.25; UE WeightFactor applies
+        // factor/inverse-factor to incoming/outgoing then normalizes per bone.
+        const float alpha = custom ? .25f - 2.708349f/16.0f : .15625f;
+        const float boneWeight = alpha*2 / (alpha*2 + (1-alpha)/2);
+        if(!custom)
+        {
+            auto almost=instance.CaptureRuntimeState();
+            auto& transition=almost.stateMachineStates.at(machineId).activeTransitions.at(0);
+            transition.elapsedTime=.999f;transition.alpha=.999997f;
+            VansAnimGraphInstance boundary(graph);boundary.RestoreRuntimeState(almost);
+            parameters["Go"].boolVal=false;const float savedDelta=context.deltaTime;context.deltaTime=0;
+            boundary.EvaluateFrame(context);context.deltaTime=savedDelta;parameters["Go"].boolVal=true;
+            if(!Expect(boundary.CaptureRuntimeState().stateMachineStates.at(machineId).currentStateName=="B",
+                "Fully blended gate accepted a source weight below exactly one"))return false;
+        }
+        if (!Expect(pose.valid, "Profiled transition pose invalid")
+            || !ExpectNear(pose.localPose[0].translation.y, 8*boneWeight, 0.0001f,
+                "Cubic/custom transition or per-bone WeightFactor incorrect")) return false;
+        const auto snapshot = instance.CaptureRuntimeState();
+        VansAnimGraphInstance restored(graph);
+        if (!Expect(restored.RestoreRuntimeState(snapshot), "Profile transition snapshot incompatible")) return false;
+        parameters["Go"].boolVal = false;
+        const auto uninterrupted = instance.EvaluateFrame(context);
+        const auto resumed = restored.EvaluateFrame(context);
+        if (!ExpectNear(uninterrupted.localPose[0].translation.y, resumed.localPose[0].translation.y,
+            0.0001f, "Profile transition changed on snapshot restore")) return false;
+        if (!Expect(instance.CaptureRuntimeState().stateMachineStates.at(machineId).currentStateName == "B",
+            "Fully-blended source gate allowed an early transition")) return false;
+        instance.EvaluateFrame(context);
+        instance.EvaluateFrame(context);
+        instance.EvaluateFrame(context);
+        if (!Expect(instance.CaptureRuntimeState().stateMachineStates.at(machineId).currentStateName == "A",
+            "Fully-blended source gate never released")) return false;
+    }
+    return true;
 }
 
 bool TestAnimationSpeedScaleContract()
@@ -10293,6 +14138,103 @@ bool TestAnimationSpeedScaleContract()
 	if (!ExpectNear(instance.GetPrimaryPlaybackTime(), 0.5f, 0.0001f,
         "SpeedScale did not propagate to the active clip clock"))
         return false;
+
+    // 显式采样用于 Aim Sweep；大 dt 与反向跳时不能推进动画或触发区间事件。
+    auto evaluator = std::make_unique<AnimGraphClipNode>();
+    evaluator->m_ClipName = "Sweep";
+    evaluator->m_SampleTimeParameter = "AimTime";
+    VansAnimGraph sampleGraph;
+    const int evaluatorId = sampleGraph.AddNode(std::move(evaluator));
+    const int sampleOutputId = sampleGraph.AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
+    if (!Expect(sampleGraph.AddLink(evaluatorId, 0, sampleOutputId, 0) > 0,
+        "Failed to build explicit sample graph")) return false;
+    clips["Sweep"] = BuildContractClip("Sweep", 2.0f, 0.0f);
+    clips["Sweep"].events.push_back({ 9901, 0.25f, "SweepEvent", true });
+    parameters["AimTime"].type = AnimatorParamType::Float;
+    VansAnimGraphInstance sampleInstance(sampleGraph);
+    for (float requested : { 0.5f, 0.5f, 1.0f, 0.0f, -1.0f, 2.0f })
+    {
+        parameters["AimTime"].floatVal = requested;
+        context.deltaTime = 4.0f;
+        const auto sampled = sampleInstance.EvaluateFrame(context);
+        const float expected = std::clamp(requested, 0.0f, 1.0f);
+        if (!Expect(sampled.valid && sampled.events.empty(), "Explicit sample emitted interval events")
+            || !ExpectNear(sampled.localPose[0].translation.y, expected * 2.0f, 0.0001f,
+                "Explicit sample drifted or wrapped at endpoint")
+            || !ExpectNear(sampleInstance.GetPrimaryPlaybackTime(), expected, 0.0001f,
+                "Explicit sample diagnostic time differs from sampled pose")) return false;
+    }
+    auto clonedSample = sampleGraph.Clone();
+    if (!Expect(static_cast<const AnimGraphClipNode*>(clonedSample->GetNode(evaluatorId))->m_SampleTimeParameter == "AimTime",
+        "Explicit sample binding lost during graph clone")) return false;
+    nlohmann::json sampleJson;
+    sampleGraph.SerializeToJsonObject(sampleJson);
+    auto decodedSample = VansAnimGraph::DeserializeFromJsonObject(sampleJson);
+    if (!Expect(decodedSample && static_cast<const AnimGraphClipNode*>(decodedSample->GetNode(evaluatorId))->m_SampleTimeParameter == "AimTime",
+        "Explicit sample binding lost during JSON round trip")) return false;
+    auto fixedGraph=sampleGraph.Clone();
+    auto* fixedClip=static_cast<AnimGraphClipNode*>(fixedGraph->GetNode(evaluatorId));
+    fixedClip->m_SampleTimeParameter.clear();fixedClip->m_SampleTime=.35f;
+    VansAnimGraphInstance fixedPlayer(*fixedGraph);
+    for(float dt:{0.0f,10.0f,.016f})
+    {
+        context.deltaTime=dt;const auto frame=fixedPlayer.EvaluateFrame(context);
+        if(!Expect(frame.valid && frame.events.empty(),"Fixed evaluator emitted interval events")
+            ||!ExpectNear(frame.localPose[0].translation.y,.7f,1e-5f,"Fixed evaluator advanced or failed to sample authored time")
+            ||!ExpectNear(fixedPlayer.GetPrimaryPlaybackTime(),.35f,1e-6f,"Fixed evaluator clock differs from authored time"))return false;
+    }
+    fixedClip->m_SampleTime=-.5f;
+    VansAnimGraphInstance invalidFixed(*fixedGraph);
+    if(!Expect(!invalidFixed.IsCompiled(),"Invalid negative sample time accepted"))return false;
+
+    // 循环开关必须保留当前相位，正反向都播到端点；克隆/热重载保留开关语义。
+    for (bool synced : {false,true})
+    for (float speed : (synced ? std::vector<float>{1} : std::vector<float>{1,-1}))
+    {
+        VansAnimGraph loopGraph;
+        auto loopClip=std::make_unique<AnimGraphClipNode>();
+        loopClip->m_ClipName="Walk";loopClip->m_LoopParameter="Loop";loopClip->m_Speed=speed;
+        if(synced)loopClip->m_SyncGroup="Cycle";
+        const int clipId=loopGraph.AddNode(std::move(loopClip));
+        const int outId=loopGraph.AddNode(std::make_unique<AnimGraphOutputNode>());
+        loopGraph.AddLink(clipId,0,outId,0);
+        parameters["Loop"].type=AnimatorParamType::Bool;parameters["Loop"].boolVal=true;
+        VansAnimGraphInstance player(loopGraph);context.deltaTime=0;player.EvaluateFrame(context);
+        context.deltaTime=3.25f;player.EvaluateFrame(context);
+        parameters["Loop"].boolVal=false;context.deltaTime=.1f;
+        auto frame=player.EvaluateFrame(context);
+        const float phase=speed>0?.35f:.65f;
+        if(!Expect(frame.valid,"Dynamic loop player failed")
+            ||!ExpectNear(player.CaptureRuntimeState().clipStates.at(clipId).currentTime,phase,1e-5f,
+                "Disabling loop jumped to an endpoint instead of preserving phase"))return false;
+        auto clone=loopGraph.Clone();
+        nlohmann::json encoded;clone->SerializeToJsonObject(encoded);
+        auto decoded=VansAnimGraph::DeserializeFromJsonObject(encoded);
+        if(!Expect(decoded && static_cast<const AnimGraphClipNode*>(decoded->GetNode(clipId))->m_LoopParameter=="Loop",
+            "Loop binding lost on clone/JSON roundtrip"))return false;
+        VansAnimGraphInstance restored(*decoded);restored.RestoreRuntimeState(player.CaptureRuntimeState());
+        context.deltaTime=2;restored.EvaluateFrame(context);
+        if(!ExpectNear(restored.CaptureRuntimeState().clipStates.at(clipId).currentTime,speed>0?1.0f:0.0f,1e-5f,
+            "Dynamic loop release did not stop at endpoint"))return false;
+        restored.EvaluateFrame(context);
+        parameters["Loop"].boolVal=true;context.deltaTime=.2f;
+        restored.EvaluateFrame(context);
+        const float t=restored.CaptureRuntimeState().clipStates.at(clipId).currentTime;
+        if(!ExpectNear(VansAnimationSampler::ResolveSampleTime(t,0,1,true),speed>0?.2f:.8f,1e-5f,
+            "Re-enabling looping failed to resume from held endpoint"))return false;
+        if(speed>0)
+        {
+            VansAnimGraphInstance endpoint(loopGraph);context.deltaTime=0;endpoint.EvaluateFrame(context);
+            context.deltaTime=1;const auto exactEnd=endpoint.EvaluateFrame(context);
+            VansAnimationSampleRequest endRequest;endRequest.loop=false;endRequest.previousTime=endRequest.currentTime=1;
+            VansPosePayload reference;VansAnimationSampler::Sample(clips.at("Walk"),skeleton,endRequest,reference);
+            if(!ExpectNear(std::abs(glm::dot(exactEnd.localPose[0].rotation,reference.localPose[0].rotation)),1,1e-5f,
+                "Exact loop endpoint sampled frame zero instead of final pose"))return false;
+            parameters["Loop"].boolVal=false;context.deltaTime=.1f;endpoint.EvaluateFrame(context);
+            if(!ExpectNear(endpoint.CaptureRuntimeState().clipStates.at(clipId).currentTime,1,1e-5f,
+                "Disabling loop exactly at endpoint incorrectly restarted a cycle"))return false;
+        }
+    }
 
     auto sharedClip = std::make_unique<AnimGraphClipNode>();
     sharedClip->m_ClipName = "Walk";
@@ -10861,9 +14803,150 @@ bool TestAnimatorRuntimeCompilerContract()
 		&& TestAnimationPreviewRigSessionContract(*targetController, skeleton, targetRig, targetRigPath, true);
 }
 
+bool TestAnimationVirtualBoneContract()
+{
+    using namespace VansGraphics;
+    Skeleton imported;
+    imported.sourceSkeletonGuid = "virtual-bone-test";
+    imported.bones.resize(3);
+    for (int index = 0; index < 3; ++index)
+    {
+        imported.bones[index].name = index == 0 ? "root" : index == 1 ? "hand" : "target";
+        imported.bones[index].guid = "physical-" + std::to_string(index);
+        imported.bones[index].canonicalPath = imported.bones[index].name;
+        imported.bones[index].parentIndex = index == 0 ? -1 : 0;
+    }
+    imported.bones[0].children = { 1, 2 };
+    imported.BuildTopologicalOrder();
+    imported.RebuildIdentityMapsAndSignature();
+    VansAnimationRigAsset rig;
+    rig.virtualBones = { { "VB hand_target", "hand", "target" },
+        { "VB return_root", "VB hand_target", "root" } };
+    Skeleton runtime;
+    std::string error;
+    if (!Expect(VansAnimationRigCompiler::BuildRuntimeSkeleton(rig, imported, runtime, error),
+            error.c_str())
+        || !Expect(runtime.bones.size() == 5 && runtime.virtualBoneLinks.size() == 2,
+            "Virtual bone compilation did not append two derived bones")
+        || !Expect(runtime.bones[3].parentIndex == 1 && runtime.bones[4].parentIndex == 3,
+            "Virtual bone dependency parent hierarchy is incorrect")
+        || !Expect(runtime.virtualBoneLinks[1].sourceBoneIndex == 2,
+            "Virtual source dependency did not resolve to its physical target"))
+        return false;
+    Skeleton rebuilt;
+    if (!Expect(VansAnimationRigCompiler::BuildRuntimeSkeleton(rig, runtime, rebuilt, error),
+            error.c_str())
+        || !Expect(rebuilt.ComputeSignature() == runtime.ComputeSignature()
+            && rebuilt.bones.size() == runtime.bones.size(),
+            "Recompiling a virtual skeleton duplicated bones or changed its bind pose"))
+        return false;
+    VansAnimationClip clip;
+    clip.duration = 1.0f;
+    clip.boneKeyframes.resize(3);
+    for (int index = 0; index < 3; ++index)
+    {
+        const glm::vec3 position = index == 1 ? glm::vec3(1, 0, 0)
+            : index == 2 ? glm::vec3(4, 0, 0) : glm::vec3(0);
+        clip.boneKeyframes[index].push_back({ 0.0f, position,
+            glm::quat(1, 0, 0, 0), glm::vec3(1) });
+    }
+    VansPosePayload pose;
+    VansAnimationSampleRequest request;
+    if (!Expect(VansAnimationSampler::Sample(clip, runtime, request, pose),
+            "Virtual bone sampling failed"))
+        return false;
+    VansAnimationFrameVector<glm::mat4> model;
+    if (!Expect(VansPoseMath::BuildModelTransforms(pose.localPose, runtime, model),
+            "Virtual bone model transforms failed")
+        || !ExpectNear(model[3][3].x, 4.0f, 1e-5f,
+            "Virtual hand target did not follow the target bone")
+        || !ExpectNear(model[4][3].x, 0.0f, 1e-5f,
+            "Virtual-on-virtual dependency did not follow the root target"))
+        return false;
+    clip.boneKeyframes.resize(4);
+    clip.boneKeyframes[3].push_back({ 0.0f, glm::vec3(8, 0, 0),
+        glm::quat(1, 0, 0, 0), glm::vec3(1) });
+    if (!Expect(VansAnimationSampler::Sample(clip, runtime, request, pose),
+            "Authored virtual bone track sampling failed")
+        || !ExpectNear(pose.localPose[3].translation.x, 8.0f, 1e-5f,
+            "Authored virtual bone track was overwritten by derivation"))
+        return false;
+    rig.virtualBones.push_back({ "VB deep_target", "VB return_root", "target" });
+    if (!Expect(VansAnimationRigCompiler::BuildRuntimeSkeleton(rig, imported, rebuilt, error),
+            error.c_str())
+        || !Expect(rebuilt.virtualBoneLinks.back().sourceBoneIndex == 0
+            && rebuilt.bones.back().parentIndex == 4,
+            "Nested virtual source did not resolve through to a physical ancestor"))
+        return false;
+    rig.virtualBones.push_back({ "bad", "missing", "root" });
+    if (!Expect(!VansAnimationRigCompiler::BuildRuntimeSkeleton(rig, imported, rebuilt, error),
+            "Unknown virtual bone source was accepted"))
+        return false;
+    std::cout << "Generic virtual bone dependency, sampling, authored-track and reload contracts passed" << std::endl;
+    return true;
+}
+
 bool TestAnimationLayerStackRuntimeContract()
 {
     using namespace VansGraphics;
+
+    // Mesh-space rotation must not turn local child translation/scale into
+    // component-space offsets. The child is masked at half weight while its
+    // parent is fully replaced, which also checks source/target accumulation.
+    {
+        Skeleton blendSkeleton;
+        blendSkeleton.bones.resize(2);
+        blendSkeleton.bones[0].parentIndex = -1;
+        blendSkeleton.bones[1].parentIndex = 0;
+        blendSkeleton.bones[0].children = { 1 };
+        blendSkeleton.BuildTopologicalOrder();
+        VansPosePayload source, target;
+        source.valid = target.valid = true;
+        source.localPose.resize(2);
+        target.localPose.resize(2);
+        source.localPose[0].rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 0, 1));
+        target.localPose[0].rotation = glm::angleAxis(glm::radians(-90.0f), glm::vec3(0, 0, 1));
+        source.localPose[1].translation = { 2, 0, 0 };
+        target.localPose[1].translation = { 4, 0, 0 };
+        source.localPose[1].scale = { 2, 2, 2 };
+        target.localPose[1].scale = { 4, 4, 4 };
+        target.localPose[1].rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
+        VansCompiledBoneMask blendMask;
+        blendMask.weights = { 1.0f, 0.5f };
+        blendMask.valid = true;
+        blendMask.allZero = false;
+        VansAnimationLayerDefinition blendDefinition;
+        blendDefinition.rotationSpace = VansRotationBlendSpace::Mesh;
+        blendDefinition.blendMode = VansLayerBlendMode::Override;
+        const VansAnimationFrameVector<VansBoneTransform> reference = source.localPose;
+        const VansPosePayload mixed = VansAnimationLayerMixer::ApplyLayer(
+            source, target, blendDefinition, blendMask, blendSkeleton, reference, 1.0f);
+        const glm::quat expectedChildMesh = glm::normalize(
+            source.localPose[0].rotation * 0.5f
+            + (target.localPose[0].rotation * target.localPose[1].rotation) * 0.5f);
+        const glm::quat actualChildMesh = glm::normalize(
+            mixed.localPose[0].rotation * mixed.localPose[1].rotation);
+        if (!Expect(mixed.valid, "Mesh-rotation layer rejected valid pose")
+            || !ExpectNear(glm::length(mixed.localPose[1].translation - glm::vec3(3, 0, 0)),
+                0.0f, 1e-5f, "Mesh-rotation blend changed local child translation")
+            || !ExpectNear(glm::length(mixed.localPose[1].scale - glm::vec3(3)),
+                0.0f, 1e-5f, "Mesh-rotation blend changed local child scale")
+            || !ExpectNear(std::abs(glm::dot(actualChildMesh, expectedChildMesh)),
+                1.0f, 1e-5f, "Mesh-rotation blend did not use source/target component rotations"))
+            return false;
+
+        VansAnimationFrameVector<VansBoneTransform> additiveReference(2);
+        additiveReference[1].translation = { 1, 0, 0 };
+        additiveReference[1].scale = { 1, 1, 1 };
+        const VansPosePayload dynamic = VansAnimationLayerMixer::ApplyDynamicAdditive(
+            source, target, additiveReference, blendSkeleton, blendMask, 1.0f,
+            VansRotationBlendSpace::Mesh);
+        if (!ExpectNear(glm::length(dynamic.localPose[1].translation - glm::vec3(4.5f, 0, 0)),
+                0.0f, 1e-5f, "Mesh additive moved child translation into component space")
+            || !ExpectNear(glm::length(dynamic.localPose[1].scale - glm::vec3(6)),
+                0.0f, 1e-5f, "Mesh additive changed local child scale delta"))
+            return false;
+    }
 
     const Skeleton skeleton = BuildLayerContractSkeleton();
     auto buildClip = [&](const std::string& name, float root, float spine, float arm)
@@ -10964,6 +15047,211 @@ bool TestAnimationLayerStackRuntimeContract()
     if (!Expect(layeredHeapAllocations == 0,
         "Stable Base + Overlay Animation Update performed a heap allocation"))
         return false;
+
+    VansBoneMaskAsset emptyMask;
+    emptyMask.id = "mask-curves-only";
+    emptyMask.name = "No bones";
+    VansAnimationLayerSetup sharedBase;
+    sharedBase.definition.id = "layer-base";
+    sharedBase.definition.name = "Base";
+    sharedBase.definition.kind = VansAnimationLayerKind::Base;
+    VansAnimationLayerSetup sharedSource;
+    sharedSource.definition.id = "layer-upper-source";
+    sharedSource.definition.name = "Upper source";
+    sharedSource.definition.kind = VansAnimationLayerKind::Overlay;
+    sharedSource.definition.slotId = "slot-upper-source";
+    sharedSource.definition.updateWhenWeightIsZero = true;
+    sharedSource.definition.fixedWeight = 0.0f;
+    sharedSource.mask = emptyMask;
+    VansAnimationLayerSetup sharedFollower;
+    sharedFollower.definition.id = "layer-upper-reuse";
+    sharedFollower.definition.name = "Upper reuse";
+    sharedFollower.definition.kind = VansAnimationLayerKind::Overlay;
+    sharedFollower.definition.poseSourceLayerId = "layer-upper-source";
+    sharedFollower.definition.events = VansLayerEventMode::Ignore;
+    sharedFollower.mask = upperMask;
+    VansAnimationController sharedController;
+    sharedController.AddClip("Base", buildClip("Base", 0.0f, 0.0f, 0.0f));
+    sharedController.AddClip("Overlay", buildClip("Overlay", 100.0f, 10.0f, 20.0f));
+    sharedController.AddClip("Action", buildClip("Action", 100.0f, 50.0f, 60.0f));
+    std::vector<VansAnimationLayerSetup> sharedLayers;
+    sharedLayers.push_back(std::move(sharedBase));
+    sharedLayers.push_back(std::move(sharedSource));
+    sharedLayers.push_back(std::move(sharedFollower));
+    std::vector<std::unique_ptr<VansAnimGraph>> sharedGraphs;
+    sharedGraphs.push_back(buildGraph("Base"));
+    sharedGraphs.push_back(buildGraph("Overlay"));
+    sharedGraphs.push_back(buildGraph("Overlay"));
+    if (!Expect(InstallTestGraphSet(sharedController, std::move(sharedLayers),
+        { "graph-base", "graph-upper", "graph-upper" }, std::move(sharedGraphs), error),
+        error.c_str())) return false;
+    VansAnimationSlotDefinition sourceSlot;
+    sourceSlot.id = "slot-upper-source";
+    sourceSlot.name = "Upper source";
+    sourceSlot.layerId = "layer-upper-source";
+    sourceSlot.defaultBlendIn = 0.0f;
+    sourceSlot.defaultBlendOut = 0.0f;
+    if (!Expect(sharedController.SetSlots({ sourceSlot }, error), error.c_str())) return false;
+    sharedController.EnableDebugMetrics(true);
+    sharedController.Play();
+    sharedController.Update(0.0f, skeleton);
+    if (!ExpectNear(sharedController.GetCachedGlobalTransform(1)[3].x, 2.5f, 0.0001f,
+        "Reused pose did not reach the follower mask")) return false;
+    const auto sharedDebug = sharedController.GetLayerRuntimeDebugInfo();
+    if (!Expect(sharedDebug.size() == 3 && sharedDebug[1].evaluationMilliseconds > 0.0f
+        && sharedDebug[2].evaluationMilliseconds == 0.0f
+        && sharedDebug[2].clip == sharedDebug[1].clip
+        && sharedDebug[2].playbackTime == sharedDebug[1].playbackTime,
+        "Pose source was evaluated again by its follower")) return false;
+    for (int frame = 0; frame < 8; ++frame)
+        sharedController.Update(1.0f / 60.0f, skeleton);
+    if (!Expect(CountHeapAllocations([&]() { sharedController.Update(1.0f / 60.0f, skeleton); }) == 0,
+        "Shared Layer pose allocated heap memory on a stable frame")) return false;
+    VansSlotPlayRequest sourceRequest;
+    sourceRequest.clipName = "Action";
+    if (!Expect(static_cast<bool>(sharedController.PlaySlot("slot-upper-source", sourceRequest)),
+        "Shared Layer source Slot rejected a valid action")) return false;
+    sharedController.Update(0.0f, skeleton);
+    if (!ExpectNear(sharedController.GetCachedGlobalTransform(1)[3].x, 12.5f, 0.0001f,
+        "Slot output was not cached as the follower's pose source")) return false;
+
+    VansAnimationLayerSetup curveBase;
+    curveBase.definition.id = "curve-base";
+    curveBase.definition.name = "Base";
+    curveBase.definition.kind = VansAnimationLayerKind::Base;
+    VansAnimationLayerSetup rawOverlay;
+    rawOverlay.definition.id = "raw-overlay";
+    rawOverlay.definition.name = "Raw overlay";
+    rawOverlay.mask = emptyMask;
+    rawOverlay.definition.curves = VansLayerCurveMode::BaseOnly;
+    VansAnimationLayerSetup curveCarrier;
+    curveCarrier.definition.id = "curve-carrier";
+    curveCarrier.definition.name = "Curve carrier";
+    curveCarrier.definition.poseSourceLayerId = "raw-overlay";
+    curveCarrier.definition.slotId = "slot-curves";
+    curveCarrier.definition.curves = VansLayerCurveMode::Override;
+    curveCarrier.mask = emptyMask;
+    VansAnimationLayerSetup curveFollower;
+    curveFollower.definition.id = "curve-follower";
+    curveFollower.definition.name = "Curve follower";
+    curveFollower.definition.poseSourceLayerId = "raw-overlay";
+    curveFollower.definition.weightCurveSourceLayerId = "curve-carrier";
+    curveFollower.definition.weightCurve = "Gate";
+    curveFollower.mask = upperMask;
+    VansAnimationController curveController;
+    curveController.AddClip("Base", buildClip("Base", 0.0f, 0.0f, 0.0f));
+    auto rawClip = buildClip("Overlay", 100.0f, 10.0f, 20.0f);
+    rawClip.curves.push_back({ VansAnimationStableId("Gate"), "Gate", { { 0.0f, 0.2f } } });
+    curveController.AddClip("Overlay", std::move(rawClip));
+    auto curveAction = buildClip("CurveAction", 100.0f, 50.0f, 60.0f);
+    curveAction.curves.push_back({ VansAnimationStableId("Gate"), "Gate", { { 0.0f, 0.75f } } });
+    curveController.AddClip("CurveAction", std::move(curveAction));
+    std::vector<VansAnimationLayerSetup> curveLayers;
+    curveLayers.push_back(std::move(curveBase));
+    curveLayers.push_back(std::move(rawOverlay));
+    curveLayers.push_back(std::move(curveCarrier));
+    curveLayers.push_back(std::move(curveFollower));
+    std::vector<std::unique_ptr<VansAnimGraph>> curveGraphs;
+    curveGraphs.push_back(buildGraph("Base"));
+    for (int index = 0; index < 3; ++index) curveGraphs.push_back(buildGraph("Overlay"));
+    if (!Expect(InstallTestGraphSet(curveController, std::move(curveLayers),
+        { "curve-base-graph", "overlay-graph", "overlay-graph", "overlay-graph" },
+        std::move(curveGraphs), error), error.c_str())) return false;
+    VansAnimationSlotDefinition curvesSlot;
+    curvesSlot.id = "slot-curves";
+    curvesSlot.name = "Curves";
+    curvesSlot.layerId = "curve-carrier";
+    curvesSlot.defaultBlendIn = 0.0f;
+    curvesSlot.defaultBlendOut = 0.0f;
+    if (!Expect(curveController.SetSlots({ curvesSlot }, error), error.c_str())) return false;
+    curveController.Play();
+    curveController.Update(0.0f, skeleton);
+    if (!ExpectNear(curveController.GetCachedGlobalTransform(1)[3].x, 0.5f, 0.0001f,
+        "Region did not read its raw overlay curve before a Slot action")) return false;
+    VansSlotPlayRequest curveRequest;
+    curveRequest.clipName = "CurveAction";
+    if (!Expect(static_cast<bool>(curveController.PlaySlot("slot-curves", curveRequest)),
+        "Curve Slot rejected its action")) return false;
+    curveController.Update(0.0f, skeleton);
+    if (!ExpectNear(curveController.GetCachedGlobalTransform(1)[3].x, 1.875f, 0.0001f,
+        "Region did not use Slot curves with the raw overlay pose")) return false;
+    for (int frame = 0; frame < 8; ++frame)
+        curveController.Update(1.0f / 60.0f, skeleton);
+    if (!Expect(CountHeapAllocations([&]() { curveController.Update(1.0f / 60.0f, skeleton); }) == 0,
+        "Separated Slot curve source allocated heap memory on a stable frame")) return false;
+
+    // The correction must use the frozen composed Base and a separate sampled
+    // reference, before the region mask blends the adjusted overlay.
+    VansAnimationLayerSetup referenceLayer;
+    referenceLayer.definition.id = "layer-reference";
+    referenceLayer.definition.name = "Reference";
+    referenceLayer.definition.fixedWeight = 0.0f;
+    referenceLayer.mask = emptyMask;
+    VansAnimationLayerSetup sourceLayer;
+    sourceLayer.definition.id = "layer-source";
+    sourceLayer.definition.name = "Source";
+    sourceLayer.definition.fixedWeight = 0.0f;
+    sourceLayer.mask = emptyMask;
+    VansAnimationLayerSetup correctedLayer;
+    correctedLayer.definition.id = "layer-corrected";
+    correctedLayer.definition.name = "Corrected";
+    correctedLayer.definition.poseSourceLayerId = "layer-source";
+    correctedLayer.definition.dynamicAdditive = true;
+    correctedLayer.definition.dynamicAdditiveWeightParameter = "Correction";
+    correctedLayer.definition.dynamicAdditiveBaseLayerId = "layer-source";
+    correctedLayer.definition.dynamicAdditiveReferenceLayerId = "layer-reference";
+    correctedLayer.definition.slotId = "slot-corrected";
+    correctedLayer.mask = upperMask;
+    VansAnimationLayerSetup correctedBase;
+    correctedBase.definition.id = "layer-base";
+    correctedBase.definition.name = "Base";
+    correctedBase.definition.kind = VansAnimationLayerKind::Base;
+    VansAnimationController correctedController;
+    correctedController.AddParameter("Correction", AnimatorParamType::Float);
+    correctedController.SetFloat("Correction", 0.5f);
+    correctedController.AddClip("Base", buildClip("Base", 0.0f, 10.0f, 20.0f));
+    correctedController.AddClip("Reference", buildClip("Reference", 0.0f, 2.0f, 4.0f));
+    correctedController.AddClip("Overlay", buildClip("Overlay", 100.0f, 30.0f, 40.0f));
+    correctedController.AddClip("Action", buildClip("Action", 100.0f, 50.0f, 60.0f));
+    std::vector<VansAnimationLayerSetup> correctedLayers;
+    correctedLayers.push_back(std::move(correctedBase));
+    correctedLayers.push_back(std::move(referenceLayer));
+    correctedLayers.push_back(std::move(sourceLayer));
+    correctedLayers.push_back(std::move(correctedLayer));
+    std::vector<std::unique_ptr<VansAnimGraph>> correctedGraphs;
+    correctedGraphs.push_back(buildGraph("Base"));
+    correctedGraphs.push_back(buildGraph("Reference"));
+    correctedGraphs.push_back(buildGraph("Overlay"));
+    correctedGraphs.push_back(buildGraph("Overlay"));
+    if (!Expect(InstallTestGraphSet(correctedController, std::move(correctedLayers),
+        { "graph-base", "graph-reference", "graph-overlay", "graph-overlay" },
+        std::move(correctedGraphs), error), error.c_str())) return false;
+    VansAnimationSlotDefinition correctedSlot;
+    correctedSlot.id = "slot-corrected";
+    correctedSlot.name = "Corrected";
+    correctedSlot.layerId = "layer-corrected";
+    correctedSlot.defaultBlendIn = 0.0f;
+    correctedSlot.defaultBlendOut = 0.0f;
+    if (!Expect(correctedController.SetSlots({ correctedSlot }, error), error.c_str())) return false;
+    correctedController.Play();
+    correctedController.Update(0.0f, skeleton);
+    if (!ExpectNear(correctedController.GetCachedGlobalTransform(1)[3].x, 16.0f, 0.0001f,
+        "Dynamic correction did not use the sampled reference before the spine mask")) return false;
+    if (!ExpectNear(correctedController.GetCachedGlobalTransform(2)[3].x, 57.0f, 0.0001f,
+        "Dynamic correction did not use the composed Base before the arm mask")) return false;
+    for (int frame = 0; frame < 8; ++frame)
+        correctedController.Update(1.0f / 60.0f, skeleton);
+    if (!Expect(CountHeapAllocations([&]() { correctedController.Update(1.0f / 60.0f, skeleton); }) == 0,
+        "Dynamic correction allocated heap memory on a stable frame")) return false;
+    VansSlotPlayRequest correctedRequest;
+    correctedRequest.clipName = "Action";
+    if (!Expect(static_cast<bool>(correctedController.PlaySlot("slot-corrected", correctedRequest)),
+        "Layer Slot rejected a valid action clip")) return false;
+    correctedController.Update(0.0f, skeleton);
+    if (!ExpectNear(correctedController.GetCachedGlobalTransform(1)[3].x, 21.0f, 0.0001f,
+        "Layer Slot did not enter dynamic correction before the spine region mix")) return false;
+    if (!ExpectNear(correctedController.GetCachedGlobalTransform(2)[3].x, 77.0f, 0.0001f,
+        "Layer Slot did not enter dynamic correction before the arm region mix")) return false;
 
 	VansAnimationLayerSetup invalidBase;
     invalidBase.definition.id = "not-base";
@@ -11506,6 +15794,7 @@ bool TestAnimationSlotRuntimeContract()
     {
         std::cerr << "[ForestContractTests] Layer + Slot stable-frame allocations: "
             << slotHeapAllocations << '\n';
+
     }
     if (!Expect(slotHeapAllocations == 0,
         "Stable Layer + Slot Animation Update performed a heap allocation"))
@@ -11544,12 +15833,213 @@ bool TestAnimationSlotRuntimeContract()
     std::unordered_map<std::string, VansAnimationClip> clips;
     clips.emplace("Fire", makeClip("Fire", 20.0f));
     clips.emplace("Reload", makeClip("Reload", 30.0f));
-    std::unordered_map<std::string, VansPosePayload> payloads;
+    std::unordered_map<std::string, VansSlotPoseInputs> payloads;
     queueRuntime.Update(1.1f, clips, skeleton, payloads);
     queueRuntime.Update(0.0f, clips, skeleton, payloads);
-    return Expect(queueRuntime.GetStatus(first).state == VansSlotPlaybackState::Completed
+    if (!Expect(queueRuntime.GetStatus(first).state == VansSlotPlaybackState::Completed
         && queueRuntime.GetStatus(second).state != VansSlotPlaybackState::Queued,
-        "Queued Slot request did not start after the prior request completed");
+        "Queued Slot request did not start after the prior request completed")) return false;
+
+    // UE UpdateWeight 使用真实帧时间，独立于片段速度/起点；热重载必须保留权重时钟。
+    for (float rate : {0.5f, 1.2f, 2.0f, -2.0f})
+    {
+        VansAnimationSlotRuntime timing;
+        if (!timing.Configure({slot},error)) return false;
+        VansSlotPlayRequest request; request.clipName="Fire"; request.playRate=rate;
+        request.startTime=rate>0 ? .25f : .75f;
+        request.blendIn=.2f; request.blendOut=.2f; request.blendOutTriggerTime=0;
+        const auto handle=timing.Play(slot.id,request);
+        timing.Update(.05f,clips,skeleton,payloads);
+        if (!ExpectNear(timing.GetStatus(handle).weight,.25f,1e-5f,"Slot fade-in changed with playback rate/start position")
+            || !ExpectNear(timing.GetStatus(handle).playbackTime,request.startTime+.05f*rate,1e-5f,"Slot clip time lost playback rate")) return false;
+        VansAnimationSlotRuntime restored;
+        if (!restored.Configure({slot},error)) return false;
+        restored.TransferRuntimeStateFrom(timing,clips);
+        restored.Update(.05f,clips,skeleton,payloads);
+        if (!ExpectNear(restored.GetStatus(handle).weight,.5f,1e-5f,"Hot reload reset real-time fade-in clock")) return false;
+    }
+	// UE AlphaBlend's Cubic zero-tangent interpolation and HermiteCubic
+	// SmoothStep have the same quarter-time value, while Linear remains .25.
+	for (const auto option : { VansSlotBlendOption::Linear,
+		VansSlotBlendOption::Cubic, VansSlotBlendOption::HermiteCubic })
+	{
+		VansAnimationSlotRuntime timing;
+		if (!timing.Configure({slot}, error)) return false;
+		VansSlotPlayRequest request; request.clipName = "Fire";
+		request.blendIn = .4f; request.blendOut = .4f;
+		request.blendInOption = option; request.blendOutOption = option;
+		const auto handle = timing.Play(slot.id, request);
+		timing.Update(.1f, clips, skeleton, payloads);
+		const float quarter = option == VansSlotBlendOption::Linear ? .25f : .15625f;
+		if (!ExpectNear(timing.GetStatus(handle).weight, quarter, 1e-6f,
+			"Slot blend-in ignored authored AlphaBlend option")) return false;
+		if (!Expect(timing.Stop(handle, .4f, true), "Slot blend-out could not start")) return false;
+		timing.Update(.1f, clips, skeleton, payloads);
+		if (!ExpectNear(timing.GetStatus(handle).weight, quarter * (1.0f - quarter), 1e-6f,
+			"Slot blend-out ignored authored AlphaBlend option")) return false;
+	}
+    slot.concurrency=VansSlotConcurrency::Replace;
+    payloads.try_emplace(slot.id);
+    for (float rate : {2.0f,-2.0f})
+    {
+        VansAnimationSlotRuntime timing;
+        if (!timing.Configure({slot},error)) return false;
+        VansSlotPlayRequest request; request.clipName="Fire"; request.playRate=rate;
+        request.startTime=.5f; request.blendIn=.2f; request.blendOut=.2f; request.blendOutTriggerTime=0;
+        const auto handle=timing.Play(slot.id,request);
+        timing.Update(.125f,clips,skeleton,payloads);
+        timing.Update(.125f,clips,skeleton,payloads);
+        auto status=timing.GetStatus(handle);
+        if (!Expect(status.state==VansSlotPlaybackState::BlendingOut,"End-triggered Slot did not start fade-out at endpoint")
+            || !ExpectNear(status.weight,1,1e-6f,"Slot consumed fade-out time in the trigger frame")
+            || !ExpectNear(status.playbackTime,rate>0?.99995f:0,1e-6f,"Slot terminal pose does not follow source section endpoint")
+            || !Expect(payloads.at(slot.id).poses.size()==1,"Slot discarded terminal pose before fade-out")) return false;
+        int blendEvents=0;
+        for (const auto& event:timing.GetLifecycleEvents()) if(event.handle==handle&&event.type==VansSlotLifecycleEventType::BlendingOut)++blendEvents;
+        if (!Expect(blendEvents==1,"Automatic Slot fade-out lifecycle was not emitted once")) return false;
+        VansAnimationSlotRuntime restored;
+        if (!restored.Configure({slot},error)) return false;
+        restored.TransferRuntimeStateFrom(timing,clips);
+        restored.Update(.05f,clips,skeleton,payloads);
+        if (!ExpectNear(restored.GetStatus(handle).weight,.75f,1e-6f,"Terminal Slot fade did not use real seconds after reload")
+            || !ExpectNear(restored.GetStatus(handle).playbackTime,status.playbackTime,1e-6f,"Terminal Slot kept advancing during fade-out")) return false;
+        restored.Update(.15f,clips,skeleton,payloads);
+        if (!Expect(restored.GetStatus(handle).state==VansSlotPlaybackState::Completed
+            &&payloads.at(slot.id).poses.empty(),"Natural Slot completion was interrupted or leaked its final pose")) return false;
+        int completed=0;
+        for (const auto& event:restored.GetLifecycleEvents()) if(event.handle==handle&&event.type==VansSlotLifecycleEventType::Completed)++completed;
+        if (!Expect(completed==1,"Natural Slot completion lifecycle missing")) return false;
+    }
+    for (float trigger : {-1.0f,.3f})
+    {
+        VansAnimationSlotRuntime timing;
+        if (!timing.Configure({slot},error)) return false;
+        VansSlotPlayRequest request; request.clipName="Fire"; request.playRate=2;
+        request.blendIn=0.0f; request.blendOut=.2f; request.blendOutTriggerTime=trigger;
+        const auto handle=timing.Play(slot.id,request);
+        timing.Update(trigger<0?.375f:.25f,clips,skeleton,payloads);
+        if (!Expect(timing.GetStatus(handle).state==VansSlotPlaybackState::BlendingOut
+            &&timing.GetStatus(handle).weight==1,"Slot trigger used clip seconds or updated fade weight too early")) return false;
+        timing.Update(trigger<0?.0625f:.1f,clips,skeleton,payloads);
+        if (!ExpectNear(timing.GetStatus(handle).weight,.5f,1e-6f,"Default/custom Slot fade duration differs from source")) return false;
+    }
+    // 同组使用新请求的淡入时长，已有淡出只能缩短；被拒绝请求不能打断其他 Slot。
+    {
+        auto other=slot; other.id="slot-other"; other.name="Other";
+        slot.group=other.group="UpperGroup";
+        VansAnimationSlotRuntime timing;
+        if (!timing.Configure({slot,other},error)) return false;
+        VansSlotPlayRequest request; request.clipName="Fire"; request.externallyDriven=true;
+        request.blendIn=0.0f; request.blendOut=.9f;
+        const auto first=timing.Play(slot.id,request); timing.Drive(first,.1f,1);
+        request.blendIn=.4f;
+        const auto second=timing.Play(other.id,request); timing.Drive(second,.1f,1);
+        timing.Update(.1f,clips,skeleton,payloads);
+        if (!ExpectNear(timing.GetStatus(first).weight,.75f,1e-6f,"Group replacement used outgoing blend-out duration")) return false;
+        request.blendIn=.2f;
+        const auto third=timing.Play(other.id,request); timing.Drive(third,.1f,1);
+        timing.Update(.1f,clips,skeleton,payloads);
+        if (!ExpectNear(timing.GetStatus(first).weight,.375f,1e-6f,"Group replacement did not shorten an older outgoing fade")
+            || !ExpectNear(timing.GetStatus(second).weight,.5f,1e-6f,"Same-slot replacement ignored incoming blend-in")) return false;
+        request.priority=-1;
+        const auto rejected=timing.Play(other.id,request);
+        if (!Expect(timing.GetStatus(rejected).state==VansSlotPlaybackState::Rejected,
+            "Lower priority request unexpectedly replaced the active Slot")) return false;
+        if (!ExpectNear(timing.GetStatus(third).weight,1,1e-6f,"Rejected request changed active Slot weight")) return false;
+        if (!Expect(timing.Stop(first,.8f,true),"Stop could not resolve outgoing playback handle")) return false;
+        timing.Update(.1f,clips,skeleton,payloads);
+        if (!Expect(timing.GetStatus(first).state==VansSlotPlaybackState::Interrupted,"Repeated stop extended outgoing fade")) return false;
+        request.blendOutTriggerTime=std::numeric_limits<float>::quiet_NaN();
+        if (!Expect(!timing.Play(slot.id,request),"Nonfinite Slot trigger was accepted")) return false;
+        slot.group.clear();
+    }
+    std::cout << "Slot real-time blend clocks, source trigger ordering, terminal poses and incoming group fades passed" << std::endl;
+
+    // 经真实播放运行时连续替换三次；不能只向图注入预先混好的单个 Pose。
+    clips.emplace("Base", makeClip("Base", 0));
+    const char* names[] = {"First", "Second", "Third"};
+    const glm::vec3 axes[] = {glm::vec3(1,0,0), glm::vec3(0,1,0), glm::vec3(0,0,1)};
+    glm::quat rotations[3];
+    for (int index = 0; index < 3; ++index)
+    {
+        auto clip = makeClip(names[index], static_cast<float>((index+1)*10));
+        rotations[index] = glm::angleAxis(glm::radians(static_cast<float>(90+index*30)), axes[index]);
+        for (auto& keys : clip.boneKeyframes) for (auto& key : keys) key.rotation = rotations[index];
+        clip.curves.push_back({VansAnimationStableId(names[index]), names[index], {{0,static_cast<float>(index+2)}}});
+        clips.emplace(names[index], std::move(clip));
+    }
+    auto graph = makeBaseGraph();
+    const int output = graph->GetOutputNodeId();
+    const auto oldLink = graph->GetLinks().front();
+    graph->RemoveLink(oldLink.linkId);
+    auto weightedSlot = std::make_unique<AnimGraphSlotNode>();
+    weightedSlot->m_SlotId = slot.id; weightedSlot->m_LinearRotationBlend = true;
+    const int weightedSlotId = graph->AddNode(std::move(weightedSlot));
+    graph->AddLink(oldLink.fromNodeId,0,weightedSlotId,0); graph->AddLink(weightedSlotId,0,output,0);
+    AnimGraphContext context; context.skeleton=&skeleton; context.clips=&clips; context.slotPayloads=&payloads;
+    slot.concurrency=VansSlotConcurrency::Replace; slot.defaultBlendOut=1;
+    for (const auto& authoredWeights : {glm::vec3(.2f,.3f,.1f), glm::vec3(.7f,.8f,.9f)})
+    {
+        VansAnimationSlotRuntime rapid;
+        if (!Expect(rapid.Configure({slot},error),error.c_str())) return false;
+        payloads.clear(); payloads.try_emplace(slot.id);
+        VansSlotPlaybackHandle handles[3];
+        for (int index=0;index<3;++index)
+        {
+            VansSlotPlayRequest request; request.clipName=names[index]; request.externallyDriven=true;
+            request.blendIn=1.0f; request.blendOut=1.0f;
+            handles[index]=rapid.Play(slot.id,request);
+            if (!Expect(rapid.Drive(handles[index],.25f,authoredWeights[index]),"Rapid Slot drive failed")) return false;
+            rapid.Update(0,clips,skeleton,payloads);
+        }
+        if (!Expect(payloads.at(slot.id).poses.size()==3,"Third replacement discarded an earlier fade-out")) return false;
+        for (int index=0;index<3;++index)
+            if (!ExpectNear(payloads.at(slot.id).poses[index].sourceWeight,authoredWeights[index],1e-6f,
+                "Slot runtime prematurely normalized a contribution")) return false;
+        VansAnimGraphInstance instance(*graph);
+        if (!Expect(instance.IsCompiled(),instance.GetCompileError().c_str())) return false;
+        const auto pose=instance.EvaluateFrame(context);
+        const float sum=authoredWeights.x+authoredWeights.y+authoredWeights.z;
+        const float baseWeight=std::max(0.0f,1-sum);
+        const auto weights=authoredWeights/std::max(1.0f,sum);
+        glm::quat expected(0,0,0,0);
+        for (int index=0;index<3;++index)
+            expected+=rotations[index]*(glm::dot(expected,rotations[index])<0?-weights[index]:weights[index]);
+        const glm::quat baseRotation(1,0,0,0);
+        expected+=baseRotation*(glm::dot(expected,baseRotation)<0?-baseWeight:baseWeight);
+        expected=glm::normalize(expected);
+        if (!Expect(pose.valid,"Rapid Slot graph produced invalid pose")
+            || !ExpectNear(std::abs(glm::dot(pose.localPose[2].rotation,expected)),1,1e-6f,
+                "Slot normalized an intermediate rotation before adding the base pose")
+            || !ExpectNear(pose.localPose[2].translation.x,10*weights.x+20*weights.y+30*weights.z,1e-5f,
+                "Slot total-weight normalization/base contribution incorrect")) return false;
+        for (int index=0;index<3;++index)
+        {
+            const auto curve=std::find_if(pose.curves.begin(),pose.curves.end(),
+                [&](const auto& curve){return curve.name==names[index];});
+            if (!Expect(curve!=pose.curves.end(),"Rapid Slot lost a sparse source curve")
+                || !ExpectNear(curve->value,static_cast<float>(index+2)*weights[index],1e-5f,
+                    "Rapid Slot sparse curve did not keep its original contribution weight")) return false;
+        }
+        VansAnimationSlotRuntime reloaded;
+        if (!reloaded.Configure({slot},error)) return false;
+        reloaded.TransferRuntimeStateFrom(rapid,clips); reloaded.Update(0,clips,skeleton,payloads);
+        if (!Expect(payloads.at(slot.id).poses.size()==3,"Hot reload discarded earlier outgoing instances")) return false;
+        reloaded.TransferRuntimeStateFrom(rapid,clips); reloaded.Update(0,clips,skeleton,payloads);
+        if (!Expect(payloads.at(slot.id).poses.size()==3,"Repeated state transfer duplicated outgoing instances")) return false;
+        reloaded.Update(.25f,clips,skeleton,payloads);
+        if (!ExpectNear(reloaded.GetStatus(handles[0]).weight,authoredWeights.x*.75f,1e-6f,
+                "First outgoing instance stopped fading after replacement")
+            || !ExpectNear(reloaded.GetStatus(handles[1]).weight,authoredWeights.y*.75f,1e-6f,
+                "Second outgoing instance lost its own fade clock")) return false;
+        reloaded.Update(.75f,clips,skeleton,payloads);
+        if (!Expect(payloads.at(slot.id).poses.size()==1
+                && reloaded.GetStatus(handles[0]).state==VansSlotPlaybackState::Interrupted
+                && reloaded.GetStatus(handles[1]).state==VansSlotPlaybackState::Interrupted,
+                "Outgoing Slot instances were not retired individually")) return false;
+    }
+    std::cout << "Slot multi-contribution replacement, sparse curves, quaternion accumulation and hot reload passed" << std::endl;
+    return true;
 }
 
 bool TestAnimationHotReloadStateTransferContract()
@@ -11701,7 +16191,7 @@ bool TestAnimationHotReloadStateTransferContract()
     std::unordered_map<std::string, VansAnimationClip> clips;
     clips.emplace("Fire", makeClip("Fire", 20.0f));
     removedSlotRuntime.TransferRuntimeStateFrom(activeSlotRuntime, clips);
-    std::unordered_map<std::string, VansPosePayload> payloads;
+    std::unordered_map<std::string, VansSlotPoseInputs> payloads;
     removedSlotRuntime.Update(0.0f, clips, skeleton, payloads);
     const bool interruptedByReload = std::any_of(
         removedSlotRuntime.GetLifecycleEvents().begin(), removedSlotRuntime.GetLifecycleEvents().end(),
@@ -11745,6 +16235,8 @@ bool TestAnimationMarkerSyncLayerContract()
         auto graph = std::make_unique<VansAnimGraph>();
         auto clip = std::make_unique<AnimGraphClipNode>();
         clip->m_ClipName = clipName;
+        clip->m_SyncGroup = "Locomotion";
+        if (clipName == "Follower") clip->m_Speed = 0.0f;
         const int clipId = graph->AddNode(std::move(clip));
         const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(VansAnimGraphNodeType::Output));
         graph->AddLink(clipId, 0, outputId, 0);
@@ -12654,6 +17146,51 @@ bool TestAudioSourcePoolContract()
 
     system.ReleaseSource(second);
     system.ReleaseSource(rejected);
+    fs::path glitchAudio;
+    for (fs::path cursor = fs::current_path(); !cursor.empty() && glitchAudio.empty();
+         cursor = cursor.parent_path())
+    {
+        const fs::path candidate = cursor / "DemoHallProject" / "Assets" / "Audio" /
+            "UIGlitch_Designed_Glitch_Corrupted_Data Error_The Noisery_Rich Glitch_06.wav";
+        if (fs::exists(candidate)) glitchAudio = candidate;
+        if (cursor == cursor.parent_path()) break;
+    }
+    passed = Expect(!glitchAudio.empty(), "DemoHall TV audio fixture is missing") && passed;
+    if (!glitchAudio.empty())
+    {
+        VansAudioManager manager;
+        Vans::VansSceneAudioResourceRequest request;
+        request.assetGuid = "tv-glitch-contract";
+        request.name = "TV_RichGlitch_Loop";
+        request.path = glitchAudio.string();
+        request.loop = true;
+        request.autoPlay = true;
+        request.spatial = true;
+        manager.Load({ request });
+        VansAudioNode* resource = manager.Get(request.assetGuid);
+        passed = Expect(resource != nullptr, "TV glitch resource did not load") && passed;
+        if (resource)
+        {
+            VansAudioSourceBinding binding;
+            const bool bound = binding.Bind(&manager, request.assetGuid);
+            passed = Expect(bound, "TV glitch static voice did not bind") && passed;
+            manager.PlayAutoPlay();
+            passed = Expect(!resource->IsPlaying(),
+                "Bound static audio also started an unpositioned resource voice") && passed;
+            if (bound)
+            {
+                VansAudioVoice* voice = binding.GetVoice();
+                passed = Expect(voice->GetSpatial() && voice->GetLoop(),
+                    "Bound TV voice lost spatial or loop settings") && passed;
+                voice->SetPosition(-110.757f, 41.974f, -94.1f);
+                voice->Play();
+                passed = Expect(voice->IsPlaying() && !resource->IsPlaying(),
+                    "TV playback did not stay on its bound voice") && passed;
+                binding.Clear();
+            }
+        }
+        manager.Clear();
+    }
     system.SetSourceLimit(1);
     passed = Expect(system.GetActiveSourceLeaseCount() == 0 &&
         system.GetPooledSourceCount() == 1,
@@ -13031,6 +17568,19 @@ bool TestPackagedAudioResourcePlanRoundTrip()
 	indexedAsset.sourceHash = 7;
 	indexedAsset.metaHash = 11;
 	plan.assetIndex.push_back(indexedAsset);
+	Vans::VansPackagedAssetIndexRecord indexedTexture;
+	indexedTexture.guid = "c2dbb215-b844-41df-b789-c6f51f81868b";
+	indexedTexture.type = "texture";
+	indexedTexture.artifactPath = "Library/Artifacts/Textures/c2dbb215-b844-41df-b789-c6f51f81868b.vtex";
+	indexedTexture.metaPath = "Library/Artifacts/Metadata/c2dbb215-b844-41df-b789-c6f51f81868b.meta";
+	indexedTexture.artifactFormat = "imported";
+	indexedTexture.maxResidentDimension = 2048;
+	plan.assetIndex.push_back(indexedTexture);
+	Vans::VansSceneTextureResourceRequest residentTexture;
+	residentTexture.name = "ResidentTexture";
+	residentTexture.assetGuid = indexedTexture.guid;
+	residentTexture.maxResidentDimension = 2048;
+	plan.resourcePlan.textures.push_back(residentTexture);
     Vans::VansSceneAudioResourceRequest audio;
     audio.name = "CaveDrip";
     audio.assetGuid = "audio-guid";
@@ -13059,10 +17609,15 @@ bool TestPackagedAudioResourcePlanRoundTrip()
         return false;
     if (!Expect(loaded.resourcePlan.audios.size() == 1, "Packaged audio resource count changed"))
         return false;
-	if (!Expect(loaded.assetIndex.size() == 1 &&
+	if (!Expect(loaded.assetIndex.size() == 2 &&
 		loaded.assetIndex.front().metaPath ==
 			(temporary.path / indexedAsset.metaPath).lexically_normal().generic_string(),
 		"Packaged asset metadata path did not round-trip into the package root"))
+		return false;
+	if (!Expect(loaded.assetIndex[1].maxResidentDimension == 2048 &&
+		loaded.resourcePlan.textures.size() == 1 &&
+		loaded.resourcePlan.textures.front().maxResidentDimension == 2048,
+		"Texture resident mip limit did not round-trip through the package plan"))
 		return false;
 
     const Vans::VansSceneAudioResourceRequest& roundTrip = loaded.resourcePlan.audios.front();
@@ -13161,7 +17716,10 @@ bool TestMediaComponentGuidProjection()
 	plan = {};
 	error.clear();
 	return Expect(!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
-		Value::Array({ invalidMediaEntity }), {}, plan, error) &&
+		Value::Array({ invalidMediaEntity }), {},
+		[](Vans::VansAssetGuid guid)
+		{ return Vans::VansProjectManager::Get().FindAssetRecord(guid); },
+		plan, error) &&
 		error.find("Audio.source") != std::string::npos &&
 		plan.objects.objects.empty(),
 		"Audio bare-string GUID bypassed exact Scene asset-reference admission");
@@ -13199,7 +17757,10 @@ bool TestSceneProjectionStrictAdmission()
 	Vans::VansSceneContentBuildPlan plan;
 	std::string error;
 	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
-		Value::Array({ disabledSpecial }), {}, plan, error) &&
+		Value::Array({ disabledSpecial }), {},
+		[](Vans::VansAssetGuid guid)
+		{ return Vans::VansProjectManager::Get().FindAssetRecord(guid); },
+		plan, error) &&
 		plan.renderNodes.empty() && plan.objects.objects.empty(),
 		"Disabled special render node entered the runtime build plan"))
 		return false;
@@ -13254,7 +17815,10 @@ bool TestSceneProjectionStrictAdmission()
 	plan = {};
 	error.clear();
 	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
-		Value::Array({ parentEntity, submeshChild }), {}, plan, error),
+		Value::Array({ parentEntity, submeshChild }), {},
+		[](Vans::VansAssetGuid guid)
+		{ return Vans::VansProjectManager::Get().FindAssetRecord(guid); },
+		plan, error),
 		"Submesh source metadata fixture did not project"))
 		return false;
 	const auto childObject = std::find_if(plan.objects.objects.begin(),
@@ -13304,7 +17868,10 @@ bool TestSceneProjectionStrictAdmission()
 		plan = {};
 		error.clear();
 		return Expect(!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
-			Value::Array({ entity }), {}, plan, error) &&
+			Value::Array({ entity }), {},
+			[](Vans::VansAssetGuid guid)
+			{ return Vans::VansProjectManager::Get().FindAssetRecord(guid); },
+			plan, error) &&
 			error.find(expectedError) != std::string::npos &&
 			plan.renderNodes.empty() && plan.objects.objects.empty(), message);
 	};
@@ -13375,6 +17942,41 @@ bool TestSceneProjectionStrictAdmission()
 	}));
 	if (!RejectsInvalidTimelineEnum(unresolvedTimelineReference, "not indexed",
 		"Unindexed Timeline GUID was published as its raw path token"))
+		return false;
+
+	Vans::VansAssetRecord indexedTimeline;
+	if (!Expect(Vans::VansAssetGuid::TryParse(
+		"12df962c-4ab3-47f1-af78-1e4e6d77afc6", indexedTimeline.guid),
+		"Timeline resolver fixture has an invalid GUID"))
+		return false;
+	indexedTimeline.type = Vans::VansAssetType::Timeline;
+	indexedTimeline.sourcePath = "C:/PackageRoot/Assets/Cinematics/Probe.vtimeline";
+	const auto resolveLocalTimeline = [&indexedTimeline](Vans::VansAssetGuid guid)
+		-> std::optional<Vans::VansAssetRecord>
+	{
+		return guid == indexedTimeline.guid
+			? std::optional<Vans::VansAssetRecord>(indexedTimeline) : std::nullopt;
+	};
+	plan = {};
+	error.clear();
+	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+		Value::Array({ unresolvedTimelineReference }), "C:/PackageRoot",
+		resolveLocalTimeline, plan, error) &&
+		plan.objects.objects.size() == 1 &&
+		plan.objects.objects[0].timeline &&
+		plan.objects.objects[0].timeline->timelineAssetPath ==
+			"/Assets/Cinematics/Probe.vtimeline",
+		"Timeline projection ignored the caller's indexed asset record"))
+		return false;
+	indexedTimeline.type = Vans::VansAssetType::Audio;
+	plan = {};
+	error.clear();
+	if (!Expect(!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+		Value::Array({ unresolvedTimelineReference }), "C:/PackageRoot",
+		resolveLocalTimeline, plan, error) &&
+		error.find("wrong asset type") != std::string::npos &&
+		plan.objects.objects.empty(),
+		"Timeline projection accepted a caller record with the wrong type"))
 		return false;
 
 	Value obsoleteOverrideType = invalidLoopMode;
@@ -13583,7 +18185,10 @@ bool TestAudioReverbZoneRuntimeProjection()
     plan = {};
     error.clear();
     return Expect(!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
-        Value::Array({ invalidZoneEntity }), {}, plan, error) &&
+        Value::Array({ invalidZoneEntity }), {},
+        [](Vans::VansAssetGuid guid)
+        { return Vans::VansProjectManager::Get().FindAssetRecord(guid); },
+        plan, error) &&
         error.find("AudioReverbZone.presetAsset") != std::string::npos &&
         plan.objects.objects.empty(),
         "Audio Reverb bare-string preset GUID bypassed exact Scene asset-reference admission");
@@ -15213,10 +19818,79 @@ bool TestLuaInspectorProjectModuleSearchPathContract()
 		"Lua Inspector did not resolve modules from the active project's Scripts directory");
 }
 
+bool TestRiverWaveDensityContract()
+{
+    using namespace Vans;
+    using namespace VansGraphics;
+    VansPcgSplineFieldSnapshot field;
+    field.worldSize=128.f;field.texelSize=2.f;field.resolution=64;
+    auto tile=std::make_shared<VansPcgSplineFieldTile>();
+    tile->x=0;tile->z=0;tile->hasRiver=true;
+    const std::size_t texelCount=std::size_t(VANS_SPLINE_TILE_EXTENT)*VANS_SPLINE_TILE_EXTENT;
+    tile->coverage.assign(texelCount,glm::vec4(0));
+    tile->heights.assign(texelCount,glm::vec2(0));
+    tile->velocities.assign(texelCount,glm::vec2(0));
+    tile->riverProperties.assign(texelCount,glm::vec4(0));
+    tile->waterBlend.assign(texelCount,0.f);
+    // 只让中间一条狭窄河道可出生，验证不会向整页空白区域随机试投。
+    for(std::uint32_t z=27;z<37;++z)for(std::uint32_t x=1;x<63;++x)
+    {
+        const std::size_t at=std::size_t(z+VANS_SPLINE_TILE_BORDER)*
+            VANS_SPLINE_TILE_EXTENT+x+VANS_SPLINE_TILE_BORDER;
+        tile->coverage[at].y=1.f;
+        tile->velocities[at]=glm::vec2(2.f,0.f);
+        tile->riverProperties[at]=glm::vec4(1.f,1.f,2.f,.15f);
+        tile->waterBlend[at]=1.f;
+    }
+    field.tiles.emplace(VansPcgSplineFieldSnapshot::TileKey(0,0),tile);
+    VansRiverWaveSimulation waves;
+    waves.Update(.1f,&field,glm::vec2(0),1.8f,8.f);
+    const auto populated=waves.GetStatistics();
+    float minimumRadius=std::numeric_limits<float>::max(),maximumRadius=0.f;
+    const auto& packed=waves.GpuData();
+    for(int bucket=0;bucket<VansRiverWaveSimulation::GridSide*VansRiverWaveSimulation::GridSide;++bucket)
+    {
+        const int start=int(packed[2+bucket].x),count=int(packed[2+bucket].y);
+        for(int i=0;i<count;++i)
+        {
+            const float radius=packed[std::size_t(start+i*VansRiverWaveSimulation::PacketVectorCount)].z;
+            minimumRadius=std::min(minimumRadius,radius);
+            maximumRadius=std::max(maximumRadius,radius);
+        }
+    }
+    if(!Expect(populated.visibleSpawnSites>0 &&
+        populated.successfulSpawns>150 &&
+        populated.activeParticles==populated.successfulSpawns &&
+        populated.activeByScale[0]>0 && populated.activeByScale[1]>0 &&
+        populated.activeByScale[2]>0 &&
+        minimumRadius<1.5f && maximumRadius>3.f &&
+        waves.GpuData().size()<=VansRiverWaveSimulation::MaxGpuVectors,
+        "River packets did not fill a narrow nearby channel at three bounded scales"))
+        return false;
+    std::cout<<"River wave narrow-channel fixture: sites="<<populated.visibleSpawnSites
+        <<" spawns="<<populated.successfulSpawns<<" active="<<populated.activeParticles
+        <<" radii="<<minimumRadius<<".."<<maximumRadius<<std::endl;
+    waves.Update(.1f,&field,glm::vec2(512.f,0.f),1.8f,8.f);
+    if(!Expect(waves.GetStatistics().visibleSpawnSites==0 &&
+        waves.GetStatistics().activeParticles==0,
+        "River packets outside the new camera region were not recycled"))
+        return false;
+    waves.Update(.1f,&field,glm::vec2(0),1.8f,8.f);
+    if(!Expect(waves.GetStatistics().successfulSpawns>150,
+        "River packets did not refill after returning to the channel"))return false;
+    field.sourceFingerprint=1;
+    std::fill(tile->waterBlend.begin(),tile->waterBlend.end(),0.f);
+    waves.Update(0.f,&field,glm::vec2(0),1.8f,8.f);
+    return Expect(waves.GetStatistics().visibleSpawnSites==0,
+        "River packet spawn sites were not rebuilt after a field publication");
+}
+
 bool TestWaterRenderingRefactorContract()
 {
 	using namespace Vans;
 	using namespace VansGraphics;
+
+    if(!TestRiverWaveDensityContract())return false;
 
 	const auto& builtIns = VansBuiltInAssetCatalog::Entries();
 	const auto detailNormal = std::find_if(
@@ -15399,6 +20073,7 @@ bool TestAtmosphereMathAndDataContract()
 	VansRenderFeatureFrameFlags atmosphereFeatures{};
 	atmosphereFeatures.hasForwardOpaquePreAtmosphere = true;
 	atmosphereFeatures.hasWater = true;
+	atmosphereFeatures.hasRainPrecipitation = true;
 	VansRenderPassCatalog::BuildCompatibilityFramePlan(
 		atmosphereFramePlan, atmosphereFeatures, 1u, false);
 	const VansRenderPassNodeDesc* localMedia =
@@ -15411,6 +20086,8 @@ bool TestAtmosphereMathAndDataContract()
 		atmosphereFramePlan.FindPass(VansRenderPassNames::AtmosphereComposite);
 	const VansRenderPassNodeDesc* waterComposite =
 		atmosphereFramePlan.FindPass(VansRenderPassNames::WaterCompositePreAtmosphere);
+	const VansRenderPassNodeDesc* rainPrecipitation =
+		atmosphereFramePlan.FindPass(VansRenderPassNames::RainPrecipitation);
 	const VansRenderPassNodeDesc* transparentPostProcess =
 		atmosphereFramePlan.FindPass(VansRenderPassNames::TransparentPostProcess);
 	const auto hasAccess = [](const std::vector<VansRenderResourceAccess>& accesses,
@@ -15436,6 +20113,10 @@ bool TestAtmosphereMathAndDataContract()
 		waterComposite != nullptr &&
 		hasAccess(waterComposite->reads, "WaterGBuffer", VansRenderResourceUsage::SampledRead) &&
 		hasAccess(waterComposite->writes, "RawOpaqueSceneColor", VansRenderResourceUsage::ColorAttachmentWrite) &&
+		rainPrecipitation != nullptr && rainPrecipitation->enabled &&
+		hasAccess(rainPrecipitation->reads, "GBuffer", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(rainPrecipitation->reads, "Depth", VansRenderResourceUsage::DepthStencilAttachmentRead) &&
+		hasAccess(rainPrecipitation->writes, "SceneColor", VansRenderResourceUsage::ColorAttachmentWrite) &&
 		hasAccess(atmosphereComposite->reads, "RawOpaqueSceneColor", VansRenderResourceUsage::SampledRead) &&
 		hasAccess(atmosphereComposite->reads, "AtmosphereAerialScattering", VansRenderResourceUsage::SampledRead) &&
 		hasAccess(atmosphereComposite->reads, "AtmosphereAerialClearScattering", VansRenderResourceUsage::SampledRead) &&
@@ -15489,6 +20170,8 @@ bool TestAtmosphereMathAndDataContract()
 		findPassIndex(VansRenderPassNames::WaterCompositePreAtmosphere) <
 			findPassIndex(VansRenderPassNames::AtmosphereComposite) &&
 		findPassIndex(VansRenderPassNames::AtmosphereComposite) <
+			findPassIndex(VansRenderPassNames::RainPrecipitation) &&
+		findPassIndex(VansRenderPassNames::RainPrecipitation) <
 			findPassIndex(VansRenderPassNames::TransparentPostProcess),
 		"Participating media is not composited between opaque and transparent rendering"))
 	{
@@ -16798,8 +21481,106 @@ bool TestSceneMemoryDependencyPlanContract()
 			"Scene dependency planning performed authoring I/O after memory bootstrap");
 }
 
+bool TestHairMaterialContract()
+{
+    // Early rejection must use a private depth target: writing main depth would
+    // break later glass/particles and cannot be hidden by material validation.
+    for (bool async : {false, true})
+    for (bool hasHair : {false, true})
+    {
+        using namespace VansGraphics;
+        VansRenderFeatureFrameFlags features{};
+        features.hasHair = hasHair;
+        VansRenderFramePlan plan;
+        VansRenderPassCatalog::BuildCompatibilityFramePlan(plan, features, 1u, async);
+        const auto* resolve = plan.FindPass(VansRenderPassNames::HairDepthResolve);
+        const auto* lighting = plan.FindPass(VansRenderPassNames::HairLighting);
+        const auto* visibility = plan.FindPass(VansRenderPassNames::HairVisibility);
+        const auto* debug = plan.FindPass(VansRenderPassNames::HairDebug);
+        const auto* composite = plan.FindPass(VansRenderPassNames::TransparentPostProcess);
+        if (!Expect((resolve != nullptr) == hasHair && (lighting != nullptr) == hasHair,
+            "Hair depth/lighting must follow the feature flag on both queue paths")) return false;
+        if (!hasHair) continue;
+        const auto accesses = [](const auto& list, const char* name, VansRenderResourceUsage usage) {
+            return std::any_of(list.begin(), list.end(), [&](const auto& a) {
+                return a.name == name && a.usage == usage;
+            });
+        };
+        if (!Expect(visibility && debug && composite &&
+            accesses(visibility->writes, "HairOpticalDepth", VansRenderResourceUsage::ColorAttachmentWrite) &&
+            accesses(visibility->writes, "HairVisibilityData", VansRenderResourceUsage::StorageWrite) &&
+            accesses(debug->reads, "HairOpticalDepth", VansRenderResourceUsage::StorageRead) &&
+            accesses(composite->reads, "HairOpticalDepth", VansRenderResourceUsage::StorageRead),
+            "Hair optical depth blend writes must reach both composite and debug consumers")) return false;
+        if (!Expect(accesses(resolve->reads, "Depth", VansRenderResourceUsage::DepthStencilAttachmentSampledRead) &&
+            accesses(resolve->writes, "HairLayerDepth", VansRenderResourceUsage::DepthStencilAttachmentWrite) &&
+            !accesses(resolve->writes, "Depth", VansRenderResourceUsage::DepthStencilAttachmentWrite) &&
+            accesses(lighting->reads, "HairLayerDepth", VansRenderResourceUsage::DepthStencilAttachmentRead) &&
+            accesses(lighting->reads, "RayTracingGI", VansRenderResourceUsage::SampledRead),
+            "Hair early depth must preserve opaque depth and consume current world GI")) return false;
+    }
+    using namespace Vans;
+    VansHairMaterialParameters original;
+    original.cuticleTiltDegrees = -3.0f;
+    original.castShadows = false;
+    auto encoded = WriteHairMaterialParameters(original);
+    VansHairMaterialParameters decoded;
+    std::string error;
+    if (!Expect(ReadHairMaterialParameters(encoded, decoded, error) &&
+        decoded.cuticleTiltDegrees == -3.0f && !decoded.castShadows,
+        "Hair material parameters must round-trip without packing or units loss")) return false;
+    auto endpoints = encoded;
+    SetSerializedObjectField(endpoints, "longitudinalRoughness", VansSerializedValue::Float(0.035));
+    SetSerializedObjectField(endpoints, "coverageScale", VansSerializedValue::Float(0.01));
+    SetSerializedObjectField(endpoints, "coverageCutoff", VansSerializedValue::Float(0.99));
+    VansHairMaterialParameters endpointValues;
+    if (!Expect(ReadHairMaterialParameters(endpoints, endpointValues, error) &&
+        ReadHairMaterialParameters(WriteHairMaterialParameters(endpointValues), endpointValues, error),
+        "Hair decimal range endpoints must load and round-trip at runtime scalar precision")) return false;
+    for (const auto& name : {"roughness_scale", "shift_params", "absorption", "coverage_params", "version"})
+    {
+        auto invalid = encoded;
+        SetSerializedObjectField(invalid, name, VansSerializedValue::Float(1.0));
+        if (!Expect(!ReadHairMaterialParameters(invalid, decoded, error),
+            "Hair must reject removed parameters instead of accepting a parallel schema")) return false;
+    }
+    for (double number : {-0.1, 1.1, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+    {
+        auto invalid = encoded;
+        SetSerializedObjectField(invalid, "longitudinalRoughness", VansSerializedValue::Float(number));
+        if (!Expect(!ReadHairMaterialParameters(invalid, decoded, error) && decoded.cuticleTiltDegrees == -3.0f,
+            "Invalid Hair numbers must fail without partially publishing values")) return false;
+    }
+    auto missing = encoded;
+    missing.objectFields.pop_back();
+    if (!Expect(!ReadHairMaterialParameters(missing, decoded, error), "Missing Hair field accepted")) return false;
+    auto duplicate = encoded;
+    duplicate.objectFields.push_back(duplicate.objectFields.front());
+    if (!Expect(!ReadHairMaterialParameters(duplicate, decoded, error), "Duplicate Hair field accepted")) return false;
+    auto wrongType = encoded;
+    SetSerializedObjectField(wrongType, "castShadows", VansSerializedValue::Int(1));
+    if (!Expect(!ReadHairMaterialParameters(wrongType, decoded, error), "Numeric Hair shadow flag accepted")) return false;
+    if (!Expect(!ApplyHairMaterialParameter(decoded, "coverageScale", VansSerializedValue::Float(0), error),
+        "Non-positive Hair coverage scale accepted")) return false;
+    auto texture = VansSerializedValue::Object({{"guid", VansSerializedValue::String("30000000-0000-4000-8000-000000000001")}});
+    auto material = VansSerializedValue::Object({
+        {"materialType", VansSerializedValue::String("hair")}, {"parameters", encoded},
+        {"textures", VansSerializedValue::Object({{"alpha", texture}})} });
+    VansMaterialAuthoringAsset asset;
+    if (!Expect(ReadMaterialAuthoringAsset(material, asset, error), "Valid Hair asset rejected")) return false;
+    SetSerializedObjectField(*FindObjectField(material, "textures"), "shift", texture);
+    if (!Expect(!ReadMaterialAuthoringAsset(material, asset, error), "Removed Hair texture slot accepted")) return false;
+    SetSerializedObjectField(material, "textures", VansSerializedValue::Object({}));
+    if (!Expect(!ReadMaterialAuthoringAsset(material, asset, error), "Hair alpha texture must be explicit")) return false;
+    SetSerializedObjectField(material, "textures", VansSerializedValue::Object({{"alpha", texture}}));
+    SetSerializedObjectField(*FindObjectField(material, "parameters"), "flowStrength", VansSerializedValue::Float(1));
+    if (!Expect(!ReadMaterialAuthoringAsset(material, asset, error), "Hair flow requires its texture")) return false;
+    return true;
+}
+
 bool TestAuthoringCodecContract()
 {
+    if (!TestHairMaterialContract()) return false;
 	std::string error;
 	Vans::VansProjectConfig projectConfig;
 	projectConfig.SetDefaults("Project Codec Contract");
@@ -19000,6 +23781,416 @@ bool TestVolumetricParticleInjectionContract()
 		"DemoHall smoke modules are incomplete or its standalone emitter remains");
 }
 
+bool TestRainWeatherContract()
+{
+	using Value = Vans::VansSerializedValue;
+	if (!Expect(std::abs(Vans::VansRainSettings{}.rippleScaleMeters - 20.0f) < 1.0e-6f,
+		"Rain ripple scale default is not 20 meters"))
+		return false;
+	const Value rain = Value::Object({
+		{ "enabled", Value::Bool(true) },
+		{ "rainRateMmPerHour", Value::Float(18.0) },
+		{ "fullIntensityRateMmPerHour", Value::Float(25.0) },
+		{ "wettingHalfLifeSeconds", Value::Float(4.0) },
+		{ "dryingHalfLifeSeconds", Value::Float(120.0) },
+		{ "puddleFillHalfLifeSeconds", Value::Float(45.0) },
+		{ "puddleDrainHalfLifeSeconds", Value::Float(360.0) },
+		{ "windDirectionX", Value::Float(0.35) },
+		{ "windDirectionZ", Value::Float(0.94) },
+		{ "windSpeedMetersPerSecond", Value::Float(2.0) },
+		{ "fallSpeedMetersPerSecond", Value::Float(8.0) },
+		{ "maximumVisibleDistanceMeters", Value::Float(45.0) },
+		{ "splashLifetimeSeconds", Value::Float(0.12) },
+		{ "splashRadiusMeters", Value::Float(0.09) },
+		{ "rippleScaleMeters", Value::Float(1.6) },
+		{ "rippleStrength", Value::Float(1.0) }
+	});
+	const Value settings = Value::Object({
+		{ "environment", BuildValidEnvironmentSettingsForTest() },
+		{ "weather", Value::Object({ { "rain", rain } }) }
+	});
+
+	Vans::VansSceneRenderSettingsConfig decoded;
+	std::string error;
+	if (!Expect(Vans::VansSceneRenderSettingsConfigReader::Read(settings, decoded, error),
+		("Current rain weather schema was rejected: " + error).c_str()) ||
+		!Expect(decoded.rain.enabled &&
+			std::abs(decoded.rain.rainRateMmPerHour - 18.0f) < 1.0e-6f &&
+			std::abs(decoded.rain.puddleDrainHalfLifeSeconds - 360.0f) < 1.0e-6f,
+			"Rain weather fields were not projected into typed scene settings"))
+	{
+		return false;
+	}
+
+	Value invalidSettings = settings;
+	Value* weather = Vans::FindObjectField(invalidSettings, "weather");
+	Value* invalidRain = weather ? Vans::FindObjectField(*weather, "rain") : nullptr;
+	if (!Expect(invalidRain != nullptr, "Rain contract fixture has no weather.rain object"))
+		return false;
+	Vans::SetSerializedObjectField(*invalidRain,
+		"fullIntensityRateMmPerHour", Value::Float(0.0));
+	if (!Expect(!Vans::VansSceneRenderSettingsConfigReader::Read(
+		invalidSettings, decoded, error) && !error.empty(),
+		"Rain schema accepted a non-positive full-intensity rate"))
+	{
+		return false;
+	}
+
+	invalidSettings = settings;
+	weather = Vans::FindObjectField(invalidSettings, "weather");
+	invalidRain = weather ? Vans::FindObjectField(*weather, "rain") : nullptr;
+	Vans::SetSerializedObjectField(*invalidRain,
+		"puddleFillHalfLifeSeconds", Value::Float(-1.0));
+	if (!Expect(!Vans::VansSceneRenderSettingsConfigReader::Read(
+		invalidSettings, decoded, error) && !error.empty(),
+		"Rain schema accepted a non-positive puddle-fill half-life"))
+	{
+		return false;
+	}
+
+	Vans::VansRainSettings runtimeSettings;
+	runtimeSettings.enabled = true;
+	runtimeSettings.rainRateMmPerHour = 18.0f;
+	runtimeSettings.fullIntensityRateMmPerHour = 25.0f;
+	runtimeSettings.wettingHalfLifeSeconds = 4.0f;
+	runtimeSettings.dryingHalfLifeSeconds = 120.0f;
+	runtimeSettings.puddleFillHalfLifeSeconds = 45.0f;
+	runtimeSettings.puddleDrainHalfLifeSeconds = 360.0f;
+	runtimeSettings.windDirectionX = 0.35f;
+	runtimeSettings.windDirectionZ = 0.94f;
+	runtimeSettings.windSpeedMetersPerSecond = 2.0f;
+	runtimeSettings.fallSpeedMetersPerSecond = 8.0f;
+	runtimeSettings.maximumVisibleDistanceMeters = 45.0f;
+	runtimeSettings.splashLifetimeSeconds = 0.12f;
+	runtimeSettings.splashRadiusMeters = 0.09f;
+	runtimeSettings.rippleScaleMeters = 1.6f;
+	runtimeSettings.rippleStrength = 1.0f;
+	const Value authoredRain = Vans::WriteSceneRainSettings(runtimeSettings);
+	if (!Expect(authoredRain.kind == Value::Kind::Object &&
+		authoredRain.objectFields.size() == 16u &&
+		Vans::FindObjectField(authoredRain, "rainRateMmPerHour") != nullptr &&
+		Vans::FindObjectField(authoredRain, "rippleStrength") != nullptr,
+		"Rain authoring writer drifted from the current 16-field schema"))
+	{
+		return false;
+	}
+	Vans::VansRainRuntime at60Hz;
+	Vans::VansRainRuntime at144Hz;
+	at60Hz.Configure(runtimeSettings);
+	at144Hz.Configure(runtimeSettings);
+	for (int frame = 0; frame < 600; ++frame)
+		at60Hz.Update(1.0f / 60.0f);
+	for (int frame = 0; frame < 1440; ++frame)
+		at144Hz.Update(1.0f / 144.0f);
+	const Vans::VansRainState& state60 = at60Hz.State();
+	const Vans::VansRainState& state144 = at144Hz.State();
+	if (!Expect(state60.enabled &&
+		std::abs(state60.normalizedIntensity - 0.72f) < 1.0e-6f &&
+		state60.filmWetness >= 0.0f && state60.filmWetness <= 1.0f &&
+		state60.puddleFill >= 0.0f && state60.puddleFill <= 1.0f &&
+		std::abs(state60.visualTimeSeconds - 10.0) < 1.0e-3 &&
+		std::abs(state144.visualTimeSeconds - 10.0) < 1.0e-3 &&
+		std::abs(state60.filmWetness - state144.filmWetness) < 1.0e-4f &&
+		std::abs(state60.puddleFill - state144.puddleFill) < 1.0e-4f,
+		"Rain scalar evolution is not bounded and frame-rate independent"))
+	{
+		return false;
+	}
+
+	const Vans::VansRainState beforeInvalidStep = at60Hz.State();
+	at60Hz.Update(std::numeric_limits<float>::quiet_NaN());
+	if (!Expect(at60Hz.State().filmWetness == beforeInvalidStep.filmWetness &&
+		at60Hz.State().puddleFill == beforeInvalidStep.puddleFill &&
+		at60Hz.State().visualTimeSeconds == beforeInvalidStep.visualTimeSeconds,
+		"Rain runtime accepted a non-finite frame delta"))
+	{
+		return false;
+	}
+	Vans::VansRainSettings previewSettings = runtimeSettings;
+	previewSettings.rainRateMmPerHour = 25.0f;
+	at60Hz.ApplySettings(previewSettings);
+	if (!Expect(
+		std::abs(at60Hz.State().filmWetness - beforeInvalidStep.filmWetness) < 1.0e-6f &&
+		std::abs(at60Hz.State().puddleFill - beforeInvalidStep.puddleFill) < 1.0e-6f &&
+		std::abs(at60Hz.State().normalizedIntensity - 1.0f) < 1.0e-6f,
+		"Rain live preview reset accumulated surface state or delayed intensity"))
+	{
+		return false;
+	}
+	if (!Expect(at60Hz.SetPuddleFill(0.75f) &&
+		std::abs(at60Hz.State().puddleFill - 0.75f) < 1.0e-6f &&
+		!at60Hz.SetPuddleFill(-0.1f) &&
+		!at60Hz.SetPuddleFill(std::numeric_limits<float>::quiet_NaN()) &&
+		std::abs(at60Hz.State().puddleFill - 0.75f) < 1.0e-6f,
+		"Rain puddle-fill preview did not validate or update the owned runtime state"))
+	{
+		return false;
+	}
+
+	fs::path sourceRoot;
+	for (fs::path cursor = fs::current_path(); !cursor.empty(); cursor = cursor.parent_path())
+	{
+		for (const fs::path& candidate : { cursor, cursor / "ForestEngine" })
+		{
+			if (fs::is_regular_file(candidate /
+				"Source/EngineCore/WeatherCore/VansRain.cpp"))
+			{
+				sourceRoot = candidate;
+				break;
+			}
+		}
+		if (!sourceRoot.empty() || cursor == cursor.root_path())
+			break;
+	}
+	if (!Expect(!sourceRoot.empty(), "Rain source root is unavailable"))
+		return false;
+	VansGraphics::VansRenderFeatureFrameFlags rainFeatures{};
+	rainFeatures.hasWater = true;
+	rainFeatures.hasRainPrecipitation = true;
+	VansGraphics::VansRenderFramePlan rainFramePlan;
+	VansGraphics::VansRenderPassCatalog::BuildCompatibilityFramePlan(
+		rainFramePlan, rainFeatures, 7u, false);
+	const auto* rainPass = rainFramePlan.FindPass(
+		VansGraphics::VansRenderPassNames::RainPrecipitation);
+	VansGraphics::VansRenderFeatureFrameFlags dryFeatures{};
+	dryFeatures.hasWater = true;
+	VansGraphics::VansRenderFramePlan dryFramePlan;
+	VansGraphics::VansRenderPassCatalog::BuildCompatibilityFramePlan(
+		dryFramePlan, dryFeatures, 8u, false);
+	const auto* dryRipplePass = dryFramePlan.FindPass(
+		VansGraphics::VansRenderPassNames::SurfaceWeatherRipple);
+	const auto* dryRainPass = dryFramePlan.FindPass(
+		VansGraphics::VansRenderPassNames::RainPrecipitation);
+	if (!Expect(dryRipplePass && dryRipplePass->enabled &&
+		(!dryRainPass || !dryRainPass->enabled),
+		"Dry frame must initialize the shared ripple normal without drawing precipitation"))
+	{
+		return false;
+	}
+	const auto& rainPasses = rainFramePlan.GetPasses();
+	auto passIndex = [&](const char* name)
+	{
+		for (std::size_t index = 0; index < rainPasses.size(); ++index)
+		{
+			if (rainPasses[index].name == name)
+				return index;
+		}
+		return rainPasses.size();
+	};
+	if (!Expect(rainPass && rainPass->enabled &&
+		passIndex(VansGraphics::VansRenderPassNames::SurfaceWeatherRipple) <
+			passIndex(VansGraphics::VansRenderPassNames::GBuffer) &&
+		passIndex(VansGraphics::VansRenderPassNames::WaterCompositePreAtmosphere) <
+			passIndex(VansGraphics::VansRenderPassNames::AtmosphereComposite) &&
+		passIndex(VansGraphics::VansRenderPassNames::AtmosphereComposite) <
+			passIndex(VansGraphics::VansRenderPassNames::RainPrecipitation),
+		"Rain precipitation pass is not enabled after atmosphere composition"))
+	{
+		return false;
+	}
+	const auto readText = [](const fs::path& path)
+	{
+		std::ifstream stream(path, std::ios::binary);
+		return std::string(std::istreambuf_iterator<char>(stream),
+			std::istreambuf_iterator<char>());
+	};
+	const std::string surfaceWeather = readText(sourceRoot /
+		"EngineAssets/Shaders/Weather/SurfaceWeather.glsl");
+	const std::string rippleCompute = readText(sourceRoot /
+		"EngineAssets/Shaders/Weather/SurfaceWeatherRipple.comp");
+	const std::string surfaceWeatherContract = readText(sourceRoot /
+		"Source/EngineCore/RenderCore/WeatherCore/VansSurfaceWeather.h");
+	const std::string terrainDeferred = readText(sourceRoot /
+		"EngineAssets/Shaders/Terrain/TerrainDeferredCommon.glsl");
+	const std::string rainSplash = readText(sourceRoot /
+		"EngineAssets/Shaders/Weather/RainSplash.vert");
+	const std::string rainSplashFragment = readText(sourceRoot /
+		"EngineAssets/Shaders/Weather/RainSplash.frag");
+	const std::string rainSplashTextureMeta = readText(sourceRoot /
+		"EngineAssets/Textures/Weather/RainSplashAtlas.png.meta");
+	const std::string rainWaterLighting = readText(sourceRoot /
+		"EngineAssets/Shaders/Weather/RainWaterLighting.glsl");
+	const std::string rainStreak = readText(sourceRoot /
+		"EngineAssets/Shaders/Weather/RainStreak.vert");
+	const std::string rainStreakFragment = readText(sourceRoot /
+		"EngineAssets/Shaders/Weather/RainStreak.frag");
+	const std::string waterPrepass = readText(sourceRoot /
+		"EngineAssets/Shaders/Water/WaterGBuffer/water_prepass.frag");
+	const std::string pbrSurface = readText(sourceRoot /
+		"EngineAssets/Shaders/UnLit/Deferred/UnLit.frag");
+	const std::string roadDecal = readText(sourceRoot /
+		"EngineAssets/Shaders/RoadDecal/RoadDecal.frag");
+	const std::string pcgRoadSource = readText(sourceRoot /
+		"Source/EngineCore/RenderCore/VansScene.PcgSplines.cpp");
+	const std::string terrainCommon = readText(sourceRoot /
+		"EngineAssets/Shaders/Terrain/TerrainCommon.glsl");
+	const std::string rainLayerGenerator = readText(sourceRoot /
+		"Tools/Weather/generate_rain_layer_data.py");
+	const std::string sceneSource = readText(sourceRoot /
+		"Source/EngineCore/RenderCore/VansScene.cpp");
+	const std::string weatherWindow = readText(sourceRoot /
+		"Source/EngineCore/EditorCore/Windows/VansWeatherWindow.cpp");
+	const std::string sceneSettingsAPI = readText(sourceRoot /
+		"Source/EngineCore/EngineAPILayer/Public/ISceneSettingsEditorAPI.h");
+	const std::string engineAPI = readText(sourceRoot /
+		"Source/EngineCore/EngineAPILayer/Private/EngineAPIImpl.cpp");
+	const std::string editorConfiguration = readText(sourceRoot /
+		"EngineAssets/Editor/EditorConfiguration.json");
+	const std::string shaderRegistrations = readText(sourceRoot /
+		"Source/EngineCore/RenderCore/VansShaderRegistrations.cpp");
+	if (!Expect(!fs::exists(sourceRoot / "EngineAssets/Shaders/Weather/RainSurface.glsl") &&
+		surfaceWeather.find("binding = 42") != std::string::npos &&
+		surfaceWeather.find("SurfaceWeatherPuddleAmount") != std::string::npos &&
+		surfaceWeather.find("float pixelDepth = 1.0 - basinDepth") != std::string::npos &&
+		surfaceWeather.find("/ 0.4") != std::string::npos &&
+		surfaceWeather.find("SurfaceWeatherApplyGround") != std::string::npos &&
+		rippleCompute.find("ComputeRipple") != std::string::npos &&
+		rippleCompute.find("vec4(0.0, 0.25, 0.5, 0.75)") != std::string::npos &&
+		rippleCompute.find("rippleNormalOutput") != std::string::npos &&
+		waterPrepass.find(
+			"SurfaceWeatherAddWaterRipple(finalNormal,inWorldXZ)") != std::string::npos &&
+		surfaceWeather.find("vec3 perturbation = vec3(rippleNormal.x, 0.0, rippleNormal.z)") != std::string::npos &&
+		surfaceWeather.find("baseNormal + perturbation * rippleActive") != std::string::npos &&
+		surfaceWeather.find("slopeMask") == std::string::npos &&
+		surfaceWeather.find("surfaceUpDot") == std::string::npos &&
+		terrainDeferred.find("SurfaceWeatherApplyGround") != std::string::npos &&
+		terrainDeferred.find("wetMaterialWeight") == std::string::npos &&
+		terrainDeferred.find("max(rainFilm, puddleAmount)") == std::string::npos &&
+		terrainCommon.find("puddleNoiseParams") == std::string::npos &&
+		terrainCommon.find("wetSurfaceParams") == std::string::npos &&
+		pbrSurface.find("SurfaceWeatherApplyGround") != std::string::npos &&
+		pbrSurface.find("drawData.passUser0") != std::string::npos &&
+		roadDecal.find("SurfaceWeatherApplyGround") != std::string::npos &&
+		roadDecal.find("cross(dpdy,dpdx)") != std::string::npos &&
+		pcgRoadSource.find("m_GroundWeatherEffects = VANS_GROUND_WEATHER_ALL") != std::string::npos &&
+		surfaceWeatherContract.find("VansSurfaceWeatherFrameData") != std::string::npos &&
+		surfaceWeatherContract.find("VANS_GROUND_WEATHER_ALL") != std::string::npos &&
+		rainStreak.find("segmentCount = 64") != std::string::npos &&
+		rainStreak.find("cameraPosition.xyz + localPosition") != std::string::npos &&
+		rainStreak.find("outPositionWS") != std::string::npos &&
+		rainStreakFragment.find("RainLayerUV") != std::string::npos &&
+		rainStreakFragment.find("-surfaceWeatherFrame.motion.w") != std::string::npos &&
+		rainStreakFragment.find("#define rainFrame") == std::string::npos &&
+		rainStreakFragment.find("vec3 fallDirectionWS") != std::string::npos &&
+		rainStreakFragment.find("windDirection.x * surfaceWeatherFrame.motion.z") != std::string::npos &&
+		rainStreakFragment.find("dot(values, mask)") != std::string::npos &&
+		rainStreakFragment.find("rainData.gba * 2.0 - 1.0") != std::string::npos &&
+		rainStreakFragment.find("RainStreakFrame") != std::string::npos &&
+		rainStreakFragment.find("cross(dFdx(inPositionWS), dFdy(inPositionWS))") == std::string::npos &&
+		rainStreakFragment.find("vec2(12.0, 4.0), -0.055, 0.2850") != std::string::npos &&
+		rainStreakFragment.find("vec2(21.0, 6.0), -0.018, 0.2500") != std::string::npos &&
+		rainStreakFragment.find("vec2(36.0, 10.0), 0.022, 0.2200") != std::string::npos &&
+		rainStreakFragment.find("vec2(60.0, 16.0), 0.050, 0.1800") != std::string::npos &&
+		fs::is_regular_file(sourceRoot /
+			"Tools/Weather/Assets/RainLayerCoverage.png") &&
+		rainLayerGenerator.find("RainLayerCoverage.png") != std::string::npos &&
+		rainLayerGenerator.find("COVERAGE_PROFILE_POWER = 2.2") != std::string::npos &&
+		rainLayerGenerator.find("Image.open(OUTPUT)") == std::string::npos &&
+		rainStreakFragment.find("dFdx(rainCoverage)") == std::string::npos &&
+		rainStreakFragment.find("RainWaterLighting.glsl") != std::string::npos &&
+		rainWaterLighting.find("RainWaterIor = 1.33") != std::string::npos &&
+		rainWaterLighting.find("SampleReflectionProbes") != std::string::npos &&
+		rainWaterLighting.find("SampleCascadeShadow") != std::string::npos &&
+		rainWaterLighting.find("SamplePointShadowMapBRDF") != std::string::npos &&
+		rainWaterLighting.find("SampleSpotShadowMapBRDF") != std::string::npos &&
+		rainStreakFragment.find("vec3(brightness)") == std::string::npos &&
+		rainSplash.find("RainSplashHasCover") != std::string::npos &&
+		rainSplash.find("outPositionWS") != std::string::npos &&
+		rainSplash.find("outTangentWS") != std::string::npos &&
+		rainSplash.find("outBillboardUpWS") != std::string::npos &&
+		rainSplash.find("viewDistance < surfaceWeatherFrame.precipitation.x") != std::string::npos &&
+		rainSplash.find("outAlpha = isActive ? 1.0 : 0.0") != std::string::npos &&
+		rainSplash.find("precipitation.x * 0.45") == std::string::npos &&
+		rainSplash.find("SampleSkyDiffuseCube") == std::string::npos &&
+		rainSplashFragment.find("rainSplashAtlasSampler") != std::string::npos &&
+		rainSplashFragment.find("frameHalfTexel") != std::string::npos &&
+		rainSplashFragment.find("inBillboardUpWS") != std::string::npos &&
+		rainSplashFragment.find("splashData.rgb * 2.0 - 1.0") != std::string::npos &&
+		rainSplashFragment.find("RainSampleReflection") != std::string::npos &&
+		rainSplashFragment.find("RainEvaluateDirectLighting") != std::string::npos &&
+		rainSplashFragment.find("* coverage, 0.0") != std::string::npos &&
+		rainSplashFragment.find("environmentLuminance") == std::string::npos &&
+		rainSplashFragment.find("inEnvironmentLighting") == std::string::npos &&
+		rainSplashFragment.find("1.0 - inUV.y") != std::string::npos &&
+		rainSplashFragment.find("floor(clamp(inAge") != std::string::npos &&
+		rainSplashFragment.find("crownSheet") == std::string::npos &&
+		rainSplashTextureMeta.find("\"needMip\": false") != std::string::npos &&
+		shaderRegistrations.find("rainStreak.enablePremultipliedAlphaBlend = true") != std::string::npos &&
+		shaderRegistrations.find("rainSplash.enableAdditiveBlend = true") != std::string::npos &&
+		shaderRegistrations.find("rainSplash.enablePremultipliedAlphaBlend = true") == std::string::npos &&
+		shaderRegistrations.find("rainStreak.colorAttachmentCount") == std::string::npos &&
+		shaderRegistrations.find("rainSplash.colorAttachmentCount") == std::string::npos &&
+		sceneSource.find("context.timing.renderDeltaSeconds") != std::string::npos &&
+		weatherWindow.find("ApplyRainWeatherSettings") != std::string::npos &&
+		weatherWindow.find("Apply to Scene Document") != std::string::npos &&
+		sceneSettingsAPI.find("GetRainWeatherSettings") != std::string::npos &&
+		engineAPI.find("\"/settings/weather/rain\"") != std::string::npos &&
+		editorConfiguration.find("\"Weather\": true") != std::string::npos,
+		"Rain shader or Editor weather-preview contract is incomplete"))
+	{
+		return false;
+	}
+	const fs::path demoScenePath = sourceRoot.parent_path().parent_path() /
+		"DemoHallProject" / "Scenes" / "DemoHall.json";
+	if (!Expect(fs::is_regular_file(demoScenePath),
+		"DemoHall rain configuration scene is unavailable"))
+	{
+		return false;
+	}
+	std::ifstream demoSceneStream(demoScenePath, std::ios::binary);
+	const nlohmann::json demoSceneJson = nlohmann::json::parse(demoSceneStream);
+	Vans::VansSceneRenderSettingsConfig demoSettings;
+	if (!Expect(Vans::VansSceneRenderSettingsConfigReader::Read(
+		Vans::DecodeSerializedValueJson(demoSceneJson.at("settings")), demoSettings, error),
+		("DemoHall rain configuration was rejected: " + error).c_str()))
+	{
+		return false;
+	}
+	if (!Expect(demoSettings.rain.enabled &&
+		std::abs(demoSettings.rain.rainRateMmPerHour - 18.0f) < 1.0e-6f &&
+		std::abs(demoSettings.rain.fullIntensityRateMmPerHour - 25.0f) < 1.0e-6f &&
+		std::abs(demoSettings.rain.wettingHalfLifeSeconds - 4.0f) < 1.0e-6f &&
+		std::abs(demoSettings.rain.dryingHalfLifeSeconds - 120.0f) < 1.0e-6f &&
+		std::abs(demoSettings.rain.puddleFillHalfLifeSeconds - 8.0f) < 1.0e-6f &&
+		std::abs(demoSettings.rain.puddleDrainHalfLifeSeconds - 360.0f) < 1.0e-6f &&
+		std::abs(demoSettings.rain.fallSpeedMetersPerSecond - 8.0f) < 1.0e-6f &&
+		std::abs(demoSettings.rain.splashLifetimeSeconds - 0.12f) < 1.0e-6f &&
+		std::abs(demoSettings.rain.splashRadiusMeters - 0.09f) < 1.0e-6f &&
+		std::abs(demoSettings.rain.rippleScaleMeters - 20.0f) < 1.0e-6f &&
+		std::abs(demoSettings.rain.rippleStrength - 1.0f) < 1.0e-6f,
+		"DemoHall rain configuration does not match the approved implementation values"))
+	{
+		return false;
+	}
+
+	const fs::path demoTerrainPath = sourceRoot.parent_path().parent_path() /
+		"DemoHallProject" / "Assets" / "Terrain" / "DemoHall.vterrain";
+	if (!Expect(fs::is_regular_file(demoTerrainPath),
+		"DemoHall terrain weather-response asset is unavailable"))
+	{
+		return false;
+	}
+	std::ifstream demoTerrainStream(demoTerrainPath, std::ios::binary);
+	const nlohmann::json demoTerrainJson = nlohmann::json::parse(demoTerrainStream);
+	Vans::VansTerrainAsset demoTerrain;
+	if (!Expect(Vans::VansTerrainAssetCodec::DecodeDefinition(
+		Vans::DecodeSerializedValueJson(demoTerrainJson), demoTerrain, error),
+		("DemoHall terrain weather-response asset was rejected: " + error).c_str()))
+	{
+		return false;
+	}
+	return Expect(
+		std::abs(demoTerrain.settings.wetSurface.albedoScale - 0.55f) < 1.0e-6f &&
+		std::abs(demoTerrain.settings.wetSurface.roughness - 0.28f) < 1.0e-6f &&
+		std::abs(demoTerrain.settings.puddle.scaleMeters - 22.0f) < 1.0e-6f &&
+		std::abs(demoTerrain.settings.puddle.detailScale - 3.4f) < 1.0e-6f &&
+		std::abs(demoTerrain.settings.puddle.threshold - 0.45f) < 1.0e-6f &&
+		std::abs(demoTerrain.settings.puddle.softness - 0.15f) < 1.0e-6f &&
+		std::abs(demoTerrain.settings.puddle.strength - 1.0f) < 1.0e-6f &&
+		std::abs(demoTerrain.settings.puddle.seed - 17.0f) < 1.0e-6f,
+		"DemoHall wet-surface and puddle settings are not independently configured");
+}
+
 bool TestTerrainAuthoringContract()
 {
 	using namespace Vans;
@@ -19033,9 +24224,14 @@ bool TestTerrainAuthoringContract()
 	terrain.settings.heightDetailEnabled = false;
 	terrain.settings.heightDetailStrength = 0.04f;
 	terrain.settings.heightDetailFadeStart = 0.65f;
-	terrain.settings.riverWetness.albedoScale = 0.63f;
-	terrain.settings.riverWetness.roughness = 0.21f;
-	terrain.settings.riverWetness.detailNormalScale = 0.74f;
+	terrain.settings.wetSurface.albedoScale = 0.63f;
+	terrain.settings.wetSurface.roughness = 0.21f;
+	terrain.settings.puddle.scaleMeters = 23.0f;
+	terrain.settings.puddle.detailScale = 3.7f;
+	terrain.settings.puddle.threshold = 0.53f;
+	terrain.settings.puddle.softness = 0.09f;
+	terrain.settings.puddle.strength = 0.87f;
+	terrain.settings.puddle.seed = 19.0f;
 	terrain.width = 9;
 	terrain.height = 7;
 	const std::size_t pixelCount = static_cast<std::size_t>(terrain.width) * terrain.height;
@@ -19062,9 +24258,14 @@ bool TestTerrainAuthoringContract()
 			decodedDefinition.settings.heightDetailEnabled == terrain.settings.heightDetailEnabled &&
 			decodedDefinition.settings.heightDetailStrength == terrain.settings.heightDetailStrength &&
 			decodedDefinition.settings.heightDetailFadeStart == terrain.settings.heightDetailFadeStart &&
-			decodedDefinition.settings.riverWetness.albedoScale == terrain.settings.riverWetness.albedoScale &&
-			decodedDefinition.settings.riverWetness.roughness == terrain.settings.riverWetness.roughness &&
-			decodedDefinition.settings.riverWetness.detailNormalScale == terrain.settings.riverWetness.detailNormalScale,
+			decodedDefinition.settings.wetSurface.albedoScale == terrain.settings.wetSurface.albedoScale &&
+			decodedDefinition.settings.wetSurface.roughness == terrain.settings.wetSurface.roughness &&
+			decodedDefinition.settings.puddle.scaleMeters == terrain.settings.puddle.scaleMeters &&
+			decodedDefinition.settings.puddle.detailScale == terrain.settings.puddle.detailScale &&
+			decodedDefinition.settings.puddle.threshold == terrain.settings.puddle.threshold &&
+			decodedDefinition.settings.puddle.softness == terrain.settings.puddle.softness &&
+			decodedDefinition.settings.puddle.strength == terrain.settings.puddle.strength &&
+			decodedDefinition.settings.puddle.seed == terrain.settings.puddle.seed,
 			"Terrain definition round trip changed required references"))
 		return false;
 	const VansSerializedValue* tessellation = FindObjectField(encodedDefinition, "tessellation");
@@ -19100,11 +24301,27 @@ bool TestTerrainAuthoringContract()
 	VansSerializedValue missingWetness = encodedDefinition;
 	missingWetness.objectFields.erase(std::remove_if(
 		missingWetness.objectFields.begin(), missingWetness.objectFields.end(),
-		[](const auto& field) { return field.first == "riverWetness"; }), missingWetness.objectFields.end());
+		[](const auto& field) { return field.first == "wetSurface"; }), missingWetness.objectFields.end());
 	if (!Expect(!VansTerrainAssetCodec::DecodeDefinition(
 		missingWetness, decodedDefinition, error) && !error.empty(),
-		"Terrain definition accepted missing river wetness settings"))
+		"Terrain definition accepted missing wet-surface settings"))
 		return false;
+	VansSerializedValue missingPuddle = encodedDefinition;
+	missingPuddle.objectFields.erase(std::remove_if(
+		missingPuddle.objectFields.begin(), missingPuddle.objectFields.end(),
+		[](const auto& field) { return field.first == "puddle"; }), missingPuddle.objectFields.end());
+	if (!Expect(!VansTerrainAssetCodec::DecodeDefinition(
+		missingPuddle, decodedDefinition, error) && !error.empty(),
+		"Terrain definition accepted missing puddle settings"))
+		return false;
+	for (const float invalidScale : { 0.0f, -1.0f, std::numeric_limits<float>::quiet_NaN() })
+	{
+		auto invalid = terrain;
+		invalid.settings.puddle.scaleMeters = invalidScale;
+		if (!Expect(!ValidateTerrainAsset(invalid, false).empty(),
+			"Terrain accepted an invalid puddle-noise scale"))
+			return false;
+	}
 	VansSerializedValue incompleteDefinition = encodedDefinition;
 	VansSerializedValue* splatmaps = FindObjectField(incompleteDefinition, "splatmaps");
 	if (!Expect(splatmaps && splatmaps->kind == VansSerializedValue::Kind::Array,
@@ -19334,7 +24551,23 @@ bool TestTerrainAuthoringContract()
 	VansSceneData dependencyScene;
 	dependencyScene.sceneGuid = VansAssetGuid::New();
 	auto dependencyJson = VansSceneSchema::SerializeSceneJson(dependencyScene);
-	dependencyJson["terrainFixture"] = terrainGuid.ToString();
+	dependencyJson["settings"]["terrain"] = {
+		{ "asset", {
+			{ "domain", "ProjectAsset" },
+			{ "guid", terrainGuid.ToString() },
+			{ "assetType", "terrain" }
+		} },
+		{ "name", "ContractTerrain" },
+		{ "collision", {
+			{ "enabled", false },
+			{ "layer", "Default" },
+			{ "material", {
+				{ "staticFriction", 0.5 },
+				{ "dynamicFriction", 0.5 },
+				{ "restitution", 0.0 }
+			} }
+		} }
+	};
 	const VansSceneAssetDependencyBuildResult dependencyResult =
 		VansSceneAssetDependencyBuilder::BuildResourcePlan(
 			database, DecodeSerializedValueJson(dependencyJson),
@@ -19658,6 +24891,7 @@ bool TestGIProbePublicationGpuContract();
 bool TestGIProbeIntegrationGpuContract();
 bool TestSkyLightingGpuContract();
 bool TestSSGIGpuContract();
+bool TestGTAOGpuContract();
 bool TestGrassLightingGpuContract();
 bool TestParticleCoreContract();
 bool TestDescriptorLayoutSharingContract();
@@ -19720,6 +24954,108 @@ bool RunCursorProjectContractTests();
 
 void RunPrefabContractTests();
 
+bool TestVehicleRoadSupport()
+{
+    using namespace VansEngine;
+    auto& layers = VansCollisionLayerManager::Get();
+    VansCollisionLayerConfig layerConfig;
+    layerConfig.ResetToDefaults();
+    layerConfig.layerCount = 2;
+    layerConfig.layerNames[1] = "Environment";
+    layerConfig.collisionMasks[0] = 3u;
+    layerConfig.collisionMasks[1] = 1u;
+    layers.ApplyConfig(layerConfig);
+
+    auto& physics = VansPhysicsSystem::GetInstance();
+    if (!physics.Initialize()) return false;
+    auto surface = std::make_shared<Vans::VansTerrainAsset>();
+    surface->settings.terrainSize = 20.0f;
+    surface->settings.maxHeight = 184.0f;
+    surface->settings.heightOffset = 41.94f;
+    surface->width = surface->height = 65;
+    surface->heights.assign(65u * 65u, 0u);
+    for (auto& splat : surface->splatPixels) splat.assign(65u * 65u * 4u, 0u);
+    TerrainPhysicsProperties terrainProperties;
+    terrainProperties.enabled = true;
+    terrainProperties.surface = surface;
+    terrainProperties.layerName = "Environment";
+    VansTerrainPhysicsNode terrain;
+    if (!terrain.Initialize(terrainProperties)) { physics.Shutdown(); return false; }
+    bool supported = false;
+    {
+        VansVehicleTuning tuning;
+        tuning.bodyMass = 1800.0f;
+        tuning.bodyMoi = physx::PxVec3(2500.0f, 2800.0f, 700.0f);
+        tuning.centerOfMassLocalPose.p = physx::PxVec3(0.0f, 0.62f, 0.0f);
+        tuning.bodyBoxHalfExtents = physx::PxVec3(0.86f, 0.53f, 1.88f);
+        tuning.bodyBoxLocalPose.p = physx::PxVec3(0.0f, 0.94f, 0.06f);
+        tuning.wheelRadius = 0.39f;
+        tuning.wheelHalfWidth = 0.13f;
+        tuning.wheelMass = 24.0f;
+        tuning.wheelMoi = 1.6f;
+        tuning.suspensionTravelDist = 0.24f;
+        tuning.suspensionAttachmentPositions = {
+            physx::PxVec3(-0.8f, -0.118494f, 1.5f),
+            physx::PxVec3(0.8f, -0.118494f, 1.5f),
+            physx::PxVec3(-0.8f, -0.11734f, -1.2f),
+            physx::PxVec3(0.8f, -0.11734f, -1.2f)};
+        tuning.suspensionStiffness = {34000.0f, 34000.0f, 30000.0f, 30000.0f};
+        tuning.suspensionDamping = {8500.0f, 8500.0f, 7600.0f, 7600.0f};
+        tuning.sprungMass = {480.0f, 480.0f, 420.0f, 420.0f};
+        tuning.collisionLayerName = "Default";
+        const float normalJounce = tuning.EstimateStaticJounce(0, 9.81f);
+        const float halfGravityJounce = tuning.EstimateStaticJounce(0, 4.905f);
+        if (std::abs(normalJounce - 2.0f * halfGravityJounce) > 0.0001f)
+        {
+            std::cerr << "VEHICLE_PREVIEW_GRAVITY_MISMATCH\n";
+            terrain.Shutdown(); physics.Shutdown(); layers.ResetToDefaults(); return false;
+        }
+        VansPhysicsVehicle vehicle;
+        vehicle.SetTuning(tuning);
+        std::string error;
+        if (!vehicle.Initialize(&physics, physx::PxTransform(physx::PxVec3(0.0f, 41.96f, 0.0f)), error))
+        {
+            std::cerr << "VEHICLE_GROUND_PROBE_INIT_FAIL " << error << '\n';
+            terrain.Shutdown(); physics.Shutdown(); layers.ResetToDefaults(); return false;
+        }
+        bool previewWheelsPlaced = true;
+        for (unsigned wheel = 0; wheel < 4; ++wheel)
+        {
+            const physx::PxVec3 center = vehicle.GetWheelWorldPose(wheel).p;
+            const physx::PxVec3 attachment = tuning.suspensionAttachmentPositions[wheel];
+            previewWheelsPlaced = previewWheelsPlaced &&
+                std::abs(center.x - attachment.x) < 0.02f &&
+                std::abs(center.z - attachment.z) < 0.02f &&
+                std::abs((center.y - tuning.wheelRadius) - 41.94f) < 0.08f;
+        }
+        if (!previewWheelsPlaced)
+        {
+            std::cerr << "VEHICLE_PREVIEW_WHEELS_MISPLACED\n";
+            terrain.Shutdown(); physics.Shutdown(); layers.ResetToDefaults(); return false;
+        }
+        physics.SetPreSimulateCallback([&vehicle](float dt) { vehicle.Step(dt); });
+        physics.StartSimulation();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2200));
+        physics.StopSimulation();
+        physics.SetPreSimulateCallback(nullptr);
+        const float bodyY = vehicle.GetTransform().p.y;
+        supported = bodyY > 41.75f;
+        std::cout << "VEHICLE_GROUND bodyY=" << bodyY;
+        for (unsigned wheel = 0; wheel < 4; ++wheel)
+        {
+            const float wheelY = vehicle.GetWheelWorldPose(wheel).p.y;
+            const bool roadHit = vehicle.HasWheelRoadHit(wheel);
+            std::cout << " wheel" << wheel << "Y=" << wheelY << " hit=" << roadHit;
+            supported = supported && roadHit && wheelY - tuning.wheelRadius >= 41.85f;
+        }
+        std::cout << '\n';
+    }
+    terrain.Shutdown();
+    physics.Shutdown();
+    layers.ResetToDefaults();
+    return supported;
+}
+
 int main(int argc, char** argv)
 {
 	std::string engineRoot;
@@ -19747,6 +25083,8 @@ int main(int argc, char** argv)
     if (argc == 2 && std::string(argv[1]) == "--particle-core")
         return TestParticleCoreContract() ? 0 : 170;
 	VANS_INIT_MAIN_THREAD();
+	if (argc == 2 && std::string(argv[1]) == "--vehicle-ground") return TestVehicleRoadSupport() ? 0 : 1;
+	if(argc==2&&std::string(argv[1])=="--physics-capsule-query")return TestPhysicsCapsuleQueryContract()?0:1;
 	if (argc == 2 && std::string(argv[1]) == "--gameplay-frame-order")
 		return TestGameplayFrameOrder() ? 0 : 3;
     if (argc == 2 && std::string(argv[1]) == "--recent-projects") return TestRecentProjectsPruningContract() ? 0 : 1;
@@ -19763,12 +25101,16 @@ int main(int argc, char** argv)
 		return RunPcgProjectContractTests(argv[2]) ? 0 : 205;
 	if (argc == 2 && std::string(argv[1]) == "--terrain-authoring")
 		return TestTerrainAuthoringContract() ? 0 : 202;
+	if (argc == 2 && std::string(argv[1]) == "--rain-weather")
+		return TestRainWeatherContract() ? 0 : 220;
     if (argc == 5 && std::string(argv[1]) == "--reflection-probe-placement-scene")
         return MeasureReflectionProbePlacement(argv[2], argv[3], argv[4]) ? 0 : 186;
     if (argc == 2 && std::string(argv[1]) == "--gi-receiver-visibility-gpu")
         return TestGIReceiverVisibilityGpuContract() ? 0 : 194;
     if (argc == 2 && std::string(argv[1]) == "--grass-lighting-gpu")
         return TestGrassLightingGpuContract() ? 0 : 199;
+    if (argc == 2 && std::string(argv[1]) == "--gtao-gpu")
+        return TestGTAOGpuContract() ? 0 : 221;
 	if (argc == 2 && std::string(argv[1]) == "--ssgi-gpu")
         return TestSSGIGpuContract() ? 0 : 199;
 	if (argc == 2 && std::string(argv[1]) == "--sky-lighting-gpu")
@@ -20033,6 +25375,14 @@ int main(int argc, char** argv)
 		return TestDemoHallWhisperAIContract() ? 0 : 145;
 	if (argc == 2 && std::string(argv[1]) == "--character-motion")
 		return TestCharacterTrajectoryGeneratorContract() ? 0 : 141;
+	if (argc == 2 && std::string(argv[1]) == "--character-acceleration")
+		return TestCharacterAccelerationContract() ? 0 : 1;
+	if (argc == 2 && std::string(argv[1]) == "--character-falling")
+		return TestCharacterFallingContract() ? 0 : 1;
+	if (argc == 2 && std::string(argv[1]) == "--character-substeps")
+		return TestCharacterSubstepsContract() ? 0 : 1;
+	if (argc == 2 && std::string(argv[1]) == "--character-motion-binding")
+		return TestPhysicsCapsuleQueryContract(true) ? 0 : 1;
 	if (argc == 2 && std::string(argv[1]) == "--motion-matching-turn-warping")
 		return (TestTurnInPlaceWarpingMathContract()
 			&& TestMotionMatchingCameraFacingTurnContract()) ? 0 : 110;
@@ -20044,6 +25394,8 @@ int main(int argc, char** argv)
 		return TestAnimationSocketAttachmentAuthoringContract() ? 0 : 154;
 	if (argc == 2 && std::string(argv[1]) == "--procedural-animation")
 		return RunProceduralAnimationContractTests() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--component-bone-transform")
+		return RunComponentBoneTransformContractTest() ? 0 : 129;
 	if (argc == 2 && std::string(argv[1]) == "--procedural-animation-integration")
 		return TestAnimationTargetPostProcessContract()
 			&& TestAnimationV2RetargetSceneContract()
@@ -20061,10 +25413,24 @@ int main(int argc, char** argv)
 		return TestProjectRetargetOwnedSkeletonAndSkinningContract() ? 0 : 131;
 	if (argc == 2 && std::string(argv[1]) == "--animation-graph-sets")
 		return TestAnimationGraphSetSwitchRuntimeContract() ? 0 : 132;
+	if (argc == 2 && std::string(argv[1]) == "--animation-marker-sync")
+		return TestAnimationMarkerSyncLayerContract() ? 0 : 133;
+	if (argc == 2 && std::string(argv[1]) == "--animation-slots")
+		return TestAnimationSlotRuntimeContract() && TestAnimationHotReloadStateTransferContract() ? 0 : 193;
 	if (argc == 2 && std::string(argv[1]) == "--animation-layer-root-frame")
 		return TestAnimationLayerRootReferenceFrameContract() ? 0 : 139;
+	if (argc == 2 && std::string(argv[1]) == "--animation-layer-pose-share")
+		return TestAnimationLayerStackRuntimeContract() ? 0 : 194;
+	if (argc == 2 && std::string(argv[1]) == "--animation-virtual-bones")
+		return TestAnimationVirtualBoneContract() ? 0 : 195;
 	if (argc == 2 && std::string(argv[1]) == "--animation-authoring-boundary")
 		return TestAnimationAuthoringBoundaryContract() ? 0 : 191;
+	if (argc == 2 && std::string(argv[1]) == "--animation-sampling")
+		return TestAnimationBakedGridContract() && TestAnimationModifyCurveContract() && TestAnimationConduitAndMeshAdditiveContract() && TestAnimationInertializationContract() && TestAnimationTransitionStackContract() && TestAnimationAlphaAndNonloopGroupContract() && TestAnimationInitializationContract() && TestAnimationSyncGroupContract() && TestAnimationBlendSpaceClockContract() && TestAnimationBlendSpaceFilterContract() && TestAnimationMultiWayBlendContract() && TestAnimationStateNotificationContract() && TestAnimationTransitionProfileContract() && TestAnimationSpeedScaleContract()
+			&& TestAnimationPayloadIntervalSamplingContract()
+			&& TestAnimationClipPayloadMetadataRoundTripContract() ? 0 : 48;
+	if (argc == 2 && std::string(argv[1]) == "--als-native-direction")
+		return TestALSNativeDirectionGraphContract() ? 0 : 192;
 	if (argc == 2 && std::string(argv[1]) == "--animation-graph-sets-integration")
 		return TestAnimatorCanonicalFormatContract()
 			&& TestAnimationProjectAnimatorAssetsCanonicalContract()
@@ -20117,6 +25483,8 @@ int main(int argc, char** argv)
 		return 127;
 	if (!TestTerrainAuthoringContract())
 		return 202;
+	if (!TestRainWeatherContract())
+		return 220;
 	if (!TestTerrainCdlodSelectionContract())
 		return 188;
 	if (!TestLuaInspectorProjectModuleSearchPathContract())
@@ -20333,7 +25701,7 @@ int main(int argc, char** argv)
 		return 46;
 	if (!TestAnimationClipPayloadMetadataRoundTripContract())
 		return 47;
-	if (!TestAnimationSpeedScaleContract())
+	if (!TestAnimationBakedGridContract() || !TestAnimationModifyCurveContract() || !TestAnimationConduitAndMeshAdditiveContract() || !TestAnimationInertializationContract() || !TestAnimationTransitionStackContract() || !TestAnimationAlphaAndNonloopGroupContract() || !TestAnimationInitializationContract() || !TestAnimationSyncGroupContract() || !TestAnimationBlendSpaceClockContract() || !TestAnimationBlendSpaceFilterContract() || !TestAnimationMultiWayBlendContract() || !TestAnimationStateNotificationContract() || !TestAnimationTransitionProfileContract() || !TestAnimationSpeedScaleContract())
 		return 48;
 	if (!TestBoneMaskCompilationAndStorageContract())
 		return 49;

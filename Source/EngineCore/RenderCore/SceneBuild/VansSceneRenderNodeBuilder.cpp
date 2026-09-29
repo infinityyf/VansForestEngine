@@ -176,64 +176,7 @@ bool VansSceneRenderNodeBuilder::BuildDeferredNode(
 	return true;
 }
 
-bool VansSceneRenderNodeBuilder::BuildScreenSpaceFeatureNodes(
-    VansScene& scene,
-    VkDevice& device,
-    std::string& error)
-{
-    VansMesh* mesh = static_cast<VansMesh*>(scene.FindMeshAsset("fullScreenQuad"));
-	if (mesh == nullptr)
-	{
-		error = "Required engine mesh 'fullScreenQuad' is missing";
-		return false;
-	}
 
-    // Each entry: { node/material name, shader name, material type }.
-    // Materials are built internally — no JSON material entries needed.
-    struct FeatureEntry { const char* name; const char* shaderName; VansMaterialType matType; };
-    static const FeatureEntry features[] =
-    {
-        { "SSAO", "SSAO", VansMaterialType::VAN_SCREEN_SPACE_AO },
-    };
-	for (const auto& feature : features)
-	{
-		if (!scene.FindShaderAsset(feature.shaderName))
-		{
-			error = "Required screen-space shader '" + std::string(feature.shaderName) +
-				"' is missing";
-			return false;
-		}
-	}
-
-    for (const auto& feature : features)
-    {
-        VansMaterial* material = VansSceneMaterialBuilder::CreateMaterialForType(feature.matType);
-        material->m_MaterialType = feature.matType;
-        VansSceneMaterialBuilder::PopulateMaterialPassShaders(scene, material, feature.matType);
-		if (!material->HasPass(VansPass::SCREEN_SPACE))
-		{
-			delete material;
-			error = "Screen-space material '" + std::string(feature.name) +
-				"' has no SCREEN_SPACE shader binding";
-			return false;
-		}
-        material->SetName(feature.name);
-        scene.AddMaterialAsset(material);
-
-        RenderNodeType type = RenderNodeType::SCREEN_SPACE_NODE;
-        VansRenderNode* renderNode = new VansScreenSpaceRenderNode(device, type);
-
-        renderNode->m_Mesh = mesh;
-        renderNode->m_Material = material;
-
-        //renderNode->CreateDescriptorSets(m_Camera, m_LightManager,m_MaterialManager);
-
-        renderNode->SetName(feature.name);
-
-        scene.RegistRenderNode(renderNode, type);
-    }
-	return true;
-}
 
 VansRenderNodeBuildResult VansSceneRenderNodeBuilder::BuildRenderNode(
 	VansScene& scene,

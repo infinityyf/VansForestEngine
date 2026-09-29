@@ -18,6 +18,7 @@ namespace VansGraphics
 	{
 		None,
 		ProjectionFailed,
+        MaterialBuildFailed,
 		ObjectBuildFailed,
 		ConfiguredRenderNodeBuildFailed,
 		ProjectCameraSettingsFailed,
@@ -26,7 +27,6 @@ namespace VansGraphics
 		VegetationBuildFailed,
 		WaterBuildFailed,
 		DeferredNodeBuildFailed,
-		ScreenSpaceNodeBuildFailed
 	};
 
 	struct VansSceneContentBuildResult

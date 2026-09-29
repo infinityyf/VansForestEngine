@@ -122,7 +122,12 @@ namespace VansGraphics
 		for (int materialIndex = 0; materialIndex < materialCount; ++materialIndex)
 		{
 			auto material = static_cast<VansMaterial*>(allmaterials[materialIndex]);
-			if (material->m_MaterialType == VansMaterialType::VAN_PBR)
+            if (material->m_MaterialType == VansMaterialType::VAN_HAIR)
+            {
+                material->m_MaterialIndex = static_cast<int>(materialManager->m_GlobalHairParamData.size());
+                materialManager->m_GlobalHairParamData.push_back(static_cast<VansHairMaterial*>(material)->BuildGPUParams());
+            }
+            else if (material->m_MaterialType == VansMaterialType::VAN_PBR)
 			{
 				VansPBRMaterial* pbr = static_cast<VansPBRMaterial*>(material);
 				int index = pbrMaterialIndex++;
@@ -341,6 +346,13 @@ namespace VansGraphics
 			VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        const VkDeviceSize hairDataSize = sizeof(VansHairParamsGPU) * materialManager->m_GlobalHairParamData.size();
+        materialManager->m_GlobalHairDataBuffer.CreatVulkanBuffer(m_VansVKLogicDevice,
+            std::max<VkDeviceSize>(hairDataSize, sizeof(VansHairParamsGPU)), VK_FORMAT_R32_SFLOAT,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        if (hairDataSize > 0)
+            materialManager->m_GlobalHairDataBuffer.SetBufferData(materialManager->m_GlobalHairParamData.data(), 0, hairDataSize);
+        materialManager->m_GlobalHairDataBuffer.PersistentMap();
 		materialManager->m_GlobalClothDataBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
 			std::max<VkDeviceSize>(clothMaterialDataSize, sizeof(VansClothGPUParam)),
@@ -660,15 +672,7 @@ namespace VansGraphics
 
 	}
 
-	void VansVKDevice::PrepareSSAORenderData()
-	{
-		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		VansTexture* ssaoResult = new VansTexture();
-		ssaoResult->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
-		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSAO_RESULT, ssaoResult);
-	}
+
 
 	void VansVKDevice::PrepareSSGIRenderData()
 	{
@@ -994,41 +998,12 @@ namespace VansGraphics
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_TemporalAA(manager->m_SSRAASetLayout, manager->m_SSRAADescriptorSets);
 	}
 
-	void VansVKDevice::PrepareBilaterFilterData()
-	{
-		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		VansTexture* ssaoFilterResult = new VansTexture();
-		ssaoFilterResult->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
-		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSAO_FILTER_RESULT, ssaoFilterResult);
 
-		VansDescriptorSetLayoutFactory::CreateAndAllocate_BilateralFilter(manager->m_BilateralFilterSetLayout, manager->m_BilateralFilterDescriptorSets, 1);
-
-		// Wider spatial filter to smooth residual noise after temporal accumulation.
-		// radius=5 (11×11 kernel) with sigmaSpace=4.0 provides better coverage for
-		// 1-SPP GI; depth parameters unchanged to preserve geometric edges.
-		manager->m_BilateralFilterPushConstant =
-		{
-			4.0f,
-			0.02f,
-			5,
-			0.01f,
-			0
-		};
-
-		const std::string& projectRoot =
-			Vans::VansProjectManager::Get().GetPathResolver().GetEngineRoot();
-		manager->m_BilateralFilterShader = VansGraphics::VansShaderManager::Get().FindComputeShader("BilateralFilter");
-		manager->m_BilateralFilterShader->SetPushConstant(sizeof(manager->m_BilateralFilterPushConstant));
-		manager->m_BilateralFilterShader->SetPushConstantData(&(manager->m_BilateralFilterPushConstant));
-	}
 
 	void VansVKDevice::PrepareResolutionDependentRenderingData()
 	{
-		PrepareSSAORenderData();
+		PrepareGTAORenderData();
 		PrepareSSGIRenderData();
-		PrepareBilaterFilterData();
 		PrepareHZBRenderData();
 		PrepareScreenSpaceShadowRenderData();
 		PrepareSSRRenderData();
@@ -1049,16 +1024,16 @@ namespace VansGraphics
 		nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
 		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
 
-		VansTexture* ssaoResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSAO_RESULT);
+		VansTexture* gtaoRaw = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_GTAO_RAW);
 		VansTexture* ssgiResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT);
 		VansTexture* ssrResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSR_RESULT);
 		VansTexture* ssrHitInfo = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSR_HIT_INFO);
 		VansTexture* ssrRayPdf = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSR_RAY_PDF);
 
-		if (ssaoResult)
+		if (gtaoRaw)
 		{
-			nameInfo.objectHandle = reinterpret_cast<uint64_t>(ssaoResult->GetImage().GetImage());
-			nameInfo.pObjectName = "SSAOResult";
+			nameInfo.objectHandle = reinterpret_cast<uint64_t>(gtaoRaw->GetImage().GetImage());
+			nameInfo.pObjectName = "GTAORaw";
 			VansGraphics::vkSetDebugUtilsObjectNameEXT(m_VansVKLogicDevice, &nameInfo);
 		}
 
@@ -1305,6 +1280,7 @@ namespace VansGraphics
 		if (!rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene, sceneGISettings))
 			throw std::runtime_error(rayTracingContext.GetResourceError());
 		PrepareAmbientSkyCacheRenderData();
+		SetupHairLightingDescriptors(VansRenderPassManager::GetInstance());
 		// 首次场景准备早于第一份渲染快照。这里必须使用刚完成构建的场景
 		// 设置；读取 m_CurrentRenderSceneSnapshot 会拿到启动默认值，并且只会
 		// 在 Play/Stop 重载后偶然恢复正确。

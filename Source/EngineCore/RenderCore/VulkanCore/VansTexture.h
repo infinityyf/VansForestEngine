@@ -51,6 +51,7 @@ namespace VansGraphics
 			int importChannel = 4;
 			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 			bool retainRgba8Pixels = false;
+			std::uint32_t maxResidentDimension = 0;
 		};
 
 		~VansTexture();
@@ -76,13 +77,13 @@ namespace VansGraphics
 			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
 		
 		// 返回实际上传像素的内容指纹；加载失败抛出异常。
-		std::uint64_t LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
+		std::uint64_t LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true, std::uint32_t maxResidentDimension = 0);
 
 		//直接创建一个GPU上的texture
 		// Runtime render/storage resources must declare their exact Vulkan format.
 		// TexturePrecision remains an import policy only and must never be used as
 		// a proxy for a shader storage-image format.
-		bool InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, bool isCube, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
+		bool InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, bool isCube, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, uint32_t mipLevelLimit = 0);
 
 		// 从按 Z 轴编号导出的 PNG 切片组装 3D 纹理。
 		// slicePathFormat 需要包含一个整数格式占位符，例如 "Slice_Z_%03d.png"。

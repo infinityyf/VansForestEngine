@@ -60,43 +60,59 @@ namespace VansGraphics
 		                          const VansAnimationFrameVector<VansBoneTransform>& reference,
 		                          float weight)
 		{
-			VansAnimationFrameVector<glm::mat4> baseModel(result.size(), glm::mat4(1.0f));
-			VansAnimationFrameVector<glm::mat4> layerModel(result.size(), glm::mat4(1.0f));
-			VansAnimationFrameVector<glm::mat4> referenceModel(result.size(), glm::mat4(1.0f));
-			VansAnimationFrameVector<glm::mat4> finalModel(result.size(), glm::mat4(1.0f));
-			std::string topologyError;
-			if (!VansPoseMath::BuildModelTransforms(result, skeleton, baseModel, &topologyError)
-				|| !VansPoseMath::BuildModelTransforms(layer.localPose, skeleton, layerModel, &topologyError)
-				|| !VansPoseMath::BuildModelTransforms(reference, skeleton, referenceModel, &topologyError))
-			{
-				VANS_LOG_WARN("[AnimationLayer] Mesh-space mix rejected: " << topologyError);
+			// UE's mesh-space-rotation flag changes only the rotation blend. Translation
+			// and scale remain local; blending complete component-space matrices moves
+			// children when their parents rotate and also introduces scale/shear drift.
+			VansAnimationFrameVector<glm::quat> baseRotation(result.size());
+			VansAnimationFrameVector<glm::quat> layerRotation(result.size());
+			VansAnimationFrameVector<glm::quat> referenceRotation(result.size());
+			VansAnimationFrameVector<glm::quat> blendedRotation(result.size());
+			if (!skeleton.ValidateTopology())
 				return;
-			}
-			finalModel = baseModel;
-			for (std::size_t index = 0; index < result.size(); ++index)
+			for (int boneIndex : skeleton.topologicalOrder)
 			{
+				const std::size_t index = static_cast<std::size_t>(boneIndex);
+				const int parent = skeleton.bones[index].parentIndex;
+				const glm::quat parentBase = parent < 0 ? glm::quat(1, 0, 0, 0) : baseRotation[parent];
+				const glm::quat parentLayer = parent < 0 ? glm::quat(1, 0, 0, 0) : layerRotation[parent];
+				const glm::quat parentReference = parent < 0 ? glm::quat(1, 0, 0, 0) : referenceRotation[parent];
+				baseRotation[index] = glm::normalize(parentBase * result[index].rotation);
+				layerRotation[index] = glm::normalize(parentLayer * layer.localPose[index].rotation);
+				referenceRotation[index] = glm::normalize(parentReference * reference[index].rotation);
+			}
+			for (int boneIndex : skeleton.topologicalOrder)
+			{
+				const std::size_t index = static_cast<std::size_t>(boneIndex);
+				const int parent = skeleton.bones[index].parentIndex;
 				const float boneWeight = std::clamp(weight * mask.weights[index], 0.0f, 1.0f);
-				if (definition.blendMode == VansLayerBlendMode::Override)
-					finalModel[index] = VansPoseMath::BlendTransforms(
-						baseModel[index], layerModel[index], boneWeight);
-				else
-					finalModel[index] = VansPoseMath::ApplyMeshSpaceAdditiveTransform(
-						baseModel[index], layerModel[index], referenceModel[index], boneWeight);
-			}
-			VansAnimationFrameVector<glm::mat4> finalLocal;
-			if (!VansPoseMath::BuildLocalTransforms(
-				finalModel, skeleton, finalLocal, &topologyError))
-			{
-				VANS_LOG_WARN("[AnimationLayer] Mesh-space result rejected: " << topologyError);
-				return;
-			}
-			for (std::size_t index = 0; index < result.size(); ++index)
-			{
-				const float boneWeight = std::clamp(weight * mask.weights[index], 0.0f, 1.0f);
-				if (!VansPoseMath::TryDecompose(finalLocal[index], result[index]))
-					result[index] = definition.blendMode == VansLayerBlendMode::Override
-						? VansPoseMath::BlendTransforms(result[index], layer.localPose[index], boneWeight)
-						: result[index];
+				VansBoneTransform mixed = result[index];
+				glm::quat meshRotation = baseRotation[index];
+				if (boneWeight > kLayerEpsilon)
+				{
+					if (definition.blendMode == VansLayerBlendMode::Override)
+					{
+						mixed.translation = glm::mix(mixed.translation, layer.localPose[index].translation, boneWeight);
+						mixed.scale = glm::mix(mixed.scale, layer.localPose[index].scale, boneWeight);
+						glm::quat target = layerRotation[index];
+						if (glm::dot(meshRotation, target) < 0.0f) target = -target;
+						meshRotation = glm::normalize(meshRotation * (1.0f - boneWeight)
+							+ target * boneWeight);
+					}
+					else
+					{
+						mixed = ApplyRelativeAdditive(mixed, layer.localPose[index], reference[index], boneWeight);
+						glm::quat delta = glm::normalize(layerRotation[index] * glm::inverse(referenceRotation[index]));
+						if (delta.w < 0.0f) delta = -delta;
+						meshRotation = glm::normalize((glm::quat(1, 0, 0, 0) * (1.0f - boneWeight)
+							+ delta * boneWeight)
+							* baseRotation[index]);
+					}
+				}
+				blendedRotation[index] = meshRotation;
+				mixed.rotation = glm::normalize(
+					(parent < 0 ? glm::quat(1, 0, 0, 0) : glm::inverse(blendedRotation[parent]))
+					* meshRotation);
+				result[index] = mixed;
 			}
 		}
 
@@ -246,35 +262,43 @@ namespace VansGraphics
 		const float clampedWeight = std::clamp(weight, 0.0f, 1.0f);
 		if (rotationSpace == VansRotationBlendSpace::Mesh)
 		{
-			VansAnimationFrameVector<glm::mat4> baseModel(base.localPose.size(), glm::mat4(1.0f));
-			VansAnimationFrameVector<glm::mat4> layerModel(layer.localPose.size(), glm::mat4(1.0f));
-			VansAnimationFrameVector<glm::mat4> referenceModel(baseReference.size(), glm::mat4(1.0f));
-			VansAnimationFrameVector<glm::mat4> resultModel(layer.localPose.size(), glm::mat4(1.0f));
-			std::string topologyError;
-			if (!VansPoseMath::BuildModelTransforms(base.localPose, skeleton, baseModel, &topologyError)
-				|| !VansPoseMath::BuildModelTransforms(layer.localPose, skeleton, layerModel, &topologyError)
-				|| !VansPoseMath::BuildModelTransforms(baseReference, skeleton, referenceModel, &topologyError))
-			{
-				VANS_LOG_WARN("[AnimationLayer] Dynamic additive rejected: " << topologyError);
+			if (!skeleton.ValidateTopology())
 				return result;
-			}
-			resultModel = layerModel;
-			for (size_t index = 0; index < layer.localPose.size(); ++index)
+			VansAnimationFrameVector<glm::quat> baseRotation(layer.localPose.size());
+			VansAnimationFrameVector<glm::quat> layerRotation(layer.localPose.size());
+			VansAnimationFrameVector<glm::quat> referenceRotation(layer.localPose.size());
+			VansAnimationFrameVector<glm::quat> blendedRotation(layer.localPose.size());
+			for (int boneIndex : skeleton.topologicalOrder)
 			{
+				const std::size_t index = static_cast<std::size_t>(boneIndex);
+				const int parent = skeleton.bones[index].parentIndex;
+				baseRotation[index] = glm::normalize((parent < 0 ? glm::quat(1, 0, 0, 0)
+					: baseRotation[parent]) * base.localPose[index].rotation);
+				layerRotation[index] = glm::normalize((parent < 0 ? glm::quat(1, 0, 0, 0)
+					: layerRotation[parent]) * layer.localPose[index].rotation);
+				referenceRotation[index] = glm::normalize((parent < 0 ? glm::quat(1, 0, 0, 0)
+					: referenceRotation[parent]) * baseReference[index].rotation);
+			}
+			for (int boneIndex : skeleton.topologicalOrder)
+			{
+				const std::size_t index = static_cast<std::size_t>(boneIndex);
+				const int parent = skeleton.bones[index].parentIndex;
 				const float boneWeight = std::clamp(mask.weights[index] * clampedWeight, 0.0f, 1.0f);
-				if (boneWeight <= kLayerEpsilon) continue;
-				resultModel[index] = VansPoseMath::ApplyMeshSpaceAdditiveTransform(
-					layerModel[index], baseModel[index], referenceModel[index], boneWeight);
+				glm::quat meshRotation = layerRotation[index];
+				if (boneWeight > kLayerEpsilon)
+				{
+					result.localPose[index] = ApplyRelativeAdditive(
+						layer.localPose[index], base.localPose[index], baseReference[index], boneWeight);
+					glm::quat delta = glm::normalize(baseRotation[index] * glm::inverse(referenceRotation[index]));
+					if (delta.w < 0.0f) delta = -delta;
+					meshRotation = glm::normalize((glm::quat(1, 0, 0, 0) * (1.0f - boneWeight)
+						+ delta * boneWeight) * layerRotation[index]);
+				}
+				blendedRotation[index] = meshRotation;
+				result.localPose[index].rotation = glm::normalize(
+					(parent < 0 ? glm::quat(1, 0, 0, 0) : glm::inverse(blendedRotation[parent]))
+					* meshRotation);
 			}
-			VansAnimationFrameVector<glm::mat4> resultLocal;
-			if (!VansPoseMath::BuildLocalTransforms(
-				resultModel, skeleton, resultLocal, &topologyError))
-			{
-				VANS_LOG_WARN("[AnimationLayer] Dynamic additive result rejected: " << topologyError);
-				return result;
-			}
-			for (std::size_t index = 0; index < result.localPose.size(); ++index)
-				VansPoseMath::TryDecompose(resultLocal[index], result.localPose[index]);
 			return result;
 		}
 		for (std::size_t index = 0; index < layer.localPose.size(); ++index)

@@ -14,6 +14,17 @@ namespace
 	{
 		return std::isfinite(value) && value >= 0.0f;
 	}
+
+	float BlendAlpha(float alpha, VansSlotBlendOption option)
+	{
+		alpha = std::clamp(alpha, 0.0f, 1.0f);
+		// UE FAlphaBlend::AlphaToBlendOption: zero-tangent CubicInterp and
+		// SmoothStep (HermiteCubic) both reduce to 3t^2 - 2t^3.
+		if (option == VansSlotBlendOption::Cubic
+			|| option == VansSlotBlendOption::HermiteCubic)
+			return alpha * alpha * (3.0f - 2.0f * alpha);
+		return alpha;
+	}
 }
 
 bool VansAnimationSlotRuntime::Configure(
@@ -58,7 +69,7 @@ VansSlotPlaybackHandle VansAnimationSlotRuntime::Play(
 	auto definitionIt = m_DefinitionById.find(slotId);
 	if (definitionIt == m_DefinitionById.end() || request.clipName.empty()
 		|| !std::isfinite(request.playRate) || request.playRate == 0.0f
-		|| !IsFiniteNonNegative(request.startTime) || request.loopCount <= 0
+		|| !IsFiniteNonNegative(request.startTime) || !std::isfinite(request.blendOutTriggerTime) || request.loopCount <= 0
 		|| !std::isfinite(request.weight) || request.weight < 0.0f
 		|| (request.blendIn && !IsFiniteNonNegative(*request.blendIn))
 		|| (request.blendOut && !IsFiniteNonNegative(*request.blendOut)))
@@ -67,19 +78,6 @@ VansSlotPlaybackHandle VansAnimationSlotRuntime::Play(
 	const std::size_t slotIndex = definitionIt->second;
 	const VansAnimationSlotDefinition& definition = m_Definitions[slotIndex];
 	SlotState& state = m_States[slotIndex];
-	if (!definition.group.empty())
-	{
-		for (std::size_t otherIndex = 0; otherIndex < m_Definitions.size(); ++otherIndex)
-		{
-			if (otherIndex == slotIndex || m_Definitions[otherIndex].group != definition.group)
-				continue;
-			SlotState& other = m_States[otherIndex];
-			if (other.active)
-				BeginBlendOut(otherIndex, VansSlotLifecycleEventType::Interrupted,
-					other.active->blendOut);
-			other.queue.clear();
-		}
-	}
 	RequestRuntime runtime;
 	runtime.handle.value = m_NextHandle++;
 	runtime.request = request;
@@ -111,7 +109,6 @@ VansSlotPlaybackHandle VansAnimationSlotRuntime::Play(
 	if (replace && definition.interruptible)
 	{
 		m_Statuses[runtime.handle.value] = status;
-		BeginBlendOut(slotIndex, VansSlotLifecycleEventType::Interrupted, state.active->blendOut);
 		StartRequest(slotIndex, std::move(runtime));
 		return state.active->handle;
 	}
@@ -150,11 +147,26 @@ bool VansAnimationSlotRuntime::Drive(
 	for (SlotState& state : m_States)
 	{
 		if (state.active && state.active->handle == handle) { drive(*state.active); return true; }
-		if (state.outgoing && state.outgoing->handle == handle) { drive(*state.outgoing); return true; }
+		for (auto& outgoing : state.outgoing)
+			if (outgoing.handle == handle) { drive(outgoing); return true; }
 		for (RequestRuntime& queued : state.queue)
 			if (queued.handle == handle) { drive(queued); return true; }
 	}
 	return false;
+}
+
+bool VansAnimationSlotRuntime::StopSlot(const std::string& slotId, float blendOut, bool force)
+{
+	auto found = m_DefinitionById.find(slotId);
+	if (found == m_DefinitionById.end()) return false;
+	const auto& state = m_States[found->second];
+	std::vector<VansSlotPlaybackHandle> handles;
+	if (state.active) handles.push_back(state.active->handle);
+	for (const auto& request : state.outgoing) handles.push_back(request.handle);
+	for (const auto& request : state.queue) handles.push_back(request.handle);
+	bool stopped = false;
+	for (auto handle : handles) stopped = Stop(handle, blendOut, force) || stopped;
+	return stopped;
 }
 
 bool VansAnimationSlotRuntime::Stop(VansSlotPlaybackHandle handle, float blendOut, bool force)
@@ -169,6 +181,13 @@ bool VansAnimationSlotRuntime::Stop(VansSlotPlaybackHandle handle, float blendOu
 			if (!force && !m_Definitions[slotIndex].interruptible)
 				return false;
 			BeginBlendOut(slotIndex, VansSlotLifecycleEventType::Interrupted, blendOut);
+			return true;
+		}
+		for (auto& outgoing : state.outgoing)
+		{
+			if (!(outgoing.handle == handle)) continue;
+			if (!force && !m_Definitions[slotIndex].interruptible) return false;
+			RetargetBlendOut(slotIndex, outgoing, blendOut);
 			return true;
 		}
 		for (auto it = state.queue.begin(); it != state.queue.end(); ++it)
@@ -196,7 +215,7 @@ bool VansAnimationSlotRuntime::IsSlotActive(const std::string& slotId) const
 {
 	auto found = m_DefinitionById.find(slotId);
 	return found != m_DefinitionById.end()
-		&& (m_States[found->second].active.has_value() || m_States[found->second].outgoing.has_value());
+		&& (m_States[found->second].active.has_value() || !m_States[found->second].outgoing.empty());
 }
 
 void VansAnimationSlotRuntime::Reset()
@@ -250,17 +269,24 @@ void VansAnimationSlotRuntime::TransferRuntimeStateFrom(
 		if (currentDefinition == m_DefinitionById.end())
 		{
 			if (previousState.active) interruptByReload(previousDefinition, *previousState.active);
-			if (previousState.outgoing) interruptByReload(previousDefinition, *previousState.outgoing);
+			for (const auto& outgoing : previousState.outgoing) interruptByReload(previousDefinition, outgoing);
 			for (const RequestRuntime& request : previousState.queue)
 				interruptByReload(previousDefinition, request);
 			continue;
 		}
 
 		SlotState& destination = m_States[currentDefinition->second];
+		destination.active.reset();
+		destination.queue.clear();
+		destination.outgoing.clear();
 		if (previousState.active)
 			transferRequest(previousDefinition, *previousState.active, destination.active);
-		if (previousState.outgoing)
-			transferRequest(previousDefinition, *previousState.outgoing, destination.outgoing);
+		for (const auto& outgoing : previousState.outgoing)
+		{
+			std::optional<RequestRuntime> transferred;
+			transferRequest(previousDefinition, outgoing, transferred);
+			if (transferred) destination.outgoing.push_back(std::move(*transferred));
+		}
 		for (const RequestRuntime& request : previousState.queue)
 		{
 			if (clips.find(request.request.clipName) == clips.end())
@@ -278,6 +304,28 @@ void VansAnimationSlotRuntime::TransferRuntimeStateFrom(
 
 void VansAnimationSlotRuntime::StartRequest(std::size_t slotIndex, RequestRuntime request)
 {
+	// 接受并实际启动后才替换同组实例；排队或被拒绝的请求不打断其他 Slot。
+	const auto& definition = m_Definitions[slotIndex];
+	for (std::size_t index = 0; index < m_States.size(); ++index)
+	{
+		if (index != slotIndex && (definition.group.empty()
+			|| definition.group != m_Definitions[index].group)) continue;
+		auto& other = m_States[index];
+		for (auto& outgoing : other.outgoing)
+			RetargetBlendOut(index, outgoing, request.blendIn, request.request.blendInOption);
+		if (other.active)
+			BeginBlendOut(index, VansSlotLifecycleEventType::Interrupted, request.blendIn,
+				request.request.blendInOption);
+		if (index != slotIndex)
+		{
+			for (const auto& queued : other.queue)
+			{
+				m_Statuses[queued.handle.value].state = VansSlotPlaybackState::Interrupted;
+				PublishLifecycle(index, queued, VansSlotLifecycleEventType::Interrupted);
+			}
+			other.queue.clear();
+		}
+	}
 	SlotState& state = m_States[slotIndex];
 	state.active = std::move(request);
 	VansSlotPlaybackStatus& status = m_Statuses[state.active->handle.value];
@@ -289,21 +337,47 @@ void VansAnimationSlotRuntime::StartRequest(std::size_t slotIndex, RequestRuntim
 void VansAnimationSlotRuntime::BeginBlendOut(
 	std::size_t slotIndex,
 	VansSlotLifecycleEventType reason,
-	float duration)
+	float duration,
+	std::optional<VansSlotBlendOption> option)
 {
 	SlotState& state = m_States[slotIndex];
 	if (!state.active)
 		return;
-	state.outgoing = std::move(state.active);
+	state.outgoing.push_back(std::move(*state.active));
+	auto& outgoing = state.outgoing.back();
 	state.active.reset();
-	state.outgoing->fadeElapsed = 0.0f;
-	state.outgoing->fadeDuration = duration;
-	state.outgoing->fadeStartWeight = state.outgoing->weight;
-	state.outgoing->stopped = true;
-	m_Statuses[state.outgoing->handle.value].state = VansSlotPlaybackState::BlendingOut;
-	PublishLifecycle(slotIndex, *state.outgoing, VansSlotLifecycleEventType::BlendingOut);
+	outgoing.fadeElapsed = 0.0f;
+	outgoing.fadeDuration = duration;
+	outgoing.fadeStartWeight = outgoing.weight;
+	outgoing.fadeOption = option.value_or(outgoing.request.blendOutOption);
+	outgoing.interrupted = reason == VansSlotLifecycleEventType::Interrupted;
+	if (duration <= 0.0f) outgoing.weight = 0.0f;
+	m_Statuses[outgoing.handle.value].state = VansSlotPlaybackState::BlendingOut;
+	m_Statuses[outgoing.handle.value].weight = outgoing.weight;
+	PublishLifecycle(slotIndex, outgoing, VansSlotLifecycleEventType::BlendingOut);
 	if (reason == VansSlotLifecycleEventType::Interrupted)
-		PublishLifecycle(slotIndex, *state.outgoing, VansSlotLifecycleEventType::Interrupted);
+		PublishLifecycle(slotIndex, outgoing, VansSlotLifecycleEventType::Interrupted);
+}
+
+void VansAnimationSlotRuntime::RetargetBlendOut(
+	std::size_t slotIndex, RequestRuntime& request, float duration,
+	std::optional<VansSlotBlendOption> option)
+{
+	if (!request.interrupted)
+	{
+		request.interrupted = true;
+		PublishLifecycle(slotIndex, request, VansSlotLifecycleEventType::Interrupted);
+	}
+	// 已停止实例只允许缩短其原淡出时长，从当前权重重新开始，不能延长。
+	if (duration < request.fadeDuration)
+	{
+		request.fadeElapsed = 0.0f;
+		request.fadeStartWeight = request.weight;
+		request.fadeDuration = duration;
+		request.fadeOption = option.value_or(request.request.blendOutOption);
+		if (duration <= 0.0f) request.weight = 0.0f;
+		m_Statuses[request.handle.value].weight = request.weight;
+	}
 }
 
 void VansAnimationSlotRuntime::PublishLifecycle(
@@ -350,12 +424,12 @@ void VansAnimationSlotRuntime::Update(
 	float deltaTime,
 	const std::unordered_map<std::string, VansAnimationClip>& clips,
 	const Skeleton& skeleton,
-	std::unordered_map<std::string, VansPosePayload>& outSlotPayloads)
+	std::unordered_map<std::string, VansSlotPoseInputs>& outSlotPayloads)
 {
 	m_LifecycleEvents = std::move(m_PendingLifecycleEvents);
 	m_PendingLifecycleEvents.clear();
 	for (auto& [slotId, payload] : outSlotPayloads)
-		payload = {};
+		payload.poses.clear();
 	deltaTime = std::max(0.0f, deltaTime);
 	const auto playbackDuration = [](const VansAnimationClip& clip,
 		const RequestRuntime& runtime)
@@ -375,104 +449,106 @@ void VansAnimationSlotRuntime::Update(
 	for (std::size_t slotIndex = 0; slotIndex < m_States.size(); ++slotIndex)
 	{
 		SlotState& state = m_States[slotIndex];
-		if (!state.active && !state.queue.empty())
+		if (!state.active && state.outgoing.empty() && !state.queue.empty())
 		{
 			RequestRuntime next = std::move(state.queue.front());
 			state.queue.pop_front();
 			StartRequest(slotIndex, std::move(next));
 		}
 
-		auto advance = [&](RequestRuntime& runtime, bool outgoing)
+		// UE 顺序：先按帧秒数更新权重，再推进片段时间并触发自动淡出。
+		// 本帧推进过程中触发的淡出从下一次权重更新开始，不能追回本帧 DeltaTime。
+		auto advancePosition = [&](RequestRuntime& runtime, const VansAnimationClip& clip)
 		{
-			if (!runtime.request.externallyDriven)
+			if (runtime.request.externallyDriven) return;
+			runtime.previousTime = runtime.currentTime;
+			if (runtime.reachedEnd) return;
+			const bool forward = runtime.request.playRate > 0.0f;
+			const float start = std::clamp(runtime.request.startTime, 0.0f, clip.duration);
+			const float end = start + (forward ? 1.0f : -1.0f) * playbackDuration(clip, runtime);
+			runtime.currentTime += deltaTime * runtime.request.playRate;
+			if ((forward && runtime.currentTime >= end) || (!forward && runtime.currentTime <= end))
 			{
-				runtime.previousTime = runtime.currentTime;
-				runtime.currentTime += deltaTime * runtime.request.playRate;
+				runtime.reachedEnd = true;
+				// UE 最后一段前向停在 End - KINDA_SMALL_NUMBER/2，避免跨过末端通知。
+				runtime.currentTime = forward ? std::max(start, end - 0.00005f) : end;
 			}
-			if (outgoing)
-			{
-				runtime.fadeElapsed += deltaTime;
-				runtime.weight = runtime.fadeDuration <= 0.0f ? 0.0f
-					: runtime.fadeStartWeight * std::max(0.0f, 1.0f - runtime.fadeElapsed / runtime.fadeDuration);
-				return;
-			}
-			if (runtime.request.externallyDriven)
-			{
-				runtime.weight = runtime.request.weight;
-				return;
-			}
-			const auto clip = clips.find(runtime.request.clipName);
-			const float totalDuration = clip == clips.end() ? 0.0f
-				: playbackDuration(clip->second, runtime);
-			const float elapsed = std::abs(runtime.currentTime - runtime.request.startTime);
-			const float fadeInWeight = runtime.blendIn <= 0.0f ? 1.0f : std::min(1.0f, elapsed / runtime.blendIn);
-			const float remaining = std::max(0.0f, totalDuration - elapsed);
-			const float fadeOutWeight = runtime.blendOut <= 0.0f ? 1.0f : std::min(1.0f, remaining / runtime.blendOut);
-			runtime.weight = std::min(fadeInWeight, fadeOutWeight);
 		};
-
-		if (state.outgoing)
+		auto retireOutgoing = [&]()
 		{
-			advance(*state.outgoing, true);
-			VansSlotPlaybackStatus& status = m_Statuses[state.outgoing->handle.value];
-			status.playbackTime = state.outgoing->currentTime;
-			status.weight = state.outgoing->weight;
-			if (state.outgoing->weight <= 0.0f)
+			for (auto it = state.outgoing.begin(); it != state.outgoing.end();)
 			{
-				status.state = VansSlotPlaybackState::Interrupted;
-				state.outgoing.reset();
+				auto& status = m_Statuses[it->handle.value];
+				status.playbackTime = it->currentTime;
+				status.weight = it->weight;
+				if (it->weight > 0.0f) { ++it; continue; }
+				status.state = it->interrupted ? VansSlotPlaybackState::Interrupted : VansSlotPlaybackState::Completed;
+				if (!it->interrupted) PublishLifecycle(slotIndex, *it, VansSlotLifecycleEventType::Completed);
+				it = state.outgoing.erase(it);
 			}
+		};
+		for (auto& outgoing : state.outgoing)
+		{
+			outgoing.fadeElapsed += deltaTime;
+			outgoing.weight = outgoing.fadeDuration <= 0.0f ? 0.0f
+				: outgoing.fadeStartWeight * (1.0f - BlendAlpha(
+					outgoing.fadeElapsed / outgoing.fadeDuration, outgoing.fadeOption));
+			const auto clip = clips.find(outgoing.request.clipName);
+			if (clip != clips.end() && outgoing.fadeDuration > 0.0f) advancePosition(outgoing, clip->second);
 		}
+		retireOutgoing();
 
 		if (state.active)
 		{
-			advance(*state.active, false);
-			auto clip = clips.find(state.active->request.clipName);
-			VansSlotPlaybackStatus& status = m_Statuses[state.active->handle.value];
-			status.playbackTime = state.active->currentTime;
-			status.weight = state.active->weight;
-			status.state = state.active->weight < 1.0f
-				? (std::abs(state.active->currentTime - state.active->request.startTime) < state.active->blendIn
-					? VansSlotPlaybackState::BlendingIn : VansSlotPlaybackState::BlendingOut)
-				: VansSlotPlaybackState::Playing;
-			const float totalDuration = clip == clips.end() ? 0.0f
-				: playbackDuration(clip->second, *state.active);
-			if (clip == clips.end() || (!state.active->request.externallyDriven &&
-				std::abs(state.active->currentTime - state.active->request.startTime) >= totalDuration))
+			auto& active = *state.active;
+			const auto clip = clips.find(active.request.clipName);
+			auto& status = m_Statuses[active.handle.value];
+			if (clip == clips.end())
 			{
 				status.state = VansSlotPlaybackState::Completed;
 				status.weight = 0.0f;
-				PublishLifecycle(slotIndex, *state.active, VansSlotLifecycleEventType::Completed);
+				PublishLifecycle(slotIndex, active, VansSlotLifecycleEventType::Completed);
 				state.active.reset();
+			}
+			else
+			{
+				active.blendElapsed += deltaTime;
+				active.weight = active.request.externallyDriven ? active.request.weight
+					: (active.blendIn <= 0.0f ? 1.0f : BlendAlpha(
+						active.blendElapsed / active.blendIn, active.request.blendInOption));
+				advancePosition(active, clip->second);
+				status.playbackTime = active.currentTime;
+				status.weight = active.weight;
+				status.state = !active.request.externallyDriven && active.blendElapsed < active.blendIn
+					? VansSlotPlaybackState::BlendingIn : VansSlotPlaybackState::Playing;
+				if (!active.request.externallyDriven && deltaTime > 0.0f)
+				{
+					const float elapsed = std::abs(active.currentTime - active.request.startTime);
+					const float remaining = active.reachedEnd ? 0.0f :
+						std::max(0.0f, playbackDuration(clip->second, active) - elapsed) / std::abs(active.request.playRate);
+					const bool custom = active.request.blendOutTriggerTime >= 0.0f;
+					const float trigger = custom ? active.request.blendOutTriggerTime : active.blendOut;
+					if (remaining <= std::max(trigger, 0.0001f))
+					{
+						BeginBlendOut(slotIndex, VansSlotLifecycleEventType::Completed,
+							custom ? active.blendOut : remaining);
+						retireOutgoing();
+					}
+				}
 			}
 		}
 
-		VansPosePayload activePayload;
-		VansPosePayload outgoingPayload;
-		bool hasActive = false;
-		bool hasOutgoing = false;
-		if (state.active)
-		{
-			auto clip = clips.find(state.active->request.clipName);
-			hasActive = clip != clips.end() && SampleRequest(*state.active, clip->second, skeleton, activePayload);
-		}
-		if (state.outgoing)
-		{
-			auto clip = clips.find(state.outgoing->request.clipName);
-			hasOutgoing = clip != clips.end() && SampleRequest(*state.outgoing, clip->second, skeleton, outgoingPayload);
-		}
-		if (!hasActive && !hasOutgoing)
-			continue;
-		VansPosePayload result = hasActive ? activePayload : outgoingPayload;
-		if (hasActive && hasOutgoing)
-		{
-			const float sum = activePayload.sourceWeight + outgoingPayload.sourceWeight;
-			const float alpha = sum > 0.0f ? activePayload.sourceWeight / sum : 1.0f;
-			result = VansPosePayloadMixer::BlendOverride(outgoingPayload, activePayload, alpha);
-			result.sourceWeight = std::clamp(sum, 0.0f, 1.0f);
-		}
 		auto destination = outSlotPayloads.find(m_Definitions[slotIndex].id);
-		if (destination != outSlotPayloads.end())
-			destination->second = std::move(result);
+		if (destination == outSlotPayloads.end()) continue;
+		auto sample = [&](RequestRuntime& request)
+		{
+			const auto clip = clips.find(request.request.clipName);
+			VansPosePayload payload;
+			if (clip != clips.end() && SampleRequest(request, clip->second, skeleton, payload))
+				destination->second.poses.push_back(std::move(payload));
+		};
+		// 请求按创建顺序传给图，淡出片段不提前归一化，也不被后续替换丢弃。
+		for (auto& outgoing : state.outgoing) sample(outgoing);
+		if (state.active) sample(*state.active);
 	}
 }

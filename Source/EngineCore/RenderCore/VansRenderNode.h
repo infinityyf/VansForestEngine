@@ -6,6 +6,7 @@
 #include "../SceneCore/VansSceneImpactDecalConfig.h"
 #include "VansRenderBounds.h"
 #include "VansVertexDeformationState.h"
+#include "WeatherCore/VansSurfaceWeather.h"
 #include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "BRDFData/VansLight.h"
 #include <cstdint>
@@ -23,7 +24,6 @@ namespace VansGraphics
 		TRANSPARENT_NODE = 1 << 1,
 		POSTPROCESS_NODE = 1 << 2,
 		DEFERRED_NODE = 1 << 4,
-		SCREEN_SPACE_NODE = 1 << 5,
 		TERRAIN_NODE = 1 << 6,
 		VEGETATION_NODE = 1 << 7,
 		DECAL_NODE = 1 << 8,    // OBB 贴花节点，叠写 GBuffer
@@ -81,6 +81,9 @@ namespace VansGraphics
 		bool m_RayTracingEnabled = true;
 		// PCG 道路投影使用独立 pass，避免复用普通弹坑贴花的材质语义。
 		bool m_UsesRoadDecalPass = false;
+		// 由节点渲染角色声明是否接收地表天气。参数始终来自统一帧契约，
+		// 节点不缓存 WeatherCore 或 Terrain 配置。
+		std::uint32_t m_GroundWeatherEffects = VANS_GROUND_WEATHER_NONE;
 
 			// Position.w / Scale.w 是保留实例分量；通过帧快照携带贴花接收组与角度阈值。
 			uint32_t m_DecalReceiverId = 0;
@@ -353,18 +356,7 @@ namespace VansGraphics
 		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 	};
 
-	class VansScreenSpaceRenderNode : public VansRenderNode
-	{
-	public:
 
-		VansScreenSpaceRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
-
-		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
-
-		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
-
-		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
-	};
 
 	// ── Vegetation render node — GPU-driven grass (indirect draw) ──────────────
 	class VansVegetationCollection;

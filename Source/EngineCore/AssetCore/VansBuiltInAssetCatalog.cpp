@@ -30,6 +30,24 @@ const std::vector<VansBuiltInAssetEntry>& VansBuiltInAssetCatalog::Entries()
 			VansAssetType::Texture
 		},
 		{
+			"rainLayerTexture",
+			"2ae873c5-332c-47ee-9806-c0b0ef2c5b18",
+			"EngineAssets/Textures/Weather/RainLayerTexture.png",
+			VansAssetType::Texture
+		},
+		{
+			"rainSplashAtlas",
+			"24ccbb4e-637d-4850-8c25-dbf67c8297f0",
+			"EngineAssets/Textures/Weather/RainSplashAtlas.png",
+			VansAssetType::Texture
+		},
+		{
+			"rainRippleSeed",
+			"15af6efd-d4a4-4d2b-93db-1157b889f691",
+			"EngineAssets/Textures/Weather/RainRippleSeed.png",
+			VansAssetType::Texture
+		},
+		{
 			"defaultSkinCavity",
 			"5f6d5237-1a6b-4b98-8b22-7cb738d88e09",
 			"EngineAssets/Textures/Default/defaultSkinCavity.png",

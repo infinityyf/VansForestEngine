@@ -72,7 +72,7 @@ bool VansGraphics::VansScene::BuildShadowDrawSubmission(
     }
 
     std::uint64_t stableOrder = 0;
-    const auto appendCaster = [&](VansRenderNode* node, bool hairNode, std::uint64_t order)
+    const auto appendCaster = [&](VansRenderNode* node, std::uint64_t order)
     {
         if (!IsRenderNodeEnabledForCurrentFrame(node)) return;
         auto* opaque = static_cast<VansCommonRenderNode*>(node);
@@ -94,8 +94,6 @@ bool VansGraphics::VansScene::BuildShadowDrawSubmission(
 			return;
 		}
         VansGraphicsShader* shadowShader = node->m_Material->GetPassShader(VansPass::SHADOW);
-        if (shadowShader == nullptr && hairNode)
-            shadowShader = node->m_Material->GetPassShader(VansPass::HAIR_SHADOW);
         if (shadowShader == nullptr) return;
 
         VansDrawPacket packet;
@@ -117,9 +115,9 @@ bool VansGraphics::VansScene::BuildShadowDrawSubmission(
     };
 
     for (VansRenderNode* node : m_OpaqueRenderNodes)
-        appendCaster(node, false, stableOrder++);
+        appendCaster(node, stableOrder++);
     for (VansRenderNode* node : m_HairRenderNodes)
-        appendCaster(node, true, stableOrder++);
+        appendCaster(node, stableOrder++);
 
     VANS_PROFILE_SCOPE("Shadow::FinalizeSubmission", Vans::ProfileCategory::CommandRecord);
     return FinalizeDrawSubmission(VansDrawSortPolicy::State, submission);
@@ -248,7 +246,7 @@ bool VansGraphics::VansScene::BuildOpaqueDrawSubmission(
         VansDrawPacket packet;
         if (node->BuildPrimaryDrawPacket(
             vkDevice->GetLogicDevice(), globalStateData, VansPass::GBUFFER,
-            0, 0, nodeIndex, depth, packet))
+            static_cast<int>(node->m_GroundWeatherEffects), 0, nodeIndex, depth, packet))
         {
             submission.packets.push_back(std::move(packet));
         }
@@ -451,13 +449,13 @@ void VansGraphics::VansScene::DrawTransParentNodes()
     flushPacketRun();
 }
 
-void VansGraphics::VansScene::DrawHairVisibilityNodes()
+void VansGraphics::VansScene::DrawHairNodes(const char* passName)
 {
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VansVKCommandBuffer& cmd = vkDevice->GetCommandBuffer();
 	GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-	VkDescriptorSetLayout oitLayout = vkDevice ? vkDevice->GetHairOITPassLayout() : VK_NULL_HANDLE;
-	VkDescriptorSet oitSet = vkDevice ? vkDevice->GetHairOITPassDescriptorSet() : VK_NULL_HANDLE;
+	VkDescriptorSetLayout passLayout = vkDevice ? vkDevice->GetHairPassLayout() : VK_NULL_HANDLE;
+	VkDescriptorSet passSet = vkDevice ? vkDevice->GetHairPassDescriptorSet() : VK_NULL_HANDLE;
 	VansDrawSubmissionList submission;
 	std::uint64_t stableOrder = 0;
 	for (auto& node : m_HairRenderNodes)
@@ -466,13 +464,13 @@ void VansGraphics::VansScene::DrawHairVisibilityNodes()
 			continue;
 		if (!ShouldDrawMainCameraNode(node))
 			continue;
-		if (oitLayout != VK_NULL_HANDLE && oitSet != VK_NULL_HANDLE)
+		if (passLayout != VK_NULL_HANDLE && passSet != VK_NULL_HANDLE)
 		{
-			node->OverridePassDescriptorSet(1, oitLayout, oitSet);
+			node->OverridePassDescriptorSet(1, passLayout, passSet);
 		}
 		VansDrawPacket packet;
 		if (node->BuildPrimaryDrawPacket(
-			vkDevice->GetLogicDevice(), globalStateData, VansPass::HAIR_VISIBILITY,
+			vkDevice->GetLogicDevice(), globalStateData, passName,
 			0, 0, stableOrder++, 0.0f, packet))
 		{
 			submission.packets.push_back(std::move(packet));
@@ -480,35 +478,6 @@ void VansGraphics::VansScene::DrawHairVisibilityNodes()
 	}
 	if (FinalizeDrawSubmission(VansDrawSortPolicy::State, submission))
 		VansDrawSubmission::Record(cmd, submission, 0, submission.batches.size());
-}
-
-void VansGraphics::VansScene::DrawHairDeepOpacityNodes(VansGraphicsShader* shader)
-{
-    if (!shader)
-        return;
-
-    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VansVKCommandBuffer& cmd = vkDevice->GetCommandBuffer();
-    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-    globalStateData.cascadeIndex = 0;
-    VansDrawSubmissionList submission;
-    std::uint64_t stableOrder = 0;
-    for (auto& node : m_HairRenderNodes)
-    {
-        if (!IsRenderNodeEnabledForCurrentFrame(node))
-            continue;
-        auto* hairNode = static_cast<VansCommonRenderNode*>(node);
-        VansDrawPacket packet;
-        if (node->BuildPassDrawPacket(
-            vkDevice->GetLogicDevice(), globalStateData, "hairDeepOpacity", shader,
-            hairNode->m_ShadowDescSets, hairNode->m_ShadowDescSetLayouts,
-            globalStateData.cascadeIndex, 0, stableOrder++, 0.0f, packet))
-        {
-            submission.packets.push_back(std::move(packet));
-        }
-    }
-    if (FinalizeDrawSubmission(VansDrawSortPolicy::State, submission))
-        VansDrawSubmission::Record(cmd, submission, 0, submission.batches.size());
 }
 
 void VansGraphics::VansScene::DrawForwardOpaquePreAtmosphereNodes()
@@ -559,21 +528,7 @@ void VansGraphics::VansScene::DrawPostProcessNodes()
     }
 }
 
-//ssao
-//ssr
-//contact shadow
-void VansGraphics::VansScene::DrawScreenSpaceFeatureNode()
-{
-    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VansVKCommandBuffer& cmd = vkDevice->GetCommandBuffer();
-    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-    for (auto& node : m_ScreenSpaceRenderNodes)
-    {
-        if (!IsRenderNodeEnabledForCurrentFrame(node)) continue;
-        //apply mesh
-        node->Draw(cmd, globalStateData);
-    }
-}
+
 
 void VansGraphics::VansScene::DrawDecalNodes()
 {

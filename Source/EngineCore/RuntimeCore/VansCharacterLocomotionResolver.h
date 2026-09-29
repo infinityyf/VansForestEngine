@@ -2,6 +2,7 @@
 
 #include "VansCharacterMotion.h"
 #include "VansCharacterTrajectoryGenerator.h"
+#include "VansCharacterMotionStepper.h"
 
 namespace Vans
 {
@@ -33,6 +34,7 @@ namespace Vans
 		float facingYaw = 0.0f;
 		float deltaTime = 0.0f;
 		bool hasMove = false;
+		bool substepped = false;
 	};
 
 	// Pure character-motion state and math. It owns intent normalization,
@@ -45,9 +47,29 @@ namespace Vans
 		void ResetMotion(const glm::vec3& positionWorld, float facingYaw);
 
 		void SetIntent(const VansCharacterMotionIntent& intent);
+		void SetDynamics(const VansCharacterAccelerationModel& model)
+		{
+			if (m_Intent.accelerationModel) m_Intent.accelerationModel = model;
+			m_MotionStepper.SetDynamics(model);
+		}
 		bool HasIntent() const { return m_Intent.valid; }
+		std::optional<float> ResolveVerticalContact(bool grounded, bool ceiling);
+		bool NextMotionStep(VansCharacterMotionStep& step) { return m_MotionStepper.Next(step); }
+		void ResolveMotionStep(bool grounded, bool ceiling, const glm::vec3* normals, std::size_t count)
+		{
+			m_MotionStepper.ApplyCollision(grounded,ceiling,normals,count);
+			m_VerticalVelocity = m_MotionStepper.GetVelocity().y;
+		}
+		glm::vec3 GetSimulatedVelocity() const { return m_MotionStepper.GetVelocity(); }
+		void ResolveSweptMotionStep(const glm::vec3& velocity, bool grounded, float unusedTime)
+		{
+			m_MotionStepper.ApplySweptCollision(velocity,grounded,unusedTime);
+			m_VerticalVelocity = m_MotionStepper.GetVelocity().y;
+		}
+		int GetSimulationSteps() const { return m_MotionStepper.GetStepCount(); }
 
-		void Prepare(float deltaTime,
+		// Returns true only when this frame consumes and accepts a jump request.
+		bool Prepare(float deltaTime,
 		             const VansCharacterMotionSettings& settings,
 		             const glm::vec3& positionWorld,
 		             float facingYaw,
@@ -76,7 +98,11 @@ namespace Vans
 	private:
 		VansCharacterMotionIntent m_Intent;
 		VansCharacterTrajectoryGenerator m_TrajectoryGenerator;
+		VansCharacterMotionStepper m_MotionStepper;
+		glm::vec3 m_FrameInitialVelocity{0.0f};
+		bool m_FrameGrounded = false;
 		float m_VerticalVelocity = 0.0f;
+		float m_VerticalDisplacement = 0.0f;
 		float m_FrameDeltaTime = 0.0f;
 		bool m_FramePrepared = false;
 		bool m_FrameMovementBlocked = false;

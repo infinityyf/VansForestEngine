@@ -632,6 +632,10 @@ VansSceneVehicleBuildResult VansSceneVehicleComponentBuilder::BuildVehicles(
 
 			const bool autoWheelGeometry = vehicleConfig.tuning.autoWheelGeometry.value_or(false);
 			const PxVehicleFrame vehicleFrame = tuning.BuildFrame();
+			const glm::vec3 gravity = VansEngine::VansPhysicsSystem::GetInstance().GetGravity();
+			const PxVec3 upAxis = vehicleFrame.getVrtAxis();
+			const float downwardGravity = std::max(0.0f,
+				-PxVec3(gravity.x, gravity.y, gravity.z).dot(upAxis));
 			if (!vehicleConfig.tuning.bodyGeometryExcludeObjects.empty())
 			{
 				for (const std::string& excludeName : vehicleConfig.tuning.bodyGeometryExcludeObjects)
@@ -685,31 +689,22 @@ VansSceneVehicleBuildResult VansSceneVehicleComponentBuilder::BuildVehicles(
 			}
 			if (!vehicleConfig.tuning.suspensionAttachmentPositions && wheelGroupPivots.size() >= 4)
 			{
-				const PxVec3 upAxis = vehicleFrame.getVrtAxis();
-				constexpr float kGravityMagnitude = 9.81f;
 				for (size_t wi = 0; wi < 4; ++wi)
 				{
-					const float stiffness = std::max(1.0f, tuning.suspensionStiffness[wi]);
-					const float staticJounce = std::clamp(
-						tuning.sprungMass[wi] * kGravityMagnitude / stiffness,
-						0.0f,
-						tuning.suspensionTravelDist);
+					const float staticJounce = tuning.EstimateStaticJounce(
+						static_cast<uint32_t>(wi), downwardGravity);
 					const float visualRestOffset = tuning.suspensionTravelDist - staticJounce + tuning.wheelVisualGroundClearance;
 					tuning.suspensionAttachmentPositions[wi] = wheelGroupPivots[wi] + upAxis * visualRestOffset;
 				}
 			}
 			if (tuning.autoAlignToGround && wheelGroupPivots.size() >= 4)
 			{
-				const PxVec3 upAxis = vehicleFrame.getVrtAxis();
 				const PxVec3 suspensionTravelDir = -upAxis;
 				float averageWheelCenterHeight = 0.0f;
 				for (size_t wi = 0; wi < 4; ++wi)
 				{
-					const float stiffness = std::max(1.0f, tuning.suspensionStiffness[wi]);
-					const float staticJounce = std::clamp(
-						tuning.sprungMass[wi] * 9.81f / stiffness,
-						0.0f,
-						tuning.suspensionTravelDist);
+					const float staticJounce = tuning.EstimateStaticJounce(
+						static_cast<uint32_t>(wi), downwardGravity);
 					const PxVec3 wheelCenterLocal =
 						tuning.suspensionAttachmentPositions[wi] +
 						suspensionTravelDir * (tuning.suspensionTravelDist - staticJounce);
@@ -721,7 +716,9 @@ VansSceneVehicleBuildResult VansSceneVehicleComponentBuilder::BuildVehicles(
 				const float spawnHeight = VehicleAxisCoordinate(spawnPx, upAxis);
 				const float desiredWheelCenterHeight =
 					tuning.groundHeight + tuning.wheelRadius + tuning.groundClearance;
-				const float currentWheelCenterHeight = spawnHeight + averageWheelCenterHeight;
+				const float centerOfMassHeight = VehicleAxisCoordinate(
+					tuning.centerOfMassLocalPose.p, upAxis);
+				const float currentWheelCenterHeight = spawnHeight + centerOfMassHeight + averageWheelCenterHeight;
 				const float deltaHeight = desiredWheelCenterHeight - currentWheelCenterHeight;
 				spawnPos += glm::vec3(upAxis.x, upAxis.y, upAxis.z) * deltaHeight;
 			}

@@ -31,6 +31,10 @@ namespace VansGraphics
 		VansAnimationLayerKind kind = VansAnimationLayerKind::Overlay;
 		std::string maskGuid;
 		std::string maskPathHint;
+		// 复用前序层已求值的姿态；空值表示独立求值绑定的 Pose Graph。
+		std::string poseSourceLayerId;
+		// Optional semantic Slot applied to this layer's sampled input pose.
+		std::string slotId;
 		VansLayerBlendMode blendMode = VansLayerBlendMode::Override;
 		VansRotationBlendSpace rotationSpace = VansRotationBlendSpace::Local;
 		VansAdditiveReferenceMode additiveReference = VansAdditiveReferenceMode::BindPose;
@@ -42,6 +46,7 @@ namespace VansGraphics
 		// 可选的动画曲线权重。曲线来自当前 Overlay Pose，用于复现 UE ALS
 		// Layering_* 曲线对身体区域的动态开关；未提供时保持原有层权重语义。
 		std::string weightCurve;
+		std::string weightCurveSourceLayerId;
 		float weightCurveDefault = 1.0f;
 		float weightSmoothingTime = 0.0f;
 		// Overlay activation is evaluated independently from GraphSet transitions.
@@ -54,6 +59,12 @@ namespace VansGraphics
 		// intentionally a layer feature; it never feeds back into Motion Matching.
 		bool dynamicAdditive = false;
 		float dynamicAdditiveWeight = 0.0f;
+		// Optional graph-layer inputs for a source-relative additive correction.
+		// Empty IDs retain the original current-pose/static-reference behavior.
+		std::string dynamicAdditiveBaseLayerId;
+		std::string dynamicAdditiveReferenceLayerId;
+		std::string dynamicAdditiveWeightParameter;
+		VansRotationBlendSpace dynamicAdditiveRotationSpace = VansRotationBlendSpace::Local;
 		float inertializationHalfLife = 0.0f;
 		float inertializationMaxDuration = 0.0f;
 		VansLayerRootMotionMode rootMotion = VansLayerRootMotionMode::Ignore;

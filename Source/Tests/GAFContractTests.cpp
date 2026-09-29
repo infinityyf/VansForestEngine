@@ -5737,6 +5737,10 @@ bool TestDemoHallHurtBodiesContract()
 	nlohmann::ordered_json scene;
 	std::string error;
 	if (!Vans::VansJsonFileStorage::Read(project / "Scenes/DemoHall.json", scene, error)) return ExpectGAF(false, error.c_str());
+	VansCollisionLayerConfig layers;
+	if (!ExpectGAF(VansCollisionLayerStorage::Load((project / "ProjectSettings/PhysicsLayers.json").string(),layers,error)
+		== VansCollisionLayerLoadStatus::Loaded,error.c_str())) return false;
+	VansCollisionLayerManager::Get().ApplyConfig(layers);
 	auto& physics = VansPhysicsSystem::GetInstance();
 	if (!ExpectGAF(physics.Initialize(), "Hurt body PhysX initialization failed")) return false;
 	struct PhysicsCleanup { VansPhysicsSystem& physics; ~PhysicsCleanup() { physics.Shutdown(); } } physicsCleanup{physics};

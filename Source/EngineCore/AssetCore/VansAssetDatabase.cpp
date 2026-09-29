@@ -1,4 +1,5 @@
 #include "VansAssetDatabase.h"
+#include "VansTextureResidentMip.h"
 #include "VansDerivedArtifactLayout.h"
 #include "Importers/VansTextureCooker.h"
 #include "Storage/VansAssetMetaStorage.h"
@@ -254,6 +255,10 @@ bool VansAssetDatabase::RegisterOrRefresh(
         error = "Asset importer does not match source extension: " + normalized.string();
         return false;
     }
+	std::uint32_t maxResidentDimension = 0;
+	if (type == VansAssetType::Texture &&
+		!ReadTextureMaxResidentDimension(meta, maxResidentDimension, error))
+		return false;
 
     VansFileFingerprint sourceFingerprint;
     if (!ComputeFileFingerprint(normalized, sourceFingerprint, &error))
@@ -353,6 +358,7 @@ bool VansAssetDatabase::RegisterOrRefresh(
 		record.textureImport.mipmapped = meta.ReadBoolSetting("needMip", true);
 		record.textureImport.channelCount = meta.ReadIntSetting("importChannel", 4);
 		record.textureImport.precision = meta.ReadStringSetting("precision", "low8");
+		record.textureImport.maxResidentDimension = maxResidentDimension;
 	}
 	else
 	{

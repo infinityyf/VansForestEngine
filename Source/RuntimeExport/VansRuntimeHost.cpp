@@ -180,6 +180,11 @@ std::vector<Vans::VansAssetRecord> BuildRuntimeAssetRecords(
 			record.sourcePath = record.artifactPath;
 		record.sourceHash = indexRecord.sourceHash;
 		record.metaHash = indexRecord.metaHash;
+		if (record.type == Vans::VansAssetType::Texture)
+		{
+			record.textureImport.available = true;
+			record.textureImport.maxResidentDimension = indexRecord.maxResidentDimension;
+		}
 		records.push_back(std::move(record));
 	}
 	return records;

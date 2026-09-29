@@ -1086,6 +1086,8 @@ namespace
 			indexRecord.artifactFormat = ArtifactFormatToString(record.artifactFormat);
 			indexRecord.sourceHash = record.sourceHash;
 			indexRecord.metaHash = record.metaHash;
+			if (record.type == Vans::VansAssetType::Texture)
+				indexRecord.maxResidentDimension = record.textureImport.maxResidentDimension;
 			assetIndexByGuid[indexRecord.guid] = cookedPlan.packagePlan.assetIndex.size();
 			cookedPlan.packagePlan.assetIndex.push_back(std::move(indexRecord));
 		}

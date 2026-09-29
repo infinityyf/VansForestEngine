@@ -59,6 +59,7 @@ namespace VansGraphics
 	class VansProfilerWindow;
 	class VansClothProfileEditorWindow;
 	class VansWaterWindow;
+	class VansWeatherWindow;
 	class VansTerrainWindow;
 	class VansReflectionProbeWindow;
 	class VansGIWindow;

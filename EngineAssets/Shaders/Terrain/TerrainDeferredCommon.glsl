@@ -1,6 +1,8 @@
 #ifndef TERRAIN_DEFERRED_COMMON_GLSL
 #define TERRAIN_DEFERRED_COMMON_GLSL
 
+#include "../Weather/SurfaceWeather.glsl"
+
 layout(set = 1, binding = 1) uniform sampler2D splatMap0;
 layout(set = 1, binding = 2) uniform sampler2D splatMap1;
 layout(set = 1, binding = 3) uniform sampler2D terrainAlbedos[8];
@@ -105,21 +107,28 @@ void TerrainWriteDeferred(
     if (dot(blendedTangentNormal, blendedTangentNormal) <= 1e-8)
         blendedTangentNormal = vec3(0.0, 0.0, 1.0);
 
-    // 湿润响应作用于 splat 材质结果：吸水使颜色变深，薄水膜集中高光并压低微表面法线。
-    float riverWetness = clamp(PcgRiverWetness(worldPosition.xz), 0.0, 1.0);
-    blendedAlbedo *= mix(1.0, terrainParams.riverWetnessParams.x, riverWetness);
-    blendedRoughness = mix(
-        blendedRoughness,
-        min(blendedRoughness, terrainParams.riverWetnessParams.y),
-        riverWetness);
-    blendedTangentNormal.xy *= mix(
-        1.0, terrainParams.riverWetnessParams.z, riverWetness);
-
     vec3 geometricNormal = TerrainHeightfieldNormal(terrainUV, heightDetailGradient);
+
+    // River coverage and the rain film are sources for the Type 2 wet-surface
+    // response. Accumulated puddle water is evaluated independently below.
+    float riverWetness = clamp(PcgRiverWetness(worldPosition.xz), 0.0, 1.0);
+    vec3 riverWetAlbedo = blendedAlbedo * surfaceWeatherFrame.groundResponse.x;
+    float riverWetRoughness = min(blendedRoughness, surfaceWeatherFrame.groundResponse.y);
+    blendedAlbedo = mix(blendedAlbedo, riverWetAlbedo, riverWetness);
+    blendedRoughness = mix(blendedRoughness, riverWetRoughness, riverWetness);
+
     mat3 tangentFrame = TerrainCotangentFrame(geometricNormal, worldPosition, terrainUV);
     vec3 finalNormal = normalize(tangentFrame * normalize(blendedTangentNormal));
+    float puddleAmount = 0.0;
+    SurfaceWeatherApplyGround(blendedAlbedo, blendedRoughness, finalNormal,
+        geometricNormal, tangentFrame, worldPosition.xz,
+        SurfaceWeatherWetFilmBit | SurfaceWeatherPuddleBit | SurfaceWeatherRippleBit,
+        puddleAmount);
 
-    outNormal = vec4(finalNormal, 1.0);
+    // Terrain uses the otherwise-unused normal alpha to carry accumulated
+    // water to the deferred dielectric F0 selection. GBuffer1.w remains the
+    // existing terrain sentinel, so no other PBR material is affected.
+    outNormal = vec4(finalNormal, puddleAmount);
     outGbuffer0 = vec4(blendedAlbedo, blendedRoughness);
     outGbuffer1 = vec4(0.0, blendedAO, float(MATERIAL_ID_PBR), -1024.0);
     float linearDepth = (ViewMatrix * vec4(worldPosition, 1.0)).z;

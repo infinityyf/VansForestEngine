@@ -19,6 +19,8 @@
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../RuntimeCore/VansFramePhase.h"
 #include "../RuntimeCore/VansThreadContract.h"
+#include "../EventCore/VansEventBus.h"
+#include "../SceneRuntime/VansRuntimeComponentTypes.h"
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
@@ -27,6 +29,7 @@
 #include <array>
 #include <cstring>
 #include <memory>
+#include <glm/gtc/quaternion.hpp>
 
 using namespace physx;
 using namespace physx::vehicle2;
@@ -34,6 +37,41 @@ using namespace physx::vehicle2;
 
 namespace
 {
+VansEngine::VansCharacterControllerNode* ResolveCharacter(Vans::VansRuntimeWorld* world, Vans::VansComponentHandle handle)
+{
+    if (!world || !world->IsComponentEffectivelyEnabled(handle)) return nullptr;
+    auto* storage = world->FindStorage<Vans::VansRuntimeCharacterControllerComponent>(Vans::VansRuntimeComponentType_CharacterController);
+    auto* component = storage ? storage->Get(handle) : nullptr;
+    return component && component->controllerNode && component->controllerNode->IsEnabled() ? component->controllerNode : nullptr;
+}
+
+VansGraphics::VansAnimationNode* ResolveCharacterAnimation(Vans::VansRuntimeWorld* world, Vans::VansComponentHandle handle)
+{
+    if (!world || !world->IsComponentEffectivelyEnabled(handle)) return nullptr;
+    auto* storage = world->FindStorage<Vans::VansRuntimeAnimationComponent>(Vans::VansRuntimeComponentType_Animation);
+    auto* component = storage ? storage->Get(handle) : nullptr;
+    return component && component->animationNode && component->animationNode->IsEnabled() ? component->animationNode : nullptr;
+}
+
+std::vector<Vans::VansComponentHandle> CollectCharacters(Vans::VansRuntimeWorld* world)
+{
+    std::vector<Vans::VansComponentHandle> handles;
+    auto* storage = world ? world->FindStorage<Vans::VansRuntimeCharacterControllerComponent>(Vans::VansRuntimeComponentType_CharacterController) : nullptr;
+    if (storage)
+        for (const auto& header : storage->Headers()) handles.push_back(header.self);
+    return handles;
+}
+
+Vans::VansComponentHandle FindCharacterAnimation(Vans::VansRuntimeWorld* world, std::uint32_t transformId)
+{
+    auto* storage = world ? world->FindStorage<Vans::VansRuntimeAnimationComponent>(Vans::VansRuntimeComponentType_Animation) : nullptr;
+    if (storage)
+        for (const auto& header : storage->Headers())
+            if (auto* animation = ResolveCharacterAnimation(world,header.self))
+                if (animation->GetTransformID() == transformId) return header.self;
+    return {};
+}
+
 glm::vec3 ToVec3(const std::array<float, 3>& value)
 {
     return glm::vec3(value[0], value[1], value[2]);
@@ -96,7 +134,14 @@ VansEngine::VansPhysicsVehicle* VansGraphics::VansScene::BuildVehicleRuntime(
 
     const PxVec3 upAxis = tuning.BuildFrame().getVrtAxis();
     const PxVec3 startPosition(position.x, position.y, position.z);
-    PxTransform startPose(startPosition + upAxis * tuning.startHeightOffset, PxQuat(PxIdentity));
+    PxQuat startRotation(PxIdentity);
+    if (Vans::VansTransformStore::IsAllocated(bodyTransformID))
+    {
+        const glm::vec3 rotationDegrees = Vans::VansTransformStore::Read(bodyTransformID).m_Rotation;
+        const glm::quat rotation = glm::normalize(glm::quat(glm::radians(rotationDegrees)));
+        startRotation = PxQuat(rotation.x, rotation.y, rotation.z, rotation.w);
+    }
+    PxTransform startPose(startPosition + upAxis * tuning.startHeightOffset, startRotation);
 
     if (!vehicle->Initialize(physicsSystem, startPose, error))
         return nullptr;
@@ -569,21 +614,14 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 {
 	VANS_ASSERT_MAIN_THREAD();
 	VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
-	for (VansEngine::VansCharacterControllerNode* cct : m_CharControllerNodes)
+	m_DeferredCharacterAnimations.clear();
+	for (const auto handle : CollectCharacters(m_RuntimeWorld.get()))
 	{
-		if (!cct || !cct->IsEnabled())
+		auto* cct = ResolveCharacter(m_RuntimeWorld.get(),handle);
+		if (!cct)
 			continue;
-
-		VansAnimationNode* animation = nullptr;
-		for (VansAnimationNode* candidate : m_AnimationNodes)
-		{
-			if (candidate && candidate->IsEnabled() &&
-			    candidate->GetTransformID() == cct->GetTransformID())
-			{
-				animation = candidate;
-				break;
-			}
-		}
+		const auto animationHandle = FindCharacterAnimation(m_RuntimeWorld.get(),cct->GetTransformID());
+		auto* animation = ResolveCharacterAnimation(m_RuntimeWorld.get(),animationHandle);
 
 		Vans::VansCharacterMotionSettings motionSettings;
 		VansAnimationController* controller =
@@ -611,15 +649,27 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 		}
 
 		cct->PrepareLocomotion(deltaTime, motionSettings);
+		// 同步脚本回调可能停用或销毁组件，重新验证 generation 后再访问节点。
+		cct = ResolveCharacter(m_RuntimeWorld.get(),handle);
+		if (!cct) continue;
+		animation = ResolveCharacterAnimation(m_RuntimeWorld.get(),animationHandle);
+		controller = animation ? animation->GetCharacterMotionController() : nullptr;
 		bool rootMotionValid = false;
 		bool rootMotionPreferred = false;
 		bool motionMatchingUsed = false;
 		glm::vec3 rootDelta(0.0f);
 		glm::quat rootRotation(1.0f, 0.0f, 0.0f, 0.0f);
-		if (animation && controller)
+		if (animation && controller && motionSettings.driveMode == Vans::VansLocomotionDriveMode::Capsule &&
+			!controller->IsMotionMatchingConfigured())
 		{
-			// 只要该动画与 CCT 共享 Transform，就在 CCT flush 前完成一次评估。
-			// 当前 Graph 是否包含 Motion Matching 不再影响 Root Motion 提交。
+			// An in-place Capsule graph has no animation displacement dependency. Evaluate
+			// once, after collision resolution and movement-result script callbacks.
+			m_DeferredCharacterAnimations.push_back({ handle, animationHandle, deltaTime });
+		}
+		else if (animation && controller)
+		{
+			// Root/Hybrid motion and Motion Matching consume the prepared trajectory
+			// before collision submission, preserving their existing search/root clocks.
 			animation->PrepareCharacterMotionFrame(deltaTime, cct->GetTrajectory());
 			rootDelta = animation->GetRootMotionDelta();
 			rootRotation = animation->GetRootRotationDelta();
@@ -664,13 +714,33 @@ void VansGraphics::VansScene::UpdateCharControllerTransforms()
 
     // 在 SimulationMutex 保护下提交 PxController::move() 并同步 Transform
     VansPhysicsSystem& physics = VansPhysicsSystem::GetInstance();
-    std::lock_guard<std::mutex> simLock(physics.GetSimulationMutex());
-
-    for (auto* node : m_CharControllerNodes)
+    m_CharacterMovementResults.clear();
+    for (const auto handle : CollectCharacters(m_RuntimeWorld.get()))
     {
-        if (node && node->IsEnabled())
-            node->FlushMoveAndSync();
+        while (auto* node = ResolveCharacter(m_RuntimeWorld.get(),handle))
+        {
+            VansCharacterMotionFlushResult result;
+            {
+                std::lock_guard<std::mutex> simLock(physics.GetSimulationMutex());
+                result = node->FlushMoveAndSync();
+            }
+            if (result.movement) m_CharacterMovementResults.push_back({handle,*result.movement});
+            if (!result.landed) break;
+            Vans::VansEventBus::Get().PublishNow(*result.landed);
+        }
     }
+    for (const auto& result : m_CharacterMovementResults)
+        if (ResolveCharacter(m_RuntimeWorld.get(),result.controller))
+            Vans::VansEventBus::Get().PublishNow(result.event);
+    for (const auto& pending : m_DeferredCharacterAnimations)
+    {
+        auto* controller = ResolveCharacter(m_RuntimeWorld.get(),pending.controller);
+        auto* animation = ResolveCharacterAnimation(m_RuntimeWorld.get(),pending.animation);
+        if (controller && animation)
+            animation->PrepareCharacterMotionFrame(pending.deltaTime,controller->GetTrajectory());
+    }
+    m_DeferredCharacterAnimations.clear();
+    m_CharacterMovementResults.clear();
 }
 
 // ===========================================================================

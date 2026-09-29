@@ -17,12 +17,14 @@ namespace VansGraphics
 		bool (*readFloat)(const void*, const std::string&, float&) = nullptr;
 		bool (*readVector3)(const void*, const std::string&, glm::vec3&) = nullptr;
 		bool (*readQuaternion)(const void*, const std::string&, glm::quat&) = nullptr;
+		const void* curveContext = nullptr;
+		bool (*readCurve)(const void*, const std::string&, float&) = nullptr;
 	};
 
 	using VansGroundQueryProfileResolver = std::function<bool(
 		const std::string& profile, std::uint32_t& collisionMask, std::string& error)>;
 
-	enum class VansProceduralDebugKind { Goal, Aim, Grounding, LimbIK, ChainIK, PoseCheckpoint, RotationDistribution };
+	enum class VansProceduralDebugKind { Goal, Aim, Grounding, LimbIK, ChainIK, PoseCheckpoint, RotationDistribution, BoneTransform };
 
 	struct VansProceduralDebugRecord
 	{

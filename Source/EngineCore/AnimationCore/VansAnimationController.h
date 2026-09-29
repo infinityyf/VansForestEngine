@@ -97,6 +97,8 @@ namespace VansGraphics
 	};
 
 	// ─── 过渡条件 ───
+	// 图内运行时查询不通过项目参数往返，权重读取上次更新的记录值。
+	enum class AnimatorConditionSource { Parameter, MachineWeight, StateElapsedTime };
 
 	struct TransitionCondition
 	{
@@ -105,6 +107,8 @@ namespace VansGraphics
 		float       floatVal = 0.0f;
 		bool        boolVal  = false;
 		int         intVal   = 0;
+		AnimatorConditionSource source = AnimatorConditionSource::Parameter;
+		int machineNodeId = -1; // -1 表示当前状态机。
 	};
 
 	// ─── 状态（State）───
@@ -127,9 +131,19 @@ namespace VansGraphics
 		// Empty keeps the authored constant speed. This is generic state-machine
 		// functionality for imported per-state play-rate pins.
 		std::string        speedParameter;
+		bool alwaysResetOnEntry = false;
+		bool conduit = false;
+		std::string entryConditionParameter;
+		std::string enteredEvent, leftEvent, fullyBlendedEvent;
 	};
 
 	// ─── 过渡（Transition）───
+
+	struct AnimatorTransitionCurveKey
+	{
+		float time = 0.0f, value = 0.0f;
+		float arriveTangent = 0.0f, leaveTangent = 0.0f;
+	};
 
 	struct AnimatorTransition
 	{
@@ -142,6 +156,16 @@ namespace VansGraphics
 
 		// 所有条件必须同时满足才触发过渡（AND 逻辑）
 		std::vector<TransitionCondition> conditions;
+		// Empty is linear. Otherwise evaluate authored cubic Hermite keys in normalized time.
+		std::vector<AnimatorTransitionCurveKey> blendCurve;
+		std::vector<AnimatorTransitionCurveKey> durationScaleCurve;
+		bool requireSourceFullyBlended = false;
+		bool requireRelevantClipFinished = false;
+		bool automaticRemainingTime = false;
+		bool matchAnyCondition = false;
+		bool inertialization = false;
+		std::unordered_map<std::string, float> boneBlendFactors;
+		std::string startEvent, endEvent, interruptEvent;
 	};
 
 	// ─── 控制器混合状态 ───
@@ -308,6 +332,11 @@ namespace VansGraphics
 		                     std::string& error);
 		bool ReplaceAnimationRig(VansCompiledAnimationRig rig, std::string& error);
 		bool BindAnimationRigSkeleton(const Skeleton& skeleton, std::string& error);
+		void SetRuntimeSkeleton(std::unique_ptr<Skeleton> skeleton)
+		{
+			m_RuntimeSkeleton = std::move(skeleton);
+		}
+		const Skeleton* GetRuntimeSkeleton() const { return m_RuntimeSkeleton.get(); }
 		const VansCompiledAnimationRig* GetAnimationRig() const
 		{
 			return m_AnimationRig.get();
@@ -340,6 +369,7 @@ namespace VansGraphics
 			std::string& diagnostic);
 		VansSlotPlaybackHandle PlaySlot(const std::string& slotId, const VansSlotPlayRequest& request);
 		bool StopSlot(VansSlotPlaybackHandle handle, float blendOut, bool force = false);
+		bool StopSlotById(const std::string& slotId, float blendOut, bool force = false);
 		bool DriveSlot(VansSlotPlaybackHandle handle, float playbackTime, float weight);
 		VansSlotPlaybackStatus GetSlotStatus(VansSlotPlaybackHandle handle) const;
 		bool IsSlotActive(const std::string& slotId) const;
@@ -414,6 +444,7 @@ namespace VansGraphics
 		struct LayerRuntime
 		{
 			VansAnimationLayerDefinition definition;
+			VansAnimationLayerDefinition mixDefinition;
 			std::optional<VansBoneMaskAsset> maskAsset;
 			VansCompiledBoneMask compiledMask;
 			VansAnimationLayerRuntimeState state;
@@ -426,12 +457,21 @@ namespace VansGraphics
 			std::unordered_map<std::string, AnimatorParameter> parameterScratch;
 			float lastEvaluationMilliseconds = 0.0f;
 			int syncLeaderIndex = -1;
+			int poseSourceIndex = -1;
+			int weightCurveSourceIndex = -1;
+			int dynamicBaseIndex = -1;
+			int dynamicReferenceIndex = -1;
+			VansPosePayload reusedPoseScratch;
 		};
 		struct GraphSetRuntime
 		{
 			VansAnimationGraphSetDefinition definition;
 			std::vector<GraphBindingRuntime> bindings;
 			std::vector<VansAnimationSyncState> evaluatedSync;
+			std::vector<VansPosePayload> cachedSourcePoses;
+			std::vector<bool> poseSourceUsed;
+			std::vector<VansPosePayload> cachedComposedPoses;
+			std::vector<bool> composedPoseUsed;
 		};
 		std::vector<LayerRuntime> m_LayerRuntimes;
 		std::vector<GraphSetRuntime> m_GraphSetRuntimes;
@@ -446,11 +486,12 @@ namespace VansGraphics
 		std::unique_ptr<VansAnimGraph> m_TargetPostProcessGraph;
 		std::unique_ptr<VansAnimGraphInstance> m_TargetPostProcessInstance;
 		VansAnimationSlotRuntime m_SlotRuntime;
-		std::unordered_map<std::string, VansPosePayload> m_SlotPayloads;
+		std::unordered_map<std::string, VansSlotPoseInputs> m_SlotPayloads;
 		std::unique_ptr<VansMotionMatchingRuntime> m_MotionMatching;
 		std::unique_ptr<VansMotionMatchingRuntime> m_IncomingMotionMatching;
 		const Vans::VansCharacterTrajectory* m_CharacterTrajectory = nullptr;
 		std::unique_ptr<VansCompiledAnimationRig> m_AnimationRig;
+		std::unique_ptr<Skeleton> m_RuntimeSkeleton;
 		std::string m_AnimationRigAssetGuid;
 		VansGroundQueryProfileResolver m_QueryProfileResolver;
 		std::unique_ptr<VansProceduralGraphRuntime> m_ProceduralRuntime;

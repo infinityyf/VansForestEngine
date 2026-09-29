@@ -120,6 +120,7 @@ bool VansScene::UpdateSplineRoadRenderNodes(const Vans::VansPcgSplineFieldSnapsh
                 else node=std::make_unique<VansCommonRenderNode>(native,OPAQUE_NODE);
                 node->SetName("PCG Road " + id);
                 node->m_RayTracingEnabled = false;
+				node->m_GroundWeatherEffects = VANS_GROUND_WEATHER_ALL;
                 node->m_Material = static_cast<VansMaterial*>(GetMaterialAsset(
                     isDecal ? road->roadDecalMaterial.ToString() : road->material.ToString()));
                 node->m_Mesh = node->m_SourceMesh = prepared.at(id).get();
@@ -181,6 +182,7 @@ bool VansScene::UpdateSplineRoadRenderNodes(const Vans::VansPcgSplineFieldSnapsh
         runtime.node->m_Material = static_cast<VansMaterial*>(GetMaterialAsset(
             isDecal ? field.roads.at(id)->roadDecalMaterial.ToString() :
                 field.roads.at(id)->material.ToString()));
+		runtime.node->m_GroundWeatherEffects = VANS_GROUND_WEATHER_ALL;
         if (isDecal)
         {
             runtime.node->m_UsesRoadDecalPass = true;

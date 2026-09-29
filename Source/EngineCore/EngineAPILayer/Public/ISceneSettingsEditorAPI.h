@@ -10,6 +10,10 @@ namespace Vans::EditorAPI
 		virtual ~ISceneSettingsEditorAPI() = default;
 		virtual LightingSettingsSnapshot GetLightingSettings() const = 0;
 		virtual void ApplyLightingSettings(const LightingSettingsSnapshot& settings) = 0;
+		virtual RainWeatherSettingsSnapshot GetRainWeatherSettings() const = 0;
+		virtual RainWeatherApplyResult ApplyRainWeatherSettings(
+			const RainWeatherSettingsSnapshot& settings) = 0;
+		virtual bool CommitRainWeatherSettings() = 0;
 		virtual PostProcessSettingsSnapshot GetPostProcessSettings() const = 0;
 		virtual void ApplyPostProcessSettings(const PostProcessSettingsSnapshot& settings) = 0;
 		virtual void CommitPostProcessSettings() = 0;

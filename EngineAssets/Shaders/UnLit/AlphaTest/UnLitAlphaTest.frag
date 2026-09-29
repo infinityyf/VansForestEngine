@@ -50,7 +50,7 @@ void main()
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normalSample);
 
-    outNormal = vec4(normal, 1.0);
+    outNormal = vec4(normal, -1.0);
     outGBuffer0 = vec4(albedo, roughness);
     outGBuffer1 = vec4(metallic, ao, float(MATERIAL_ID_PBR),
         -decalReceiverGroup);

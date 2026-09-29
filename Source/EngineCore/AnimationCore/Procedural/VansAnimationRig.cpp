@@ -114,6 +114,99 @@ namespace VansGraphics
 		return found == jointLimits.end() ? nullptr : &*found;
 	}
 
+	bool VansAnimationRigCompiler::BuildRuntimeSkeleton(
+		const VansAnimationRigAsset& asset,
+		const Skeleton& importedSkeleton,
+		Skeleton& outSkeleton,
+		std::string& error)
+	{
+		error.clear();
+		outSkeleton = importedSkeleton;
+		// Hot reload may provide the preceding runtime skeleton. Rebuild from its
+		// physical prefix so virtual bones cannot be appended twice.
+		if (!outSkeleton.virtualBoneLinks.empty())
+		{
+			const int physicalCount = outSkeleton.virtualBoneLinks.front().boneIndex;
+			if (physicalCount <= 0 || physicalCount > static_cast<int>(outSkeleton.bones.size()))
+			{
+				error = "Runtime Skeleton has an invalid virtual bone boundary";
+				return false;
+			}
+			outSkeleton.bones.resize(static_cast<std::size_t>(physicalCount));
+			for (BoneInfo& bone : outSkeleton.bones)
+				bone.children.erase(std::remove_if(bone.children.begin(), bone.children.end(),
+					[physicalCount](int child) { return child >= physicalCount; }), bone.children.end());
+			outSkeleton.virtualBoneLinks.clear();
+			outSkeleton.BuildTopologicalOrder();
+			outSkeleton.RebuildIdentityMapsAndSignature();
+		}
+		if (!outSkeleton.ValidateTopology(&error))
+			return false;
+		if (outSkeleton.bones.size() + asset.virtualBones.size() > MAX_BONES)
+		{
+			error = "Animation Rig virtual bones exceed the runtime bone limit";
+			return false;
+		}
+		std::vector<glm::mat4> bindLocal;
+		bindLocal.reserve(outSkeleton.bones.size());
+		for (const BoneInfo& bone : outSkeleton.bones)
+			bindLocal.push_back(bone.localTransform);
+		std::vector<glm::mat4> bindModel;
+		if (!VansPoseMath::BuildModelTransforms(bindLocal, outSkeleton, bindModel, &error))
+			return false;
+		const int physicalCount = static_cast<int>(bindModel.size());
+		for (const VansRigVirtualBoneDefinition& definition : asset.virtualBones)
+		{
+			const int parent = outSkeleton.FindBoneIndex(definition.sourceBone);
+			const int target = outSkeleton.FindBoneIndex(definition.targetBone);
+			if (definition.name.empty() || parent < 0 || target < 0
+				|| outSkeleton.FindBoneIndex(definition.name) >= 0)
+			{
+				error = "Animation Rig virtual bone '" + definition.name
+					+ "' requires a unique name and previously defined source/target bones";
+				return false;
+			}
+			int source = parent;
+			while (source >= physicalCount)
+			{
+				const auto link = std::find_if(outSkeleton.virtualBoneLinks.begin(),
+					outSkeleton.virtualBoneLinks.end(), [source](const auto& candidate)
+					{ return candidate.boneIndex == source; });
+				if (link == outSkeleton.virtualBoneLinks.end())
+				{
+					error = "Animation Rig virtual bone source has no physical ancestor";
+					return false;
+				}
+				source = link->targetBoneIndex;
+			}
+			const glm::mat4 local = glm::inverse(bindModel[static_cast<std::size_t>(source)])
+				* bindModel[static_cast<std::size_t>(target)];
+			VansBoneTransform decomposed;
+			if (!VansPoseMath::TryDecompose(local, decomposed))
+			{
+				error = "Animation Rig virtual bone '" + definition.name
+					+ "' has a non-decomposable bind transform";
+				return false;
+			}
+			const int boneIndex = static_cast<int>(outSkeleton.bones.size());
+			BoneInfo bone;
+			bone.name = definition.name;
+			bone.guid = "virtual:" + definition.name;
+			bone.canonicalPath = outSkeleton.bones[static_cast<std::size_t>(parent)].canonicalPath
+				+ "/" + definition.name;
+			bone.parentIndex = parent;
+			bone.localTransform = VansPoseMath::Compose(decomposed);
+			bone.offsetMatrix = glm::inverse(bindModel[static_cast<std::size_t>(target)]);
+			outSkeleton.bones.push_back(std::move(bone));
+			outSkeleton.bones[static_cast<std::size_t>(parent)].children.push_back(boneIndex);
+			outSkeleton.virtualBoneLinks.push_back({ boneIndex, source, target });
+			bindModel.push_back(bindModel[static_cast<std::size_t>(parent)] * local);
+			outSkeleton.RebuildIdentityMapsAndSignature();
+		}
+		outSkeleton.BuildTopologicalOrder();
+		return outSkeleton.ValidateTopology(&error);
+	}
+
 	bool VansCompiledAnimationRig::BindSkeleton(
 		const Skeleton& targetSkeleton,
 		std::string& error)
@@ -306,10 +399,10 @@ namespace VansGraphics
 				&& (compiled.boneIndices.size() != 3 || !ValidAxis(compiled.poleAxisLocal)
 					|| !compiled.weights.empty() || !compiled.solveWeights.empty()
 					|| !std::isfinite(compiled.softReachStartRatio)
-					|| compiled.softReachStartRatio <= 0.0f || compiled.softReachStartRatio >= 1.0f
+					|| compiled.softReachStartRatio <= 0.0f || compiled.softReachStartRatio > 1.0f
 					|| !std::isfinite(compiled.maxStretchScale) || compiled.maxStretchScale < 1.0f))
 			{
-				error = "Limb chain '" + source.id + "' requires three bones, a pole axis, softReachStartRatio in (0,1), and maxStretchScale >= 1";
+				error = "Limb chain '" + source.id + "' requires three bones, a pole axis, softReachStartRatio in (0,1], and maxStretchScale >= 1";
 				return false;
 			}
 			if (compiled.solver == VansRigSolverKind::Limb)

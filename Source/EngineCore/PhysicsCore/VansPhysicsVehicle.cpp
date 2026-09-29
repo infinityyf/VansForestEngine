@@ -155,6 +155,9 @@ namespace VansEngine
 
         // -- Wheels & Suspension (from Base.json) --
         // Wheel positions from Base.json suspension attachment points
+        const glm::vec3 gravity = m_PhysicsSystem->GetGravity();
+        const PxReal downwardGravity = std::max(0.0f,
+            -PxVec3(gravity.x, gravity.y, gravity.z).dot(upAxis));
         for (int i = 0; i < 4; i++)
         {
             // Wheel params (from Base.json)
@@ -176,6 +179,17 @@ namespace VansEngine
             m_Params.suspensionForceParams[i].stiffness = m_Tuning.suspensionStiffness[i];
             m_Params.suspensionForceParams[i].damping = m_Tuning.suspensionDamping[i];
             m_Params.suspensionForceParams[i].sprungMass = m_Tuning.sprungMass[i];
+
+            // The editor syncs vehicle visuals before the first simulation step.
+            // Seed the wheel pose at static suspension compression so that sync
+            // does not move every wheel to the body's center of mass.
+            const PxReal staticJounce = m_Tuning.EstimateStaticJounce(i, downwardGravity);
+            PxVehicleSuspensionState restSuspension;
+            restSuspension.setToDefault(staticJounce);
+            m_State.wheelLocalPoses[i].localPose = PxVehicleComputeWheelLocalPose(
+                m_Params.frame, m_Params.suspensionParams[i], restSuspension,
+                m_State.suspensionComplianceStates[i], 0.0f,
+                m_State.wheelRigidBody1dStates[i]);
 
             // Tire force params (from Base.json)
             m_Params.tireForceParams[i].longStiff = m_Tuning.tireLongitudinalStiffness;
@@ -414,7 +428,6 @@ namespace VansEngine
         m_SimulationContext.setToDefault();
         m_SimulationContext.frame = m_Params.frame;
         m_SimulationContext.scale.scale = 1.0f;
-        const glm::vec3 gravity = m_PhysicsSystem->GetGravity();
         m_SimulationContext.gravity = PxVec3(gravity.x, gravity.y, gravity.z);
         m_SimulationContext.physxScene =
             VansPhysicsNativeAccess::Scene(*m_PhysicsSystem);
@@ -859,6 +872,15 @@ namespace VansEngine
     // =========================================================
     // Helpers
     // =========================================================
+
+    PxReal VansVehicleTuning::EstimateStaticJounce(uint32_t wheelIndex, PxReal downwardGravity) const
+    {
+        if (wheelIndex >= 4 || !std::isfinite(downwardGravity))
+            return 0.0f;
+        const PxReal stiffness = std::max(suspensionStiffness[wheelIndex], 1.0f);
+        return std::clamp(sprungMass[wheelIndex] * std::max(downwardGravity, 0.0f) / stiffness,
+            0.0f, suspensionTravelDist);
+    }
 
     bool VansVehicleTuning::IsValid(std::string& error) const
     {

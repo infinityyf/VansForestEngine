@@ -41,6 +41,7 @@ struct VansSceneTextureResourceRequest
 	bool srgb = true;
 	bool useCompress = true;
 	bool needMip = true;
+	std::uint32_t maxResidentDimension = 0;
 	std::string precision = "low8";
 	int importChannel = 4;
 	std::string addressMode = "repeat";

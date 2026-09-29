@@ -1,0 +1,42 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "WeatherFrameData.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 1, binding = 0) uniform sampler2D rippleSeedSampler;
+layout(rgba16f, set = 1, binding = 1) uniform writeonly image2D rippleNormalOutput;
+
+vec3 ComputeRipple(vec2 uv, float currentTime, float weight)
+{
+    vec4 ripple = texture(rippleSeedSampler, uv);
+    ripple.yz = ripple.yz * 2.0 - 1.0;
+    float dropFrac = fract(ripple.w + currentTime);
+    float timeFrac = dropFrac - 1.0 + ripple.x;
+    float dropFactor = clamp(0.2 + weight * 0.8 - dropFrac, 0.0, 1.0);
+    float finalFactor = dropFactor * ripple.x *
+        sin(clamp(timeFrac * 9.0, 0.0, 3.0) * 3.14159265359);
+    return vec3(ripple.yz * finalFactor * 0.35, 1.0);
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(rippleNormalOutput);
+    if (any(greaterThanEqual(pixel, size))) return;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    float intensity = clamp(surfaceWeatherFrame.state.y *
+        step(0.5, surfaceWeatherFrame.state.x), 0.0, 1.0);
+    vec4 weights = clamp((vec4(intensity) - vec4(0.0, 0.25, 0.5, 0.75)) * 4.0,
+        vec4(0.0), vec4(1.0));
+    vec4 times = fract((surfaceWeatherFrame.surface.z * vec4(1.0, 0.85, 0.93, 1.13) +
+        vec4(0.0, 0.2, 0.45, 0.7)) * 1.6);
+    vec3 r1 = ComputeRipple(uv + vec2(0.25, 0.0), times.x, weights.x);
+    vec3 r2 = ComputeRipple(uv + vec2(-0.55, 0.3), times.y, weights.y);
+    vec3 r3 = ComputeRipple(uv + vec2(0.6, 0.85), times.z, weights.z);
+    vec3 r4 = ComputeRipple(uv + vec2(0.5, -0.75), times.w, weights.w);
+    vec4 z = mix(vec4(1.0), vec4(r1.z, r2.z, r3.z, r4.z), weights);
+    vec2 xy = (weights.x * r1.xy + weights.y * r2.xy +
+        weights.z * r3.xy + weights.w * r4.xy) * surfaceWeatherFrame.surface.y;
+    vec3 normal = normalize(vec3(xy.x, z.x * z.y * z.z * z.w, xy.y));
+    imageStore(rippleNormalOutput, pixel, vec4(normal, 1.0));
+}

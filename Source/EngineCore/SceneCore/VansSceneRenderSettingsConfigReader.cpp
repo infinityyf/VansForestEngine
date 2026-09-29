@@ -705,6 +705,67 @@ bool DecodeEnvironment(
 	}
 	return true;
 }
+
+bool DecodeRain(
+	const VansSerializedValue& sceneSettings,
+	VansRainSettings& config,
+	std::string& error)
+{
+	const VansSerializedValue* weather = FindObjectField(sceneSettings, "weather");
+	if (!weather)
+		return true;
+	if (weather->kind != VansSerializedValue::Kind::Object)
+	{
+		error = "/settings/weather must be an object";
+		return false;
+	}
+
+	const VansSerializedValue* rain = nullptr;
+	const char* path = "/settings/weather/rain";
+	if (!RequireObjectField(*weather, "rain", "/settings/weather", rain, error) ||
+		!RequireBoolField(*rain, "enabled", path, config.enabled, error) ||
+		!RequireFloatField(*rain, "rainRateMmPerHour", path,
+			config.rainRateMmPerHour, error) ||
+		!RequireFloatField(*rain, "fullIntensityRateMmPerHour", path,
+			config.fullIntensityRateMmPerHour, error) ||
+		!RequireFloatField(*rain, "wettingHalfLifeSeconds", path,
+			config.wettingHalfLifeSeconds, error) ||
+		!RequireFloatField(*rain, "dryingHalfLifeSeconds", path,
+			config.dryingHalfLifeSeconds, error) ||
+		!RequireFloatField(*rain, "puddleFillHalfLifeSeconds", path,
+			config.puddleFillHalfLifeSeconds, error) ||
+		!RequireFloatField(*rain, "puddleDrainHalfLifeSeconds", path,
+			config.puddleDrainHalfLifeSeconds, error) ||
+		!RequireFloatField(*rain, "windDirectionX", path,
+			config.windDirectionX, error) ||
+		!RequireFloatField(*rain, "windDirectionZ", path,
+			config.windDirectionZ, error) ||
+		!RequireFloatField(*rain, "windSpeedMetersPerSecond", path,
+			config.windSpeedMetersPerSecond, error) ||
+		!RequireFloatField(*rain, "fallSpeedMetersPerSecond", path,
+			config.fallSpeedMetersPerSecond, error) ||
+		!RequireFloatField(*rain, "maximumVisibleDistanceMeters", path,
+			config.maximumVisibleDistanceMeters, error) ||
+		!RequireFloatField(*rain, "splashLifetimeSeconds", path,
+			config.splashLifetimeSeconds, error) ||
+		!RequireFloatField(*rain, "splashRadiusMeters", path,
+			config.splashRadiusMeters, error) ||
+		!RequireFloatField(*rain, "rippleScaleMeters", path,
+			config.rippleScaleMeters, error) ||
+		!RequireFloatField(*rain, "rippleStrength", path,
+			config.rippleStrength, error))
+	{
+		return false;
+	}
+
+	std::string validationError;
+	if (!ValidateRainSettings(config, validationError))
+	{
+		error = std::string(path) + " is invalid: " + validationError;
+		return false;
+	}
+	return true;
+}
 std::optional<VansScenePostProcessSettingsConfig> DecodePostProcess(
 	const VansSerializedValue& sceneSettings)
 {
@@ -870,6 +931,10 @@ bool VansSceneRenderSettingsConfigReader::Read(
 	}
 
 	if (!DecodeEnvironment(sceneSettings, config.environment, error))
+	{
+		return false;
+	}
+	if (!DecodeRain(sceneSettings, config.rain, error))
 	{
 		return false;
 	}

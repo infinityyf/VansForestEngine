@@ -42,7 +42,7 @@ void main()
     vec3 normal = normalize(tbn * normalSample);
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
 
-    outNormal = vec4(normal, 1.0);
+    outNormal = vec4(normal, -1.0);
     if (!mixedPbrEmission)
     {
         float emissiveIntensity = max(-materialData.padding - 1.0, 0.0);

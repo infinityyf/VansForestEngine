@@ -7,11 +7,11 @@
 #include "../BRDF/BRDFData.glsl"
 #include "../Decal/DecalResponse.glsl"
 #include "../Decal/DecalReceiverFilter.glsl"
+#include "../Weather/SurfaceWeather.glsl"
 
 layout(set=0,binding=50) uniform sampler2D globalPBRTextures[];
 layout(set=1,binding=0) uniform sampler2D gBuffer2Sampler;
 layout(set=1,binding=1) uniform sampler2D gBuffer1Sampler;
-layout(set=1,binding=2) uniform sampler2D normalSampler;
 layout(location=0) flat in vec4 roadOriginDepth;
 layout(location=1) flat in vec3 roadEdge1;
 layout(location=2) flat in vec3 roadEdge2;
@@ -67,11 +67,20 @@ void main()
     if (abs(determinantUV)<1e-8) discard;
     vec3 directionU=(roadEdge1*duv2.y-roadEdge2*duv1.y)/determinantUV;
     vec3 directionV=(roadEdge2*duv1.x-roadEdge1*duv2.x)/determinantUV;
-    vec3 normal=DecalSafeNormal(texelFetch(normalSampler,pixel,0).xyz,vec3(0,1,0));
-    vec3 tangent=DecalSafeNormal(directionU-normal*dot(directionU,normal),vec3(1,0,0));
-    vec3 bitangent=cross(normal,tangent);
+    // 使用位置导数重建接收面的宏观法线。Terrain GBuffer 可能已包含
+    // 涟漪，若作为道路 TBN 再应用一次会导致法线重复叠加。
+    vec3 geometricNormal=DecalSafeNormal(cross(dpdy,dpdx),vec3(0,1,0));
+    if (geometricNormal.y<0.0) geometricNormal=-geometricNormal;
+    vec3 tangent=DecalSafeNormal(directionU-geometricNormal*dot(directionU,geometricNormal),vec3(1,0,0));
+    vec3 bitangent=cross(geometricNormal,tangent);
     if (dot(bitangent,directionV)<0.0) bitangent=-bitangent;
-    vec3 normalWS=DecalSafeNormal(mat3(tangent,bitangent,normal)*sampledNormal,normal);
+    mat3 tangentFrame=mat3(tangent,bitangent,geometricNormal);
+    vec3 normalWS=DecalSafeNormal(tangentFrame*sampledNormal,geometricNormal);
+    float puddleAmount=0.0;
+    SurfaceWeatherApplyGround(albedo,roughness,normalWS,geometricNormal,
+        tangentFrame,surface.xz,
+        SurfaceWeatherWetFilmBit|SurfaceWeatherPuddleBit|SurfaceWeatherRippleBit,
+        puddleAmount);
     // V 是道路里程，可超过 1；只在道路左右边缘衰减。
     float edge=smoothstep(0.0,0.06,uv.x)*(1.0-smoothstep(0.94,1.0,uv.x));
     vec3 coverage=vec3(edge)*response;

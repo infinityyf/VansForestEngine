@@ -13,6 +13,7 @@
 
 #include "VansAnimationTypes.h"
 #include "VansPoseTypes.h"
+#include "VansInertialization.h"
 #include "VansAnimationController.h"
 #include "VansAnimGraphNodeType.h"
 #include "Procedural/Grounding/VansGroundingTypes.h"
@@ -110,12 +111,17 @@ namespace VansGraphics
 	struct AnimGraphContext
 	{
 		float                                                      deltaTime  = 0.0f;
+		// Frame time before SpeedScale: input filters and authored transition
+		// durations advance in real graph-update time, not clip playback time.
+		float                                                      inputDeltaTime = -1.0f;
+		bool stagedPlayback = false;
+		bool preparePlayback = false;
 		const Skeleton*                                            skeleton   = nullptr;
 		std::unordered_map<std::string, AnimatorParameter>*        parameters = nullptr;
 		const std::unordered_map<std::string, VansAnimationClip>*  clips      = nullptr;
 		const VansAnimGraphMotionMatchingPort*                     motionMatching = nullptr;
 		const Vans::VansCharacterTrajectory*                       characterTrajectory = nullptr;
-		const std::unordered_map<std::string, VansPosePayload>*     slotPayloads = nullptr;
+		const std::unordered_map<std::string, VansSlotPoseInputs>*     slotPayloads = nullptr;
 		const VansPosePayload*                                     targetPoseInput = nullptr;
 		bool                                                       synchronizedStateFollower = false;
 		glm::mat4                                                  ownerWorldTransform = glm::mat4(1.0f);
@@ -157,11 +163,11 @@ namespace VansGraphics
 			VansAnimGraphInstance& instance,
 			int nodeId,
 			int inputPinIndex,
-			const AnimGraphContext& ctx);
+			const AnimGraphContext& ctx, float weight = 1.0f);
 		static AnimGraphPose EvaluateNodePose(
 			VansAnimGraphInstance& instance,
 			int nodeId,
-			const AnimGraphContext& ctx);
+			const AnimGraphContext& ctx, int parentId = -1, float weight = 1.0f);
 		static VansAnimGraphClipRuntimeState& ResolveClipState(
 			VansAnimGraphInstance& instance, int nodeId);
 		static VansAnimGraphStateMachineRuntimeState& ResolveStateMachineState(
@@ -231,8 +237,22 @@ namespace VansGraphics
 
 		// 配置
 		std::string m_ClipName;
+		std::string m_SyncGroup;
 		float       m_Speed     = 1.0f;
 		bool        m_Loop      = true;
+		// Bool 参数控制当前轮是否允许继续循环；关闭时从当前相位播到端点。
+		std::string m_LoopParameter;
+		bool ResolveLoop(const AnimGraphContext& ctx) const;
+		void AdvancePlayback(VansAnimGraphClipRuntimeState& clock, float deltaTime,
+		                     const AnimGraphContext& ctx, bool normalizeTime = false) const;
+		// 非空时按参数指定的秒数采样；不推进时钟，也不产生穿越事件或根运动。
+		std::string m_SampleTimeParameter;
+		float m_SampleTime = -1.0f;
+		float m_StartPosition = 0.0f; // 只决定初始化位置，不裁剪播放区间。
+		bool HasExplicitSampleTime() const { return m_SampleTime >= 0 || !m_SampleTimeParameter.empty(); }
+		float m_AdditiveReferenceTime = -1.0f;
+		std::string m_AdditiveReferenceClip;
+		VansAdditivePoseMode m_AdditiveMode = VansAdditivePoseMode::LocalSpherical;
 		// Animation assets can retain extracted root tracks while a graph node
 		// decides whether this pose is allowed to drive the owner.  Locomotion
 		// samples therefore keep their authored tracks available for actions but
@@ -260,6 +280,10 @@ namespace VansGraphics
 		std::string m_ParamName;       // 驱动 alpha 的参数名（Float 类型）
 		float       m_FixedAlpha = 0.5f;  // 无参数时使用的固定 alpha
 		bool        m_UseParam   = true;  // true=用参数, false=用固定值
+		bool m_MapAlpha = false, m_InterpolateAlpha = false;
+		bool m_LinearRotationBlend = false;
+		float m_AlphaInMin = 0, m_AlphaInMax = 1, m_AlphaOutMin = 0, m_AlphaOutMax = 1;
+		float m_AlphaSpeedIncreasing = 0, m_AlphaSpeedDecreasing = 0;
 	};
 
 	// ─── Blend1DNode ────────────────────────────────────────────
@@ -294,6 +318,19 @@ namespace VansGraphics
 		float y = 0.0f;
 	};
 
+	struct VansBlendSpaceGridInfluence
+	{
+		int sampleIndex = -1;
+		float weight = 0;
+	};
+	struct VansBlendSpaceSampleGrid
+	{
+		int columns = 0, rows = 0;
+		float minX = 0, maxX = 1, minY = 0, maxY = 1;
+		std::vector<std::vector<VansBlendSpaceGridInfluence>> cells;
+		bool IsEnabled() const {return columns!=0 || rows!=0 || !cells.empty();}
+	};
+
 	class AnimGraphBlendSpace2DNode : public VansAnimGraphNode
 	{
 	public:
@@ -304,7 +341,84 @@ namespace VansGraphics
 
 		std::string m_XParamName;
 		std::string m_YParamName;
+		bool m_BilinearGrid = false;
+		float m_CubicFilterWindowX = 0.0f;
+		float m_CubicFilterWindowY = 0.0f;
+		// 同步模式由混合空间统一管理直接 Clip 输入的播放区间。
+		bool m_SynchronizeSamples = false;
+		std::string m_SyncGroup;
+		float m_StartPosition = 0.0f;
 		std::vector<AnimGraphBlendSpaceSample> m_Samples;
+		VansBlendSpaceSampleGrid m_SampleGrid;
+		bool ValidateSampleGrid(std::string& error) const;
+	private:
+		bool SynchronizeSampleTimes(const AnimGraphContext& ctx, VansAnimGraphInstance& instance,
+			const VansAnimationFrameVector<float>& weights, bool allowMarkers = true) const;
+		friend class VansAnimGraphInstance;
+	};
+
+	// Independent normalized pose weights; rotations accumulate before normalization.
+	class AnimGraphMultiWayBlendNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphMultiWayBlendNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraphInstance& instance) const override;
+		std::vector<std::string> m_WeightParameters;
+	};
+
+	struct VansAnimGraphCurveValue
+	{
+		std::string name;
+		float value = 0;
+		std::string parameter;
+	};
+
+	// 只修改姿态负载中的命名曲线，骨骼、事件和根运动保持输入值。
+	class AnimGraphModifyCurveNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphModifyCurveNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
+		VansCurveModifyMode m_Mode = VansCurveModifyMode::Blend;
+		float m_Alpha = 1;
+		std::string m_AlphaParameter;
+		std::vector<VansAnimGraphCurveValue> m_Curves;
+	};
+
+	// Multiply one bone's component-space scale, then blend the component
+	// transform by alpha before converting it back to its parent-local pose.
+	class AnimGraphComponentBoneScaleNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphComponentBoneScaleNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
+		std::string m_BoneName;
+		glm::vec3 m_Scale{1.0f};
+		float m_Alpha = 1.0f;
+		std::string m_AlphaParameter;
+	};
+
+	// Parameter-driven component/world-space bone translation and rotation.
+	// Runs in the procedural phase so an upstream PoseCheckpoint can preserve
+	// a target before this node changes the working pose.
+	class AnimGraphComponentBoneTransformNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphComponentBoneTransformNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
+		std::string m_BoneName;
+		std::string m_PositionParameter;
+		std::string m_RotationParameter;
+		std::string m_AlphaParameter;
+		float m_Alpha = 1.0f;
+		bool m_PositionAdditive = false;
+		bool m_RotationAdditive = false;
+		bool m_WorldSpace = false;
 	};
 
 	// ─── IfConditionNode ────────────────────────────────────────
@@ -363,6 +477,7 @@ namespace VansGraphics
 		                       VansAnimGraphInstance& instance) const override;
 
 		// 配置
+		VansGraphics::VansAdditivePoseMode m_AdditiveMode = VansGraphics::VansAdditivePoseMode::LocalSpherical;
 		std::string m_ParamName;        // 驱动 weight 的参数名（Float 类型）
 		float       m_FixedWeight = 1.0f;
 		bool        m_UseParam    = false;
@@ -372,6 +487,15 @@ namespace VansGraphics
 	//  速度缩放节点：对下游节点的 AdvanceTime 施加速度倍率。
 	//  Input 0: Pose（传递求值）
 	//  速度由参数驱动或固定值。
+
+	class AnimGraphInertializationNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphInertializationNode();
+		float m_TeleportDistance = 3.0f;
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
+	};
 
 	class AnimGraphSpeedScaleNode : public VansAnimGraphNode
 	{
@@ -405,6 +529,9 @@ namespace VansGraphics
 		std::vector<AnimatorState>      m_States;
 		std::vector<AnimatorTransition> m_Transitions;
 		std::string                     m_DefaultStateName;
+		bool m_SkipFirstUpdateTransition = false;
+		int m_MaxTransitionsPerFrame = 1;
+		bool m_LinearRotationBlend = false;
 
 	};
 
@@ -426,9 +553,13 @@ namespace VansGraphics
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
 		                       VansAnimGraphInstance& instance) const override;
+		static AnimGraphPose BlendInputs(const AnimGraphPose& fallback,
+			const VansSlotPoseInputs* inputs, const Skeleton* skeleton,
+			bool linearRotationBlend);
 
 		std::string m_SlotId;
 		bool m_EnableFallbackInput = true;
+		bool m_LinearRotationBlend = false;
 	};
 
 	class AnimGraphSaveCachedPoseNode : public VansAnimGraphNode
@@ -461,6 +592,8 @@ namespace VansGraphics
 		VansBoneMaskAsset m_Mask;
 		VansLayerBlendMode m_BlendMode = VansLayerBlendMode::Override;
 		VansRotationBlendSpace m_RotationSpace = VansRotationBlendSpace::Mesh;
+		// 仅旋转在模型空间做线性四元数混合，平移与缩放仍在局部空间。
+		bool m_MeshSpaceRotationOnly = false;
 		std::string m_WeightParameter;
 		float m_FixedWeight = 1.0f;
 		bool m_UseWeightParameter = false;
@@ -480,16 +613,21 @@ namespace VansGraphics
 		                       VansAnimGraphInstance& instance) const override;
 	};
 
-	enum class VansGraphGoalSource { Binding, Parameters, Fixed };
+	enum class VansGraphGoalSource { Binding, Parameters, Fixed, PoseBone };
 
 	struct VansGraphGoalDefinition
 	{
 		std::string goalId;
 		VansGraphGoalSource source = VansGraphGoalSource::Binding;
 		std::string binding;
+		std::string boneName;
+		std::string poleBoneName;
+		glm::vec3 poleOffsetLocal{ 0.0f };
 		std::string positionParameter;
 		std::string rotationParameter;
 		std::string weightParameter;
+		std::string weightCurve;
+		std::string offsetWeightCurve;
 		glm::vec3 fixedPositionModel{ 0.0f };
 		glm::quat fixedRotationModel{ 1.0f, 0.0f, 0.0f, 0.0f };
 		float fixedPositionWeight = 1.0f;
@@ -638,23 +776,76 @@ namespace VansGraphics
 	{
 		float previousTime = 0.0f;
 		float currentTime = 0.0f;
+		bool looping = true;
+		bool startPositionPending = false;
+	};
+
+	struct VansAnimGraphTransitionRuntimeState
+	{
+		int definitionIndex = -1;
+		std::string previousStateName, nextStateName;
+		float elapsedTime = 0.0f, duration = 0.0f, alpha = 0.0f;
+		bool linearRotationBlend = false;
+		std::vector<AnimatorTransitionCurveKey> blendCurve;
+		std::unordered_map<std::string, float> boneBlendFactors;
 	};
 
 	struct VansAnimGraphStateMachineRuntimeState
 	{
+		bool firstUpdate = true;
+		float recordedWeight = 0.0f;
+		float currentStateElapsedTime = 0.0f;
+		std::unordered_map<std::string, float> relevantClipRemaining;
 		std::string currentStateName;
-		std::string previousStateName;
-		float blendAlpha = 0.0f;
-		float blendDuration = 0.0f;
-		ControllerBlendState blendState = ControllerBlendState::Idle;
+		std::vector<VansAnimGraphTransitionRuntimeState> activeTransitions;
+		std::vector<float> inertialRequests;
+		float GetStateWeight(const std::string& name) const;
 		std::unordered_map<std::string, float> stateTimes;
 		std::unordered_map<std::string, float> previousStateTimes;
+	};
+
+	struct VansAnimGraphInputFilterState
+	{
+		struct Sample { float value = 0.0f, time = 0.0f; };
+		float window = 0.0f, time = 0.0f, output = 0.0f;
+		std::size_t writeIndex = 0;
+		std::vector<Sample> samples;
+		float Update(float input, float deltaTime, float duration);
+	};
+
+	struct VansAnimGraphBlendSpaceRuntimeState
+	{
+		VansAnimGraphInputFilterState x, y;
+		bool playbackInitialized = false;
+		float normalizedTime = 0.0f;
+		int markerLeader = -1;
+		std::vector<int> activeSamples;
+	};
+
+	struct VansAnimGraphBlendAlphaState
+	{
+		bool initialized = false;
+		float value = 0;
+	};
+
+	struct VansAnimGraphSyncGroupState
+	{
+		int leaderNode = -1;
+		std::string leaderClip;
+		float previousTime = 0, currentTime = 0;
 	};
 
 	struct VansAnimGraphRuntimeStateSnapshot
 	{
 		std::unordered_map<int, VansAnimGraphClipRuntimeState> clipStates;
 		std::unordered_map<int, VansAnimGraphStateMachineRuntimeState> stateMachineStates;
+		std::unordered_map<int, VansAnimGraphBlendSpaceRuntimeState> blendSpaceStates;
+		std::unordered_map<int, VansAnimGraphBlendAlphaState> blendAlphaStates;
+		std::unordered_map<int, VansInertializationState> inertializationStates;
+		std::unordered_map<int, bool> activeNodes;
+		std::unordered_set<int> initializedNodes;
+		std::unordered_set<int> updatedNodes;
+		std::unordered_map<std::string, VansAnimGraphSyncGroupState> syncGroups;
 	};
 
 	// 可变播放状态、活动节点和帧缓存只属于实例；VansAnimGraph 保持定义数据。
@@ -666,6 +857,7 @@ namespace VansGraphics
 
 		const VansAnimGraph& GetDefinition() const { return m_Definition; }
 		bool IsCompiled() const { return m_CompileError.empty(); }
+		void QueueStateMachineEvent(int nodeId, std::string_view name);
 		const std::string& GetCompileError() const { return m_CompileError; }
 		const std::vector<int>& GetExecutionPlan() const { return m_ExecutionPlan; }
 
@@ -681,6 +873,10 @@ namespace VansGraphics
 		float GetPrimaryPlaybackTime() const;
 		const std::string& GetPrimaryClipName() const;
 		bool SetPrimaryPlaybackTime(float time, const std::string& stateName = {});
+		const std::unordered_map<std::string, VansAnimGraphSyncGroupState>& GetActiveSyncGroups() const
+		{ return m_SyncGroups; }
+		void SetExternalSyncGroups(const std::unordered_map<std::string, VansAnimGraphSyncGroupState>& groups)
+		{ m_ExternalSyncGroups = groups; }
 		bool SynchronizePrimaryStateMachineFrom(
 			const VansAnimGraphInstance& leader,
 			const std::unordered_map<std::string, VansAnimationClip>& clips);
@@ -689,7 +885,11 @@ namespace VansGraphics
 
 	private:
 		AnimGraphPose EvaluateNode(int nodeId, const AnimGraphContext& ctx);
-		AnimGraphPose EvaluateInput(int nodeId, int inputPinIndex, const AnimGraphContext& ctx);
+		AnimGraphPose EvaluateInput(int nodeId, int inputPinIndex, const AnimGraphContext& ctx, float weight = 1.0f);
+		AnimGraphPose EvaluateWeightedNode(int parentId, int nodeId, float weight, const AnimGraphContext& ctx);
+		void TickSyncGroups(const AnimGraphContext& ctx);
+		void RouteInertializationRequests();
+		void InitializeSubgraph(int nodeId);
 		void AdvanceTime(float deltaTime, const AnimGraphContext& ctx);
 		void SetCachedPose(const std::string& name, const AnimGraphPose& pose);
 		const AnimGraphPose* FindCachedPose(const std::string& name) const;
@@ -709,6 +909,10 @@ namespace VansGraphics
 		const VansLayeredBlendRuntimeState& ResolveLayeredBlendRuntime(
 			int nodeId, const VansBoneMaskAsset& mask, const Skeleton& skeleton);
 		friend class AnimGraphLayeredBlendPerBoneNode;
+		friend class AnimGraphBlendSpace2DNode;
+		friend class AnimGraphBlendNode;
+		friend class AnimGraphStateMachineNode;
+		friend class AnimGraphInertializationNode;
 		friend class VansAnimGraphNode;
 		friend class VansAnimationController;
 
@@ -717,11 +921,28 @@ namespace VansGraphics
 		std::string m_CompileError;
 		std::unordered_map<int, VansAnimGraphClipRuntimeState> m_ClipStates;
 		std::unordered_map<int, VansAnimGraphStateMachineRuntimeState> m_StateMachineStates;
+		std::unordered_map<int, VansAnimGraphBlendSpaceRuntimeState> m_BlendSpaceStates;
+		std::unordered_map<int, VansAnimGraphBlendAlphaState> m_BlendAlphaStates;
+		std::unordered_map<int, VansInertializationState> m_InertializationStates;
+		std::unordered_map<int, int> m_SynchronizedSampleOwners;
+		bool m_UsesStagedPlayback = false;
+		struct PlaybackEdge { int child; float weight; };
+		std::unordered_map<int, std::vector<PlaybackEdge>> m_PlaybackEdges;
+		std::unordered_map<int, float> m_PlaybackWeights;
+		std::unordered_map<int, float> m_PlayerDeltaTimes;
+		std::unordered_map<int, std::vector<float>> m_PreparedSampleWeights;
+		std::unordered_map<std::string, VansAnimGraphSyncGroupState> m_SyncGroups;
+		std::unordered_map<std::string, VansAnimGraphSyncGroupState> m_ExternalSyncGroups;
+		std::unordered_map<int, bool> m_SyncFollowers;
 		std::unordered_map<int, AnimGraphPose> m_EvaluationCache;
+		VansAnimationFrameVector<VansAnimationEventSample> m_StateMachineEvents{std::pmr::new_delete_resource()};
 		std::unordered_map<std::string, AnimGraphPose> m_CachedPoses;
 		std::unordered_map<int, bool> m_EvaluatedNodes;
 		std::unordered_map<int, bool> m_EvaluatingNodes;
 		std::unordered_map<int, bool> m_PreviousActiveNodes;
+		std::unordered_set<int> m_InitializedNodes;
+		std::unordered_set<int> m_UpdatedNodes;
+		std::unordered_set<int> m_InitializedThisFrame;
 		std::unordered_map<int, float> m_ActiveTimeScales;
 		std::unordered_map<int, bool> m_HasActiveTimeScale;
 		std::unordered_map<int, VansLayeredBlendRuntimeState> m_LayeredBlendRuntimes;

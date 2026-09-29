@@ -779,11 +779,10 @@ namespace VansGraphics
 			m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue,
 			renderExtent);
 		renderPassManager->SetupVansSkyMotionVectorRenderPass(m_VansVKLogicDevice, renderExtent);
-		renderPassManager->SetupVansHairDeepOpacityPass(m_VansVKLogicDevice, renderExtent);
-		renderPassManager->SetupVansHairVisibilityPass(m_VansVKLogicDevice, renderExtent);
+		renderPassManager->SetupVansHairVisibilityPass(m_VansVKLogicDevice, m_VansVKPhysicalDevice, renderExtent);
+		renderPassManager->SetupVansHairDepthResolvePass(m_VansVKLogicDevice, renderExtent);
 		renderPassManager->SetupVansHairLightingPass(m_VansVKLogicDevice, renderExtent);
 		renderPassManager->SetupVansDecalRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, renderExtent);
-		renderPassManager->SetupVansScreenSpaceEffectsPass(m_VansVKLogicDevice, renderExtent);
 		renderPassManager->SetupVansWaterGBufferPass(m_VansVKLogicDevice, renderExtent);
 		PrepareResolutionDependentRenderingData();
 		if (!m_Scene->ReinitializeEnvironmentRendering(

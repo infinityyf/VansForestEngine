@@ -188,86 +188,10 @@ namespace VansGraphics
 
 
 
-	void VansVKDevice::BilateralFilterSSAO(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
-
-	{
-		// SSAO filter 是独立 pass。同步与异步路径都只更新自身 descriptor，
-		// 不能在 GraphicsScreen 记录期间重写 SSGI/DDGI 的 atlas/state 绑定。
-		UpdateSSAOFilterDescriptorSet(renderPassManager);
-		if (!IsFeatureDescriptorCurrent(m_SSAOFilterDescSetGeneration))
-			return;
-
-		uint32_t halfResWidth = m_RenderWidth / 2;
-
-		uint32_t halfResHeight = m_RenderHeight / 2;
 
 
 
-		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		if (manager == nullptr || manager->m_BilateralFilterShader == nullptr ||
-			manager->m_BilateralFilterDescriptorSets.empty())
-		{
-			return;
-		}
 
-		manager->m_BilateralFilterPushConstant.sigmaSpace = 3.0f;
-
-		manager->m_BilateralFilterPushConstant.sigmaDepth = 0.08f;
-
-		manager->m_BilateralFilterPushConstant.radius = 4;
-
-		manager->m_BilateralFilterPushConstant.depthThreshold = 0.18f;
-
-		manager->m_BilateralFilterPushConstant.depthMode = 2;
-
-		manager->m_BilateralFilterShader->SetPushConstantData(&(manager->m_BilateralFilterPushConstant));
-
-		computeCmd.EnsureComputeShader(*manager->m_BilateralFilterShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_BilateralFilterSetLayout });
-
-		computeCmd.DispatchCompute(*manager->m_BilateralFilterShader, (halfResWidth + 7) / 8, (halfResHeight + 7) / 8, 1, { m_Scene->GetGlobalDescriptorSet(), manager->m_BilateralFilterDescriptorSets[0] });
-
-	}
-
-
-	void VansVKDevice::UpdateSSAOFilterDescriptorSet(VansRenderPassManager* renderPassManager)
-	{
-		if (IsFeatureDescriptorCurrent(m_SSAOFilterDescSetGeneration))
-			return;
-
-		VansMaterialManager* manager = m_Scene != nullptr ? m_Scene->GetMaterialManager() : nullptr;
-		if (manager == nullptr || manager->m_BilateralFilterDescriptorSets.empty())
-			return;
-
-		VansTexture* ssaoResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSAO_RESULT);
-		VansTexture* ssaoFilterResult = manager->GetRuntimeRenderTexture(
-			VansMaterialManager::RT_SSAO_FILTER_RESULT);
-		if (ssaoResult == nullptr || ssaoFilterResult == nullptr)
-			return;
-
-		auto& positionGbuffer = renderPassManager->GetGbuffer2();
-		auto* descriptorManager = VansVKDescriptorManager::GetInstance();
-		descriptorManager->BeginDescriptorUpdate();
-		descriptorManager->WriteImageDescriptor(
-			manager->m_BilateralFilterDescriptorSets[0],
-			PassBinding::TEXTURE_0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ ssaoResult->GetImage().GetSampler(), ssaoResult->GetImage().GetImageView(),
-				VK_IMAGE_LAYOUT_GENERAL }}, 0);
-		descriptorManager->WriteImageDescriptor(
-			manager->m_BilateralFilterDescriptorSets[0],
-			PassBinding::TEXTURE_1,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ positionGbuffer.GetSampler(), positionGbuffer.GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}, 0);
-		descriptorManager->WriteImageDescriptor(
-			manager->m_BilateralFilterDescriptorSets[0],
-			PassBinding::UAV_IMAGE_1,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			{{ ssaoFilterResult->GetImage().GetSampler(),
-				ssaoFilterResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }}, 0);
-		descriptorManager->CommitDescriptorUpdates();
-		MarkFeatureDescriptorCurrent(m_SSAOFilterDescSetGeneration);
-	}
 
 
 

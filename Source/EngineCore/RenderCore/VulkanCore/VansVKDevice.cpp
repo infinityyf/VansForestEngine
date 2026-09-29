@@ -288,10 +288,9 @@ namespace VansGraphics
 		};
 		resetIfValid(m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKShadowMapsCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKHairShadowCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKGBufferMaterialCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKSSAORawCommandBuffer.m_CommandBufferFinishSubmitFence);
+		resetIfValid(m_VansVKGTAORawCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKVegetationCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKEarlyAuxCommandBuffer.m_CommandBufferFinishSubmitFence);
@@ -822,10 +821,9 @@ namespace VansGraphics
 
 		if (!createFrameCommandBuffer(m_VansVKCommandBuffer, m_GraphicsQueueFamilyIndex, "GraphicsMain")
 			|| !createFrameCommandBuffer(m_VansVKShadowMapsCommandBuffer, m_GraphicsQueueFamilyIndex, "ShadowMaps")
-			|| !createFrameCommandBuffer(m_VansVKHairShadowCommandBuffer, m_GraphicsQueueFamilyIndex, "HairShadow")
 			|| !createFrameCommandBuffer(m_VansVKGBufferCommandBuffer, m_GraphicsQueueFamilyIndex, "GBuffer")
 			|| !createFrameCommandBuffer(m_VansVKGBufferMaterialCommandBuffer, m_GraphicsQueueFamilyIndex, "GBufferMaterial")
-			|| !createFrameCommandBuffer(m_VansVKSSAORawCommandBuffer, m_GraphicsQueueFamilyIndex, "SSAORaw")
+			|| !createFrameCommandBuffer(m_VansVKGTAORawCommandBuffer, m_GraphicsQueueFamilyIndex, "GTAORaw")
 			|| !createFrameCommandBuffer(m_VansVKGraphicsScreenCommandBuffer, m_ComputeQueueFamilyIndex, "ComputeScreen")
 			|| !createFrameCommandBuffer(m_VansVKVegetationCommandBuffer, m_ComputeQueueFamilyIndex, "Vegetation")
 			|| !createFrameCommandBuffer(m_VansVKEarlyAuxCommandBuffer, m_ComputeQueueFamilyIndex, "EarlyAux")
@@ -894,10 +892,9 @@ namespace VansGraphics
 		DestroyVKFence(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKGIDataCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKShadowMapsCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKHairShadowCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKGBufferMaterialCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKSSAORawCommandBuffer.m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(m_VansVKGTAORawCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_ImmediateGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
@@ -908,10 +905,9 @@ namespace VansGraphics
 		m_VansVKRayTracingCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKGIDataCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKShadowMapsCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKHairShadowCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 	m_VansVKGBufferCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 	m_VansVKGBufferMaterialCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKSSAORawCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		m_VansVKGTAORawCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKGraphicsScreenCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_ImmediateGraphicsCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 

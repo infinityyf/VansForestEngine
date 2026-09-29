@@ -23,6 +23,13 @@ namespace VansGraphics
 		std::string effectorBone;
 	};
 
+	struct VansRigVirtualBoneDefinition
+	{
+		std::string name;
+		std::string sourceBone;
+		std::string targetBone;
+	};
+
 	struct VansRigChainDefinition
 	{
 		std::string id;
@@ -119,6 +126,7 @@ namespace VansGraphics
 		glm::vec3 modelForward{ 0.0f, 0.0f, 1.0f };
 		glm::vec3 modelUp{ 0.0f, 1.0f, 0.0f };
 		std::unordered_map<std::string, std::string> semanticBones;
+		std::vector<VansRigVirtualBoneDefinition> virtualBones;
 		std::vector<VansRigSocketDefinition> sockets;
 		std::vector<VansRigAttachmentProfileDefinition> attachmentProfiles;
 		std::vector<VansRigGoalDefinition> goals;
@@ -257,6 +265,9 @@ namespace VansGraphics
 	class VansAnimationRigCompiler
 	{
 	public:
+		// Preserve imported/skinned bone indices while extending the runtime pose.
+		static bool BuildRuntimeSkeleton(const VansAnimationRigAsset& asset,
+			const Skeleton& importedSkeleton, Skeleton& outSkeleton, std::string& error);
 		static bool Compile(const VansAnimationRigAsset& asset,
 		                    const Skeleton& skeleton,
 		                    VansCompiledAnimationRig& outRig,

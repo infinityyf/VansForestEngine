@@ -62,6 +62,8 @@ namespace VansGraphics
         GLOBAL_BINDING_LIGHT_COOKIE_TEXTURES = 38,
         GLOBAL_BINDING_LIGHT_COOKIE_DATA = 39,
         GLOBAL_BINDING_GRASS_ENERGY_LUT = 40,
+		GLOBAL_BINDING_SURFACE_WEATHER_FRAME_UBO = 41,
+		GLOBAL_BINDING_SURFACE_WEATHER_RIPPLE    = 42,
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 
@@ -126,10 +128,8 @@ namespace VansGraphics
 		HAIR_TEXTURE_BINDING_NORMAL    = 2,
 		HAIR_TEXTURE_BINDING_ROUGHNESS = 3,
 		HAIR_TEXTURE_BINDING_AO        = 4,
-		HAIR_TEXTURE_BINDING_SHIFT     = 5,
-		HAIR_TEXTURE_BINDING_FLOW      = 6,
-		HAIR_TEXTURE_BINDING_ID        = 7,
-		HAIR_TEXTURE_BINDING_PARAMS    = 8,
+		HAIR_TEXTURE_BINDING_FLOW      = 5,
+		HAIR_TEXTURE_BINDING_PARAMS    = 6,
 	};
 
 	// ====================================================================
@@ -247,7 +247,7 @@ namespace VansGraphics
 		DEFERRED_BINDING_GBUFFER_2        = 2,
 		DEFERRED_BINDING_GBUFFER_3        = 3,
 		DEFERRED_BINDING_DEPTH            = 4,
-		DEFERRED_BINDING_SSAO             = 5,
+		DEFERRED_BINDING_GTAO             = 5,
 		DEFERRED_BINDING_SSGI             = 6,
 		DEFERRED_BINDING_SSR              = 7,
 		DEFERRED_BINDING_SHADOW_MAP       = 8,
@@ -271,17 +271,6 @@ namespace VansGraphics
 		DEFERRED_BINDING_AMBIENT_SKY_CACHE_Y = 36,
 		DEFERRED_BINDING_AMBIENT_SKY_CACHE_Z = 37,
 		DEFERRED_BINDING_AMBIENT_SKY_CACHE_PARAMS = 38,
-	};
-
-	// --- Screen-Space Pass (SSAO etc.) ---
-	enum ScreenSpacePassBinding : uint32_t
-	{
-		SCREEN_BINDING_NORMAL        = 0,
-		SCREEN_BINDING_GBUFFER0      = 1,
-		SCREEN_BINDING_GBUFFER1      = 2,
-		SCREEN_BINDING_GBUFFER2      = 3,
-		SCREEN_BINDING_DEPTH         = 4,
-		SCREEN_BINDING_SSAO_OUTPUT   = 5,
 	};
 
 	// --- Atmosphere Compute Pass ---
@@ -383,6 +372,21 @@ namespace VansGraphics
 	static constexpr uint32_t TERRAIN_MAX_LAYERS = 8;
 
 	// --- SSGI Compute Pass ---
+	    enum GTAODepthBinding : uint32_t
+    {
+        GTAO_DEPTH_POSITION = 0, GTAO_DEPTH_SOURCE = 1, GTAO_DEPTH_RESULT = 2
+    };
+    enum GTAOMainBinding : uint32_t
+    {
+        GTAO_MAIN_NORMAL = 0, GTAO_MAIN_MATERIAL = 1, GTAO_MAIN_POSITION = 2,
+        GTAO_MAIN_DEPTH = 3, GTAO_MAIN_RAW = 4, GTAO_MAIN_EDGES = 5
+    };
+    enum GTAODenoiseBinding : uint32_t
+    {
+        GTAO_DENOISE_RAW = 0, GTAO_DENOISE_EDGES = 1, GTAO_DENOISE_NORMAL = 2,
+        GTAO_DENOISE_MATERIAL = 3, GTAO_DENOISE_POSITION = 4, GTAO_DENOISE_RESULT = 5
+    };
+
 	enum SSGIPassBinding : uint32_t
 	{
 		SSGI_BINDING_NORMAL       = 0,
@@ -500,14 +504,6 @@ namespace VansGraphics
 		TILE_BUILD_BINDING_GRID    = 0,  // TileLightHeader SSBO (write)
 		TILE_BUILD_BINDING_INDICES = 1,  // TileLight Index SSBO  (write)
 		TILE_BUILD_BINDING_PARAMS  = 2,  // TileLightBuildParams UBO (read)
-	};
-
-	// --- Bilateral Filter Compute Pass ---
-	enum BilateralFilterPassBinding : uint32_t
-	{
-		BILATERAL_BINDING_COLOR   = 0,
-		BILATERAL_BINDING_DEPTH   = 1,
-		BILATERAL_BINDING_RESULT  = 2,
 	};
 
 	// --- HIZ Compute Pass ---
@@ -657,16 +653,22 @@ namespace VansGraphics
 	enum HairCompositePassBinding : uint32_t
 	{
 		HAIR_COMP_BINDING_COLOR = 0,
+        HAIR_COMP_BINDING_OPTICAL_DEPTH = 1,
 	};
 
 	// --- Hair Lighting Pass（Set 1）---
 	enum HairLightingPassBinding : uint32_t
 	{
-		HAIR_LIGHTING_BINDING_OIT_HEAD = 0,
-		HAIR_LIGHTING_BINDING_OIT_NODES = 1,
-		HAIR_LIGHTING_BINDING_OIT_COUNTER = 2,
-		HAIR_LIGHTING_BINDING_DEEP_OPACITY = 3,
-		HAIR_LIGHTING_BINDING_CASCADE_SHADOW = 4,
+		HAIR_LIGHTING_BINDING_LAYER_DEPTHS = 1,
+		HAIR_LIGHTING_BINDING_PUNCTUAL_SHADOW = 2,
+		HAIR_LIGHTING_BINDING_CASCADE_SHADOW = 3,
+        HAIR_LIGHTING_BINDING_IES = 4,
+        HAIR_LIGHTING_BINDING_GI_IRRADIANCE = 5,
+        HAIR_LIGHTING_BINDING_GI_VISIBILITY = 6,
+        HAIR_LIGHTING_BINDING_GI_STATE = 7,
+        HAIR_LIGHTING_BINDING_GI_LAYOUT = 8,
+        HAIR_LIGHTING_BINDING_SKY_DIFFUSE = 9,
+        HAIR_LIGHTING_BINDING_OPAQUE_DEPTH = 10,
 	};
 
 	// --- Transmission Glass Pass（Set 1）---
@@ -898,9 +900,11 @@ namespace VansGraphics
 		static void CreateAndAllocate_VertexDeformation(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_PostProcess(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_DeferredLighting(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_ScreenSpace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_Empty(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_Terrain(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+        static void CreateAndAllocate_GTAODepth(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount);
+        static void CreateAndAllocate_GTAOMain(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets);
+        static void CreateAndAllocate_GTAODenoise(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets);
 		static void CreateAndAllocate_SSGI(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSGIProbeCache(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
 		static void CreateAndAllocate_ScreenSpaceShadow(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
@@ -912,7 +916,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_SSR_Trace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_Resolve(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_TemporalAA(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_BilateralFilter(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_HIZ(std::vector<VkDescriptorSetLayout>& outLayouts, std::vector<VkDescriptorSet>& outSets, uint32_t mipCount);
 		static void CreateAndAllocate_HIZSeed(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_MainCameraHiZCull(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
@@ -945,6 +948,7 @@ namespace VansGraphics
 		// Water Composite Pass Set 1：WaterGBuf_Normal + WaterGBuf_LinearDepth + Params UBO
 		static void CreateAndAllocate_WaterComposite(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Hair Composite Pass Set 1：HairVis0(albedo + coverage)
+        static bool CreateAndAllocate_HairDebug(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets);
 		static void CreateAndAllocate_HairComposite(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Hair Lighting Pass Set 1：HairVis0-3 visibility buffers
 		static void CreateAndAllocate_HairLighting(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

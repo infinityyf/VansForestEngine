@@ -208,7 +208,9 @@ bool RunModelLodContractTests()
         VansSceneContentBuildPlan lodPlan;
         std::string lodPlanError;
         check(VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
-            VansSerializedValue::Array({lodEntity}), root.string(), lodPlan, lodPlanError),
+            VansSerializedValue::Array({lodEntity}), root.string(),
+            [](VansAssetGuid) { return std::optional<VansAssetRecord>{}; },
+            lodPlan, lodPlanError),
             "LODGroup scene projection failed: " + lodPlanError);
         check(lodPlan.objects.objects.size() == 1 && lodPlan.objects.objects[0].lodGroup.has_value() &&
             lodPlan.objects.objects[0].lodGroup->levels.size() == 1,

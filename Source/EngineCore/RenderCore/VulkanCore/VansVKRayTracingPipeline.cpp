@@ -3,6 +3,7 @@
 #include "../VansCamera.h"
 #include "../VansMaterial.h"
 #include "VansVKCommandBuffer.h"
+#include "VansRenderPass.h"
 #include "../../Util/VansProfiler.h"
 #include "../../Util/VansLog.h"
 #include <stdexcept>
@@ -25,6 +26,7 @@ namespace VansGraphics
 					materials->ClearAmbientSkyCacheRenderData(m_VansVKLogicDevice);
 				}
 				PrepareAmbientSkyCacheRenderData();
+				SetupHairLightingDescriptors(VansRenderPassManager::GetInstance());
 				// 新资源发布后才废弃消费者绑定；失败时旧光照和预览仍然有效。
 				m_Scene->GetReflectionProbeSystem()->ReleaseGILightingBindings();
 				if (auto* materials = m_Scene->GetMaterialManager()) materials->m_SSGITemporalFrame = 0;

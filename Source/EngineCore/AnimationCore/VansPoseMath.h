@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VansPoseTypes.h"
+#include "VansAnimGraphNodeType.h"
 
 #include <../../GLM/glm.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
@@ -10,6 +11,11 @@
 
 namespace VansGraphics::VansPoseMath
 {
+	bool MakeAdditiveDeltaPose(VansAnimationFrameVector<VansBoneTransform>& pose,
+		const VansAnimationFrameVector<VansBoneTransform>& reference, const Skeleton& skeleton, VansAdditivePoseMode mode);
+	bool ApplyAdditiveDeltaPose(const VansAnimationFrameVector<VansBoneTransform>& base,
+		const VansAnimationFrameVector<VansBoneTransform>& additive, float weight,
+		const Skeleton& skeleton, VansAnimationFrameVector<VansBoneTransform>& result, VansAdditivePoseMode mode);
 	bool TryDecompose(const glm::mat4& matrix, VansBoneTransform& outTransform);
 	glm::mat4 Compose(const VansBoneTransform& transform);
 

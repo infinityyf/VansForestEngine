@@ -424,6 +424,37 @@ namespace VansGraphics
 				outPayload.localPose[boneIndex] = InterpolateBoneKeys(
 					clip.boneKeyframes[boneIndex], sampleTime, outPayload.localPose[boneIndex]);
 		}
+		if (!skeleton.virtualBoneLinks.empty())
+		{
+			const std::size_t physicalCount = static_cast<std::size_t>(
+				skeleton.virtualBoneLinks.front().boneIndex);
+			VansAnimationFrameVector<glm::mat4> model(skeleton.bones.size(), glm::mat4(1.0f));
+			for (int boneIndex : skeleton.topologicalOrder)
+			{
+				const std::size_t index = static_cast<std::size_t>(boneIndex);
+				if (index >= physicalCount) continue;
+				const int parent = skeleton.bones[index].parentIndex;
+				model[index] = (parent < 0 ? glm::mat4(1.0f)
+					: model[static_cast<std::size_t>(parent)])
+					* VansPoseMath::Compose(outPayload.localPose[index]);
+			}
+			for (const Skeleton::VirtualBoneLink& link : skeleton.virtualBoneLinks)
+			{
+				const std::size_t index = static_cast<std::size_t>(link.boneIndex);
+				const int parent = skeleton.bones[index].parentIndex;
+				const bool authoredTrack = index < clip.boneKeyframes.size()
+					&& !clip.boneKeyframes[index].empty();
+				if (!authoredTrack)
+				{
+					const glm::mat4 local = glm::inverse(model[static_cast<std::size_t>(link.sourceBoneIndex)])
+						* model[static_cast<std::size_t>(link.targetBoneIndex)];
+					if (!VansPoseMath::TryDecompose(local, outPayload.localPose[index]))
+						return false;
+				}
+				model[index] = model[static_cast<std::size_t>(parent)]
+					* VansPoseMath::Compose(outPayload.localPose[index]);
+			}
+		}
 
 		SampleNodeTransforms(clip, sampleTime, outPayload.nodeTransforms);
 		outPayload.curves.reserve(clip.curves.size());

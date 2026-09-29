@@ -1,0 +1,89 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../../Common/Common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 1, binding = 0) uniform sampler2D rawInput;
+layout(set = 1, binding = 1) uniform sampler2D edgeInput;
+layout(set = 1, binding = 2) uniform sampler2D normalInput;
+layout(set = 1, binding = 3) uniform sampler2D materialInput;
+layout(set = 1, binding = 4) uniform sampler2D positionInput;
+layout(set = 1, binding = 5, rg16f) uniform writeonly image2D result;
+
+const int tileSize = 12;
+shared vec2 aoTile[144];
+shared vec4 surfaceTile[144];
+shared vec4 edgeTile[144];
+shared uint grassTile[144];
+
+int Index(ivec2 p) { return p.y * tileSize + p.x; }
+vec4 UnpackEdges(uint value)
+{
+    return vec4((value >> 6) & 3u, (value >> 4) & 3u, (value >> 2) & 3u, value & 3u) / 3.0;
+}
+float Connection(ivec2 a, ivec2 b)
+{
+    vec4 ea = edgeTile[Index(a)], eb = edgeTile[Index(b)];
+    if (b.x < a.x) return ea.x * eb.y;
+    if (b.x > a.x) return ea.y * eb.x;
+    if (b.y < a.y) return ea.z * eb.w;
+    return ea.w * eb.z;
+}
+float PathWeight(ivec2 start, ivec2 offset, bool horizontalFirst)
+{
+    float weight = 1.0;
+    ivec2 cursor = start;
+    for (int axisStep = 0; axisStep < 2; ++axisStep)
+    {
+        int axis = horizontalFirst ? axisStep : 1 - axisStep;
+        ivec2 direction = ivec2(0);
+        direction[axis] = offset[axis] < 0 ? -1 : 1;
+        for (int i = 0; i < abs(offset[axis]); ++i)
+        {
+            weight *= Connection(cursor, cursor + direction);
+            cursor += direction;
+        }
+    }
+    return weight;
+}
+void main()
+{
+    ivec2 size = imageSize(result);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 tileOrigin = ivec2(gl_WorkGroupID.xy) * 8 - 2;
+    int thread = int(gl_LocalInvocationID.y) * 8 + int(gl_LocalInvocationID.x);
+    for (int i = thread; i < 144; i += 64)
+    {
+        ivec2 p = clamp(tileOrigin + ivec2(i % tileSize, i / tileSize), ivec2(0), size - 1);
+        vec3 n = texelFetch(normalInput, p, 0).xyz;
+        surfaceTile[i] = vec4(n / max(length(n), 1e-6), texelFetch(positionInput, p, 0).w);
+        aoTile[i] = texelFetch(rawInput, p, 0).rg;
+        edgeTile[i] = UnpackEdges(uint(round(texelFetch(edgeInput, p, 0).r)));
+        grassTile[i] = uint(int(round(texelFetch(materialInput, p, 0).z)) == MATERIAL_ID_GRASS);
+    }
+    barrier();
+    if (any(greaterThanEqual(pixel, size))) return;
+    ivec2 center = ivec2(gl_LocalInvocationID.xy) + 2;
+    int c = Index(center);
+    if (surfaceTile[c].w <= 0.0)
+    {
+        imageStore(result, pixel, vec4(1.0));
+        return;
+    }
+    vec2 sum = aoTile[c];
+    float weightSum = 1.0;
+    for (int y = -2; y <= 2; ++y)
+        for (int x = -2; x <= 2; ++x)
+        {
+            if (x == 0 && y == 0) continue;
+            ivec2 offset = ivec2(x, y);
+            int s = Index(center + offset);
+            if (surfaceTile[s].w <= 0.0 || grassTile[c] != grassTile[s]) continue;
+            float normalWeight = pow(max(dot(surfaceTile[c].xyz, surfaceTile[s].xyz), 0.0), 8.0);
+            float edgeWeight = 0.5 * (PathWeight(center, offset, true) + PathWeight(center, offset, false));
+            float weight = exp(-float(x*x + y*y) / 8.0) * normalWeight * edgeWeight;
+            sum += aoTile[s] * weight;
+            weightSum += weight;
+        }
+    imageStore(result, pixel, vec4(clamp(sum / weightSum, 0.0, 1.0), 1.0, 1.0));
+}

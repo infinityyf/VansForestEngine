@@ -11,7 +11,6 @@ layout(location = 0) in vec4 position;
 layout(location = 1) in vec2 uv;
 
 layout(location = 0) out vec2 fragUV;
-layout(location = 1) out float shadowDepth;
 
 void main()
 {
@@ -20,8 +19,7 @@ void main()
     vec4 localPosition = position;
     VansApplyVertexPositionDeformation(localPosition, drawData.vertexFeatureMask);
     vec4 clipCoord = uDirectionLight.shadowMatrix[drawData.passUser0] * modelMatrix * localPosition;
-    clipCoord.z = clipCoord.z * 0.5 + 0.5;
+    clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
     gl_Position = clipCoord;
-    shadowDepth = clipCoord.z;
     fragUV = uv;
 }

@@ -79,12 +79,17 @@ namespace VansGraphics
         {
             throw std::invalid_argument("Terrain material height detail settings are invalid.");
         }
-        const auto& wetness=settings.riverWetness;
+        const auto& wetness=settings.wetSurface;
         if (!std::isfinite(wetness.albedoScale) || wetness.albedoScale<0 || wetness.albedoScale>1 ||
             !std::isfinite(wetness.roughness) || wetness.roughness<0 || wetness.roughness>1 ||
-            !std::isfinite(wetness.detailNormalScale) || wetness.detailNormalScale<0 || wetness.detailNormalScale>1)
+            !IsFinitePositive(settings.puddle.scaleMeters) ||
+            !std::isfinite(settings.puddle.detailScale) || settings.puddle.detailScale<=1.0f ||
+            !std::isfinite(settings.puddle.threshold) || settings.puddle.threshold<0.0f || settings.puddle.threshold>1.0f ||
+            !std::isfinite(settings.puddle.softness) || settings.puddle.softness<=0.0f || settings.puddle.softness>0.5f ||
+            !std::isfinite(settings.puddle.strength) || settings.puddle.strength<0.0f || settings.puddle.strength>1.0f ||
+            !std::isfinite(settings.puddle.seed))
         {
-            throw std::invalid_argument("Terrain river wetness material settings are invalid.");
+            throw std::invalid_argument("Terrain wet-surface or puddle-noise settings are invalid.");
         }
 
         for (const TerrainLayerConfig& layer : config.layers)
@@ -133,9 +138,8 @@ namespace VansGraphics
         m_EnableHeightDetail = settings.heightDetailEnabled;
         m_HeightDetailStrength = settings.heightDetailStrength;
         m_HeightDetailFadeStart = settings.heightDetailFadeStart;
-        m_RiverWetAlbedoScale = settings.riverWetness.albedoScale;
-        m_RiverWetRoughness = settings.riverWetness.roughness;
-        m_RiverWetDetailNormalScale = settings.riverWetness.detailNormalScale;
+        m_WetSurface = settings.wetSurface;
+        m_Puddle = settings.puddle;
         ConfigureLodSelector();
 
         m_HeightMap = new VansTexture();
@@ -207,8 +211,6 @@ namespace VansGraphics
             params.tilingFactors[i * 4] = i < m_LayerCount ? config.layers[i].tiling : 1.0f;
         params.heightfieldParams = glm::vec4(
             m_TerrainSize, m_MaxHeight, m_HeightOffset, static_cast<float>(PatchGridResolution));
-        params.riverWetnessParams = glm::vec4(
-            m_RiverWetAlbedoScale,m_RiverWetRoughness,m_RiverWetDetailNormalScale,0.0f);
         m_ParamsUBO.CreatVulkanBuffer(device->GetLogicDevice(), sizeof(TerrainParamsGPU),
             VK_FORMAT_R32_SFLOAT, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -584,20 +586,16 @@ namespace VansGraphics
         UpdateHeightDetailUBO();
     }
 
-    void VansTerrain::UpdateRiverWetnessUBO()
+    void VansTerrain::SetWetSurfaceResponse(
+        float albedoScale,
+        float roughness)
     {
-        const glm::vec4 params(
-            m_RiverWetAlbedoScale,m_RiverWetRoughness,m_RiverWetDetailNormalScale,0.0f);
-        m_ParamsUBO.SetBufferData(
-            &params,offsetof(TerrainParamsGPU,riverWetnessParams),sizeof(params));
+        m_WetSurface.albedoScale=std::clamp(albedoScale,0.0f,1.0f);
+        m_WetSurface.roughness=std::clamp(roughness,0.0f,1.0f);
     }
 
-    void VansTerrain::SetRiverWetnessResponse(
-        float albedoScale,float roughness,float detailNormalScale)
+    void VansTerrain::SetPuddleResponse(const Vans::VansTerrainPuddleSettings& puddle)
     {
-        m_RiverWetAlbedoScale=std::clamp(albedoScale,0.0f,1.0f);
-        m_RiverWetRoughness=std::clamp(roughness,0.0f,1.0f);
-        m_RiverWetDetailNormalScale=std::clamp(detailNormalScale,0.0f,1.0f);
-        UpdateRiverWetnessUBO();
+        m_Puddle=puddle;
     }
 }

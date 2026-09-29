@@ -149,18 +149,10 @@ namespace VansGraphics
 
 		VansVKImage m_GBufferImage2; // worldposition + linear depth
 
-		VansVKImage m_HairVis0Image;
-		VansVKImage m_HairVis1Image;
-		VansVKImage m_HairVis2Image;
-		VansVKImage m_HairVis3Image;
-		VansVKImage m_HairDepthImage;
-		VansVKImage m_HairCoverageImage;
+		VansVKImage m_HairLayerDepthImage;
 		VansVKImage m_HairColorImage;
-		VansVKImage m_HairDeepOpacityImage;
-		VansVKImage m_HairOITHeadImage;
-		VansVKBuffer m_HairOITNodeBuffer;
-		VansVKBuffer m_HairOITCounterBuffer;
-		uint32_t m_HairOITMaxNodes = 0;
+		VansVKImage m_HairOpticalDepthImage;
+		VansVKBuffer m_HairLayerDepthBuffer;
 
 	private:
 		static VansRenderPassManager* instance;
@@ -200,9 +192,7 @@ namespace VansGraphics
 		// 原始不透明光照 pass：仅产生未经过大气的 HDR 辐亮度。
 		VansVKRenderPass m_VansRawOpaqueLightingPass;
 
-		// Screen-space raw feature pass. Currently runs SSAO at half resolution
 		// and writes only storage images, so it has no framebuffer attachments.
-		VansVKRenderPass m_VansScreenSpaceEffectsPass;
 
 		// Forward opaque pass after deferred lighting and before transparent.
 		// RawOpaqueSceneColor 的统一大气前表面目标：Forward Opaque 与 Water
@@ -210,8 +200,8 @@ namespace VansGraphics
 		VansVKRenderPass m_VansPreAtmosphereSurfacePass;
 
 		VansVKRenderPass m_VansHairVisibilityPass;
+		VansVKRenderPass m_VansHairDepthResolvePass;
 		VansVKRenderPass m_VansHairLightingPass;
-		VansVKRenderPass m_VansHairDeepOpacityPass;
 
 		VkDevice m_LogicDevice;
 
@@ -259,10 +249,9 @@ namespace VansGraphics
 		// ── 水面 GBuffer pass ──────────────────────────────────────────────
 		// 须在 SetupVansDeferredRenderPass 之后调用（依赖已创建的 m_DepthImage）
 		void SetupVansWaterGBufferPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
-		void SetupVansScreenSpaceEffectsPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
-		void SetupVansHairVisibilityPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
+		void SetupVansHairVisibilityPass(VkDevice& logic_device, VkPhysicalDevice physicalDevice, const VkExtent2D& renderResolution);
+		void SetupVansHairDepthResolvePass(VkDevice& logic_device, const VkExtent2D& renderResolution);
 		void SetupVansHairLightingPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
-		void SetupVansHairDeepOpacityPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
 
 		// 水面 GBuffer 纹理访问器（供 VansWaterSystem / 描述符写入使用）
 		VansVKImage& GetWaterGBufNormal()      { return m_WaterGBufNormalImage; }
@@ -271,24 +260,14 @@ namespace VansGraphics
 		VansVKImage& GetWaterGBufLinearDepth() { return m_WaterGBufLinearDepthImage; }
 
 		VansVKRenderPass& GetVansRawOpaqueLightingPass() { return m_VansRawOpaqueLightingPass; }
-		VansVKRenderPass& GetVansScreenSpaceEffectsPass() { return m_VansScreenSpaceEffectsPass; }
 
 		VansVKRenderPass& GetVansPreAtmosphereSurfacePass() { return m_VansPreAtmosphereSurfacePass; }
 		VansVKRenderPass& GetVansHairVisibilityPass() { return m_VansHairVisibilityPass; }
+		VansVKRenderPass& GetVansHairDepthResolvePass() { return m_VansHairDepthResolvePass; }
 		VansVKRenderPass& GetVansHairLightingPass() { return m_VansHairLightingPass; }
-		VansVKRenderPass& GetVansHairDeepOpacityPass() { return m_VansHairDeepOpacityPass; }
-		VansVKImage& GetHairVis0() { return m_HairVis0Image; }
-		VansVKImage& GetHairVis1() { return m_HairVis1Image; }
-		VansVKImage& GetHairVis2() { return m_HairVis2Image; }
-		VansVKImage& GetHairVis3() { return m_HairVis3Image; }
-		VansVKImage& GetHairDepth() { return m_HairDepthImage; }
-		VansVKImage& GetHairCoverage() { return m_HairCoverageImage; }
 		VansVKImage& GetHairColor() { return m_HairColorImage; }
-		VansVKImage& GetHairDeepOpacity() { return m_HairDeepOpacityImage; }
-		VansVKImage& GetHairOITHead() { return m_HairOITHeadImage; }
-		VansVKBuffer& GetHairOITNodeBuffer() { return m_HairOITNodeBuffer; }
-		VansVKBuffer& GetHairOITCounterBuffer() { return m_HairOITCounterBuffer; }
-		uint32_t GetHairOITMaxNodes() const { return m_HairOITMaxNodes; }
+		VansVKImage& GetHairOpticalDepth() { return m_HairOpticalDepthImage; }
+		VansVKBuffer& GetHairLayerDepthBuffer() { return m_HairLayerDepthBuffer; }
 
 		// Water GBuffer pass 访问器
 		VansVKRenderPass& GetVansWaterGBufferPass() { return m_VansWaterGBufferPass; }

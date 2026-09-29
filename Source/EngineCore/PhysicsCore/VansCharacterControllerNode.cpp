@@ -4,6 +4,9 @@
 #include "VansPhysicsNativeAccess.h"
 #include "VansCollisionFilter.h"
 #include "VansRagdollSystem.h"
+#include "VansPhysicsEvents.h"
+#include "VansCharacterSweepSolver.h"
+#include "../EventCore/VansEventBus.h"
 #include "../RuntimeCore/VansFramePhase.h"
 #include "../RuntimeCore/VansThreadContract.h"
 #include "../SceneRuntime/Transform/VansTransformStore.h"
@@ -19,11 +22,20 @@ namespace VansEngine
 {
 	using namespace physx;
 
-	struct VansCharacterControllerNode::NativeState
+	struct VansCharacterControllerNode::NativeState : PxUserControllerHitReport
 	{
 		PxCapsuleController* controller = nullptr;
 		PxFilterData filterData;
 		PxControllerCollisionFlags lastCollisionFlags{ 0 };
+		std::vector<glm::vec3> contactNormals;
+		NativeState() { contactNormals.reserve(16); }
+		void Record(const PxControllerHit& hit)
+		{
+			contactNormals.emplace_back(hit.worldNormal.x,hit.worldNormal.y,hit.worldNormal.z);
+		}
+		void onShapeHit(const PxControllerShapeHit& hit) override { Record(hit); }
+		void onControllerHit(const PxControllersHit& hit) override { Record(hit); }
+		void onObstacleHit(const PxControllerObstacleHit& hit) override { Record(hit); }
 	};
 
     namespace
@@ -31,6 +43,9 @@ namespace VansEngine
         class VansCCTQueryFilterCallback final : public PxQueryFilterCallback
         {
         public:
+            explicit VansCCTQueryFilterCallback(const PxRigidActor* ignoredActor = nullptr,
+                PxQueryHitType::Enum acceptedType = PxQueryHitType::eBLOCK)
+                : m_IgnoredActor(ignoredActor), m_AcceptedType(acceptedType) {}
             PxQueryHitType::Enum preFilter(const PxFilterData& filterData,
                                            const PxShape* shape,
                                            const PxRigidActor* actor,
@@ -54,8 +69,7 @@ namespace VansEngine
                                              const PxShape* shape,
                                              const PxRigidActor* actor) const
             {
-                (void)actor;
-                if (!shape)
+                if (!shape || actor == m_IgnoredActor)
                     return PxQueryHitType::eNONE;
 
                 const PxFilterData targetData = shape->getQueryFilterData();
@@ -73,8 +87,10 @@ namespace VansEngine
                 if (!((maskA & (1u << layerB)) && (maskB & (1u << layerA))))
                     return PxQueryHitType::eNONE;
 
-                return PxQueryHitType::eBLOCK;
+                return m_AcceptedType;
             }
+            const PxRigidActor* m_IgnoredActor;
+            PxQueryHitType::Enum m_AcceptedType;
         };
     }
 
@@ -133,7 +149,8 @@ namespace VansEngine
             static_cast<double>(spawnPos.x),
             static_cast<double>(spawnPos.y),
             static_cast<double>(spawnPos.z));
-        desc.reportCallback = nullptr;
+        desc.reportCallback = m_Native.get();
+        desc.userData = this;
 
         m_Native->controller = static_cast<PxCapsuleController*>(
             manager->createController(desc));
@@ -198,18 +215,37 @@ namespace VansEngine
 
     void VansCharacterControllerNode::QueueMove(const glm::vec3& displacement, float dt)
     {
+        // 落地回调提交新移动时取消旧续算，不能把两次命令拼成同一物理帧。
+        if (m_PendingLanding) DiscardPendingMove();
         // 允许在一帧内多次调用，各次位移叠加
         m_PendingDisplacement += displacement;
         m_PendingDt            = dt;  // 以最后一次 dt 为准
         m_HasPendingMove       = true;
+        m_PendingModeledMotion = false;
+        m_PendingSubsteps = false;
     }
 
-    void VansCharacterControllerNode::FlushMoveAndSync()
+    VansCharacterMotionFlushResult VansCharacterControllerNode::FlushMoveAndSync()
     {
 		VANS_ASSERT_MAIN_THREAD();
 		VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
         if (!m_Native->controller || !m_Enabled)
-            return;
+        {
+            DiscardPendingMove();
+            return {};
+        }
+
+        if (m_PendingLanding)
+        {
+            if (IsGameplayMovementBlocked())
+            {
+                DiscardPendingMove();
+                return {};
+            }
+            m_Native->lastCollisionFlags |= PxControllerCollisionFlag::eCOLLISION_DOWN;
+            m_Locomotion.ResolveSweptMotionStep(m_PendingLanding->velocity,true,m_PendingLanding->unusedTime);
+            m_PendingLanding.reset();
+        }
 
         // ── Ragdoll 接管路径 ───────────────────────────────────────────
         // 若已绑定 AnimNode 且处于 Physics/Blend 模式，跳过 move()，改用 setPosition 瞬移
@@ -223,22 +259,84 @@ namespace VansEngine
                 // m_Properties.m_PositionOffset 将胶囊中心对齐到骨骼附近，可在 JSON 中微调。
                 SetPosition(boneWorldPos + m_Properties.m_PositionOffset);
                 SyncTransformFromController();
-                return;
+                return {};
             }
         }
 
         // ── 正常脚本驱动路径 ───────────────────────────────────────────
+		std::optional<VansCharacterMovementUpdatedEvent> result;
 		if (m_HasPendingMove)
 		{
-			const glm::vec3 positionBefore = GetPosition();
+			if (!m_FlushStarted)
+			{
+				m_FlushStartPosition = GetPosition();
+				m_FlushStarted = true;
+			}
+			const glm::vec3 positionBefore = m_FlushStartPosition;
 			const float resolvedDt = m_PendingDt;
 			PxVec3 disp(m_PendingDisplacement.x,
                         m_PendingDisplacement.y,
                         m_PendingDisplacement.z);
             VansCCTQueryFilterCallback queryFilterCallback;
             PxControllerFilters filters(&m_Native->filterData, &queryFilterCallback, nullptr);
-			m_Native->lastCollisionFlags = m_Native->controller->move(disp, 0.001f, m_PendingDt, filters);
+			if (m_PendingSubsteps)
+			{
+				Vans::VansCharacterMotionStep step;
+				while (m_Locomotion.NextMotionStep(step))
+				{
+					if (!step.grounded)
+					{
+						VansPhysicsCapsuleSweepRequest shape;
+						shape.origin=GetPosition();shape.axis=m_Properties.m_UpDirection;
+						shape.radius=m_Properties.m_Radius;
+						shape.halfHeight=.5f*m_Properties.m_Height+m_Properties.m_Radius;
+						shape.filter.ignoredTransformId=m_TransformID;
+						shape.filter.collisionLayerIndex=static_cast<int>(m_Native->filterData.word0);
+						shape.filter.includeTriggers=false;
+						const auto contact=VansCharacterSweepSolver::AdvanceAirLocked(shape,step,m_Properties.m_SlopeLimit);
+						m_Native->controller->setPosition(PxExtendedVec3(contact.position.x,contact.position.y,contact.position.z));
+						m_Native->lastCollisionFlags=PxControllerCollisionFlags();
+						if (contact.grounded)
+						{
+							m_PendingLanding = PendingLanding{contact.velocity,contact.unusedTime};
+							SyncTransformFromController();
+							return {std::nullopt,VansCharacterLandedEvent{m_TransformID,
+								contact.position,contact.landingVelocity,contact.landingNormal}};
+						}
+						if (contact.ceiling) m_Native->lastCollisionFlags|=PxControllerCollisionFlag::eCOLLISION_UP;
+						if (contact.blocked) m_Native->lastCollisionFlags|=PxControllerCollisionFlag::eCOLLISION_SIDES;
+						m_Locomotion.ResolveSweptMotionStep(contact.velocity,contact.grounded,contact.unusedTime);
+						continue;
+					}
+					m_Native->contactNormals.clear();
+					m_Native->lastCollisionFlags = m_Native->controller->move(
+						PxVec3(step.displacement.x,step.displacement.y,step.displacement.z),
+						1.e-6f,step.deltaTime,filters);
+					m_Locomotion.ResolveMotionStep(IsGrounded(),
+						m_Native->lastCollisionFlags.isSet(PxControllerCollisionFlag::eCOLLISION_UP),
+						m_Native->contactNormals.data(),m_Native->contactNormals.size());
+				}
+			}
+			else
+			{
+				m_Native->contactNormals.clear();
+				m_Native->lastCollisionFlags = m_Native->controller->move(disp, 0.001f, m_PendingDt, filters);
+			}
 			const glm::vec3 positionAfter = GetPosition();
+			if (resolvedDt > 0.0f)
+				result = VansCharacterMovementUpdatedEvent{ m_TransformID, resolvedDt,
+					positionAfter, (positionAfter - positionBefore) / resolvedDt, IsGrounded() };
+			if (result && m_PendingSubsteps)
+			{
+				result->motionVelocity = m_Locomotion.GetSimulatedVelocity();
+				result->simulationSteps = m_Locomotion.GetSimulationSteps();
+			}
+			else if (result && m_PendingModeledMotion)
+			{
+				const auto vertical = m_Locomotion.ResolveVerticalContact(IsGrounded(),
+					m_Native->lastCollisionFlags.isSet(PxControllerCollisionFlag::eCOLLISION_UP));
+				if (vertical) result->motionVelocity = glm::vec3(result->velocity.x,*vertical,result->velocity.z);
+			}
 			glm::vec3 resolvedPlanarDelta = positionAfter - positionBefore;
 			resolvedPlanarDelta.y = 0.0f;
 			if (resolvedDt > 0.0001f)
@@ -248,7 +346,7 @@ namespace VansEngine
 				m_Locomotion.RecordResolvedMotion(
 					resolvedDt,
 					transformPosition,
-					resolvedPlanarDelta / resolvedDt,
+					result && result->motionVelocity ? *result->motionVelocity : resolvedPlanarDelta / resolvedDt,
 					glm::vec3(m_PendingDisplacement.x, 0.0f,
 						m_PendingDisplacement.z) / resolvedDt);
 			}
@@ -258,6 +356,7 @@ namespace VansEngine
 
         // 无论是否有待执行位移，每帧都将 PhysX 位置同步回 Transform
         SyncTransformFromController();
+		return {result,std::nullopt};
     }
 
     void VansCharacterControllerNode::SetPosition(const glm::vec3& pos)
@@ -276,6 +375,48 @@ namespace VansEngine
 		}
 		m_Locomotion.ResetMotion(pos - m_Properties.m_PositionOffset, facingYaw);
 		m_Native->lastCollisionFlags = PxControllerCollisionFlags(0);
+    }
+
+    bool VansCharacterControllerNode::ResizeCapsule(float cylinderHeight)
+    {
+        if (!m_Native->controller || !std::isfinite(cylinderHeight) || cylinderHeight <= 0.0f)
+            return false;
+        const float oldHeight = m_Properties.m_Height;
+        if (std::abs(cylinderHeight - oldHeight) <= 1.0e-5f)
+            return true;
+
+        const glm::vec3 up = glm::normalize(m_Properties.m_UpDirection);
+        if (cylinderHeight > oldHeight)
+        {
+            auto& physics = VansPhysicsSystem::GetInstance();
+            PxScene* scene = VansPhysicsNativeAccess::Scene(physics);
+            if (!scene) return false;
+            const glm::vec3 center = GetPosition() + up * ((cylinderHeight - oldHeight) * 0.5f);
+            const glm::quat orientation = glm::quat(glm::vec3(1.0f, 0.0f, 0.0f), up);
+            PxOverlapHit overlapHit;
+            PxOverlapBuffer result(&overlapHit, 1);
+            VansCCTQueryFilterCallback callback(m_Native->controller->getActor(), PxQueryHitType::eTOUCH);
+            PxQueryFilterData filterData(m_Native->filterData,
+                PxQueryFlag::eSTATIC | PxQueryFlag::eDYNAMIC | PxQueryFlag::ePREFILTER);
+            // A small inset avoids classifying the supporting floor as an obstruction.
+            const float inset = (std::min)(0.001f, m_Properties.m_Radius * 0.01f);
+            const PxCapsuleGeometry geometry(m_Properties.m_Radius - inset,
+                cylinderHeight * 0.5f - inset);
+            {
+                PxSceneReadLock sceneLock(*scene);
+                if (scene->overlap(geometry,
+                    PxTransform(PxVec3(center.x, center.y, center.z),
+                        PxQuat(orientation.x, orientation.y, orientation.z, orientation.w)),
+                    result, filterData, &callback))
+                    return false;
+            }
+        }
+
+        m_Native->controller->resize(cylinderHeight);
+        m_Properties.m_Height = cylinderHeight;
+        m_Properties.m_PositionOffset += up * ((cylinderHeight - oldHeight) * 0.5f);
+        SyncTransformFromController();
+        return true;
     }
 
     glm::vec3 VansCharacterControllerNode::GetPosition() const
@@ -298,6 +439,18 @@ namespace VansEngine
 		m_Locomotion.SetIntent(intent);
 	}
 
+	void VansCharacterControllerNode::SetFacingYaw(float yaw)
+	{
+		VANS_ASSERT_MAIN_THREAD();
+		VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
+		if (!m_Enabled || IsGameplayMovementBlocked() || !std::isfinite(yaw) || m_TransformID == UINT32_MAX ||
+			!Vans::VansTransformStore::IsAllocated(m_TransformID)) return;
+		auto transform = Vans::VansTransformStore::Read(m_TransformID);
+		transform.m_Rotation.y = yaw;
+		Vans::VansTransformStore::Write(m_TransformID, transform);
+		Vans::VansTransformStore::MarkDirty(m_TransformID);
+	}
+
 	void VansCharacterControllerNode::AcquireGameplayMovementBlock()
 	{
 		if (m_GameplayMovementBlockCount < UINT32_MAX)
@@ -313,18 +466,24 @@ namespace VansEngine
 	void VansCharacterControllerNode::PrepareLocomotion(
 		float dt, const Vans::VansCharacterMotionSettings& settings)
 	{
-		if (m_TransformID == UINT32_MAX)
+		VANS_ASSERT_MAIN_THREAD();
+		VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
+		if (!IsEnabled() || !m_Native->controller || m_TransformID == UINT32_MAX)
 			return;
 
 		const Vans::VansTransform& transform =
 			Vans::VansTransformStore::Read(m_TransformID);
-		m_Locomotion.Prepare(
+		const bool jumpAccepted = m_Locomotion.Prepare(
 			dt,
 			settings,
 			transform.m_Position,
 			transform.m_Rotation.y,
 			IsGrounded(),
 			IsGameplayMovementBlocked());
+		// No simulation mutex is held: callbacks may query Physics and update
+		// animation parameters for the immediately following graph evaluation.
+		if (jumpAccepted)
+			Vans::VansEventBus::Get().PublishNow(VansCharacterJumpEvent{ m_TransformID });
 	}
 
 	void VansCharacterControllerNode::ResolveLocomotion(
@@ -353,6 +512,8 @@ namespace VansEngine
 			return;
 
 		m_PendingDisplacement = result.displacementWorld;
+		m_PendingModeledMotion = true;
+		m_PendingSubsteps = result.substepped;
 		m_PendingDt = result.deltaTime;
 		m_HasPendingMove = true;
 		transform.m_Rotation.y = result.facingYaw;
@@ -375,6 +536,10 @@ namespace VansEngine
 		m_PendingDisplacement = glm::vec3(0.0f);
 		m_PendingDt = 0.0f;
 		m_HasPendingMove = false;
+		m_PendingModeledMotion = false;
+		m_PendingSubsteps = false;
+		m_FlushStarted = false;
+		m_PendingLanding.reset();
 	}
 
     void VansCharacterControllerNode::SyncTransformFromController()

@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "../WeatherCore/VansRain.h"
+
 namespace Vans
 {
 struct VansScenePlanetSettingsConfig
@@ -287,6 +289,7 @@ struct VansSceneMainCameraHiZCullSettingsConfig
 struct VansSceneRenderSettingsConfig
 {
 	VansSceneEnvironmentSettingsConfig environment;
+	VansRainSettings rain;
 	std::optional<VansScenePostProcessSettingsConfig> postProcess;
 	std::optional<VansSceneGISettingsConfig> globalIllumination;
 	std::optional<VansSceneMainCameraHiZCullSettingsConfig> mainCameraHiZCulling;

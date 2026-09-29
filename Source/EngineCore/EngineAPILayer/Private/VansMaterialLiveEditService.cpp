@@ -295,22 +295,18 @@ bool SetMaterialTexturePointer(VansMaterial& material, const std::string& slot, 
 	}
 	if (auto* hair = dynamic_cast<VansHairMaterial*>(&material))
 	{
-		if (slot == "albedo" || slot == "basecolor" || slot == "diffuse")
+		if (slot == "basecolor")
 			hair->m_AlbedoTexture = texture;
-		else if (slot == "alpha" || slot == "opacity")
+		else if (slot == "alpha")
 			hair->m_AlphaTexture = texture;
 		else if (slot == "normal")
 			hair->m_NormalTexture = texture;
 		else if (slot == "roughness")
 			hair->m_RoughnessTexture = texture;
-		else if (slot == "ao" || slot == "occlusion")
+		else if (slot == "ao")
 			hair->m_AOTexture = texture;
-		else if (slot == "shift")
-			hair->m_ShiftTexture = texture;
 		else if (slot == "flow")
 			hair->m_FlowTexture = texture;
-		else if (slot == "id")
-			hair->m_IDTexture = texture;
 		else
 			return false;
 		return true;

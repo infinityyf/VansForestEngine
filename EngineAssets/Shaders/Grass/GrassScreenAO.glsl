@@ -1,6 +1,6 @@
 #ifndef GRASS_SCREEN_AO_GLSL
 #define GRASS_SCREEN_AO_GLSL
-// 正反半球继续使用现有 SSAO/滤波通道。只在 Grass 分支调用。
+// GTAO 主 pass 的薄叶材质估计：R/G 分别保留正反半球可见度。
 // 透视校正的屏幕线段深度区间与有限厚度相交，避免四个世界空间点跳过薄叶。
 float GrassRayOcclusion(sampler2D positions,sampler2D materials,
     vec3 origin,vec3 N,vec3 direction)

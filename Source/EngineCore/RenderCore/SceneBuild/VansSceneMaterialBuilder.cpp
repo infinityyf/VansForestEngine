@@ -156,7 +156,6 @@ namespace VansGraphics
 		if (type == "glass" || type == "transmission" || type == "pbr_transmission") return VansMaterialType::VAN_PBR_TRANSMISSION;
 		if (type == "post_process") return VansMaterialType::VAN_POST_PROCESS;
 		if (type == "deferred") return VansMaterialType::VAN_DEFERRED;
-		if (type == "ssao") return VansMaterialType::VAN_SCREEN_SPACE_AO;
 		if (type == "skin") return VansMaterialType::VAN_SKIN;
 		if (type == "cloth") return VansMaterialType::VAN_CLOTH;
 		if (type == "hair") return VansMaterialType::VAN_HAIR;
@@ -182,7 +181,6 @@ namespace VansGraphics
 		case VansMaterialType::VAN_PBR_TRANSMISSION: return new VansTransmissionMaterial();
 		case VansMaterialType::VAN_POST_PROCESS: return new VansPostProcessMaterial();
 		case VansMaterialType::VAN_DEFERRED: return new VansDeferredMaterial();
-		case VansMaterialType::VAN_SCREEN_SPACE_AO: return new VansSSAOMaterial();
 		case VansMaterialType::VAN_SKIN: return new VansSkinMaterial();
 		case VansMaterialType::VAN_CLOTH: return new VansClothMaterial();
 		case VansMaterialType::VAN_HAIR: return new VansHairMaterial();
@@ -381,7 +379,7 @@ void PopulateCustomMaterialData(
 	const Vans::VansSceneMaterialConfig& sceneMaterial)
 {
     if (!material)
-        return;
+    return;
 
     material->m_CustomParameterSlots.clear();
     material->m_CustomTextureSlots.clear();
@@ -447,14 +445,14 @@ void PopulateCustomMaterialData(
 }
 }
 
-void VansSceneMaterialBuilder::PopulateMaterial(
+bool VansSceneMaterialBuilder::PopulateMaterial(
     VansScene& scene,
     VansMaterial* material,
     VansMaterialType matType,
-    const Vans::VansSceneMaterialConfig& sceneMaterial)
+    const Vans::VansSceneMaterialConfig& sceneMaterial, std::string& error)
 {
     if (!material)
-        return;
+    { error = "Material allocation failed"; return false; }
 
     if (matType == VansMaterialType::VAN_CUSTOM_SHADER)
         PopulateCustomMaterialData(scene, material, sceneMaterial);
@@ -729,35 +727,29 @@ void VansSceneMaterialBuilder::PopulateMaterial(
     case VansMaterialType::VAN_HAIR:
     {
         auto* hair = static_cast<VansHairMaterial*>(material);
-        hair->m_AlbedoTexture = ResolveMaterialTexture(scene, sceneMaterial, "albedo_texture");
-		if (hair->m_AlbedoTexture == nullptr)
-			hair->m_AlbedoTexture = ResolveMaterialTexture(scene, sceneMaterial, "basecolor_texture");
+        hair->m_AlbedoTexture = ResolveMaterialTexture(scene, sceneMaterial, "basecolor_texture");
 		hair->m_AlbedoTexture = scene.ResolveTextureAssetOrDefault(hair->m_AlbedoTexture, "defaultAlbedo");
-        hair->m_AlphaTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "alpha_texture", "defaultAlbedo");
+        hair->m_AlphaTexture = ResolveMaterialTexture(scene, sceneMaterial, "alpha_texture");
+        if (!hair->m_AlphaTexture) { error = "Hair alpha texture could not be resolved"; return false; }
         hair->m_NormalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
-        hair->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
+        hair->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultAo");
         hair->m_AOTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "ao_texture", "defaultAo");
-        hair->m_ShiftTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "shift_texture", "defaultRoughness");
-        hair->m_FlowTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "flow_texture", "defaultAlbedo");
-        hair->m_IDTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "id_texture", "defaultAlbedo");
-		if (const Vans::VansSerializedValue* params = FindDirectMaterialField(sceneMaterial, "params");
-			params && params->kind == Vans::VansSerializedValue::Kind::Object)
-		{
-			auto readVec4 = [](const Vans::VansSerializedValue& obj, const char* key, glm::vec4 fallback) {
-				const Vans::VansSerializedValue* value = Vans::FindObjectField(obj, key);
-				if (!value || value->kind != Vans::VansSerializedValue::Kind::Array || value->arrayItems.size() < 4)
-					return fallback;
-				return glm::vec4(
-					static_cast<float>(Vans::ReadSerializedNumber(value->arrayItems[0], fallback.x)),
-					static_cast<float>(Vans::ReadSerializedNumber(value->arrayItems[1], fallback.y)),
-					static_cast<float>(Vans::ReadSerializedNumber(value->arrayItems[2], fallback.z)),
-					static_cast<float>(Vans::ReadSerializedNumber(value->arrayItems[3], fallback.w)));
-			};
-			hair->m_Params.absorption = readVec4(*params, "absorption", hair->m_Params.absorption);
-			hair->m_Params.roughnessScale = readVec4(*params, "roughness_scale", hair->m_Params.roughnessScale);
-			hair->m_Params.shiftParams = readVec4(*params, "shift_params", hair->m_Params.shiftParams);
-			hair->m_Params.coverageParams = readVec4(*params, "coverage_params", hair->m_Params.coverageParams);
-		}
+        hair->m_FlowTexture = ResolveMaterialTexture(scene, sceneMaterial, "flow_texture");
+        auto parameters = sceneMaterial.root;
+        // Runtime projection adds only identity and texture bindings to the typed parameters.
+        for (auto it = parameters.objectFields.begin(); it != parameters.objectFields.end(); )
+        {
+            const auto& key = it->first;
+            if (key == "name" || key == "type" || key == "shader" || key == "shaderPasses" ||
+                (key.size() > 8 && key.compare(key.size() - 8, 8, "_texture") == 0))
+                it = parameters.objectFields.erase(it);
+            else ++it;
+        }
+        std::string hairError;
+        if (!Vans::ReadHairMaterialParameters(parameters, hair->m_Params, hairError))
+            { error = hairError; return false; }
+        if (hair->m_Params.flowStrength > 0.0f && !hair->m_FlowTexture)
+            { error = "Hair flow texture could not be resolved"; return false; }
         break;
     }
     case VansMaterialType::VAN_SUBSURFACE:
@@ -974,9 +966,10 @@ void VansSceneMaterialBuilder::PopulateMaterial(
     default:
         break;
     }
+    return true;
 }
 
-	void VansSceneMaterialBuilder::LoadMaterials(VansScene& scene, const Vans::VansSceneMaterialConfigs& materialData)
+	bool VansSceneMaterialBuilder::LoadMaterials(VansScene& scene, const Vans::VansSceneMaterialConfigs& materialData, std::string& error)
 	{
 		for (const Vans::VansSceneMaterialConfig& sceneMaterial : materialData)
 		{
@@ -987,11 +980,17 @@ void VansSceneMaterialBuilder::PopulateMaterial(
 			VansMaterial* material = CreateMaterialForType(materialType);
 			material->m_MaterialType = materialType;
 			PopulateMaterialPassShaders(scene, material, materialType);
-			PopulateMaterial(scene, material, materialType, sceneMaterial);
+			if (!PopulateMaterial(scene, material, materialType, sceneMaterial, error))
+            {
+                delete material;
+                error = materialName + ": " + error;
+                return false;
+            }
 			material->SetName(materialName);
 			ApplyMaterialShaderOverrides(scene, material);
 			scene.AddMaterialAsset(material);
 		}
+        return true;
 	}
 
 }

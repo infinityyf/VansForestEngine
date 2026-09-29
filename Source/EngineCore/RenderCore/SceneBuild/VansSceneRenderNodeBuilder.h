@@ -33,7 +33,6 @@ namespace VansGraphics
 			const Vans::VansSceneRenderNodeConfigs& renderNodes,
 			std::string& error);
 		static bool BuildDeferredNode(VansScene& scene, VkDevice& device, std::string& error);
-		static bool BuildScreenSpaceFeatureNodes(VansScene& scene, VkDevice& device, std::string& error);
 
 	private:
 		static VansRenderNodeBuildResult ExpandMultiMeshToRenderNodes(

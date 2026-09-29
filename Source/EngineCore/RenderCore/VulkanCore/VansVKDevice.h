@@ -1,5 +1,6 @@
 #pragma once
 #include <unordered_set>
+#include <atomic>
 #include "../BRDFData/VansLightCookie.h"
 #include "../VansGraphicsDevice.h"
 #include "../VansCameraFrameData.h"
@@ -424,10 +425,16 @@ namespace VansGraphics
 		// 大气合成随后写 SceneColor，透明、水面和头发只消费合成后的颜色。
 		void DrawSceneRawOpaqueLighting(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void DrawSceneTransparentPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void DrawHairDepthResolve(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void DrawHairLighting(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+        void UpdateHairDebugPreview(VansRenderPassManager* passes, VansVKCommandBuffer& commandBuffer);
+        void RequestHairDebugPreview() { m_HairDebugRequested.store(true, std::memory_order_release); }
+        VansVKImage* GetHairDebugPreview() {
+            return m_HairDebugReady.load(std::memory_order_acquire) ? &m_HairDebugImage : nullptr;
+        }
 		void DrawHairComposite(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
-		void ClearHairOITResources(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
-		void PrepareHairOITForResolve(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void ClearHairVisibilityResources(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void PrepareHairVisibilityForLighting(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void BuildSceneColorPyramid(
 			VansVKImage& source,
 			VansVKImage& target,
@@ -437,8 +444,8 @@ namespace VansGraphics
 		void PrepareWaterBackgroundPyramid(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void ResolveDepthOfFieldIntoSceneColor(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void PrepareSceneColorForTransparentPass(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
-		VkDescriptorSetLayout GetHairOITPassLayout() const { return m_HairLightingPassLayout; }
-		VkDescriptorSet GetHairOITPassDescriptorSet() const
+		VkDescriptorSetLayout GetHairPassLayout() const { return m_HairLightingPassLayout; }
+		VkDescriptorSet GetHairPassDescriptorSet() const
 		{
 			return m_HairLightingPassSets.empty() ? VK_NULL_HANDLE : m_HairLightingPassSets[0];
 		}
@@ -519,7 +526,7 @@ namespace VansGraphics
 
 		uint64_t m_FeatureDescriptorGeneration = 1;
 		uint64_t m_GIDataDescSetGeneration = 0;
-		uint64_t m_SSAOFilterDescSetGeneration = 0;
+		uint64_t m_GTAODescSetGeneration = 0;
 		uint64_t m_HZBDescSetGeneration = 0;
 		uint64_t m_HIZSeedDescSetGeneration = 0;
 		uint64_t m_OcclusionHZBDescSetGeneration = 0;
@@ -539,6 +546,11 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_HairLightingPassLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_HairLightingPassSets;
 		bool m_HairLightingDescriptorsReady = false;
+        std::atomic<bool> m_HairDebugRequested{false};
+        std::atomic<bool> m_HairDebugReady{false};
+        VansVKImage m_HairDebugImage;
+        VkDescriptorSetLayout m_HairDebugLayout = VK_NULL_HANDLE;
+        std::vector<VkDescriptorSet> m_HairDebugSets;
 		VkDescriptorSetLayout m_TransmissionGlassPassLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_TransmissionGlassPassSets;
 		bool m_TransmissionGlassDescriptorsReady = false;
@@ -570,12 +582,10 @@ namespace VansGraphics
 
 		void AtrousFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
-		void BilateralFilterSSAO(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 	private:
 
 		void UpdateGIDataDescriptorSets(VansRenderPassManager* renderPassManager);
-		void UpdateSSAOFilterDescriptorSet(VansRenderPassManager* renderPassManager);
 		void UploadSSGIParams(const VansGISettings& settings);
 
 		void UpdateHIZSeedDescriptorSet(VansRenderPassManager* renderPassManager);
@@ -621,7 +631,11 @@ namespace VansGraphics
 
 		void PrepareSkyRenderData();
 
-		void PrepareSSAORenderData();
+		void PrepareGTAORenderData();
+        void UpdateGTAODescriptorSets(VansRenderPassManager* renderPassManager);
+        void UpdateGTAODepth(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+        void UpdateGTAOMain(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+        void DenoiseGTAO(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 
 		void PrepareSSGIRenderData();
 
@@ -635,7 +649,6 @@ namespace VansGraphics
 
 		void PrepareTileLightData();
 
-		void PrepareBilaterFilterData();
 
 		void PrepareGlobalIllumiationData();
 
@@ -744,13 +757,12 @@ namespace VansGraphics
 		VansVKCommandBuffer m_VansVKCommandBuffer;
 
 		VansVKCommandBuffer m_VansVKShadowMapsCommandBuffer;
-		VansVKCommandBuffer m_VansVKHairShadowCommandBuffer;
 
 		// GBuffer base and decals are separate submissions so depth-only async work
 		// can begin before material overlays finish.
 		VansVKCommandBuffer m_VansVKGBufferCommandBuffer;
 		VansVKCommandBuffer m_VansVKGBufferMaterialCommandBuffer;
-		VansVKCommandBuffer m_VansVKSSAORawCommandBuffer;
+		VansVKCommandBuffer m_VansVKGTAORawCommandBuffer;
 		// 屏幕空间 compute 固定在专用 compute queue 上，并接在 GIData 之后执行。
 		VansVKCommandBuffer m_VansVKGraphicsScreenCommandBuffer;
 

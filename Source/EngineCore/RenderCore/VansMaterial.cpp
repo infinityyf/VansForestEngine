@@ -519,10 +519,6 @@ VansGraphics::VansHairMaterial::~VansHairMaterial()
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_HairOwnedDescSets);
 	descMgr->ReleaseDescriptorSetLayout(m_HairOwnedLayout);
-	if (m_ParamsDevice != VK_NULL_HANDLE && m_ParamsBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
-	{
-		m_ParamsBuffer.DestroyVulkanBuffer(m_ParamsDevice);
-	}
 }
 
 VansGraphics::VansSubsurfaceMaterial::~VansSubsurfaceMaterial()
@@ -751,7 +747,7 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 {
 	const char* transientTextures[] =
 	{
-		RT_SSAO_RESULT, RT_SSAO_FILTER_RESULT,
+		RT_GTAO_RAW, RT_GTAO_RESULT, RT_GTAO_DEPTH, RT_GTAO_EDGES,
 		RT_SSGI_RESULT, RT_SSGI_FILTER_RESULT,
 		RT_SSGI_PROBE_CACHE_RADIANCE, RT_SSGI_PROBE_CACHE_SURFACE,
 		RT_SSGI_TEMPORAL_A, RT_SSGI_TEMPORAL_B,
@@ -825,8 +821,12 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 	descMgr->ReleaseDescriptorSetLayout(m_SSRResolveSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSRAADescriptorSets);
 	descMgr->ReleaseDescriptorSetLayout(m_SSRAASetLayout);
-	descMgr->DestroyDescriptorSet(m_BilateralFilterDescriptorSets);
-	descMgr->ReleaseDescriptorSetLayout(m_BilateralFilterSetLayout);
+	descMgr->DestroyDescriptorSet(m_GTAODepthDescriptorSets);
+    descMgr->ReleaseDescriptorSetLayout(m_GTAODepthSetLayout);
+    descMgr->DestroyDescriptorSet(m_GTAOMainDescriptorSets);
+    descMgr->ReleaseDescriptorSetLayout(m_GTAOMainSetLayout);
+    descMgr->DestroyDescriptorSet(m_GTAODenoiseDescriptorSets);
+	descMgr->ReleaseDescriptorSetLayout(m_GTAODenoiseSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSGITemporalDescriptorSets);
 	descMgr->ReleaseDescriptorSetLayout(m_SSGITemporalSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSGIAtrousDescriptorSets);
@@ -1207,6 +1207,7 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	m_GlobalPBRMaterial.clear();
 	m_GlobalPBRParamData.clear();
 	m_GlobalClothParamData.clear();
+    m_GlobalHairParamData.clear();
 	m_GlobalTreeLeafParamData.clear();
 	m_GlobalSkinParamData.clear();
 	m_GlobalCustomMaterialParamData.clear();
@@ -1226,6 +1227,7 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	// Destroy GPU buffers.
 	m_GlobalPBRDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalClothDataBuffer.DestroyVulkanBuffer(device);
+    m_GlobalHairDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalTreeLeafDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalSkinDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalCustomMaterialDataBuffer.DestroyVulkanBuffer(device);
@@ -1246,6 +1248,13 @@ bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& mater
 	const int index = material.GetGlobalMaterialIndex();
 	if (index < 0)
 		return false;
+
+    if (auto* hair = dynamic_cast<VansHairMaterial*>(&material))
+    {
+        if (index >= static_cast<int>(m_GlobalHairParamData.size())) return false;
+        m_GlobalHairParamData[index] = hair->BuildGPUParams();
+        return true;
+    }
 
 	auto stagePbrPayload = [&](const VansBasePBRParam& payload) -> bool
 	{
@@ -1315,6 +1324,7 @@ VansGraphics::VansMaterialManager::CaptureRenderMaterialFrameData(
 	VansRenderMaterialFrameData frameData;
 	copyBytes(m_GlobalPBRParamData, frameData.pbr);
 	copyBytes(m_GlobalClothParamData, frameData.cloth);
+    copyBytes(m_GlobalHairParamData, frameData.hair);
 	copyBytes(m_GlobalTreeLeafParamData, frameData.treeLeaf);
 	copyBytes(m_GlobalSkinParamData, frameData.skin);
 	copyBytes(m_GlobalCustomMaterialParamData, frameData.custom);
@@ -1347,6 +1357,7 @@ bool VansGraphics::VansMaterialManager::UploadRenderMaterialFrameData(
 
 	if (!upload(frameData.pbr, m_GlobalPBRDataBuffer, sizeof(VansBasePBRParam)) ||
 		!upload(frameData.cloth, m_GlobalClothDataBuffer, sizeof(VansClothGPUParam)) ||
+        !upload(frameData.hair, m_GlobalHairDataBuffer, sizeof(VansHairParamsGPU)) ||
 		!upload(frameData.treeLeaf, m_GlobalTreeLeafDataBuffer, sizeof(VansTreeLeafParamsGPU)) ||
 		!upload(frameData.skin, m_GlobalSkinDataBuffer, sizeof(VansSkinGPUParam)) ||
 		!upload(frameData.custom, m_GlobalCustomMaterialDataBuffer, sizeof(VansCustomMaterialPayload)))
@@ -1363,6 +1374,26 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 	const VansMaterialParameterValue& value)
 {
 	const std::string key = parameterPath;
+    if (auto* hair = dynamic_cast<VansHairMaterial*>(&material))
+    {
+        Vans::VansSerializedValue input;
+        float scalar = 0.0f;
+        bool boolean = false;
+        if (key == "castShadows" && ReadMaterialBool(value, boolean))
+            input = Vans::VansSerializedValue::Bool(boolean);
+        else if (ReadMaterialFloat(value, scalar)) input = Vans::VansSerializedValue::Float(scalar);
+        else return false;
+        auto candidate = hair->m_Params;
+        std::string error;
+        if (!Vans::ApplyHairMaterialParameter(candidate, key, input, error)) return false;
+        if (candidate.flowStrength > 0.0f && !hair->m_FlowTexture) return false;
+        const auto previous = hair->m_Params;
+        hair->m_Params = candidate;
+        if (FlushMaterialPayload(*hair)) return true;
+        hair->m_Params = previous;
+        return false;
+    }
+
 	if (key.rfind("customParameters/", 0) == 0)
 	{
 		const std::string customName = key.substr(std::string("customParameters/").size());
@@ -2150,20 +2181,17 @@ void VansGraphics::VansSkinMaterial::BuildSkinTextureDescriptors()
 	descManager->CommitDescriptorUpdates();
 }
 
-void VansGraphics::VansHairMaterial::BuildHairDescriptors(VkDevice& device)
+VansGraphics::VansHairParamsGPU VansGraphics::VansHairMaterial::BuildGPUParams() const
 {
-	VansDescriptorSetLayoutFactory::CreateAndAllocate_HairTexture(m_HairOwnedLayout, m_HairOwnedDescSets);
-	m_ParamsDevice = device;
-	if (m_ParamsBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
-	{
-		m_ParamsBuffer.CreatVulkanBuffer(
-			device,
-			sizeof(VansHairParamsGPU),
-			VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	}
-	m_ParamsBuffer.SetBufferData(&m_Params, 0, sizeof(VansHairParamsGPU));
+    return { glm::vec4(m_Params.longitudinalRoughness, m_Params.azimuthalRoughness,
+        glm::radians(m_Params.cuticleTiltDegrees), m_Params.normalScale),
+        glm::vec4(m_Params.coverageCutoff, m_Params.coverageScale, m_Params.flowStrength,
+            m_Params.castShadows ? 1.0f : 0.0f),
+        glm::vec4(m_Params.aoStrength, 0.0f, 0.0f, 0.0f) };
+}
+void VansGraphics::VansHairMaterial::BuildHairDescriptors(VansMaterialManager& materialManager)
+{
+    VansDescriptorSetLayoutFactory::CreateAndAllocate_HairTexture(m_HairOwnedLayout, m_HairOwnedDescSets);
 
 	auto* descManager = VansVKDescriptorManager::GetInstance();
 	descManager->BeginDescriptorUpdate();
@@ -2233,53 +2261,31 @@ void VansGraphics::VansHairMaterial::BuildHairDescriptors(VkDevice& device)
 			}});
 	}
 
-	if (m_ShiftTexture)
-	{
-		descManager->WriteImageDescriptor(
-			m_HairOwnedDescSets[0],
-			HAIR_TEXTURE_BINDING_SHIFT,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{
-				m_ShiftTexture->GetImage().GetSampler(),
-				m_ShiftTexture->GetImage().GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}});
-	}
 
-	if (m_FlowTexture)
+    // 无 flow 时使用已绑定法线图作未使用槽位的有效描述符；flowStrength 必须为零。
+    VansTexture* flowTexture = m_FlowTexture ? m_FlowTexture : m_NormalTexture;
+	if (flowTexture)
 	{
 		descManager->WriteImageDescriptor(
 			m_HairOwnedDescSets[0],
 			HAIR_TEXTURE_BINDING_FLOW,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
-				m_FlowTexture->GetImage().GetSampler(),
-				m_FlowTexture->GetImage().GetImageView(),
+				flowTexture->GetImage().GetSampler(),
+				flowTexture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			}});
 	}
 
-	if (m_IDTexture)
-	{
-		descManager->WriteImageDescriptor(
-			m_HairOwnedDescSets[0],
-			HAIR_TEXTURE_BINDING_ID,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{
-				m_IDTexture->GetImage().GetSampler(),
-				m_IDTexture->GetImage().GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}});
-	}
 
 	descManager->WriteBufferDescriptor(
 		m_HairOwnedDescSets[0],
 		HAIR_TEXTURE_BINDING_PARAMS,
-		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		{{
-			m_ParamsBuffer.GetNativeBuffer(),
+			materialManager.m_GlobalHairDataBuffer.GetNativeBuffer(),
 			0,
-			m_ParamsBuffer.GetBufferSize()
+			materialManager.m_GlobalHairDataBuffer.GetBufferSize()
 		}});
 
 	descManager->CommitDescriptorUpdates();
