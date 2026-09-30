@@ -2,12 +2,16 @@
 
 #include "../../SceneCore/VansSceneRuntimeProjection.h"
 #include "../../ProjectSystem/VansProjectManager.h"
+#include "../../AssetCore/VansAssetObjectRepository.h"
+#include "../../NavigationCore/VansNavigationMesh.h"
+#include "../../NavigationCore/VansSceneNavigationGeometry.h"
 #include "../../Util/VansLog.h"
 #include "VansSceneEnvironmentNodeBuilder.h"
 #include "VansSceneAssembly.h"
 #include "VansSceneMaterialBuilder.h"
 #include "VansSceneRenderNodeBuilder.h"
 #include "../VulkanCore/VansVKDevice.h"
+#include "../VulkanCore/VansMesh.h"
 #include "../../PcgCore/Storage/VansPcgSplineFieldStorage.h"
 #include "../WaterCore/VansWaterGeometryClipmap.h"
 
@@ -15,6 +19,7 @@
 #include <cstddef>
 #include <string>
 #include <utility>
+#include <set>
 
 namespace VansGraphics
 {
@@ -26,6 +31,55 @@ void ApplyOptionalValue(const std::optional<T>& source, T& destination)
 	if (source.has_value())
 	{
 		destination = *source;
+	}
+}
+
+void WarnNavigationSourceChanges(VansScene& scene,
+	const Vans::VansSceneObjectBuildPlan& objects,
+	const std::filesystem::path& scenePath, const std::string& projectRoot)
+{
+	std::set<std::string> navigationGuids;
+	for (const auto& object : objects.objects)
+		if (object.navigationAgent && object.navigationAgent->enabled &&
+			!object.navigationAgent->runtime.navigationMeshGuid.empty())
+			navigationGuids.insert(object.navigationAgent->runtime.navigationMeshGuid);
+	if (navigationGuids.empty()) return;
+
+	auto& project = Vans::VansProjectManager::Get();
+	Vans::VansNavigationGeometry geometry;
+	std::string error;
+	const Vans::VansNavigationMeshResolver resolveMesh =
+		[&scene](const std::string& guid, Vans::VansTriangleMeshData& data, std::string& resolveError)
+	{
+		const auto* mesh = dynamic_cast<VansMesh*>(scene.FindMeshAsset(guid));
+		if (mesh) return mesh->CopyTriangleMeshData(data, resolveError);
+		resolveError = "Navigation collider mesh is unavailable: " + guid;
+		return false;
+	};
+	std::uint64_t geometryHash = 0;
+	// 与烘焙共用有效几何，消费已加载 CPU 网格和内存场景，不再读取作者文件。
+	if (!Vans::VansSceneNavigationGeometry::BuildEnvironmentGeometry(objects,
+		project.GetProjectSettings().GetNavigationSettings().areas, resolveMesh, geometry, error) ||
+		!Vans::ComputeNavigationGeometryHash(geometry, geometryHash, error))
+	{
+		VANS_LOG_WARN("[Navigation] Could not compare navigation source: " << error
+			<< "; using the existing baked navigation meshes");
+		return;
+	}
+	const std::string sourceScene = scenePath.lexically_normal().lexically_relative(
+		std::filesystem::path(projectRoot).lexically_normal()).generic_string();
+	for (const std::string& guidText : navigationGuids)
+	{
+		Vans::VansAssetGuid guid;
+		if (!Vans::VansAssetGuid::TryParse(guidText, guid)) continue;
+		const auto navigation = project.GetAssetObjectRepository().ResolveLatest<Vans::VansNavigationMesh>(guid);
+		if (navigation && !navigation->GetSource().MatchesGeometry(geometryHash))
+		{
+			const char* reason = navigation->GetSource().geometryHash == 0
+				? "has no recorded geometry fingerprint" : "has different source geometry";
+			VANS_LOG_WARN("[Navigation] Navigation Mesh " << guidText << " " << reason << " for Scene '"
+				<< sourceScene << "'; using the existing baked navigation mesh; run ForestAssetTool bake-navigation to update it");
+		}
 	}
 }
 
@@ -76,6 +130,7 @@ VansSceneContentBuildResult VansSceneContentBuildExecutor::BuildFromPlan(
 	};
 
 	const std::string sceneSourcePathString = sceneSourcePath.string();
+	WarnNavigationSourceChanges(scene, buildPlan.objects, sceneSourcePath, projectRoot);
 	const Vans::VansSceneRenderSettingsConfig& renderSettings = buildPlan.renderSettings;
 	scene.SetEnvironmentSettings(renderSettings.environment);
 	scene.SetRainSettings(renderSettings.rain);

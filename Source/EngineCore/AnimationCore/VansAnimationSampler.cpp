@@ -78,7 +78,15 @@ namespace VansGraphics
 			const AnimationCurveKey& left = *(upper - 1);
 			const float span = right.time - left.time;
 			const float alpha = span > 0.0f ? std::clamp((time - left.time) / span, 0.0f, 1.0f) : 0.0f;
-			return glm::mix(left.value, right.value, alpha);
+			if (left.interpolation == AnimationCurveInterpolation::Constant || span <= 0.0f)
+				return left.value;
+			const auto lerp = [alpha](float a, float b) { return a + (b - a) * alpha; };
+			if (left.interpolation == AnimationCurveInterpolation::Linear)
+				return lerp(left.value, right.value);
+			const float p1 = left.value + left.leaveTangent * span * (1.0f / 3.0f);
+			const float p2 = right.value - right.arriveTangent * span * (1.0f / 3.0f);
+			return lerp(lerp(lerp(left.value,p1),lerp(p1,p2)),
+				lerp(lerp(p1,p2),lerp(p2,right.value)));
 		}
 
 		int ResolveRootBoneIndex(
@@ -106,7 +114,8 @@ namespace VansGraphics
 			VansBoneTransform fallback;
 			VansPoseMath::TryDecompose(skeleton.bones[boneIndex].localTransform, fallback);
 			if (boneIndex >= 0 && boneIndex < static_cast<int>(clip.boneKeyframes.size()))
-				return VansPoseMath::Compose(InterpolateBoneKeys(clip.boneKeyframes[boneIndex], time, fallback));
+				fallback=InterpolateBoneKeys(clip.boneKeyframes[boneIndex], time, fallback);
+			if (clip.rootMotion.normalizeScale) fallback.scale=glm::vec3(1.0f);
 			return VansPoseMath::Compose(fallback);
 		}
 
@@ -163,7 +172,7 @@ namespace VansGraphics
 		                      float start, float end, VansRootMotionDelta& outDelta)
 		{
 			outDelta = {};
-			if (!clip.rootMotion.enabled || end <= start)
+			if (!request.extractRootMotion || !clip.rootMotion.enabled || end <= start)
 				return;
 			const int rootBoneIndex = ResolveRootBoneIndex(
 				clip, skeleton, request.rootMotionBoneIndex);
@@ -402,6 +411,11 @@ namespace VansGraphics
 		return wrapped;
 	}
 
+	float VansAnimationSampler::SampleCurve(const AnimationCurveTrack& curve, float time)
+	{
+		return InterpolateCurve(curve.keys,time);
+	}
+
 	bool VansAnimationSampler::Sample(const VansAnimationClip& clip,
 	                                  const Skeleton& skeleton,
 	                                  const VansAnimationSampleRequest& request,
@@ -423,6 +437,25 @@ namespace VansGraphics
 			if (boneIndex < clip.boneKeyframes.size())
 				outPayload.localPose[boneIndex] = InterpolateBoneKeys(
 					clip.boneKeyframes[boneIndex], sampleTime, outPayload.localPose[boneIndex]);
+		}
+		if (clip.rootMotion.forceLock || (request.extractRootMotion && clip.rootMotion.enabled))
+		{
+			const int root = ResolveRootBoneIndex(clip, skeleton, request.rootMotionBoneIndex);
+			if (root >= 0 && root < static_cast<int>(outPayload.localPose.size()))
+			{
+				VansBoneTransform reference;
+				VansPoseMath::TryDecompose(skeleton.bones[root].localTransform, reference);
+				switch (clip.rootMotion.lockMode)
+				{
+				case AnimationRootLockMode::ReferencePose: outPayload.localPose[root] = reference; break;
+				case AnimationRootLockMode::FirstFrame:
+					outPayload.localPose[root] = root < static_cast<int>(clip.boneKeyframes.size())
+						? InterpolateBoneKeys(clip.boneKeyframes[root], 0.0f, reference) : reference;
+					break;
+				case AnimationRootLockMode::Zero: outPayload.localPose[root] = {}; break;
+				case AnimationRootLockMode::None: break;
+				}
+			}
 		}
 		if (!skeleton.virtualBoneLinks.empty())
 		{
@@ -470,10 +503,22 @@ namespace VansGraphics
 			});
 		}
 		SampleEvents(clip, request, start, end, outPayload.events);
-		SampleRootMotion(clip, skeleton, request, start, end, outPayload.rootMotion);
+		outPayload.rootMotion = ExtractRootMotion(clip, skeleton, request);
 		SampleSync(clip, sampleTime, start, end, request.loop, outPayload.sync);
 		outPayload.valid = !outPayload.localPose.empty() || !outPayload.nodeTransforms.empty()
 			|| !outPayload.curves.empty() || !outPayload.events.empty() || outPayload.rootMotion.valid;
 		return outPayload.valid;
+	}
+
+	VansRootMotionDelta VansAnimationSampler::ExtractRootMotion(const VansAnimationClip& clip,
+		const Skeleton& skeleton, const VansAnimationSampleRequest& request)
+	{
+		VansRootMotionDelta delta;
+		if (!std::isfinite(clip.duration) || clip.duration <= 0.0f) return delta;
+		const float start = std::clamp(request.startTime, 0.0f, clip.duration);
+		const float requestedEnd = request.endTime < 0.0f ? clip.duration : request.endTime;
+		const float end = std::clamp(requestedEnd, start, clip.duration);
+		SampleRootMotion(clip, skeleton, request, start, end, delta);
+		return delta;
 	}
 }

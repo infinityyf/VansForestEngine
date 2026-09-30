@@ -2,11 +2,13 @@
 #include "../EngineCore/GameplayActionAdapters/Projectile/VansProjectilePhysics.h"
 #include "../EngineCore/PhysicsCore/VansPhysics.h"
 #include "../EngineCore/PhysicsCore/VansPhysicsNativeAccess.h"
+#include "../EngineCore/PhysicsCore/VansPhysicsQuery.h"
 #include "../EngineCore/ParticleCore/VansParticleRuntime.h"
 #include "../EngineCore/ParticleCore/Serialization/VansParticleAssetJsonCodec.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeWorld.h"
 #include "../EngineCore/GameplayActionCore/VansGameplayRuntime.h"
+#include "../EngineCore/GameplayActionSchema/VansGameplayAssetLibrary.h"
 #include <nlohmann/json.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <fstream>
@@ -83,6 +85,27 @@ bool TestProjectileSmokeContract()
     if (!check(particles.AliveInstanceCount() == 0, "Restart bypassed emission delay")) return false;
     particles.Stop();
     std::cout << "[ProjectileSmoke] delay=2 noPrewarm=1 continuous=1 worldEmissionFrame=1 offset=1 pauseResume=1\n";
+    auto heAsset=std::make_shared<VansParticleAsset>();
+    if (!VansParticleAssetJsonCodec::Decode(Vans::DecodeSerializedValueJson(read(
+        workspace/"DustV3Project/Assets/CS2/Throwables/HE/Explosion/HEExplosion.particle")),{},*heAsset,error))
+        return check(false,error.c_str());
+    const glm::vec3 heOrigin(-20,3,-34);
+    VansParticleRuntime heParticles; heParticles.SetAsset(heAsset); heParticles.SetOwnerWorldTransform(glm::translate(glm::mat4(1),heOrigin)); heParticles.Play();
+    heParticles.Update(1.f/60); heParticles.SwapBuffers();
+    std::cout << "[HEParticles] emitters=" << heAsset->m_Emitters.size() << " alive=" << heParticles.AliveInstanceCount()
+        << " rendered=" << heParticles.GetRenderBuffer().size() << '\n';
+    if (!check(heAsset->m_Emitters.size()==6 && heParticles.AliveInstanceCount()>0 && !heParticles.GetRenderBuffer().empty(),
+        "HE particle asset did not produce billboard render instances")) return false;
+    for (const auto& point : heParticles.GetRenderBuffer())
+        if (!check(glm::length(point.m_WorldPosition-heOrigin)<1 && point.m_Size>0 && point.m_Color.a>0,
+            "HE particle lost world position, size or opacity")) return false;
+    heParticles.Restart(); heParticles.EmitInitialFrame(); heParticles.DeferFirstUpdate();
+    heParticles.Update(.5f); heParticles.SwapBuffers();
+    if (!check(heParticles.GetPlayTime()==0 && !heParticles.GetFrameData().emitters.empty()
+        && heParticles.GetFrameData().emitters.front().surfaceCount==1,
+        "A short world explosion flash was lost before its birth frame")) return false;
+    for (int i=0;i<480;++i) heParticles.Update(1.f/60);
+    if (!check(heParticles.IsFinished() && heParticles.AliveInstanceCount()==0,"HE particles did not finish and drain")) return false;
 
     const auto graph = read(project / "Assets/GAF/PlayerThrow/ThrowSmoke.vactiongraph");
     nlohmann::ordered_json inputs;
@@ -96,7 +119,8 @@ bool TestProjectileSmokeContract()
     Vans::VansGameplayRuntime gameplay;
     Vans::VansEntityHandle spawned;
     int sequence = 0, destroyed = 0;
-    Vans::VansProjectileActionService projectiles(world, gameplay, {
+    Vans::VansGameplayAssetLibrary assets;
+    Vans::VansProjectileActionService projectiles(world, gameplay, assets, {
         [&](const Vans::VansProjectileSpawnRequest&, std::string&) {
             return spawned = world.CreateEntity({"smoke-lifetime-" + std::to_string(++sequence), "Smoke", {}, true});
         },
@@ -182,5 +206,43 @@ bool TestProjectileSmokeContract()
     };
     const float oldHeight=drop(true), newHeight=drop(false);
     std::cout << "[ProjectileSmoke] reboundHeightOld=" << oldHeight << " reboundHeightConfigured=" << newHeight << '\n';
-    return check(newHeight>0.20f && newHeight>oldHeight*2, "Configured grenade material did not rebound visibly on zero-restitution ground");
+    if (!check(newHeight>0.20f && newHeight>oldHeight*2, "Configured grenade material did not rebound visibly on zero-restitution ground")) return false;
+    struct BlastBodies
+    {
+        std::vector<uint32_t> transforms;
+        std::vector<std::unique_ptr<VansPhysicsNode>> nodes;
+        ~BlastBodies() { nodes.clear(); for (const auto id : transforms) Vans::VansTransformStore::Release(id); }
+    } blastBodies;
+    auto makeBody = [&](glm::vec3 position, PhysicsBodyType type, glm::vec3 extent)
+    {
+        auto id=Vans::VansTransformStore::Allocate(); blastBodies.transforms.push_back(id);
+        auto pose=Vans::VansTransformStore::Read(id); pose.m_Position=position; pose.m_Scale=glm::vec3(1);
+        Vans::VansTransformStore::Write(id,pose);
+        PhysicsNodeProperties props; props.enabled=true; props.bodyType=type; props.mass=2; props.boxExtents=extent;
+        auto node=std::make_unique<VansPhysicsNode>(); node->Initialize(props,id);
+        auto* actor=const_cast<physx::PxRigidActor*>(static_cast<const physx::PxRigidActor*>(node->GetActorIdentity()));
+        blastBodies.nodes.push_back(std::move(node)); return actor;
+    };
+    auto* nearBody=makeBody({2,10,0},PhysicsBodyType::Dynamic,glm::vec3(.2f))->is<physx::PxRigidDynamic>();
+    auto* covered=makeBody({0,10,4},PhysicsBodyType::Dynamic,glm::vec3(.2f))->is<physx::PxRigidDynamic>();
+    auto* outside=makeBody({12,10,0},PhysicsBodyType::Dynamic,glm::vec3(.2f))->is<physx::PxRigidDynamic>();
+    makeBody({0,10,2},PhysicsBodyType::Static,{1,2,.2f});
+    makeBody({-2,10,0},PhysicsBodyType::Kinematic,glm::vec3(.2f));
+    // A compound body must receive exactly one impulse, despite two query shapes.
+    auto* extraShape=VansPhysicsNativeAccess::Physics(physics)->createShape(physx::PxBoxGeometry(.1f,.1f,.1f),
+        *VansPhysicsNativeAccess::DefaultMaterial(physics));
+    physx::PxShape* firstShape=nullptr; nearBody->getShapes(&firstShape,1);
+    extraShape->setQueryFilterData(firstShape->getQueryFilterData());
+    nearBody->attachShape(*extraShape); extraShape->release();
+    VansPhysicsRadialImpulseRequest blast; blast.center={0,10,0}; blast.radius=10;
+    blast.impulse=100; blast.maxVelocityChange=3; blast.blockingLayerMask=1;
+    if (!check(VansPhysicsQuery::ApplyRadialImpulse(blast)==1,"Blast did not exclude covered, static, kinematic and distant bodies")) return false;
+    auto* nativeScene=VansPhysicsNativeAccess::Scene(physics);
+    nativeScene->simulate(1.f/120); nativeScene->fetchResults(true);
+    if (!check(std::abs(nearBody->getLinearVelocity().x-3)<.02f && std::abs(covered->getLinearVelocity().z)<.001f
+        && std::abs(outside->getLinearVelocity().x)<.001f,"Blast cap, compound deduplication or obstruction failed")) return false;
+    blast.center.x=std::numeric_limits<float>::quiet_NaN();
+    if (!check(VansPhysicsQuery::ApplyRadialImpulse(blast)==0,"Non-finite blast center accepted")) return false;
+    std::cout << "[RadialBlast] compoundDedup=1 obstruction=1 outside=1 staticKinematic=1 velocityCap=3 invalidRejected=1\n";
+    return true;
 }

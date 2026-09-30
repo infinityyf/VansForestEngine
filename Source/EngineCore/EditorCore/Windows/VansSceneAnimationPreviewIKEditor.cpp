@@ -391,6 +391,7 @@ bool VansSceneAnimationPreviewWindow::DrawTransformIKEditor(IEngineEditorAPI& ap
 					int mode = static_cast<int>(node->m_LimbSettings.tipRotationMode);
 					if (ImGui::Combo("Tip Rotation", &mode, "Preserve Input\0Match Goal\0Follow Chain\0"))
 					{ node->m_LimbSettings.tipRotationMode = static_cast<AnimationLimbTipRotationMode>(mode); m_AnimatorDraftDirty = true; }
+					if (ImGui::Checkbox("Linear Pose Blend", &node->m_LimbSettings.linearPoseBlend)) m_AnimatorDraftDirty = true;
 				}
 				if (node->GetType() == VansAnimGraphNodeType::RotationDistribution)
 				{

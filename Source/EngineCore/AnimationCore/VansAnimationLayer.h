@@ -13,7 +13,9 @@ namespace VansGraphics
 	enum class VansRotationBlendSpace { Local, Mesh };
 	enum class VansAdditiveReferenceMode { BindPose, FirstFrame, ClipTime, ReferenceClip };
 	enum class VansLayerRootMotionMode { Ignore, Base, BlendByRootWeight, Override };
-	enum class VansLayerCurveMode { BaseOnly, Override, Blend, Normalize, Min, Max };
+	enum class VansLayerCurveMode { BaseOnly, Override, Blend, Normalize, Min, Max, Accumulate };
+	const char* VansLayerCurveModeName(VansLayerCurveMode mode);
+	bool VansParseLayerCurveMode(const std::string& name, VansLayerCurveMode& mode);
 	enum class VansLayerEventMode { Ignore, ActiveOnly, Always };
 	enum class VansLayerNodeTrackMode { Ignore, Override };
 	enum class VansLayerSyncMode { Independent, NormalizedTime, MarkerSync, SyncedGraph };
@@ -37,15 +39,16 @@ namespace VansGraphics
 		std::string slotId;
 		VansLayerBlendMode blendMode = VansLayerBlendMode::Override;
 		VansRotationBlendSpace rotationSpace = VansRotationBlendSpace::Local;
+		bool linearRotationBlend = false;
 		VansAdditiveReferenceMode additiveReference = VansAdditiveReferenceMode::BindPose;
 		std::string referenceClipName;
 		float referenceTime = 0.0f;
 		std::string weightParameter;
 		float fixedWeight = 1.0f;
 		bool useWeightParameter = false;
-		// 可选的动画曲线权重。曲线来自当前 Overlay Pose，用于复现 UE ALS
-		// Layering_* 曲线对身体区域的动态开关；未提供时保持原有层权重语义。
+		// 可选的动画曲线权重。未指定来源层时使用当前 Overlay Pose 的曲线。
 		std::string weightCurve;
+		// 指定来源时读取该层完成合成后的曲线，而不是它的原始输入曲线。
 		std::string weightCurveSourceLayerId;
 		float weightCurveDefault = 1.0f;
 		float weightSmoothingTime = 0.0f;
@@ -139,7 +142,8 @@ namespace VansGraphics
 			const Skeleton& skeleton,
 			const VansCompiledBoneMask& mask,
 			float weight,
-			VansRotationBlendSpace rotationSpace = VansRotationBlendSpace::Local);
+			VansRotationBlendSpace rotationSpace = VansRotationBlendSpace::Local,
+			bool linearRotationBlend = false);
 
 		static void BuildBindPose(const Skeleton& skeleton,
 		                          VansAnimationFrameVector<VansBoneTransform>& outPose);

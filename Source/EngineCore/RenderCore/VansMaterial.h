@@ -204,6 +204,7 @@ namespace VansGraphics
 
 		static constexpr const char* DECAL_MODIFIER    = "decalModifier";
 		static constexpr const char* ROAD_DECAL_MODIFIER = "roadDecalModifier";
+		static constexpr const char* SPLINE_DECAL_MODIFIER = "splineDecalModifier";
 
 	}
 
@@ -1147,6 +1148,8 @@ namespace VansGraphics
 
     // 通用材质 payload：values[0]=albedo/opacity，values[1]=roughness/三种属性权重，
     // values[2].x=sortPriority；textureIndices=颜色/法线/粗糙度/三通道覆盖遮罩。
+    // 样条贴花还使用 values[3].yzw 设置两侧、首尾渐隐与 Noise 强度，
+    // values[4].x 设置 Noise 世界频率；可选第 5 纹理槽写入 values[5].x。
     class VansDecalMaterial : public VansMaterial
     {
     public:

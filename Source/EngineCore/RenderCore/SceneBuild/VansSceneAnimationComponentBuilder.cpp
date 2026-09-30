@@ -178,6 +178,7 @@ namespace VansGraphics
 			std::string compileError;
 			VansAnimatorRuntimeCompileOptions options;
 			options.enableTargetPostProcess = false;
+			options.enableFinalComposition = false;
 			options.enableRootMotion = enableRootMotion;
 			options.rigResolver = [](const std::string& guid, std::string& error)
 			{
@@ -357,6 +358,8 @@ namespace VansGraphics
 				: VansAnimatorRuntimeCompileMode::FullGraph;
 			options.enableTargetPostProcess = true;
 			options.enableRootMotion = enableRootMotion && !retargetRequested;
+			options.extractGraphRootMotion = animConfig.extractGraphRootMotion;
+			options.normalizeRootPose = animConfig.normalizeRootPose;
 			options.animationRigGuidOverride = animConfig.rigGuid;
 			options.rigResolver = [](const std::string& guid, std::string& error)
 			{
@@ -498,6 +501,7 @@ namespace VansGraphics
 		if (enableRootMotion && !retargetRequested)
 			controller->EnableRootMotion(true);
 		controller->SetNormalizeRootPose(animConfig.normalizeRootPose);
+		controller->SetGraphRootMotionExtraction(animConfig.extractGraphRootMotion);
 
 		if (animConfig.motionMatching && !retargetRequested)
 		{

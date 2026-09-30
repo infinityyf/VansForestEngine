@@ -10,6 +10,22 @@ namespace VansGraphics
 	namespace
 	{
 		constexpr float kEpsilon = 1.0e-6f;
+		constexpr float kAnimWeightThreshold = 1.0e-5f;
+
+		VansBoneTransform BlendSolvedLocalLinear(
+			const VansBoneTransform& solved, const VansBoneTransform& original, float weight)
+		{
+			if (weight <= kAnimWeightThreshold) return original;
+			if (weight >= 1.0f - kAnimWeightThreshold) return solved;
+			VansBoneTransform blended;
+			blended.translation = glm::mix(original.translation, solved.translation, weight);
+			blended.scale = glm::mix(original.scale, solved.scale, weight);
+			const float signedWeight = glm::dot(solved.rotation, original.rotation) < 0.0f
+				? -weight : weight;
+			blended.rotation = glm::normalize(
+				solved.rotation * signedWeight + original.rotation * (1.0f - weight));
+			return blended;
+		}
 
 		bool Finite(const glm::vec3& value)
 		{
@@ -105,10 +121,20 @@ namespace VansGraphics
 				result.status = VansProceduralSolverStatus::NoEffect;
 				return result;
 			}
-			glm::quat target = glm::normalize(goal.rotationModel);
-			if (glm::dot(originalTipComponentRotation, target) < 0.0f) target = -target;
-			if (!workspace.SetComponentRotation(tipIndex, glm::normalize(glm::slerp(
-				originalTipComponentRotation, target, rotationWeight)))) return result;
+			if (settings.linearPoseBlend)
+			{
+				if (!workspace.SetComponentRotation(tipIndex, glm::normalize(goal.rotationModel))) return result;
+				const VansBoneTransform solvedTip = workspace.GetLocal(tipIndex);
+				if (!workspace.SetLocal(tipIndex,
+					BlendSolvedLocalLinear(solvedTip, original[2], rotationWeight))) return result;
+			}
+			else
+			{
+				glm::quat target = glm::normalize(goal.rotationModel);
+				if (glm::dot(originalTipComponentRotation, target) < 0.0f) target = -target;
+				if (!workspace.SetComponentRotation(tipIndex, glm::normalize(glm::slerp(
+					originalTipComponentRotation, target, rotationWeight)))) return result;
+			}
 			bool tipLimited = false;
 			if (!ApplyLimit(workspace, rig, tipIndex, tipLimited))
 			{
@@ -166,7 +192,8 @@ namespace VansGraphics
 		}
 		float effectiveDistance = softenedDistance + stretchAmount;
 		effectiveDistance = std::clamp(effectiveDistance,
-			std::abs(upperLength - lowerLength) + kEpsilon, upperLength + lowerLength - kEpsilon);
+			std::abs(upperLength - lowerLength) + kEpsilon,
+			upperLength + lowerLength - (settings.linearPoseBlend ? 0.0f : kEpsilon));
 		const glm::vec3 effectiveTarget = root + targetDirection * effectiveDistance;
 
 		glm::vec3 pole(0.0f);
@@ -228,18 +255,52 @@ namespace VansGraphics
 		const float solvedEffectiveError = glm::length(
 			workspace.GetComponentPosition(tipIndex) - effectiveTarget);
 
+		const bool blendGoalRotationLocally = settings.linearPoseBlend
+			&& settings.tipRotationMode == VansLimbTipRotationMode::MatchGoal
+			&& rotationWeight > kEpsilon;
+		if (blendGoalRotationLocally
+			&& !workspace.SetComponentRotation(tipIndex, glm::normalize(goal.rotationModel)))
+		{
+			restore();
+			return {};
+		}
 		const std::array<VansBoneTransform, 3> solved = {
 			workspace.GetLocal(rootIndex), workspace.GetLocal(midIndex), workspace.GetLocal(tipIndex)
 		};
-		if (positionWeight < 1.0f - kEpsilon)
+		if (settings.linearPoseBlend)
+		{
+			if (!workspace.SetLocal(rootIndex,
+				BlendSolvedLocalLinear(solved[0], original[0], positionWeight))
+				|| !workspace.SetLocal(midIndex,
+					BlendSolvedLocalLinear(solved[1], original[1], positionWeight)))
+			{
+				restore();
+				return {};
+			}
+			VansBoneTransform tip = BlendSolvedLocalLinear(solved[2], original[2], positionWeight);
+			if (blendGoalRotationLocally && rotationWeight != positionWeight)
+				tip.rotation = BlendSolvedLocalLinear(solved[2], original[2], rotationWeight).rotation;
+			if (!workspace.SetLocal(tipIndex, tip))
+			{
+				restore();
+				return {};
+			}
+		}
+		else if (positionWeight < 1.0f - kEpsilon)
 		{
 			workspace.SetLocal(rootIndex, VansPoseMath::BlendTransforms(original[0], solved[0], positionWeight));
 			workspace.SetLocal(midIndex, VansPoseMath::BlendTransforms(original[1], solved[1], positionWeight));
 			workspace.SetLocal(tipIndex, VansPoseMath::BlendTransforms(original[2], solved[2], positionWeight));
 		}
+		if (blendGoalRotationLocally && !ApplyLimit(workspace, rig, tipIndex, jointLimited))
+		{
+			restore();
+			return {};
+		}
 		if (settings.tipRotationMode == VansLimbTipRotationMode::PreserveInput)
 			workspace.SetComponentRotation(tipIndex, originalTipComponentRotation);
-		else if (settings.tipRotationMode == VansLimbTipRotationMode::MatchGoal && rotationWeight > kEpsilon)
+		else if (settings.tipRotationMode == VansLimbTipRotationMode::MatchGoal
+			&& rotationWeight > kEpsilon && !blendGoalRotationLocally)
 		{
 			glm::quat current = workspace.GetComponentRotation(tipIndex);
 			glm::quat target = glm::normalize(goal.rotationModel);

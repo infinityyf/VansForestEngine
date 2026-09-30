@@ -1501,7 +1501,7 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 	for (auto* node : m_OpaqueRenderNodes)
 		deleteRenderNode(node);
 	m_OpaqueRenderNodes.clear();
-	m_SplineRoads.clear();
+	m_SplineSurfaces.clear();
 
 	for (auto* node : m_HairRenderNodes)
 		deleteRenderNode(node);

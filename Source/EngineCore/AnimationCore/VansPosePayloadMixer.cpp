@@ -93,8 +93,10 @@ namespace VansGraphics
 		VansAnimationFrameVector<VansAnimationCurveSample> BlendCurves(
 			const VansAnimationFrameVector<VansAnimationCurveSample>& first,
 			const VansAnimationFrameVector<VansAnimationCurveSample>& second,
-			float alpha)
+			float alpha, bool preserveMissing)
 		{
+			if (!preserveMissing && alpha <= 1.0e-5f) return first;
+			if (!preserveMissing && std::abs(alpha - 1.0f) <= 1.0e-5f) return second;
 			VansAnimationFrameVector<bool> consumed(second.size(), false);
 			VansAnimationFrameVector<VansAnimationCurveSample> result;
 			result.reserve(first.size() + second.size());
@@ -109,6 +111,7 @@ namespace VansGraphics
 				if (found == second.size())
 				{
 					result.push_back(curve);
+					if (!preserveMissing) result.back().value *= 1.0f - alpha;
 					continue;
 				}
 				VansAnimationCurveSample blended = curve;
@@ -117,7 +120,8 @@ namespace VansGraphics
 				consumed[found] = true;
 			}
 			for (std::size_t index = 0; index < second.size(); ++index)
-				if (!consumed[index] && second[index].present) result.push_back(second[index]);
+				if (!consumed[index] && second[index].present)
+				{ result.push_back(second[index]); if (!preserveMissing) result.back().value *= alpha; }
 			return result;
 		}
 
@@ -137,6 +141,13 @@ namespace VansGraphics
 			}
 			return alpha < 0.5f ? first : second;
 		}
+	}
+
+	VansAnimationFrameVector<VansAnimationCurveSample> VansPosePayloadMixer::BlendCurveSamples(
+		const VansAnimationFrameVector<VansAnimationCurveSample>& first,
+		const VansAnimationFrameVector<VansAnimationCurveSample>& second, float alpha)
+	{
+		return BlendCurves(first, second, std::clamp(alpha, 0.0f, 1.0f), false);
 	}
 
 	VansPosePayload VansPosePayloadMixer::BlendWeighted(
@@ -253,7 +264,8 @@ namespace VansGraphics
 		VansPosePayload result;
 		VansPoseMath::BlendPoses(first.localPose, second.localPose, weight, result.localPose);
 		result.rootMotion = BlendRootMotion(first.rootMotion, second.rootMotion, weight);
-		result.curves = BlendCurves(first.curves, second.curves, weight);
+		// 普通有效姿态混合保留单侧曲线；按零参与的线性曲线混合由独立入口提供。
+		result.curves = BlendCurves(first.curves, second.curves, weight, true);
 		AppendWeightedEvents(result.events, first.events, 1.0f - weight);
 		AppendWeightedEvents(result.events, second.events, weight);
 		result.nodeTransforms = BlendNodeTransforms(first.nodeTransforms, second.nodeTransforms, weight);

@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <array>
 
 struct GLFWwindow;
 
@@ -106,6 +107,15 @@ namespace Vans
         /// Mouse scroll delta this frame
         void GetScrollDelta(double& outX, double& outY) const;
 
+        // Standard gamepad state uses GLFW's cross-platform button/axis order.
+        // Player index is zero-based. Focus loss/disconnection clears down
+        // and axis values; a formerly held button emits one release edge.
+        bool IsGamepadConnected(int player) const;
+        bool IsGamepadButtonDown(int player, int button) const;
+        bool IsGamepadButtonPressed(int player, int button) const;
+        bool IsGamepadButtonReleased(int player, int button) const;
+        float GetGamepadAxis(int player, int axis) const;
+
         // -------- Action / Axis System --------
 
         /// Register a named action bound to a GLFW key code
@@ -185,6 +195,14 @@ namespace Vans
         // Keys that received events this frame (for state transitions)
         std::unordered_set<int> m_KeysUpdatedThisFrame;
         std::unordered_set<int> m_MouseButtonsUpdatedThisFrame;
+
+        struct GamepadState
+        {
+            bool connected = false;
+            std::array<KeyState, 15> buttons{};
+            std::array<float, 6> axes{};
+        };
+        std::array<GamepadState, 16> m_Gamepads{};
 
         // Action bindings
         std::unordered_map<std::string, int> m_ActionBindings;

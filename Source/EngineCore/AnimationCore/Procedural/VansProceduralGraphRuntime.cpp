@@ -23,17 +23,17 @@ namespace VansGraphics
 
 		enum class RuntimeNodeKind { Goal, Aim, Grounding, Limb, Chain, Checkpoint, RotationDistribution, BoneTransform };
 
-		int Phase(RuntimeNodeKind kind)
+		int GroundingPhase(RuntimeNodeKind kind)
 		{
 			switch (kind)
 			{
-			case RuntimeNodeKind::Goal: return 1;
-			case RuntimeNodeKind::Aim: return 1;
+			case RuntimeNodeKind::Goal:
+			case RuntimeNodeKind::Aim:
 			case RuntimeNodeKind::BoneTransform: return 1;
 			case RuntimeNodeKind::Grounding: return 2;
 			case RuntimeNodeKind::Limb:
 			case RuntimeNodeKind::RotationDistribution:
-			case RuntimeNodeKind::Chain: return 3;
+			case RuntimeNodeKind::Chain:
 			case RuntimeNodeKind::Checkpoint: return 3;
 			}
 			return -1;
@@ -601,7 +601,12 @@ namespace VansGraphics
 		m_Impl->graph = &graph;
 		std::vector<int> plan;
 		if (!graph.BuildExecutionPlan(plan, error)) return false;
-		std::unordered_map<int, int> maxPhaseByNode;
+		const bool hasGrounding = std::any_of(plan.begin(), plan.end(), [&graph](int id)
+		{
+			const auto* node = graph.GetNode(id);
+			return node && node->GetType() == VansAnimGraphNodeType::Grounding;
+		});
+		std::unordered_map<int, int> maxGroundingPhaseByNode;
 		std::size_t groundingCount = 0;
 		int groundingNodeId = -1;
 		std::unordered_set<int> groundedChainIndices;
@@ -609,10 +614,12 @@ namespace VansGraphics
 		{
 			const VansAnimGraphNode* source = graph.GetNode(nodeId);
 			if (!source) continue;
-			int inheritedPhase = -1;
-			for (const AnimGraphLink& link : graph.GetLinks())
-				if (link.toNodeId == nodeId)
-					inheritedPhase = std::max(inheritedPhase, maxPhaseByNode[link.fromNodeId]);
+			int inheritedGroundingPhase = -1;
+			if (hasGrounding)
+				for (const AnimGraphLink& link : graph.GetLinks())
+					if (link.toNodeId == nodeId)
+						inheritedGroundingPhase = std::max(inheritedGroundingPhase,
+							maxGroundingPhaseByNode[link.fromNodeId]);
 			CompiledRuntimeNode node;
 			node.nodeId = nodeId;
 			bool procedural = true;
@@ -782,14 +789,21 @@ namespace VansGraphics
 				break;
 			}
 			if (!error.empty()) return false;
-			const int nodePhase = procedural && node.kind != RuntimeNodeKind::Checkpoint ? Phase(node.kind) : inheritedPhase;
-			if (procedural && nodePhase < inheritedPhase)
+			// Grounding splits execution around its world-query batch and keeps
+			// the existing phase contract. Graphs without Grounding execute
+			// strictly in link order, including Goal -> IK -> Goal -> IK chains.
+			if (hasGrounding)
 			{
-				error = "Target Procedural Graph contains a phase-reversing connection at node "
-					+ std::to_string(nodeId);
-				return false;
+				const int nodePhase = procedural && node.kind != RuntimeNodeKind::Checkpoint
+					? GroundingPhase(node.kind) : inheritedGroundingPhase;
+				if (procedural && nodePhase < inheritedGroundingPhase)
+				{
+					error = "Target Procedural Graph contains a phase-reversing connection at node "
+						+ std::to_string(nodeId);
+					return false;
+				}
+				maxGroundingPhaseByNode[nodeId] = std::max(inheritedGroundingPhase, nodePhase);
 			}
-			maxPhaseByNode[nodeId] = std::max(inheritedPhase, nodePhase);
 			if (procedural)
 			{
 				for (int chainIndex : node.chainIndices)

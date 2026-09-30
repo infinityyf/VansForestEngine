@@ -13,6 +13,7 @@ namespace VansGraphics
 		float startTime = 0.0f;
 		float endTime = -1.0f;
 		bool loop = true;
+		bool extractRootMotion = true;
 		int rootMotionBoneIndex = -1;
 		std::uint64_t sourceNodeId = 0;
 		std::uint64_t sourceLayerId = 0;
@@ -26,7 +27,12 @@ namespace VansGraphics
 		                   const VansAnimationSampleRequest& request,
 		                   VansPosePayload& outPayload);
 
+		static VansRootMotionDelta ExtractRootMotion(const VansAnimationClip& clip,
+		                                            const Skeleton& skeleton,
+		                                            const VansAnimationSampleRequest& request);
+
 		static float ResolveSampleTime(float rawTime, float startTime,
 		                               float endTime, bool loop);
+		static float SampleCurve(const AnimationCurveTrack& curve, float time);
 	};
 }

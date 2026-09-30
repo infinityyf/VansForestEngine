@@ -9,10 +9,13 @@ namespace Vans
 		const VansCharacterMotionSettings& settings,
 		bool rootMotionValid,
 		bool motionMatchingUsed,
-		bool rootMotionPreferred)
+		bool rootMotionPreferred,
+		bool activeSlotRootMotion)
 	{
 		VansLocomotionAuthority authority;
-		if (settings.driveMode == VansLocomotionDriveMode::RootMotion)
+		if (settings.driveMode == VansLocomotionDriveMode::RootMotion ||
+			(settings.driveMode == VansLocomotionDriveMode::Capsule &&
+			 settings.slotRootMotionOverridesCapsule && activeSlotRootMotion && rootMotionValid))
 		{
 			authority.mode = VansLocomotionAuthorityMode::RootMotion;
 		}
@@ -55,6 +58,21 @@ namespace Vans
 		m_MotionStepper = {};
 	}
 
+	void VansCharacterLocomotionResolver::SeedVelocity(const glm::vec3& velocityWorld)
+	{
+		m_TrajectoryGenerator.SeedVelocity(velocityWorld);
+		m_VerticalVelocity = velocityWorld.y;
+		m_FrameInitialVelocity = velocityWorld;
+		m_VerticalDisplacement = 0.0f;
+		m_FramePrepared = false;
+	}
+
+	void VansCharacterLocomotionResolver::InitializeGroundVelocity()
+	{
+		auto velocity=m_TrajectoryGenerator.GetIntegrationVelocity();velocity.y=0;
+		SeedVelocity(velocity);
+	}
+
 	void VansCharacterLocomotionResolver::SetIntent(
 		const VansCharacterMotionIntent& intent)
 	{
@@ -72,7 +90,8 @@ namespace Vans
 		const glm::vec3& positionWorld,
 		float facingYaw,
 		bool grounded,
-		bool movementBlocked)
+		bool movementBlocked,
+		const glm::vec3& leavingBaseVelocity)
 	{
 		m_FrameDeltaTime = (std::max)(deltaTime, 0.0f);
 		m_FramePrepared = true;
@@ -99,6 +118,12 @@ namespace Vans
 		m_FrameInitialVelocity = m_TrajectoryGenerator.GetIntegrationVelocity();
 		m_FrameInitialVelocity.y = grounded ? 0.0f : m_VerticalVelocity;
 		if (jumpAccepted) m_FrameInitialVelocity.y = (std::max)(m_FrameInitialVelocity.y,m_Intent.jumpSpeed);
+		if (jumpAccepted)
+		{
+			m_FrameInitialVelocity += leavingBaseVelocity;
+			if (leavingBaseVelocity.x!=0 || leavingBaseVelocity.z!=0)
+				m_TrajectoryGenerator.SeedVelocity(m_FrameInitialVelocity);
+		}
 		m_FrameGrounded = grounded && !jumpAccepted;
 		m_TrajectoryGenerator.Update(
 			m_FrameDeltaTime,
@@ -119,7 +144,7 @@ namespace Vans
 		if (m_Intent.accelerationModel)
 		{
 			if (grounded) m_VerticalVelocity = 0.0f;
-			if (jumpAccepted) m_VerticalVelocity = (std::max)(m_VerticalVelocity, m_Intent.jumpSpeed);
+			if (jumpAccepted) m_VerticalVelocity = m_FrameInitialVelocity.y;
 			if (!grounded || jumpAccepted)
 			{
 				const auto falling = IntegrateCharacterFalling(m_VerticalVelocity,
@@ -135,7 +160,7 @@ namespace Vans
 		if (grounded && m_VerticalVelocity < 0.0f)
 			m_VerticalVelocity = -0.5f;
 		if (jumpAccepted)
-			m_VerticalVelocity = m_Intent.jumpSpeed;
+			m_VerticalVelocity = m_FrameInitialVelocity.y;
 		else
 			m_VerticalVelocity -=
 				(std::max)(0.0f, m_Intent.gravity) * m_FrameDeltaTime;
@@ -210,9 +235,14 @@ namespace Vans
 		result.deltaTime = deltaTime;
 		result.hasMove = true;
 		result.substepped = m_Intent.valid && m_Intent.accelerationModel && !movementBlocked &&
-			authority.mode == VansLocomotionAuthorityMode::Capsule;
+			authority.mode != VansLocomotionAuthorityMode::Blend;
 		if (result.substepped)
-			m_MotionStepper.Begin(m_Intent,m_FrameInitialVelocity,m_FrameGrounded,deltaTime);
+		{
+			const auto rootVelocity = authority.mode == VansLocomotionAuthorityMode::RootMotion
+				? std::optional<glm::vec3>(deltaTime > 0 ? rootWorldDelta / deltaTime : glm::vec3(0))
+				: std::nullopt;
+			m_MotionStepper.Begin(m_Intent,m_FrameInitialVelocity,m_FrameGrounded,deltaTime,rootVelocity);
+		}
 
 		const float capsuleFacingDelta = m_Intent.valid
 			? std::remainder(

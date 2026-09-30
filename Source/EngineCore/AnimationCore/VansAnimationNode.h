@@ -81,6 +81,7 @@ namespace VansGraphics
 			return m_Controller ? m_Controller->GetFinalPoseView(m_Skeleton)
 				: VansSkeletonPoseView{};
 		}
+		bool SavePoseSnapshot(const std::string& name);
 		// Character motion is evaluated on the source controller for source-proxy
 		// retargeting, while the target controller only post-processes the
 		// retargeted pose. CCT motion must query the same controller that owns
@@ -130,6 +131,7 @@ namespace VansGraphics
 		float GetSpeed() const;
 
 		const VansAnimationFrameVector<VansAnimationEventSample>& GetSampledEvents() const;
+		bool ClaimSampledEventPublication();
 
 		// Root motion
 		void EnableRootMotion(bool enable);

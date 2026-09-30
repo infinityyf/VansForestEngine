@@ -62,6 +62,7 @@ private:
 	std::unique_ptr<VansNavigationQueryScratch> m_QueryScratch;
 	std::vector<unsigned char> m_SerializedData;
 	VansNavigationSettings m_Settings;
+	VansNavigationAreaSettings m_BakedAreas;
 	VansNavigationSource m_Source;
 };
 }

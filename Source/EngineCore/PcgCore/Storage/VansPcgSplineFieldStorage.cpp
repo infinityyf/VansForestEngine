@@ -58,8 +58,8 @@ bool VansPcgSplineFieldStorage::Save(const std::filesystem::path& path,const Van
         w.Array(t.waterBlend);
         w.Value(t.minimumWaterHeight);w.Value(t.maximumWaterHeight);w.Value(t.minimumRiverWidth);w.Value(t.maximumHeightConflict);w.Value(std::uint8_t(t.hasRiver));
     }
-    w.Value(std::uint32_t(field.roads.size()));
-    for(const auto& [id,road]:field.roads){w.Text(id);w.Text(road->material.ToString());w.Text(road->roadDecalMaterial.ToString());w.Value(road->fingerprint);w.Array(road->vertices);w.Array(road->indices);}
+    w.Value(std::uint32_t(field.surfaces.size()));
+    for(const auto& [id,surface]:field.surfaces){w.Text(id);w.Text(surface->material.ToString());w.Text(surface->roadDecalMaterial.IsValid()?surface->roadDecalMaterial.ToString():std::string{});w.Value(std::uint32_t(surface->mode));w.Value(surface->projectedDepth);w.Value(surface->decalSortPriority);w.Value(surface->fingerprint);w.Array(surface->vertices);w.Array(surface->indices);}
     w.Value(std::uint32_t(field.warnings.size()));for(const auto& warning:field.warnings)w.Text(warning);
     w.Array(field.uncoveredBankPoints);
     w.Value(ComputeMemoryFnv1a64(w.bytes.data(),w.bytes.size()));
@@ -92,7 +92,7 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldStorage::Loa
         auto terrain=std::make_shared<VansTerrainAsset>(*base);terrain->heights=r.Array<std::uint16_t>(base->heights.size());
         if(terrain->heights.size()!=base->heights.size())throw std::runtime_error("Invalid baked terrain size.");
         field->effectiveTerrain=terrain;
-        field->hasVegetationExclusion=std::any_of(source.splines.begin(),source.splines.end(),[](const auto& s){return s.enabled && s.points.size()>=2 && s.excludeVegetation;});
+        field->hasVegetationExclusion=std::any_of(source.splines.begin(),source.splines.end(),[](const auto& s){return s.kind!=VansPcgSplineKind::Decal && s.enabled && s.points.size()>=2 && s.excludeVegetation;});
         const auto pixels=std::size_t(VANS_SPLINE_TILE_EXTENT)*VANS_SPLINE_TILE_EXTENT;
         const auto tileCount=r.Count(VANS_SPLINE_MAX_ATLAS_PAGES);
         const auto axisTiles=(field->resolution+VANS_SPLINE_TILE_SIZE-1)/VANS_SPLINE_TILE_SIZE;
@@ -109,17 +109,26 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldStorage::Loa
             t->minimumWaterHeight=r.Value<float>();t->maximumWaterHeight=r.Value<float>();t->minimumRiverWidth=r.Value<float>();t->maximumHeightConflict=r.Value<float>();t->hasRiver=r.Value<std::uint8_t>()!=0;
             field->tiles.emplace(key,std::move(t));field->changedTiles.push_back(key);
         }
-        const auto roads=r.Count(16384);
-        for(std::uint32_t i=0;i<roads;++i)
+        const auto surfaces=r.Count(16384);
+        for(std::uint32_t i=0;i<surfaces;++i)
         {
-            auto road=std::make_shared<VansPcgRoadMesh>();road->splineId=r.Text();
-            if(!VansAssetGuid::TryParse(r.Text(),road->material))throw std::runtime_error("Invalid baked road material.");
+            auto surface=std::make_shared<VansPcgSplineSurface>();surface->splineId=r.Text();
+            if(!VansAssetGuid::TryParse(r.Text(),surface->material))throw std::runtime_error("Invalid baked spline surface material.");
             const auto roadDecalMaterial=r.Text();
-            if(!roadDecalMaterial.empty() && !VansAssetGuid::TryParse(roadDecalMaterial,road->roadDecalMaterial))
+            if(!roadDecalMaterial.empty() && !VansAssetGuid::TryParse(roadDecalMaterial,surface->roadDecalMaterial))
                 throw std::runtime_error("Invalid baked road decal material.");
-            road->fingerprint=r.Value<std::uint64_t>();road->vertices=r.Array<VansPcgRoadVertex>(524288);road->indices=r.Array<std::uint32_t>(1572864);
-            for(const auto index:road->indices)if(index>=road->vertices.size())throw std::runtime_error("Invalid baked road index.");
-            if(!field->roads.emplace(road->splineId,road).second)throw std::runtime_error("Duplicate baked road.");
+            const auto mode=r.Value<std::uint32_t>();
+            if(mode>std::uint32_t(VansPcgSplineSurfaceMode::MaterialDecal))
+                throw std::runtime_error("Invalid baked spline surface mode.");
+            surface->mode=VansPcgSplineSurfaceMode(mode);
+            surface->projectedDepth=r.Value<float>();
+            surface->decalSortPriority=r.Value<int>();
+            if(!std::isfinite(surface->projectedDepth)||surface->projectedDepth<0.05f||surface->projectedDepth>100.0f||
+                surface->decalSortPriority<-32768||surface->decalSortPriority>32767)
+                throw std::runtime_error("Invalid baked spline decal settings.");
+            surface->fingerprint=r.Value<std::uint64_t>();surface->vertices=r.Array<VansPcgSplineSurfaceVertex>(524288);surface->indices=r.Array<std::uint32_t>(1572864);
+            for(const auto index:surface->indices)if(index>=surface->vertices.size())throw std::runtime_error("Invalid baked spline surface index.");
+            if(!field->surfaces.emplace(surface->splineId,surface).second)throw std::runtime_error("Duplicate baked spline surface.");
         }
         const auto warnings=r.Count(4096);for(std::uint32_t i=0;i<warnings;++i)field->warnings.push_back(r.Text());
         field->uncoveredBankPoints=r.Array<glm::vec3>(VANS_SPLINE_MAX_ATLAS_PAGES);

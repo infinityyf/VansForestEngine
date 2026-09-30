@@ -118,6 +118,7 @@ namespace VansGraphics
 
 		// Display-resolution result after post-processing the unified HDR upscaler output.
 		VansVKImage m_FinalDisplayColorImage;
+		VansVKImage m_SceneUIStencilImage;
 		VansVKImage* m_DisplayPostProcessInput = nullptr;
 
 		VansVKImage m_ShadowMapImage;
@@ -229,6 +230,7 @@ namespace VansGraphics
 
 		void SetupVansSceneUIRenderPass(
 			VkDevice& logicDevice,
+			VkPhysicalDevice physicalDevice,
 			VkImageView finalDisplayImageView,
 			const VkExtent2D& displayExtent);
 		void DestroySceneUIRenderPass();

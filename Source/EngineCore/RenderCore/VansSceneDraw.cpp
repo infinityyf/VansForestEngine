@@ -560,7 +560,8 @@ bool VansGraphics::VansScene::BuildDecalDrawSubmission(
         VansDrawPacket packet;
         if (node->BuildPrimaryDrawPacket(
             vkDevice->GetLogicDevice(), globalStateData,
-            node->m_UsesRoadDecalPass ? VansPass::ROAD_DECAL_MODIFIER : VansPass::DECAL_MODIFIER,
+            node->m_UsesRoadDecalPass ? VansPass::ROAD_DECAL_MODIFIER :
+                node->m_UsesSplineDecalPass ? VansPass::SPLINE_DECAL_MODIFIER : VansPass::DECAL_MODIFIER,
             0, 0, nodeIndex, 0.0f, packet))
         {
             submission.packets.push_back(std::move(packet));
@@ -568,19 +569,27 @@ bool VansGraphics::VansScene::BuildDecalDrawSubmission(
     }
 
     const auto& payloadBytes = vkDevice->GetCurrentRenderSceneSnapshot().materials.custom.bytes;
-    auto priority = [&](const VansDrawPacket& packet) {
+    auto priority = [&](const VansDrawPacket& packet) -> int {
+        const auto* node = m_DecalRenderNodes[packet.stableOrder];
+        if (node->m_DecalSortPriority) return *node->m_DecalSortPriority;
         // 道路使用 PBR payload，不能把同索引的普通贴花 custom payload 当成排序参数。
-        if (m_DecalRenderNodes[packet.stableOrder]->m_UsesRoadDecalPass) return 0.0f;
+        if (node->m_UsesRoadDecalPass) return 0;
         const size_t offset = static_cast<size_t>(packet.instanceData.materialIndex) * sizeof(VansCustomMaterialPayload);
         VansCustomMaterialPayload payload;
         if (offset <= payloadBytes.size() && sizeof(payload) <= payloadBytes.size() - offset)
+        {
             std::memcpy(&payload, payloadBytes.data() + offset, sizeof(payload));
-        return payload.values[2].x;
+            if (std::isfinite(payload.values[2].x))
+                return static_cast<int>(std::round(std::clamp(payload.values[2].x, -32768.0f, 32767.0f)));
+        }
+        return 0;
     };
+    // 不同层级不能合成同一个实例批次，否则混合顺序失去逐层保证。
+    for (auto& packet : submission.packets)
+        packet.orderGroup = static_cast<std::uint64_t>(priority(packet) + 32768);
     std::sort(submission.packets.begin(), submission.packets.end(),
-        [&](const VansDrawPacket& lhs, const VansDrawPacket& rhs) {
-            const float leftPriority = priority(lhs), rightPriority = priority(rhs);
-            return leftPriority != rightPriority ? leftPriority < rightPriority : lhs.stableOrder < rhs.stableOrder;
+        [](const VansDrawPacket& lhs, const VansDrawPacket& rhs) {
+            return lhs.orderGroup != rhs.orderGroup ? lhs.orderGroup < rhs.orderGroup : lhs.stableOrder < rhs.stableOrder;
         });
     return FinalizeDrawSubmission(VansDrawSortPolicy::PreserveOrder, submission);
 }

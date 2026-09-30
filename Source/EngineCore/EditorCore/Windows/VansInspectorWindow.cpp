@@ -2610,6 +2610,20 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
                     type,
                     "data");
             }
+            if (type == "ModelRenderer" &&
+                Vans::ReadSerializedStringField(*data, "renderType", "opaque") == "decal")
+            {
+                if (Vans::FindObjectField(*data, "decalSortPriority"))
+                {
+                    if (ImGui::Button("Use decal material priority"))
+                        changed |= Vans::EraseSerializedObjectField(*data, "decalSortPriority");
+                }
+                else if (ImGui::Button("Override decal sort priority"))
+                {
+                    Vans::SetSerializedObjectField(*data, "decalSortPriority", Vans::VansSerializedValue::Int(0));
+                    changed = true;
+                }
+            }
             if (data->objectFields.empty()) ImGui::TextDisabled("No properties");
 			if (type == "ActionHost")
 			{

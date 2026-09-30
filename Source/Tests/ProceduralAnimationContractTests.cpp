@@ -1132,6 +1132,50 @@ namespace
 			&& partialResult.effectivePositionError > 1.0e-3f,
 			"Limb IK misclassified an authored partial weight as a solver clamp")) return false;
 
+		VansLimbIKSettings linearBlendSettings;
+		linearBlendSettings.linearPoseBlend = true;
+		VansProceduralGoal linearBlendGoal = reachable;
+		linearBlendGoal.rotationModel = glm::angleAxis(
+			glm::radians(48.0f), glm::normalize(glm::vec3(0.2f, 1.0f, 0.4f)));
+		linearBlendGoal.rotationWeight = 1.0f;
+		workspace.Initialize(fixture.skeleton, fixture.localPose);
+		std::array<VansBoneTransform, 3> originalLeg;
+		for (std::size_t bone = 0; bone < originalLeg.size(); ++bone)
+			originalLeg[bone] = workspace.GetLocal(chain.boneIndices[bone]);
+		const VansProceduralSolverResult fullLinearResult = VansLimbIKSolver::Solve(
+			workspace, fixture.rig, chain, linearBlendGoal, linearBlendSettings);
+		if (!Check(fullLinearResult.status == VansProceduralSolverStatus::Solved,
+			"Limb IK could not produce a full pose for linear blending")) return false;
+		std::array<VansBoneTransform, 3> solvedLeg;
+		for (std::size_t bone = 0; bone < solvedLeg.size(); ++bone)
+			solvedLeg[bone] = workspace.GetLocal(chain.boneIndices[bone]);
+		workspace.Initialize(fixture.skeleton, fixture.localPose);
+		constexpr float blendWeight = 0.35f;
+		linearBlendGoal.positionWeight = blendWeight;
+		linearBlendGoal.rotationWeight = blendWeight;
+		const VansProceduralSolverResult blendedLinearResult = VansLimbIKSolver::Solve(
+			workspace, fixture.rig, chain, linearBlendGoal, linearBlendSettings);
+		if (!Check(blendedLinearResult.status == VansProceduralSolverStatus::Solved,
+			"Limb IK rejected an authored linear pose blend")) return false;
+		for (std::size_t bone = 0; bone < solvedLeg.size(); ++bone)
+		{
+			const VansBoneTransform actual = workspace.GetLocal(chain.boneIndices[bone]);
+			glm::quat solvedRotation = solvedLeg[bone].rotation;
+			if (glm::dot(solvedRotation, originalLeg[bone].rotation) < 0.0f)
+				solvedRotation = -solvedRotation;
+			const glm::quat expectedRotation = glm::normalize(
+				solvedRotation * blendWeight
+				+ originalLeg[bone].rotation * (1.0f - blendWeight));
+			const float translationError = glm::length(actual.translation - glm::mix(
+				originalLeg[bone].translation, solvedLeg[bone].translation, blendWeight));
+			const float scaleError = glm::length(actual.scale - glm::mix(
+				originalLeg[bone].scale, solvedLeg[bone].scale, blendWeight));
+			const float rotationDot = std::abs(glm::dot(actual.rotation, expectedRotation));
+			if (!Check(translationError < 1.0e-5f && scaleError < 1.0e-5f
+				&& rotationDot > 1.0f - 1.0e-5f,
+				"Limb IK partial weight did not blend the solved local leg pose linearly")) return false;
+		}
+
 		VansAnimationRigAsset stretchAsset = fixture.asset;
 		stretchAsset.chains.front().maxStretchScale = 1.2f;
 		VansCompiledAnimationRig stretchRig;
@@ -1150,6 +1194,71 @@ namespace
 			&& stretchResult.softReachApplied && stretchResult.stretchApplied
 			&& stretchResult.effectivePositionError <= 1.0e-3f,
 			"Limb IK did not combine soft reach and explicit stretch continuously")) return false;
+
+		VansAnimationRigAsset sourceGeometryAsset = bentFixture.asset;
+		sourceGeometryAsset.chains.front().softReachStartRatio = 1.0f;
+		sourceGeometryAsset.chains.front().maxStretchScale = 1.5f;
+		VansCompiledAnimationRig sourceGeometryRig;
+		if (!VansAnimationRigCompiler::Compile(sourceGeometryAsset,
+			bentFixture.skeleton, sourceGeometryRig, error))
+			return Check(false, error.c_str());
+		const VansCompiledRigChain& sourceGeometryChain = sourceGeometryRig.chains.front();
+		VansLimbIKSettings sourceGeometrySettings;
+		sourceGeometrySettings.linearPoseBlend = true;
+		const glm::vec3 sourceDirection = glm::normalize(glm::vec3(0.25f, -0.9f, 0.1f));
+		for (float reachRatio : { 0.4f, 0.8f, 1.0f, 1.2f, 1.6f })
+		{
+			workspace.Initialize(bentFixture.skeleton, bentFixture.localPose);
+			const glm::vec3 sourceRoot = workspace.GetComponentPosition(sourceGeometryChain.boneIndices[0]);
+			const glm::vec3 sourceJoint = workspace.GetComponentPosition(sourceGeometryChain.boneIndices[1]);
+			const glm::vec3 sourceEnd = workspace.GetComponentPosition(sourceGeometryChain.boneIndices[2]);
+			float sourceUpper = glm::length(sourceJoint - sourceRoot);
+			float sourceLower = glm::length(sourceEnd - sourceJoint);
+			const float sourceReach = sourceUpper + sourceLower;
+			const float desiredLength = sourceReach * reachRatio;
+			VansProceduralGoal sourceGoal;
+			sourceGoal.valid = true;
+			sourceGoal.positionModel = sourceRoot + sourceDirection * desiredLength;
+			sourceGoal.rotationWeight = 1.0f;
+			sourceGoal.rotationModel = linearBlendGoal.rotationModel;
+			sourceGoal.hasPoleTarget = true;
+			sourceGoal.poleTargetModel = sourceRoot + glm::vec3(1.0f, 0.0f, 0.0f);
+			const float scaleFactor = 1.0f + 0.5f * std::clamp(
+				(reachRatio - 1.0f) / 0.5f, 0.0f, 1.0f);
+			sourceUpper *= scaleFactor;
+			sourceLower *= scaleFactor;
+			const float scaledReach = sourceUpper + sourceLower;
+			const float endDistance = std::min(desiredLength, scaledReach);
+			glm::vec3 expectedJoint;
+			if (desiredLength >= scaledReach)
+				expectedJoint = sourceRoot + sourceDirection * sourceUpper;
+			else
+			{
+				const glm::vec3 jointOffset = sourceGoal.poleTargetModel - sourceRoot;
+				const glm::vec3 bend = glm::normalize(jointOffset
+					- sourceDirection * glm::dot(jointOffset, sourceDirection));
+				const float along = (sourceUpper * sourceUpper + desiredLength * desiredLength
+					- sourceLower * sourceLower) / (2.0f * desiredLength);
+				const float height = std::sqrt(std::max(0.0f,
+					sourceUpper * sourceUpper - along * along));
+				expectedJoint = sourceRoot + sourceDirection * along + bend * height;
+			}
+			const VansProceduralSolverResult geometryResult = VansLimbIKSolver::Solve(
+				workspace, sourceGeometryRig, sourceGeometryChain, sourceGoal, sourceGeometrySettings);
+			const float jointError = glm::length(
+				workspace.GetComponentPosition(sourceGeometryChain.boneIndices[1]) - expectedJoint);
+			const float endError = glm::length(
+				workspace.GetComponentPosition(sourceGeometryChain.boneIndices[2])
+				- (sourceRoot + sourceDirection * endDistance));
+			if (jointError >= 2.0e-4f || endError >= 2.0e-4f)
+				std::cerr << "Two-bone geometry reachRatio=" << reachRatio << " status="
+					<< static_cast<int>(geometryResult.status) << " jointError=" << jointError
+					<< " endError=" << endError << '\n';
+			if (!Check((geometryResult.status == VansProceduralSolverStatus::Solved
+					|| geometryResult.status == VansProceduralSolverStatus::Unreachable)
+				&& jointError < 2.0e-4f && endError < 2.0e-4f,
+				"Limb IK joint/end geometry diverged from the two-bone source equations")) return false;
+		}
 
 		workspace.Initialize(fixture.skeleton, fixture.localPose);
 		VansProceduralGoal rotationOnly;
@@ -1661,6 +1770,7 @@ namespace
 		const int checkpointId = graph.AddNode(std::move(checkpoint));
 		auto limb = std::make_unique<AnimGraphLimbIKNode>();
 		limb->m_ChainIds = { "leftLeg" };
+		limb->m_Settings.linearPoseBlend = true;
 		const int limbId = graph.AddNode(std::move(limb));
 		const int outputId = graph.AddNode(std::make_unique<AnimGraphOutputNode>());
 		graph.AddLink(inputId,0,goalId,0);
@@ -1671,6 +1781,9 @@ namespace
 		graph.SerializeToJsonObject(json);
 		auto roundtrip = VansAnimGraph::DeserializeFromJsonObject(json);
 		if (!Check(roundtrip != nullptr, "Checkpoint graph roundtrip failed")) return false;
+		const auto* restoredLimb = dynamic_cast<const AnimGraphLimbIKNode*>(roundtrip->GetNode(limbId));
+		if (!Check(restoredLimb && restoredLimb->m_Settings.linearPoseBlend,
+			"Limb IK linear pose blend was lost during graph serialization")) return false;
 		VansProceduralGraphRuntime runtime;
 		std::string error;
 		if (!Check(runtime.Configure(*roundtrip,fixture.rig,{},error),error.c_str())) return false;
@@ -2119,4 +2232,9 @@ bool RunProceduralAnimationContractTests()
 bool RunComponentBoneTransformContractTest()
 {
 	return TestComponentBoneTransformCheckpoint();
+}
+
+bool RunProceduralLimbIKContractTests()
+{
+	return TestRigValidationAndLimbSolver() && TestTransformTargetCheckpoint();
 }

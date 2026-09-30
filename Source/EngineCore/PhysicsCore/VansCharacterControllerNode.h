@@ -14,6 +14,8 @@
 
 namespace VansEngine
 {
+	struct VansPhysicsQueryHit;
+	struct VansCharacterFloorResult;
 	enum class VansCharacterClimbingMode : std::uint8_t
 	{
 		Easy,
@@ -31,6 +33,22 @@ namespace VansEngine
         // ── 运动参数 ─────────────────────────────────────────────────────
         float     m_SlopeLimit      = 0.707f;  // 可行走斜坡最大角余弦值（默认 cos45°）
         float     m_StepOffset      = 0.3f;    // 可自动跨越的台阶高度（米）
+        float     m_PerchRadiusThreshold = 0; // 边缘站立时从胶囊半径中扣除的距离
+        float     m_PerchAdditionalHeight = .4f;
+        float     m_PenetrationPullbackDistance = .00125f;
+        float     m_PenetrationOverlapInflation = .001f;
+        float     m_MaxDepenetrationWithGeometry = 5.f;
+        float     m_MaxDepenetrationWithCharacters = 1.f;
+        bool      m_UseImpactBodyVelocity = true;
+        bool      m_MaintainHorizontalGroundVelocity = true;
+        bool      m_CanWalkOffLedges = true;
+        bool      m_CanWalkOffLedgesWhenCrouching = false;
+        float     m_LedgeCheckThreshold = .04f;
+        bool      m_FollowMovementBaseRotation = false;
+        bool      m_ImpartMovementBaseVelocityX = true;
+        bool      m_ImpartMovementBaseVelocityY = true;
+        bool      m_ImpartMovementBaseVelocityZ = true;
+        bool      m_ImpartMovementBaseAngularVelocity = true;
         float     m_ContactOffset   = 0.08f;   // 皮肤厚度（skin width），用于穿透修正
 
         // ── 方向 ─────────────────────────────────────────────────────────
@@ -97,6 +115,7 @@ namespace VansEngine
 		{
 			return m_Locomotion.GetTrajectory();
 		}
+		glm::vec3 GetResolvedVelocity() const { return m_Locomotion.GetResolvedVelocity(); }
 		bool HasMotionIntent() const { return m_Locomotion.HasIntent(); }
 
         // ── 内部：提交 move() + 同步 Transform（由 UpdateCharControllerTransforms 调用）──
@@ -106,14 +125,23 @@ namespace VansEngine
         // ── 瞬移 ─────────────────────────────────────────────────────────
         // pos 为胶囊中心坐标（忽略 positionOffset）
         void SetPosition(const glm::vec3& pos);
+		bool SeedMotionVelocity(const glm::vec3& velocityWorld);
+		// Seed the next locomotion preparation after an externally controlled move.
+		// The following controller sweep replaces this transient contact state.
+		bool SeedGroundedContact(bool grounded);
+		// 初次启用时查询支撑面并调整离地距离；不推进模拟或派发落地事件。
+		bool InitializeContactState(bool preferGrounded);
 
         // Resize the capsule cylinder while keeping its foot and Transform origin fixed.
         // Caller holds SimulationMutex; growing fails if the target shape is obstructed.
-        bool ResizeCapsule(float cylinderHeight);
+        bool ResizeCapsule(float cylinderHeight, std::optional<bool> crouched = std::nullopt);
 
         // ── 状态查询 ──────────────────────────────────────────────────────
         glm::vec3 GetPosition() const;          // 返回胶囊中心坐标
         bool IsGrounded() const;                // COLLISION_DOWN 标志
+        // 可在脚本状态切换时关闭/恢复胶囊与场景的碰撞；调用方持有 SimulationMutex。
+        void SetCollisionEnabled(bool enabled);
+        bool IsCollisionEnabled() const { return m_CollisionEnabled; }
         // [迁移到 VansNode] IsEnabled 由基类提供
         uint32_t GetTransformID() const { return m_TransformID; }
         const CharControllerProperties& GetProperties() const { return m_Properties; }
@@ -148,11 +176,16 @@ namespace VansEngine
         // （胶囊中心 - positionOffset = Transform 原点）
         void SyncTransformFromController();
 		void DiscardPendingMove();
+		void UpdateMovementBaseLocked();
+		VansCharacterFloorResult FindCurrentFloorLocked() const;
+		void SaveMovementBaseLocked(const VansPhysicsQueryHit& floorHit);
+		glm::vec3 GetImpartedMovementBaseVelocityLocked() const;
 
     private:
         CharControllerProperties          m_Properties;
         std::unique_ptr<NativeState>       m_Native;
         uint32_t                          m_TransformID       = UINT32_MAX;  // UINT32_MAX 表示「尚未绑定」
+        bool                              m_CollisionEnabled = true;
 
         // ── 待执行位移缓冲 ────────────────────────────────────────────────
         glm::vec3                         m_PendingDisplacement = { 0.0f, 0.0f, 0.0f };
@@ -160,6 +193,7 @@ namespace VansEngine
 		bool                              m_HasPendingMove      = false;
 		bool m_PendingModeledMotion = false;
 		bool m_PendingSubsteps = false;
+		bool m_PendingAnimationRootMotion = false;
 		bool m_FlushStarted = false;
 		glm::vec3 m_FlushStartPosition{0.0f};
 		struct PendingLanding

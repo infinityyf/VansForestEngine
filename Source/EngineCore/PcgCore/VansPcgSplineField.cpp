@@ -63,7 +63,7 @@ struct Curve
     VansPcgEvaluatedSpline evaluated;
     std::uint64_t hash = 0;
     std::uint64_t terrainShapeHash = 0;
-    std::uint64_t roadHash = 0;
+    std::uint64_t surfaceHash = 0;
 };
 struct Candidate
 {
@@ -165,20 +165,23 @@ float DeformHeight(float base, const Curve& curve, const Contribution& c)
     return glm::mix(base,target,weight);
 }
 
-std::shared_ptr<VansPcgRoadMesh> BuildRoad(const Curve& curve)
+std::shared_ptr<VansPcgSplineSurface> BuildSurface(const Curve& curve)
 {
-    auto mesh=std::make_shared<VansPcgRoadMesh>();
+    auto mesh=std::make_shared<VansPcgSplineSurface>();
     const auto& spline=*curve.source;
     mesh->splineId=spline.id;mesh->material=spline.material;mesh->roadDecalMaterial=spline.roadDecalMaterial;
-    mesh->renderMode=spline.roadRenderMode;
-    mesh->projectedDepth=spline.projectedDepth;mesh->fingerprint=curve.roadHash;
+    mesh->mode=spline.kind==VansPcgSplineKind::Decal?VansPcgSplineSurfaceMode::MaterialDecal:
+        spline.roadRenderMode==VansPcgRoadRenderMode::ProjectedDecal?VansPcgSplineSurfaceMode::RoadDecal:
+        VansPcgSplineSurfaceMode::RoadMesh;
+    mesh->decalSortPriority=spline.decalSortPriority;
+    mesh->projectedDepth=spline.projectedDepth;mesh->fingerprint=curve.surfaceHash;
     for (const auto& p:curve.evaluated.samples)
     {
         auto right=p.right; right.y=std::tan(glm::radians(p.bankAngleDegrees));
         const auto normal=glm::normalize(glm::cross(right,p.tangent));
         for (const float d:{-p.leftWidth,p.rightWidth})
         {
-            VansPcgRoadVertex vertex;
+            VansPcgSplineSurfaceVertex vertex;
             vertex.position=p.position+right*d+glm::vec3(0,spline.surfaceOffset,0);
             vertex.normal=normal;
             // U 横跨整幅路面，V 沿道路里程重复，标线沿样条而不是横穿道路。
@@ -241,7 +244,7 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
         previous->terrainFingerprint==output->terrainFingerprint) return previous;
     if (previous && (previous->resolution!=output->resolution || previous->worldSize!=size || previous->terrainGuid!=asset.terrain)) previous.reset();
 
-    output->hasVegetationExclusion=std::any_of(asset.splines.begin(),asset.splines.end(),[](const auto& s){return s.enabled && s.points.size()>=2 && s.excludeVegetation;});
+    output->hasVegetationExclusion=std::any_of(asset.splines.begin(),asset.splines.end(),[](const auto& s){return s.kind!=VansPcgSplineKind::Decal && s.enabled && s.points.size()>=2 && s.excludeVegetation;});
     std::vector<Curve> curves;
     for (const auto& spline:asset.splines) if (spline.enabled && spline.points.size()>=2)
     {
@@ -254,15 +257,15 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
         auto identity=asset;identity.splines={spline};
         auto& shape=identity.splines.front();
         // 道路显示方式和投影深度只影响渲染代理，不应使地形/植被控制纹理失效。
-        shape.roadRenderMode=VansPcgRoadRenderMode::Mesh;shape.projectedDepth=2.0f;shape.roadDecalMaterial={};
+        shape.roadRenderMode=VansPcgRoadRenderMode::Mesh;shape.projectedDepth=2.0f;shape.roadDecalMaterial={};shape.decalSortPriority=0;
         curve.hash=VansPcgSplineAssetCodec::ContentHash(identity);
         shape.roadRenderMode=spline.roadRenderMode;shape.projectedDepth=spline.projectedDepth;
-        shape.roadDecalMaterial=spline.roadDecalMaterial;
+        shape.roadDecalMaterial=spline.roadDecalMaterial;shape.decalSortPriority=spline.decalSortPriority;
         shape.excludeVegetation=false;shape.vegetationFade=2;shape.name.clear();shape.locked=false;
-        curve.roadHash=VansPcgSplineAssetCodec::ContentHash(identity);
+        curve.surfaceHash=VansPcgSplineAssetCodec::ContentHash(identity);
         shape.excludeVegetation=false;shape.vegetationFade=2;
         shape.name.clear();shape.locked=false;shape.material={};shape.surfaceOffset=0;shape.textureRepeat=1;
-        shape.roadRenderMode=VansPcgRoadRenderMode::Mesh;shape.projectedDepth=2.0f;shape.roadDecalMaterial={};
+        shape.roadRenderMode=VansPcgRoadRenderMode::Mesh;shape.projectedDepth=2.0f;shape.roadDecalMaterial={};shape.decalSortPriority=0;
         shape.flowSign=1;shape.fadeInDistance=shape.fadeOutDistance=0;shape.coordinateOffset=0;shape.coordinateSign=1;
         shape.continuation=false;shape.envelopeOffset=shape.envelopeLength=0;shape.normalFlowEnabled=false;
         shape.wetBankWidthMeters=3;shape.wetnessStrength=0;
@@ -281,6 +284,14 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
     for (std::size_t ci=0;ci<curves.size();++ci)
     {
         const auto& curve=curves[ci];
+        if (curve.source->kind==VansPcgSplineKind::Decal)
+        {
+            const auto found=previous?previous->surfaces.find(curve.source->id):output->surfaces.end();
+            output->surfaces.emplace(curve.source->id,
+                previous && found!=previous->surfaces.end() && found->second->fingerprint==curve.surfaceHash?
+                    found->second:BuildSurface(curve));
+            continue;
+        }
         std::map<std::uint64_t,std::vector<std::size_t>> segments;
         for (std::size_t si=0;si+1<curve.evaluated.samples.size();++si)
         {
@@ -301,10 +312,10 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
         for (auto& [key,list]:segments) index[key].push_back({ci,std::move(list)});
         if (curve.source->kind==VansPcgSplineKind::Road)
         {
-            const auto found=previous?previous->roads.find(curve.source->id):output->roads.end();
-            if (previous && found!=previous->roads.end() && found->second->fingerprint==curve.roadHash)
-                output->roads.emplace(curve.source->id,found->second);
-            else output->roads.emplace(curve.source->id,BuildRoad(curve));
+            const auto found=previous?previous->surfaces.find(curve.source->id):output->surfaces.end();
+            if (previous && found!=previous->surfaces.end() && found->second->fingerprint==curve.surfaceHash)
+                output->surfaces.emplace(curve.source->id,found->second);
+            else output->surfaces.emplace(curve.source->id,BuildSurface(curve));
         }
     }
     if (index.size()>VANS_SPLINE_MAX_ATLAS_PAGES) {error="Spline field resident tile budget exceeded (2048).";return {};}

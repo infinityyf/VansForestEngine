@@ -12,6 +12,7 @@
 #include "../EngineCore/AssetCore/VansDerivedArtifactLayout.h"
 #include "../EngineCore/RenderCore/WaterCore/VansWaterGeometryClipmap.h"
 #include "../EngineCore/RenderCore/WaterCore/VansRiverWaveSimulation.h"
+#include "../EngineCore/RenderCore/Decal/VansSplineDecalGeometry.h"
 #include "../EngineCore/RenderCore/VegetationCore/VansVegetationCollection.h"
 
 #include <algorithm>
@@ -474,12 +475,14 @@ bool RunPcgCoreContractTests()
 			VansPcgSplineAssetCodec::ContentHash(asset)==VansPcgSplineAssetCodec::ContentHash(decoded),"Spline serialization changed author data: "+error)) return false;
 		auto projectedRoad=river;projectedRoad.id="projectedRoad";projectedRoad.name="Projected road";projectedRoad.kind=VansPcgSplineKind::Road;projectedRoad.material=VansAssetGuid::New();
         projectedRoad.roadRenderMode=VansPcgRoadRenderMode::ProjectedDecal;projectedRoad.projectedDepth=3.5f;
+        projectedRoad.decalSortPriority=-8;
         projectedRoad.roadDecalMaterial=VansAssetGuid::New();
 		VansPcgSplineAsset roadAsset;roadAsset.name="Road rendering contracts";roadAsset.terrain=asset.terrain;roadAsset.splines={projectedRoad};
 		VansSerializedValue roadEncoded;VansPcgSplineAsset roadDecoded,projectedRoadDecoded;
         if (!Check(VansPcgSplineAssetCodec::Encode(roadAsset,roadEncoded,error) && VansPcgSplineAssetCodec::Decode(roadEncoded,roadDecoded,error) &&
             roadDecoded.splines.front().roadRenderMode==VansPcgRoadRenderMode::ProjectedDecal &&
             std::abs(roadDecoded.splines.front().projectedDepth-3.5f)<1e-6f &&
+            roadDecoded.splines.front().decalSortPriority==-8 &&
             roadDecoded.splines.front().roadDecalMaterial==projectedRoad.roadDecalMaterial,
             "Road projected decal settings were lost in serialization: "+error)) return false;
 		auto meshOnlyRoadEncoded=roadEncoded;
@@ -488,10 +491,11 @@ bool RunPcgCoreContractTests()
 			"Road serialization fixture is missing its spline")) return false;
 		auto& meshOnlyRoadFields=meshOnlyRoadList->second.arrayItems.front().objectFields;
 		meshOnlyRoadFields.erase(std::remove_if(meshOnlyRoadFields.begin(),meshOnlyRoadFields.end(),[](const auto& field) {
-			return field.first=="roadRenderMode" || field.first=="projectedDepth";
+            return field.first=="roadRenderMode" || field.first=="projectedDepth" || field.first=="decalSortPriority";
 		}),meshOnlyRoadFields.end());
 		if (!Check(VansPcgSplineAssetCodec::Decode(meshOnlyRoadEncoded,roadDecoded,error) &&
 			roadDecoded.splines.front().roadRenderMode==VansPcgRoadRenderMode::Mesh &&
+            roadDecoded.splines.front().decalSortPriority==0 &&
 			std::abs(roadDecoded.splines.front().projectedDepth-2.0f)<1e-6f,
 			"Road assets without the additive render fields lost their defaults: "+error)) return false;
 		if (!Check(VansPcgSplineAssetCodec::Decode(roadEncoded,projectedRoadDecoded,error),"Road projected decal fixture could not be restored: "+error)) return false;
@@ -509,11 +513,88 @@ bool RunPcgCoreContractTests()
 		terrain->settings.terrainSize=128;terrain->settings.maxHeight=32;terrain->settings.heightOffset=0;
 		terrain->heights.assign(256*256,32768);for(auto& splat:terrain->splatPixels)splat.resize(256*256*4);
 		auto projectedRoadField=VansPcgSplineFieldBuilder::Build(projectedRoadDecoded,terrain,{},error);
-        if (!Check(bool(projectedRoadField) && projectedRoadField->roads.count("projectedRoad") &&
-            projectedRoadField->roads.at("projectedRoad")->renderMode==VansPcgRoadRenderMode::ProjectedDecal &&
-            std::abs(projectedRoadField->roads.at("projectedRoad")->projectedDepth-3.5f)<1e-6f &&
-            projectedRoadField->roads.at("projectedRoad")->roadDecalMaterial==projectedRoad.roadDecalMaterial,
+        if (!Check(bool(projectedRoadField) && projectedRoadField->surfaces.count("projectedRoad") &&
+            projectedRoadField->surfaces.at("projectedRoad")->mode==VansPcgSplineSurfaceMode::RoadDecal &&
+            projectedRoadField->surfaces.at("projectedRoad")->decalSortPriority==-8 &&
+            std::abs(projectedRoadField->surfaces.at("projectedRoad")->projectedDepth-3.5f)<1e-6f &&
+            projectedRoadField->surfaces.at("projectedRoad")->roadDecalMaterial==projectedRoad.roadDecalMaterial,
             "Road projected decal settings did not reach the generated road field: "+error)) return false;
+        const auto roadCachePath=std::filesystem::temp_directory_path()/(VansAssetGuid::New().ToString()+".pcgfields");
+        struct RoadCacheCleanup {std::filesystem::path path;~RoadCacheCleanup(){std::error_code ignored;std::filesystem::remove(path,ignored);}} roadCleanup{roadCachePath};
+        if (!Check(VansPcgSplineFieldStorage::Save(roadCachePath,*projectedRoadField,error),error)) return false;
+        const auto loadedRoadField=VansPcgSplineFieldStorage::Load(roadCachePath,projectedRoadDecoded,terrain,error);
+        if (!Check(loadedRoadField && loadedRoadField->surfaces.at("projectedRoad")->mode==VansPcgSplineSurfaceMode::RoadDecal &&
+            loadedRoadField->surfaces.at("projectedRoad")->decalSortPriority==-8 &&
+            std::abs(loadedRoadField->surfaces.at("projectedRoad")->projectedDepth-3.5f)<1e-6f,
+            "Baked projected road lost its rendering settings: "+error)) return false;
+        auto reprioritizedRoad=projectedRoadDecoded;
+        reprioritizedRoad.splines.front().decalSortPriority=12;
+        auto reprioritizedField=VansPcgSplineFieldBuilder::Build(reprioritizedRoad,terrain,projectedRoadField,error);
+        if (!Check(reprioritizedField && !projectedRoadField->tiles.empty() &&
+            reprioritizedField->surfaces.at("projectedRoad")->decalSortPriority==12 &&
+            reprioritizedField->tiles.at(projectedRoadField->tiles.begin()->first)==projectedRoadField->tiles.begin()->second,
+            "Changing decal sort priority rebuilt terrain tiles or lost the road setting")) return false;
+        if (!Check(!VansPcgSplineFieldStorage::Load(roadCachePath,reprioritizedRoad,terrain,error),
+            "A baked road accepted an outdated decal sort priority")) return false;
+        auto splineDecal=projectedRoad;
+        splineDecal.id="curved-tracks";splineDecal.name="Curved tracks";splineDecal.kind=VansPcgSplineKind::Decal;
+        for (auto& point:splineDecal.points) point.id="decal-"+point.id;
+        splineDecal.roadDecalMaterial={};splineDecal.decalSortPriority=24;
+        splineDecal.excludeVegetation=true; // 贴花类型即使带有旧的内存属性也不能进入植被场。
+        VansPcgSplineAsset decalAsset;decalAsset.name="Spline decal contracts";
+        decalAsset.terrain=asset.terrain;decalAsset.splines={splineDecal};
+        VansSerializedValue decalEncoded;VansPcgSplineAsset decalDecoded;
+        if (!Check(VansPcgSplineAssetCodec::Encode(decalAsset,decalEncoded,error) &&
+            VansPcgSplineAssetCodec::Decode(decalEncoded,decalDecoded,error) &&
+            decalDecoded.splines.front().kind==VansPcgSplineKind::Decal &&
+            decalDecoded.splines.front().decalSortPriority==24,
+            "Spline decal authoring did not round-trip: "+error)) return false;
+        auto reversedDecal=decalDecoded;
+        VansPcgEvaluatedSpline decalSamples;
+        if (!Check(VansPcgSplineEvaluator::Evaluate(reversedDecal.splines.front(),.5f,.025f,decalSamples,error),error)) return false;
+        VansPcgSplineEvaluator::ReversePointOrder(reversedDecal.splines.front(),decalSamples.length);
+        VansSerializedValue reversedDecalEncoded;VansPcgSplineAsset restoredDecal;
+        if (!Check(VansPcgSplineAssetCodec::Encode(reversedDecal,reversedDecalEncoded,error) &&
+            VansPcgSplineAssetCodec::Decode(reversedDecalEncoded,restoredDecal,error) &&
+            restoredDecal.splines.front().coordinateSign==-1 &&
+            std::abs(restoredDecal.splines.front().coordinateOffset-decalSamples.length)<1e-4f,
+            "Reversing a spline decal lost its longitudinal texture coordinates: "+error)) return false;
+        const auto decalField=VansPcgSplineFieldBuilder::Build(decalDecoded,terrain,{},error);
+        const auto decalWithUnusedSettings=VansPcgSplineFieldBuilder::Build(decalAsset,terrain,{},error);
+        if (!Check(decalField && decalField->surfaces.size()==1 && decalField->tiles.empty() &&
+            !decalField->hasVegetationExclusion && decalField->effectiveTerrain->heights==terrain->heights &&
+            decalWithUnusedSettings && !decalWithUnusedSettings->hasVegetationExclusion &&
+            decalWithUnusedSettings->tiles.empty() &&
+            decalField->surfaces.at("curved-tracks")->mode==VansPcgSplineSurfaceMode::MaterialDecal &&
+            decalField->surfaces.at("curved-tracks")->vertices.size()>4,
+            "Spline decal changed terrain/vegetation or failed to follow the curve: "+error)) return false;
+        const auto& decalSurface=*decalField->surfaces.at("curved-tracks");
+        std::vector<VansGraphics::VansSplineDecalVertex> fadeVertices;
+        std::vector<std::uint32_t> fadeIndices;
+        VansGraphics::BuildSplineDecalGeometry(decalSurface,fadeVertices,fadeIndices);
+        if (!Check(!fadeVertices.empty() && !fadeIndices.empty(),
+            "Spline decal proxy did not generate render geometry")) return false;
+        const auto& fadeRange=fadeVertices.front().fadeRange;
+        const float endProgress=(decalSurface.vertices.back().uv.y-fadeRange.x)*fadeRange.y;
+        if (!Check(std::abs(fadeRange.x-decalSurface.vertices.front().uv.y)<1e-6f &&
+            std::abs(endProgress-1.0f)<1e-4f &&
+            std::abs(fadeRange.z-decalSamples.length)<0.1f,
+            "Spline decal proxy lost the full-path range needed for endpoint fading")) return false;
+        const auto decalCachePath=std::filesystem::temp_directory_path()/(VansAssetGuid::New().ToString()+".pcgfields");
+        RoadCacheCleanup decalCleanup{decalCachePath};
+        if (!Check(VansPcgSplineFieldStorage::Save(decalCachePath,*decalField,error),error)) return false;
+        const auto bakedDecal=VansPcgSplineFieldStorage::Load(decalCachePath,decalDecoded,terrain,error);
+        if (!Check(bakedDecal && bakedDecal->surfaces.at("curved-tracks")->mode==VansPcgSplineSurfaceMode::MaterialDecal &&
+            bakedDecal->surfaces.at("curved-tracks")->decalSortPriority==24 && bakedDecal->tiles.empty(),
+            "Baked spline decal lost its render mode or priority: "+error)) return false;
+        auto mixedSplines=projectedRoadDecoded;
+        mixedSplines.splines.push_back(decalDecoded.splines.front());
+        const auto mixedField=VansPcgSplineFieldBuilder::Build(mixedSplines,terrain,projectedRoadField,error);
+        if (!Check(mixedField && mixedField->surfaces.size()==2 &&
+            mixedField->effectiveTerrain==projectedRoadField->effectiveTerrain &&
+            mixedField->tiles.size()==projectedRoadField->tiles.size() &&
+            mixedField->tiles.at(projectedRoadField->tiles.begin()->first)==projectedRoadField->tiles.begin()->second,
+            "Adding a spline decal rebuilt road terrain or changed its collision surface: "+error)) return false;
 		const auto base=terrain->heights;
 		auto field=VansPcgSplineFieldBuilder::Build(asset,terrain,{},error);
 		if (!Check(bool(field),error)) return false;
@@ -649,7 +730,7 @@ bool RunPcgCoreContractTests()
         packets60.Update(1,nullptr,{0,0},1.8f,8);
         if(!Check(packets60.GpuData().size()==1026 && packets60.GpuData()[0].w==0,
             "Removing river fields must clear their wave simulation"))return false;
-		if (!Check(terrain->heights==base && field->roads.empty() && field->effectiveTerrain->heights!=base,
+		if (!Check(terrain->heights==base && field->surfaces.empty() && field->effectiveTerrain->heights!=base,
 			"River must carve a derived terrain without creating mesh or overwriting base pixels")) return false;
 		const auto unchanged=VansPcgSplineFieldBuilder::Build(asset,terrain,field,error);
 		if (!Check(unchanged==field,"Unchanged author inputs regenerated the field")) return false;
@@ -662,7 +743,7 @@ bool RunPcgCoreContractTests()
 			VansPcgSplineAssetCodec::ContentHash(sculptedDecoded)!=VansPcgSplineAssetCodec::ContentHash(asset),
 			"Riverbed authoring mode was lost in serialization or content hashing")) return false;
 		const auto sculptedField=VansPcgSplineFieldBuilder::Build(sculptedDecoded,terrain,field,error);
-		if (!Check(sculptedField && sculptedField->effectiveTerrain->heights==base && sculptedField->roads.empty() &&
+		if (!Check(sculptedField && sculptedField->effectiveTerrain->heights==base && sculptedField->surfaces.empty() &&
 			coverageAt(*sculptedField,0,0).w==0 &&
 			std::abs(coverageAt(*sculptedField,0,4).z-wetBank.z)<1e-6f &&
 			sculptedField->SampleRiver({0,0},sampledHeight,sampledVelocity,sampledProperties) &&
@@ -772,8 +853,8 @@ bool RunPcgCoreContractTests()
         road.points.back().leftWidth=4;road.points.back().rightWidth=5;
         for(auto& p:road.points){p.bankAngleDegrees=12;p.linkedWidth=false;}
         asset.splines={road};const auto roadField=VansPcgSplineFieldBuilder::Build(asset,terrain,{},error);
-        if (!Check(roadField && roadField->roads.size()==1,error)) return false;
-        const auto& vertices=roadField->roads.at(road.id)->vertices;
+        if (!Check(roadField && roadField->surfaces.size()==1,error)) return false;
+        const auto& vertices=roadField->surfaces.at(road.id)->vertices;
         for(std::size_t i=0;i<vertices.size();i+=2)
         {
             const auto& left=vertices[i];const auto& right=vertices[i+1];
@@ -787,8 +868,8 @@ bool RunPcgCoreContractTests()
         if (!Check(std::abs(vertices.back().uv.y-100.f/6)<1e-4f,"Road texture repeat is not measured along the spline")) return false;
         VansPcgSplineEvaluator::ReversePointOrder(asset.splines.front(),100);
         const auto reverseRoad=VansPcgSplineFieldBuilder::Build(asset,terrain,roadField,error);
-        if (!Check(reverseRoad && reverseRoad->roads.at(road.id)->vertices.size()==vertices.size(),error)) return false;
-        const auto& reversedVertices=reverseRoad->roads.at(road.id)->vertices;
+        if (!Check(reverseRoad && reverseRoad->surfaces.at(road.id)->vertices.size()==vertices.size(),error)) return false;
+        const auto& reversedVertices=reverseRoad->surfaces.at(road.id)->vertices;
         for(std::size_t i=0;i<vertices.size();++i)
             if (!Check(glm::length(vertices[i].position-reversedVertices[vertices.size()-1-i].position)<1e-4f &&
                 glm::length(vertices[i].uv-reversedVertices[vertices.size()-1-i].uv)<1e-4f,

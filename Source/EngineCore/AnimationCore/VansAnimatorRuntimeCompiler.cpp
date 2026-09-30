@@ -163,7 +163,21 @@ namespace VansGraphics
 					return nullptr;
 			}
 		}
+		if (options.enableFinalComposition)
+		if (const VansAnimGraph* sourceComposition = asset.FindFinalCompositionGraph())
+		{
+			auto graph = sourceComposition->Clone();
+			if (!graph)
+			{
+				error = "Failed to instantiate Final Composition Graph";
+				return nullptr;
+			}
+			if (!controller->SetFinalCompositionGraph(std::move(graph), error))
+				return nullptr;
+		}
 		controller->EnableRootMotion(options.enableRootMotion);
+		controller->SetGraphRootMotionExtraction(options.extractGraphRootMotion);
+		controller->SetNormalizeRootPose(options.normalizeRootPose);
 		controller->EnableDebugMetrics(options.enableDebugMetrics);
 		controller->Update(0.0f, compiledSkeleton);
 		return controller;

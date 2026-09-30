@@ -75,7 +75,8 @@ std::shared_ptr<IVansActionService> CreateAudioService(
 		return {};
 	}
 	return std::make_shared<VansAudioActionService>(
-		context.world, *context.audio, context.resolveEntityPosition);
+		context.world, *context.audio, context.resolveEntityPosition,
+		[view=context.combatBackend.viewRay](glm::vec3& position) { glm::vec3 direction; return view && view(position,direction); });
 }
 
 std::shared_ptr<IVansActionService> CreateVFXService(
@@ -127,11 +128,11 @@ std::shared_ptr<IVansActionService> CreateAnimationEventService(
 
 std::shared_ptr<IVansActionService> CreateProjectileService(
 	const VansSceneGameplayContributorContext& context,
-	const VansGameplayAssetLibrary&,
+	const VansGameplayAssetLibrary& assets,
 	std::string&)
 {
 	return std::make_shared<VansProjectileActionService>(
-		context.world, context.gameplay, context.projectileBackend);
+		context.world, context.gameplay, assets, context.projectileBackend);
 }
 
 std::shared_ptr<IVansActionService> CreateAttachmentService(

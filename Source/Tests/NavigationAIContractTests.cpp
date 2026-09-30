@@ -245,9 +245,8 @@ bool RunNavigationAIContractTests()
 	{
 		VansNavigationSource source;
 		source.scene = scene;
-		source.sceneHash = 1u;
-		source.colliderHash = HashNavigationColliders({});
-		source.settingsHash = HashNavigationSettings(sourceSettings);
+		source.geometryHash = 1u;
+		source.bakeSettingsHash = HashNavigationBakeSettings(sourceSettings.bake);
 		return source;
 	};
 	VansSceneObjectBuildPlan plan;
@@ -393,40 +392,99 @@ bool RunNavigationAIContractTests()
 		return true;
 	};
 	VansNavigationGeometry meshGeometry;
-	std::vector<std::string> meshAssets;
 	if (!Expect(VansSceneNavigationGeometry::BuildEnvironmentGeometry(
 		meshPlan, settings.areas, meshResolver, meshGeometry, error), error.c_str()) ||
 		!Expect(meshResolveCount == 1u && meshGeometry.VertexCount() == 3u &&
 			meshGeometry.TriangleCount() == 1u &&
 			meshGeometry.vertices == std::vector<float>{
 				2.0f, 0.0f, 3.0f, 4.0f, 0.0f, 3.0f, 2.0f, 0.0f, 6.0f },
-			"Navigation mesh collider geometry did not preserve source topology and transform") ||
-		!Expect(VansSceneNavigationGeometry::CollectEnvironmentMeshAssets(
-			meshPlan, meshAssets, error), error.c_str()) ||
-		!Expect(meshAssets == std::vector<std::string>{ "mesh-collider-guid" },
-			"Navigation mesh collider source collection failed"))
-	{
-		return false;
-	}
-	const std::vector<VansNavigationColliderSource> colliderSources = {
-		{ "b", 2u, 3u }, { "a", 4u, 5u }
-	};
-	const std::vector<VansNavigationColliderSource> reorderedColliderSources = {
-		{ "a", 4u, 5u }, { "b", 2u, 3u }
-	};
-	const std::vector<VansNavigationColliderSource> changedColliderSources = {
-		{ "a", 4u, 6u }, { "b", 2u, 3u }
-	};
-	if (!Expect(HashNavigationColliders(colliderSources) ==
-		HashNavigationColliders(reorderedColliderSources) &&
-		HashNavigationColliders(colliderSources) !=
-		HashNavigationColliders(changedColliderSources),
-		"Navigation collider closure hash is order-dependent or ignores source changes"))
+			"Navigation mesh collider geometry did not preserve source topology and transform"))
 	{
 		return false;
 	}
 
 	VansNavigationMesh mesh;
+	std::uint64_t originalGeometryHash = 0;
+	if (!Expect(ComputeNavigationGeometryHash(geometry, originalGeometryHash, error), error.c_str())) return false;
+	const auto fingerprintPlan = [&](const VansSceneObjectBuildPlan& source, std::uint64_t& hash)
+	{
+		VansNavigationGeometry projected;
+		return VansSceneNavigationGeometry::BuildEnvironmentGeometry(source, settings.areas, {}, projected, error) &&
+			ComputeNavigationGeometryHash(projected, hash, error);
+	};
+	auto unrelatedPlan = plan;
+	for (auto& object : unrelatedPlan.objects)
+	{
+		object.name += "Renamed";
+		object.physicsComponents.physics->mass = 99.0f;
+		object.physicsComponents.physics->hitRegion = "UnrelatedRegion";
+		object.physicsComponents.physics->material = VansScenePhysicsMaterialConfig{};
+		object.physicsComponents.physics->material->restitution = 0.7f;
+		object.render = VansSceneRenderNodeConfig{};
+		object.render->mesh = "unrelated-render-mesh";
+	}
+	VansSceneObjectBuildConfig decoration;
+	decoration.name = "LightAndScriptOnly";
+	decoration.transform = VansSceneTransformConfig{};
+	decoration.transform->position = { 100.0f, 200.0f, 300.0f };
+	unrelatedPlan.objects.push_back(decoration);
+	std::reverse(unrelatedPlan.objects.begin(), unrelatedPlan.objects.end());
+	std::uint64_t changedGeometryHash = 0;
+	if (!Expect(fingerprintPlan(unrelatedPlan, changedGeometryHash) && changedGeometryHash == originalGeometryHash,
+		"Unrelated render/physics properties, non-colliders or entity order invalidated navigation")) return false;
+	const auto expectGeometryChange = [&](const VansSceneObjectBuildPlan& changed, const char* message)
+	{
+		return Expect(fingerprintPlan(changed, changedGeometryHash) && changedGeometryHash != originalGeometryHash, message);
+	};
+	auto movedPlan = plan;
+	movedPlan.objects.back().transform->position[0] += 1.0f;
+	if (!expectGeometryChange(movedPlan, "Moving an Environment collider did not invalidate navigation")) return false;
+	auto resizedPlan = plan;
+	(*resizedPlan.objects.back().physicsComponents.physics->boxExtents)[2] += 1.0f;
+	if (!expectGeometryChange(resizedPlan, "Changing collider extents did not invalidate navigation")) return false;
+	auto disabledPlan = plan;
+	disabledPlan.objects.back().physicsComponents.physics->enabled = false;
+	if (!expectGeometryChange(disabledPlan, "Disabling a collider did not invalidate navigation")) return false;
+	auto triggerPlan = plan;
+	triggerPlan.objects.back().physicsComponents.physics->isTrigger = true;
+	if (!expectGeometryChange(triggerPlan, "Making a collider a trigger did not invalidate navigation")) return false;
+	auto layerPlan = plan;
+	layerPlan.objects.back().physicsComponents.physics->layer = "Default";
+	if (!expectGeometryChange(layerPlan, "Removing a collider from Environment did not invalidate navigation")) return false;
+	auto reorderedGeometry = geometry;
+	std::reverse(reorderedGeometry.areas.begin(), reorderedGeometry.areas.end());
+	for (std::size_t triangle = 0; triangle < geometry.TriangleCount(); ++triangle)
+		for (std::size_t corner = 0; corner < 3u; ++corner)
+			reorderedGeometry.indices[triangle * 3u + corner] =
+				geometry.indices[(geometry.TriangleCount() - 1u - triangle) * 3u + (corner + 1u) % 3u];
+	if (!Expect(ComputeNavigationGeometryHash(reorderedGeometry, changedGeometryHash, error) &&
+		changedGeometryHash == originalGeometryHash, "Triangle order or cyclic winding invalidated navigation")) return false;
+	std::uint64_t meshGeometryHash = 0;
+	if (!Expect(ComputeNavigationGeometryHash(meshGeometry, meshGeometryHash, error), error.c_str())) return false;
+	auto changedMeshGeometry = meshGeometry;
+	changedMeshGeometry.vertices[0] += 0.1f;
+	if (!Expect(ComputeNavigationGeometryHash(changedMeshGeometry, changedGeometryHash, error) &&
+		changedGeometryHash != meshGeometryHash, "Changing mesh collision vertices did not invalidate navigation")) return false;
+	auto areaGeometryHashInput = geometry;
+	areaGeometryHashInput.areas[0] = 1u;
+	if (!Expect(ComputeNavigationGeometryHash(areaGeometryHashInput, changedGeometryHash, error) &&
+		changedGeometryHash != originalGeometryHash, "Changing a triangle navigation area did not invalidate navigation")) return false;
+	VansNavigationSource geometrySource = testSource(settings, "Scenes/NavigationContract.json");
+	geometrySource.geometryHash = originalGeometryHash;
+	geometrySource.scene = "Scenes/RenamedScene.json";
+	if (!Expect(geometrySource.MatchesGeometry(originalGeometryHash) &&
+		!geometrySource.MatchesGeometry(changedGeometryHash),
+		"Navigation source did not distinguish effective geometry changes")) return false;
+	std::uint64_t hierarchyHash = 0;
+	if (!Expect(ComputeNavigationGeometryHash(hierarchyGeometry, hierarchyHash, error), error.c_str())) return false;
+	auto changedHierarchy = hierarchyPlan;
+	changedHierarchy.objects.front().transform->position[0] += 2.0f;
+	if (!Expect(fingerprintPlan(changedHierarchy, changedGeometryHash) && changedGeometryHash != hierarchyHash,
+		"Changing a collider parent Transform did not invalidate navigation")) return false;
+	changedHierarchy = hierarchyPlan;
+	changedHierarchy.objects.front().active = false;
+	if (!Expect(fingerprintPlan(changedHierarchy, changedGeometryHash) && changedGeometryHash != hierarchyHash,
+		"Disabling a collider parent did not invalidate navigation")) return false;
 	if (!Expect(mesh.Build(geometry, settings, error), error.c_str()))
 		return false;
 	const VansNavigationPath path = mesh.FindPath(
@@ -483,9 +541,11 @@ bool RunNavigationAIContractTests()
 	VansNavigationSettings staleBakeSettings = highCostSettings;
 	staleBakeSettings.bake.agentRadius += 0.1f;
 	VansNavigationMesh staleBakeMesh;
-	if (!Expect(!staleBakeMesh.Load(areaAssetPath, staleBakeSettings, error) &&
-		error.find("stale") != std::string::npos,
-		"Navigation asset accepted incompatible bake settings"))
+	if (!Expect(staleBakeMesh.Load(areaAssetPath, staleBakeSettings, error) &&
+		staleBakeMesh.GetBakeSettings().agentRadius == highCostSettings.bake.agentRadius &&
+		staleBakeMesh.FindPath(glm::vec3(-4.0f, 0.0f, 0.0f),
+			glm::vec3(4.0f, 0.0f, 0.0f)).status == VansNavigationPathStatus::Complete,
+		"Changed bake settings prevented loading or querying the existing navigation mesh"))
 	{
 		return false;
 	}
@@ -495,6 +555,19 @@ bool RunNavigationAIContractTests()
 	VansNavigationMesh equalCostMesh;
 	if (!Expect(equalCostMesh.Load(areaAssetPath, equalCostSettings, error), error.c_str()))
 		return false;
+	VansNavigationSettings renumberedAreas = equalCostSettings;
+	renumberedAreas.areas.definitions.back().id = 2u;
+	VansNavigationMesh renumberedMesh;
+	if (!Expect(renumberedMesh.Load(areaAssetPath, renumberedAreas, error) &&
+		renumberedMesh.FindPath(glm::vec3(-4.0f, 0.0f, 0.0f), glm::vec3(4.0f, 0.0f, 0.0f)).status ==
+			VansNavigationPathStatus::Complete,
+		"Changing project area IDs made the existing navigation mesh unusable")) return false;
+	renumberedAreas.areas.definitions.pop_back();
+	VansNavigationMesh removedAreaMesh;
+	if (!Expect(removedAreaMesh.Load(areaAssetPath, renumberedAreas, error) &&
+		removedAreaMesh.FindPath(glm::vec3(-4.0f, 0.0f, 0.0f), glm::vec3(4.0f, 0.0f, 0.0f)).status ==
+			VansNavigationPathStatus::Complete,
+		"Removing a project area made the existing navigation mesh unusable")) return false;
 	const VansNavigationPath equalCostPath = equalCostMesh.FindPath(
 		glm::vec3(-4.0f, 0.0f, 0.0f), glm::vec3(4.0f, 0.0f, 0.0f));
 	if (!Expect(equalCostPath.status == VansNavigationPathStatus::Complete &&
@@ -529,6 +602,8 @@ bool RunNavigationAIContractTests()
 	const bool loadedOk = loaded.Load(assetPath, settings, error);
 	if (!Expect(loadedOk, error.c_str()))
 		return false;
+	if (!Expect(!loaded.GetSource().MatchesGeometry(changedGeometryHash) &&
+		loaded.IsReady(), "Source mismatch invalidated the loaded navigation mesh")) return false;
 	const VansNavigationPath loadedPath = loaded.FindPath(
 		glm::vec3(-4.0f, 0.0f, 0.0f), glm::vec3(4.0f, 0.0f, 0.0f));
 	if (!Expect(loadedPath.status == VansNavigationPathStatus::Complete &&
@@ -596,10 +671,14 @@ bool RunNavigationAIContractTests()
 	const std::istreambuf_iterator<char> assetBegin(validAsset);
 	const std::istreambuf_iterator<char> assetEnd;
 	std::vector<unsigned char> corruptAsset(assetBegin, assetEnd);
+	std::size_t areaHeaderSize = sizeof(std::uint32_t) * 2u + settings.areas.defaultArea.size();
+	for (const auto& area : settings.areas.definitions)
+		areaHeaderSize += sizeof(std::uint32_t) + area.name.size() +
+			sizeof(std::uint8_t) * 2u + sizeof(float);
 	const std::size_t headerSize = sizeof(std::uint32_t) * 2u +
 		sizeof(float) * 12u + sizeof(int) + sizeof(std::uint8_t) +
 		sizeof(std::uint32_t) + navigationTestSource.scene.size() +
-		sizeof(std::uint64_t) * 4u;
+		sizeof(std::uint64_t) * 3u + areaHeaderSize;
 	if (!Expect(!validAsset.bad() && corruptAsset.size() > headerSize,
 		"Could not prepare a corrupt navigation asset for rollback validation"))
 	{

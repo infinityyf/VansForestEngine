@@ -336,7 +336,14 @@ bool VansGraphics::VansAnimationClipBinaryCodec::Encode(
 		curveJson["name"] = curve.name;
 		curveJson["keys"] = json::array();
 		for (const AnimationCurveKey& key : curve.keys)
-			curveJson["keys"].push_back({ { "time", key.time }, { "value", key.value } });
+		{
+			json keyJson = { { "time", key.time }, { "value", key.value } };
+			if (key.interpolation != AnimationCurveInterpolation::Linear)
+				keyJson["interpolation"] = key.interpolation == AnimationCurveInterpolation::Constant ? "constant" : "cubic";
+			if (key.arriveTangent != 0.0f) keyJson["arriveTangent"] = key.arriveTangent;
+			if (key.leaveTangent != 0.0f) keyJson["leaveTangent"] = key.leaveTangent;
+			curveJson["keys"].push_back(std::move(keyJson));
+		}
 		curvesJson.push_back(std::move(curveJson));
 	}
 	header["curves"] = std::move(curvesJson);
@@ -371,7 +378,12 @@ bool VansGraphics::VansAnimationClipBinaryCodec::Encode(
 		{ "bone", clip.rootMotion.boneName },
 		{ "translation", clip.rootMotion.extractTranslation },
 		{ "rotation", clip.rootMotion.extractRotation },
-		{ "scale", clip.rootMotion.extractScale }
+		{ "scale", clip.rootMotion.extractScale },
+		{ "normalizeScale", clip.rootMotion.normalizeScale },
+		{ "lock", clip.rootMotion.lockMode == AnimationRootLockMode::ReferencePose ? "reference"
+			: clip.rootMotion.lockMode == AnimationRootLockMode::FirstFrame ? "firstFrame"
+			: clip.rootMotion.lockMode == AnimationRootLockMode::Zero ? "zero" : "none" },
+		{ "forceLock", clip.rootMotion.forceLock }
 	};
 
 	std::string headerStr = header.dump();
@@ -598,7 +610,16 @@ bool VansGraphics::VansAnimationClipBinaryCodec::Decode(
 					if (!keyJson.is_object() || !keyJson.contains("time") || !keyJson["time"].is_number()
 					    || !keyJson.contains("value") || !keyJson["value"].is_number())
 						throw std::runtime_error("invalid curve key");
-					curve.keys.push_back({ keyJson["time"].get<float>(), keyJson["value"].get<float>() });
+					AnimationCurveKey key;
+					key.time=keyJson["time"].get<float>();key.value=keyJson["value"].get<float>();
+					const auto interpolation=keyJson.value("interpolation",std::string("linear"));
+					if(interpolation=="constant")key.interpolation=AnimationCurveInterpolation::Constant;
+					else if(interpolation=="cubic")key.interpolation=AnimationCurveInterpolation::Cubic;
+					else if(interpolation!="linear")throw std::runtime_error("invalid curve interpolation");
+					key.arriveTangent=keyJson.value("arriveTangent",0.f);key.leaveTangent=keyJson.value("leaveTangent",0.f);
+					if(!std::isfinite(key.time)||!std::isfinite(key.value)||!std::isfinite(key.arriveTangent)||!std::isfinite(key.leaveTangent))
+						throw std::runtime_error("curve keys and tangents must be finite");
+					curve.keys.push_back(key);
 				}
 				std::stable_sort(curve.keys.begin(), curve.keys.end(),
 					[](const AnimationCurveKey& a, const AnimationCurveKey& b) { return a.time < b.time; });
@@ -659,6 +680,14 @@ bool VansGraphics::VansAnimationClipBinaryCodec::Decode(
 			outClip.rootMotion.extractTranslation = rootMotionJson.value("translation", true);
 			outClip.rootMotion.extractRotation = rootMotionJson.value("rotation", true);
 			outClip.rootMotion.extractScale = rootMotionJson.value("scale", false);
+			outClip.rootMotion.normalizeScale = rootMotionJson.value("normalizeScale", false);
+			const std::string rootLock = rootMotionJson.value("lock", "none");
+			if (rootLock == "none") outClip.rootMotion.lockMode = AnimationRootLockMode::None;
+			else if (rootLock == "reference") outClip.rootMotion.lockMode = AnimationRootLockMode::ReferencePose;
+			else if (rootLock == "firstFrame") outClip.rootMotion.lockMode = AnimationRootLockMode::FirstFrame;
+			else if (rootLock == "zero") outClip.rootMotion.lockMode = AnimationRootLockMode::Zero;
+			else throw std::runtime_error("Unknown rootMotion.lock: " + rootLock);
+			outClip.rootMotion.forceLock = rootMotionJson.value("forceLock", false);
 		}
 	}
 	catch (const std::exception& exception)

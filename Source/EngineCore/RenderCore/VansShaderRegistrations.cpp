@@ -319,6 +319,12 @@ void RegisterEngineShaders()
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_GREATER_OR_EQUAL, VK_CULL_MODE_FRONT_BIT,
         0, false, true
     });
+    reg.RegisterGraphicsShader("SplineDecal", {
+        "SplineDecal",
+        "EngineAssets/Shaders/SplineDecal",
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_GREATER_OR_EQUAL, VK_CULL_MODE_FRONT_BIT,
+        0, false, true
+    });
 
     // -----------------------------------------------------------------------
 
@@ -536,5 +542,6 @@ void RegisterEngineShaders()
     // Decal 仅参与独立修饰附件合成，不写入阴影和深度。
     reg.RegisterMaterialPasses(VansGraphics::VAN_DECAL, {
         { VansGraphics::VansPass::DECAL_MODIFIER,    "Decal"          },
+        { VansGraphics::VansPass::SPLINE_DECAL_MODIFIER, "SplineDecal" },
     });
 }

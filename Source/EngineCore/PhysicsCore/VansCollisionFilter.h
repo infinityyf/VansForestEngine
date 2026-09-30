@@ -15,6 +15,7 @@ public:
 		None = 0u,
 		Trigger = 1u << 0u,
 		RagdollSelfCollision = 1u << 1u,
+		RagdollSelectiveCollision = 1u << 2u,
 	};
 
 	static bool Build(

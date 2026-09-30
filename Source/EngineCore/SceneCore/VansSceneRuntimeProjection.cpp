@@ -897,6 +897,8 @@ bool TryBuildAuthoringRenderNode(
 	outRender.material = ResolveMaterialOverride(*data);
 	outRender.type = ReadSerializedStringField(*data, "renderType", "opaque");
 	outRender.rayTracingMode = ReadSerializedStringField(*data, "rayTracingMode", "auto");
+	if (FindSerializedObjectField(*data, "decalSortPriority"))
+		outRender.decalSortPriority = ReadIntFieldClamped(*data, "decalSortPriority", 0, -32768, 32767);
 	if (const auto* pool = FindSerializedObjectField(*data, "impactPool"))
 	{
 		VansSceneImpactDecalConfig config;

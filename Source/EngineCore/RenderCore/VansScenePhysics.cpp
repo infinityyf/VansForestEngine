@@ -420,6 +420,8 @@ VansGraphics::VansScenePhysicsComponentBuilder::CreatePhysicsNode(
     // 解析 Trigger 标志
     if (config.isTrigger)
         properties.isTrigger = *config.isTrigger;
+    if (config.canCharacterStepUp)
+        properties.canCharacterStepUp = *config.canCharacterStepUp;
     if (config.hitRegion)
         properties.hitRegion = *config.hitRegion;
 
@@ -630,7 +632,7 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 			(animation && animation->TryGetCharacterMotionSettings(motionSettings)) ||
 			(controller && controller->TryGetCharacterMotionSettings(motionSettings));
 
-		const bool animationRoutesOwnerMotion = animation && controller &&
+		bool animationRoutesOwnerMotion = animation && controller &&
 			animation->IsRootMotionEnabled() &&
 			controller->ShouldApplyRootMotionToOwner();
 		if (!cct->HasMotionIntent() && !animationRoutesOwnerMotion)
@@ -654,13 +656,17 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 		if (!cct) continue;
 		animation = ResolveCharacterAnimation(m_RuntimeWorld.get(),animationHandle);
 		controller = animation ? animation->GetCharacterMotionController() : nullptr;
+		animationRoutesOwnerMotion = animation && controller && animation->IsRootMotionEnabled() &&
+			controller->ShouldApplyRootMotionToOwner();
 		bool rootMotionValid = false;
 		bool rootMotionPreferred = false;
 		bool motionMatchingUsed = false;
 		glm::vec3 rootDelta(0.0f);
 		glm::quat rootRotation(1.0f, 0.0f, 0.0f, 0.0f);
+		const bool activeSlotRootMotion = animationRoutesOwnerMotion && controller &&
+			motionSettings.slotRootMotionOverridesCapsule && controller->HasActiveRootMotionSlot();
 		if (animation && controller && motionSettings.driveMode == Vans::VansLocomotionDriveMode::Capsule &&
-			!controller->IsMotionMatchingConfigured())
+			!controller->IsMotionMatchingConfigured() && !activeSlotRootMotion)
 		{
 			// An in-place Capsule graph has no animation displacement dependency. Evaluate
 			// once, after collision resolution and movement-result script callbacks.
@@ -674,13 +680,27 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 			rootDelta = animation->GetRootMotionDelta();
 			rootRotation = animation->GetRootRotationDelta();
 			rootMotionValid = animationRoutesOwnerMotion && animation->HasRootMotionDelta();
+			if (activeSlotRootMotion)
+			{
+				// Slot 覆盖 Capsule 时消费单一播放请求的原始增量，不能乘姿态淡入权重。
+				const auto slotRoot=controller->GetSlotRootMotionDelta();
+				rootDelta=slotRoot.translation;rootRotation=slotRoot.rotation;
+				rootMotionValid=animationRoutesOwnerMotion && slotRoot.valid;
+			}
 			rootMotionPreferred = controller->CharacterMotionPrefersRootMotion();
 			motionMatchingUsed = controller->IsMotionMatchingUsedThisFrame();
 			if (hasConfiguredMotionModel && !controller->IsMotionMatchingConfigured())
 				rootMotionPreferred = true;
+			// Keep this evaluated interval even if a notify stops/replaces its
+			// controller. Callbacks run outside the physics mutex and can destroy
+			// or disable the CharacterController, as in UE TickCharacterPose.
+			if (auto* scripts = VansScriptContext::GetInstance(); scripts && scripts->GetScene() == this)
+				scripts->PublishAnimationEvents({animation});
+			cct = ResolveCharacter(m_RuntimeWorld.get(),handle);
+			if (!cct) continue;
 		}
 		const Vans::VansLocomotionAuthority authority = Vans::SelectLocomotionAuthority(
-			motionSettings, rootMotionValid, motionMatchingUsed, rootMotionPreferred);
+			motionSettings, rootMotionValid, motionMatchingUsed, rootMotionPreferred,activeSlotRootMotion);
 		cct->ResolveLocomotion(
 			rootDelta, rootRotation, rootMotionValid, authority,
 			motionSettings, animationToWorldScale);
@@ -732,14 +752,21 @@ void VansGraphics::VansScene::UpdateCharControllerTransforms()
     for (const auto& result : m_CharacterMovementResults)
         if (ResolveCharacter(m_RuntimeWorld.get(),result.controller))
             Vans::VansEventBus::Get().PublishNow(result.event);
-    for (const auto& pending : m_DeferredCharacterAnimations)
+    auto deferredAnimations = std::move(m_DeferredCharacterAnimations);
+    for (const auto& pending : deferredAnimations)
     {
         auto* controller = ResolveCharacter(m_RuntimeWorld.get(),pending.controller);
         auto* animation = ResolveCharacterAnimation(m_RuntimeWorld.get(),pending.animation);
         if (controller && animation)
+        {
             animation->PrepareCharacterMotionFrame(pending.deltaTime,controller->GetTrajectory());
+			if (auto* scripts = VansScriptContext::GetInstance(); scripts && scripts->GetScene() == this)
+				scripts->PublishAnimationEvents({animation});
+		}
     }
-    m_DeferredCharacterAnimations.clear();
+    deferredAnimations.clear();
+    if (m_DeferredCharacterAnimations.empty())
+        m_DeferredCharacterAnimations = std::move(deferredAnimations);
     m_CharacterMovementResults.clear();
 }
 
@@ -766,6 +793,38 @@ VansGraphics::VansScenePhysicsComponentBuilder::CreateCharacterControllerNode(
         props.m_SlopeLimit = *config.slopeLimit;
     if (config.stepOffset)
         props.m_StepOffset = *config.stepOffset;
+    if (config.perchRadiusThreshold)
+        props.m_PerchRadiusThreshold = *config.perchRadiusThreshold;
+    if (config.perchAdditionalHeight)
+        props.m_PerchAdditionalHeight = *config.perchAdditionalHeight;
+    if (config.penetrationPullbackDistance)
+        props.m_PenetrationPullbackDistance = *config.penetrationPullbackDistance;
+    if (config.penetrationOverlapInflation)
+        props.m_PenetrationOverlapInflation = *config.penetrationOverlapInflation;
+    if (config.maxDepenetrationWithGeometry)
+        props.m_MaxDepenetrationWithGeometry = *config.maxDepenetrationWithGeometry;
+    if (config.maxDepenetrationWithCharacters)
+        props.m_MaxDepenetrationWithCharacters = *config.maxDepenetrationWithCharacters;
+    if (config.useImpactBodyVelocity)
+        props.m_UseImpactBodyVelocity = *config.useImpactBodyVelocity;
+    if (config.maintainHorizontalGroundVelocity)
+        props.m_MaintainHorizontalGroundVelocity = *config.maintainHorizontalGroundVelocity;
+    if (config.canWalkOffLedges)
+        props.m_CanWalkOffLedges = *config.canWalkOffLedges;
+    if (config.canWalkOffLedgesWhenCrouching)
+        props.m_CanWalkOffLedgesWhenCrouching = *config.canWalkOffLedgesWhenCrouching;
+    if (config.ledgeCheckThreshold)
+        props.m_LedgeCheckThreshold = *config.ledgeCheckThreshold;
+    if (config.followMovementBaseRotation)
+        props.m_FollowMovementBaseRotation = *config.followMovementBaseRotation;
+    if (config.impartMovementBaseVelocityX)
+        props.m_ImpartMovementBaseVelocityX = *config.impartMovementBaseVelocityX;
+    if (config.impartMovementBaseVelocityY)
+        props.m_ImpartMovementBaseVelocityY = *config.impartMovementBaseVelocityY;
+    if (config.impartMovementBaseVelocityZ)
+        props.m_ImpartMovementBaseVelocityZ = *config.impartMovementBaseVelocityZ;
+    if (config.impartMovementBaseAngularVelocity)
+        props.m_ImpartMovementBaseAngularVelocity = *config.impartMovementBaseAngularVelocity;
     if (config.contactOffset)
         props.m_ContactOffset = *config.contactOffset;
     if (config.layer)

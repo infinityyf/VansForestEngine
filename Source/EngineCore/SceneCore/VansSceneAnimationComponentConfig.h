@@ -35,6 +35,7 @@ namespace Vans
 		std::vector<VansGraphics::VansAnimationTargetBinding> targetBindings;
 		std::string externClips;
 		bool rootMotion = false;
+		bool extractGraphRootMotion = true;
 		bool normalizeRootPose = true;
 		bool autoPlay = true;
 		bool loop = true;

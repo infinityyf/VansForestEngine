@@ -54,6 +54,12 @@ void VansParticleRuntime::BeginPrewarm()
     m_ResimulationRemaining = m_Asset->m_Duration;
     m_ResimulationStep = m_Asset->m_FixedStep > 0 ? m_Asset->m_FixedStep : 1.0f/60.0f;
 }
+void VansParticleRuntime::EmitInitialFrame()
+{
+    if (!m_Asset || m_State != VansParticlePlaybackState::Emitting || m_Time != 0 || HasPendingResimulation()) return;
+    for (auto& emitter : m_Emitters) if (emitter) emitter->Update(0,m_LocalToWorld,true);
+    Capture();
+}
 void VansParticleRuntime::Stop()
 {
     m_State = VansParticlePlaybackState::Stopped; m_Paused = false;

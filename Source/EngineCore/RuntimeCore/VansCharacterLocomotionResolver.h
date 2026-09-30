@@ -26,7 +26,8 @@ namespace Vans
 		const VansCharacterMotionSettings& settings,
 		bool rootMotionValid,
 		bool motionMatchingUsed,
-		bool rootMotionPreferred);
+		bool rootMotionPreferred,
+		bool activeSlotRootMotion = false);
 
 	struct VansCharacterLocomotionResult
 	{
@@ -45,6 +46,8 @@ namespace Vans
 	public:
 		void Clear(const glm::vec3& positionWorld, float facingYaw);
 		void ResetMotion(const glm::vec3& positionWorld, float facingYaw);
+		void SeedVelocity(const glm::vec3& velocityWorld);
+		void InitializeGroundVelocity();
 
 		void SetIntent(const VansCharacterMotionIntent& intent);
 		void SetDynamics(const VansCharacterAccelerationModel& model)
@@ -55,15 +58,12 @@ namespace Vans
 		bool HasIntent() const { return m_Intent.valid; }
 		std::optional<float> ResolveVerticalContact(bool grounded, bool ceiling);
 		bool NextMotionStep(VansCharacterMotionStep& step) { return m_MotionStepper.Next(step); }
-		void ResolveMotionStep(bool grounded, bool ceiling, const glm::vec3* normals, std::size_t count)
-		{
-			m_MotionStepper.ApplyCollision(grounded,ceiling,normals,count);
-			m_VerticalVelocity = m_MotionStepper.GetVelocity().y;
-		}
 		glm::vec3 GetSimulatedVelocity() const { return m_MotionStepper.GetVelocity(); }
-		void ResolveSweptMotionStep(const glm::vec3& velocity, bool grounded, float unusedTime)
+		glm::vec3 GetResolvedVelocity() const { return m_TrajectoryGenerator.GetIntegrationVelocity(); }
+		void ResolveSweptMotionStep(const glm::vec3& velocity, bool grounded, float unusedTime,
+			bool stopSimulation = false)
 		{
-			m_MotionStepper.ApplySweptCollision(velocity,grounded,unusedTime);
+			m_MotionStepper.ApplySweptCollision(velocity,grounded,unusedTime,stopSimulation);
 			m_VerticalVelocity = m_MotionStepper.GetVelocity().y;
 		}
 		int GetSimulationSteps() const { return m_MotionStepper.GetStepCount(); }
@@ -74,7 +74,8 @@ namespace Vans
 		             const glm::vec3& positionWorld,
 		             float facingYaw,
 		             bool grounded,
-		             bool movementBlocked);
+		             bool movementBlocked,
+		             const glm::vec3& leavingBaseVelocity = glm::vec3(0));
 
 		VansCharacterLocomotionResult Resolve(
 			const glm::vec3& animationRootDelta,

@@ -41,6 +41,7 @@ namespace VansGraphics
 	};
 
 	using VansAnimationEventValue = AnimationEventValue;
+	enum class VansAnimationEventPhase { Instant, Begin, End, Tick };
 
 	struct VansAnimationEventSample
 	{
@@ -54,6 +55,9 @@ namespace VansGraphics
 		float weight = 1.0f;
 		bool forward = true;
 		VansAnimationEventValue payload;
+		VansAnimationEventPhase phase = VansAnimationEventPhase::Instant;
+		std::uint64_t sourceInstanceId = 0;
+		float deltaTime = 0.0f;
 	};
 
 	struct VansAnimationSyncState

@@ -8,6 +8,8 @@
 #include "../../ScriptCore/VansCommonUtils.h"
 #include "../../RuntimeCore/VansCharacterMotion.h"
 #include "../../SceneCore/VansSceneParticleComponentReader.h"
+#include "../../GameplayActionSchema/VansGameplayAssetLibrary.h"
+#include "../../Util/VansLog.h"
 #include <algorithm>
 #include <cmath>
 
@@ -21,8 +23,9 @@ double Number(const VansSerializedValue& value, const char* name, double fallbac
     return field ? ReadSerializedNumber(*field, fallback) : fallback;
 }
 }
-VansProjectileActionService::VansProjectileActionService(VansRuntimeWorld& world, IVansGameplayServiceRuntime& runtime, VansProjectileSceneBackend backend)
-    : m_World(world), m_Runtime(runtime), m_Backend(std::move(backend)) {}
+VansProjectileActionService::VansProjectileActionService(VansRuntimeWorld& world, IVansGameplayServiceRuntime& runtime,
+    const VansGameplayAssetLibrary& assets, VansProjectileSceneBackend backend)
+    : m_World(world), m_Runtime(runtime), m_Assets(assets), m_Backend(std::move(backend)) {}
 const VansActionServiceCapability& VansProjectileActionService::Capability() const { return VansProjectileActionCapability(); }
 
 VansActionCommandResult VansProjectileActionService::Execute(const VansActionCommand& command)
@@ -51,6 +54,12 @@ VansActionCommandResult VansProjectileActionService::Execute(const VansActionCom
     const float speed = static_cast<float>(Number(command.payload, "speed", 8.0));
     const float lift = static_cast<float>(Number(command.payload, "lift", 3.0));
     const double lifetime = Number(command.payload, "lifetime", 10.0);
+    const double fuse = Number(command.payload, "fuseSeconds", 0.0);
+    const auto detonationName = ReadSerializedStringField(command.payload,"detonationAction");
+    const auto detonation = detonationName.empty() ? nullptr : m_Assets.ResolveAction(detonationName);
+    if (!std::isfinite(fuse) || fuse < 0 || fuse > 3600 || (fuse > 0) != !detonationName.empty()
+        || (!detonationName.empty() && !detonation) || (fuse > 0 && lifetime > 0 && lifetime < fuse))
+        return {VansActionError::Rejected,{},{},"Projectile fuse requires a resolved detonation Action and lifetime >= fuse (or zero)"};
     auto* storage = m_World.FindStorage<VansRuntimeTransformComponent>(VansRuntimeComponentType_Transform);
     bool hasDirection = false;
     if (storage) for (auto handle : m_World.CollectComponentsOwnedBy(request.owner))
@@ -78,8 +87,12 @@ VansActionCommandResult VansProjectileActionService::Execute(const VansActionCom
     const auto entity = m_Backend.spawn(request, error);
     if (!entity.IsValid()) return { VansActionError::Execution, {}, {}, std::move(error) };
     const auto* record = m_World.Entities().Get(entity);
-    return { VansActionError::None, m_Projectiles.Emplace(Projectile{entity,
-        lifetime > 0 ? std::optional<double>(lifetime) : std::nullopt}),
+    Projectile projectile{entity,lifetime > 0 ? std::optional<double>(lifetime) : std::nullopt};
+    projectile.owner = request.owner;
+    projectile.instigator = command.context.Entity(VansActionContextSlots::Instigator);
+    if (!projectile.instigator.IsValid()) projectile.instigator = request.owner;
+    if (detonation) { projectile.detonationAction=detonation->id; projectile.fuseSeconds=fuse; }
+    return { VansActionError::None, m_Projectiles.Emplace(std::move(projectile)),
         VansSerializedValue::Object({ {"entityGuid", VansSerializedValue::String(record ? record->stableGuid : "")} }), {} };
 }
 bool VansProjectileActionService::Release(VansGenerationHandle resource, std::string& error)
@@ -99,6 +112,39 @@ void VansProjectileActionService::Tick(double deltaSeconds)
         if (projectile.entity.IsValid())
         {
             if (projectile.justSpawned) { projectile.justSpawned = false; return; }
+            if (projectile.fuseSeconds && m_World.IsAlive(projectile.entity))
+            {
+                *projectile.fuseSeconds -= std::max(0.0,deltaSeconds);
+                if (*projectile.fuseSeconds <= 1.e-9)
+                {
+                    // Consume before activation: failure or recursive commands must never detonate twice.
+                    projectile.fuseSeconds.reset();
+                    glm::vec3 position(0);
+                    auto* transforms=m_World.FindStorage<VansRuntimeTransformComponent>(VansRuntimeComponentType_Transform);
+                    const auto* transform=transforms ? transforms->Get(transforms->FindFirstOwnedBy(projectile.entity)) : nullptr;
+                    const auto* entity=m_World.Entities().Get(projectile.entity);
+                    if (transform && VansTransformStore::IsAllocated(transform->transformStoreId) && entity)
+                    {
+                        position=VansTransformStore::Read(transform->transformStoreId).m_Position;
+                        using V=VansSerializedValue;
+                        VansActionContext context;
+                        context.SetEntity(VansActionContextSlots::Owner,projectile.owner);
+                        context.SetEntity(VansActionContextSlots::Instigator,projectile.instigator);
+                        context.SetEntity(VansActionContextSlots::Source,projectile.entity);
+                        context.SetSerialized(VansActionContextSlots::Payload,V::Object({
+                            {"position",V::Object({{"x",V::Float(position.x)},{"y",V::Float(position.y)},{"z",V::Float(position.z)}})},
+                            {"projectileGuid",V::String(entity->stableGuid)}}));
+                        VansTargetLocation location; location.value={position.x,position.y,position.z};
+                        const auto result=m_Runtime.ActivateAction(projectile.owner,projectile.detonationAction,
+                            std::move(context),VansTargetData{{location}});
+                        VANS_LOG("[Projectile] Detonation entity=" << entity->stableGuid << " position="
+                            << position.x << "," << position.y << "," << position.z << " activated=" << static_cast<bool>(result));
+                        if (!result) VANS_LOG_WARN("[Projectile] Detonation Action rejected: " << result.message);
+                    }
+                    // Keep entity alive until scene's structural destruction barrier; effects use a world snapshot.
+                    projectile.remainingSeconds=0;
+                }
+            }
             if (projectile.remainingSeconds)
                 *projectile.remainingSeconds -= std::max(0.0, deltaSeconds);
             if (!m_World.IsAlive(projectile.entity)

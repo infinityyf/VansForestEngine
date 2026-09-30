@@ -982,7 +982,7 @@ bool RunPcgProjectContractTests(const char* projectPath)
         for(auto& spline:edit.splines) spline.excludeVegetation=true;
         projectSplineField=VansPcgSplineFieldBuilder::Build(edit,terrain,generated,error);
         if (!Check(bool(projectSplineField),"Project spline exclusion: "+error)) return false;
-		std::cout<<"[PcgProject] spline fields="<<generated->tiles.size()<<" road meshes="<<generated->roads.size()<<'\n';
+		std::cout<<"[PcgProject] spline fields="<<generated->tiles.size()<<" spline surfaces="<<generated->surfaces.size()<<'\n';
 		if (fs::is_regular_file(packagePlanPath))
 		{
 			const auto baked=VansPcgSplineFieldStorage::Load(VansPcgSplineFieldStorage::CachePath(project,record.guid),*splines,terrain,error);

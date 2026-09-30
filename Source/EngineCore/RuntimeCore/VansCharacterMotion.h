@@ -34,6 +34,8 @@ namespace Vans
 		float loopRootMotionWeight = 0.0f;
 		float transitionRootMotionWeight = 1.0f;
 		float rootRotationWeight = 1.0f;
+		// Slot 根运动可临时覆盖 Capsule；是否启用由角色作者配置决定。
+		bool slotRootMotionOverridesCapsule = false;
 	};
 
 	struct VansCharacterMotionIntent

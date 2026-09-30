@@ -1286,6 +1286,7 @@ namespace Vans::EditorAPI
 				? VansGraphics::VansAnimatorRuntimeCompileMode::ExternalPoseTarget
 				: VansGraphics::VansAnimatorRuntimeCompileMode::FullGraph;
 			options.enableTargetPostProcess = enableTargetPostProcess;
+			options.enableFinalComposition = enableTargetPostProcess;
 			options.enableRootMotion = enableRootMotion && !externalPoseTarget;
 			options.animationRigGuidOverride = animationRigGuidOverride;
 			options.rigResolver = [](const std::string& guid, std::string& resolveError)
@@ -1349,6 +1350,7 @@ namespace Vans::EditorAPI
 			bool originalSceneStateCaptured = false;
 			bool replacedRetargetSourceController = false;
 			std::unique_ptr<VansGraphics::VansAnimGraph> originalTargetPostProcess;
+			std::unique_ptr<VansGraphics::VansAnimGraph> originalFinalComposition;
 			std::vector<VansGraphics::VansAnimationTargetBinding> originalTargetBindings;
 			std::uint64_t bindingRevision = 0;
 			std::unique_ptr<VansGraphics::VansAnimationController>
@@ -6098,7 +6100,9 @@ namespace Vans::EditorAPI
 			previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 100, "GBuffer 0 (Albedo + Roughness)", renderPassManager->GetGbuffer0(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
 			previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 101, "GBuffer 1 (Metallic + AO + MatID)", renderPassManager->GetGbuffer1(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
 			previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 102, "GBuffer 2 (WorldPos + LinearDepth)", renderPassManager->GetGbuffer2(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-			previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 103, "Normal", renderPassManager->GetNormal(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+			// Normal.w stores material data (for example -1 for surfaces without
+			// ground weather effects). It is not preview opacity.
+			previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 103, "Normal", renderPassManager->GetNormal(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_NULL_HANDLE, true));
 			return previews;
 		}
 
@@ -9394,7 +9398,7 @@ namespace Vans::EditorAPI
 			const VansGraphics::Skeleton& compileSkeleton = useRetarget
 				? node->GetRetargetSourceSkeleton() : node->GetSkeleton();
 			auto previewController = CompileProjectAnimator(
-				request.animatorAssetGuid, compileSkeleton, true, true, false,
+				request.animatorAssetGuid, compileSkeleton, !useRetarget, true, false,
 				std::string{}, result.message);
 			if (!previewController)
 			{
@@ -9403,6 +9407,28 @@ namespace Vans::EditorAPI
 					: "Selected Animator is incompatible with the Scene target Skeleton: ")
 					+ result.message;
 				return result;
+			}
+			std::unique_ptr<VansGraphics::VansAnimGraph> selectedFinalComposition;
+			if (useRetarget)
+			{
+				std::string selectedAssetError;
+				const auto selectedAsset = ResolveProjectAnimationObject<VansGraphics::AnimatorAssetData>(
+					request.animatorAssetGuid, Vans::VansAssetType::AnimatorController, selectedAssetError);
+				if (!selectedAsset)
+				{
+					result.message = selectedAssetError;
+					return result;
+				}
+				if (const auto* finalGraph = selectedAsset->FindFinalCompositionGraph())
+				{
+					VansGraphics::VansAnimationController validation;
+					if (!validation.SetFinalCompositionGraph(finalGraph->Clone(), selectedAssetError))
+					{
+						result.message = selectedAssetError;
+						return result;
+					}
+					selectedFinalComposition = validation.CloneFinalCompositionGraph();
+				}
 			}
 			if (!useRetarget)
 			{
@@ -9454,7 +9480,10 @@ namespace Vans::EditorAPI
 			session->skeleton = compileSkeleton;
 			session->originalTargetBindings = node->GetTargetBindings();
 			if (useRetarget && node->GetController())
+			{
 				session->originalTargetPostProcess = node->GetController()->CloneTargetPostProcessGraph();
+				session->originalFinalComposition = node->GetController()->CloneFinalCompositionGraph();
+			}
 			bool controllerExchanged = false;
 			if (useRetarget)
 			{
@@ -9472,6 +9501,25 @@ namespace Vans::EditorAPI
 				scene->EndExternalAnimationEvaluation(node);
 				result.message = "Scene Animation Component rejected the preview Animator";
 				return result;
+			}
+			if (useRetarget)
+			{
+				auto* targetController = node->GetController();
+				if (selectedFinalComposition)
+				{
+					std::string graphError;
+					if (!targetController->SetFinalCompositionGraph(
+							std::move(selectedFinalComposition), graphError))
+					{
+						std::unique_ptr<VansGraphics::VansAnimationController> rejectedPreview;
+						node->ExchangeRetargetSourceController(
+							std::move(session->originalSceneController), rejectedPreview);
+						scene->EndExternalAnimationEvaluation(node);
+						result.message = graphError;
+						return result;
+					}
+				}
+				else targetController->ClearFinalCompositionGraph();
 			}
 			const AnimationPreviewWriteToken writeToken =
 				MakeAnimationPreviewWriteToken(*session);
@@ -9637,6 +9685,7 @@ namespace Vans::EditorAPI
 		}
 		VansGraphics::VansAnimatorRuntimeCompileOptions options;
 		options.enableTargetPostProcess = !sceneNode;
+			options.enableFinalComposition = !sceneNode;
 		options.enableRootMotion = true;
 		options.enableDebugMetrics = true;
 		options.rigResolver = [](const std::string& guid, std::string& error)
@@ -9698,18 +9747,22 @@ namespace Vans::EditorAPI
 				return result;
 			}
 			std::unique_ptr<VansGraphics::VansAnimGraph> post;
+			std::unique_ptr<VansGraphics::VansAnimGraph> composition;
 			if (const auto* definition = asset.FindTargetPostProcessGraph())
 			{
 				nlohmann::json json;
 				definition->SerializeToJsonObject(json);
 				post = VansGraphics::VansAnimGraph::DeserializeFromJsonObject(json);
 			}
+			if (const auto* definition = asset.FindFinalCompositionGraph())
+				composition = definition->Clone();
 			// 在独立候选 Controller 上验证目标骨架图，通过后才交换会话实例。
 			VansGraphics::VansAnimationController validation;
 			const auto* targetRig = target->GetAnimationRig();
 			if ((targetRig && (!validation.SetAnimationRig(*targetRig, options.queryProfileResolver, compileError)
 				|| !validation.BindAnimationRigSkeleton(sceneNode->GetSkeleton(), compileError)))
-				|| (post && !validation.SetTargetPostProcessGraph(std::move(post), compileError)))
+				|| (post && !validation.SetTargetPostProcessGraph(std::move(post), compileError))
+				|| (composition && !validation.SetFinalCompositionGraph(std::move(composition), compileError)))
 			{
 				result.message = compileError;
 				result.usingLastGoodDefinition = true;
@@ -9729,6 +9782,9 @@ namespace Vans::EditorAPI
 				post = validation.CloneTargetPostProcessGraph();
 				if (post) target->SetTargetPostProcessGraph(std::move(post), compileError);
 				else target->ClearTargetPostProcessGraph();
+				composition = validation.CloneFinalCompositionGraph();
+				if (composition) target->SetFinalCompositionGraph(std::move(composition), compileError);
+				else target->ClearFinalCompositionGraph();
 			}
 			else
 			{
@@ -9737,6 +9793,9 @@ namespace Vans::EditorAPI
 				compiled->SetAnimationRigAssetGuid(target->GetAnimationRigAssetGuid());
 				post = validation.CloneTargetPostProcessGraph();
 				if (post && !compiled->SetTargetPostProcessGraph(std::move(post), compileError))
+				{ result.message = compileError; return result; }
+				composition = validation.CloneFinalCompositionGraph();
+				if (composition && !compiled->SetFinalCompositionGraph(std::move(composition), compileError))
 				{ result.message = compileError; return result; }
 				if (!scene->ExchangeAnimationRuntimeController(sceneNode, std::move(compiled), previous))
 				{ result.message = "Target Animator exchange failed"; return result; }
@@ -10709,6 +10768,9 @@ namespace Vans::EditorAPI
 					if (session.originalTargetPostProcess)
 						node->GetController()->SetTargetPostProcessGraph(std::move(session.originalTargetPostProcess), graphError);
 					else node->GetController()->ClearTargetPostProcessGraph();
+					if (session.originalFinalComposition)
+						node->GetController()->SetFinalCompositionGraph(std::move(session.originalFinalComposition), graphError);
+					else node->GetController()->ClearFinalCompositionGraph();
 				}
 				const bool controllerRestored = session.replacedRetargetSourceController
 					? node->ExchangeRetargetSourceController(

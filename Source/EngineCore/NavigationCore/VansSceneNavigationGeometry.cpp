@@ -331,45 +331,4 @@ bool VansSceneNavigationGeometry::BuildEnvironmentGeometry(
 	return true;
 }
 
-bool VansSceneNavigationGeometry::CollectEnvironmentMeshAssets(
-	const VansSceneObjectBuildPlan& sceneObjects,
-	std::vector<std::string>& output,
-	std::string& error)
-{
-	error.clear();
-	std::vector<std::string> assetGuids;
-	SceneTransformResolver transforms(sceneObjects);
-	if (!transforms.Initialize(error)) return false;
-	for (std::size_t index = 0; index < sceneObjects.objects.size(); ++index)
-	{
-		const VansSceneObjectBuildConfig& object = sceneObjects.objects[index];
-		if (!object.physicsComponents.physics) continue;
-		const VansScenePhysicsNodeConfig& physics = *object.physicsComponents.physics;
-		std::string colliderType;
-		if (!IsEnvironmentStaticCollider(object, physics, colliderType) ||
-			colliderType != "mesh")
-		{
-			continue;
-		}
-		if (!ValidateColliderOffsets(object, physics, error)) return false;
-		glm::mat4 worldTransform(1.0f);
-		bool hierarchyActive = false;
-		if (!transforms.Resolve(index, worldTransform, hierarchyActive, error))
-			return false;
-		if (!hierarchyActive) continue;
-		if (!physics.useMeshCollider.value_or(false) || !physics.mesh ||
-			physics.mesh->empty())
-		{
-			error = "Navigation mesh collider '" + ObjectLabel(object) +
-				"' requires useMeshCollider and a Model GUID";
-			return false;
-		}
-		assetGuids.push_back(*physics.mesh);
-	}
-	std::sort(assetGuids.begin(), assetGuids.end());
-	assetGuids.erase(std::unique(assetGuids.begin(), assetGuids.end()),
-		assetGuids.end());
-	output = std::move(assetGuids);
-	return true;
-}
 }

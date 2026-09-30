@@ -116,6 +116,7 @@ namespace VansGraphics
 		float                                                      inputDeltaTime = -1.0f;
 		bool stagedPlayback = false;
 		bool preparePlayback = false;
+		bool extractRootMotion = true;
 		const Skeleton*                                            skeleton   = nullptr;
 		std::unordered_map<std::string, AnimatorParameter>*        parameters = nullptr;
 		const std::unordered_map<std::string, VansAnimationClip>*  clips      = nullptr;
@@ -462,6 +463,21 @@ namespace VansGraphics
 		int         m_CaseCount = 2;  // 输入 Pose 数量
 	};
 
+	// The first pose is the default. Each additional pose maps to one enum
+	// value and has an authored activation blend time.
+	class AnimGraphBlendListByEnumNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphBlendListByEnumNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraphInstance& instance) const override;
+		std::string m_ParamName;
+		std::vector<int> m_EnumValues;
+		std::vector<float> m_BlendTimes;
+		bool m_HermiteCubic = false;
+	};
+
 	// ─── AdditiveBlendNode ──────────────────────────────────────
 	//  叠加混合节点。
 	//  Input 0: Base Pose
@@ -582,6 +598,18 @@ namespace VansGraphics
 		std::string m_CacheName;
 	};
 
+	// Reads a named pose saved explicitly by the owning animation controller.
+	// Unlike UseCachedPose, the snapshot persists across evaluation frames.
+	class AnimGraphPoseSnapshotNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphPoseSnapshotNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraphInstance& instance) const override;
+		std::string m_SnapshotName;
+	};
+
 	class AnimGraphLayeredBlendPerBoneNode : public VansAnimGraphNode
 	{
 	public:
@@ -592,8 +620,10 @@ namespace VansGraphics
 		VansBoneMaskAsset m_Mask;
 		VansLayerBlendMode m_BlendMode = VansLayerBlendMode::Override;
 		VansRotationBlendSpace m_RotationSpace = VansRotationBlendSpace::Mesh;
+		bool m_LinearRotationBlend = false;
 		// 仅旋转在模型空间做线性四元数混合，平移与缩放仍在局部空间。
 		bool m_MeshSpaceRotationOnly = false;
+		VansLayerCurveMode m_CurveBlendMode = VansLayerCurveMode::Blend;
 		std::string m_WeightParameter;
 		float m_FixedWeight = 1.0f;
 		bool m_UseWeightParameter = false;
@@ -828,6 +858,15 @@ namespace VansGraphics
 		float value = 0;
 	};
 
+	struct VansAnimGraphEnumBlendState
+	{
+		int activeCase = -1;
+		float elapsed = 0.0f;
+		float duration = 0.0f;
+		std::vector<float> weights;
+		std::vector<float> startWeights;
+	};
+
 	struct VansAnimGraphSyncGroupState
 	{
 		int leaderNode = -1;
@@ -841,11 +880,13 @@ namespace VansGraphics
 		std::unordered_map<int, VansAnimGraphStateMachineRuntimeState> stateMachineStates;
 		std::unordered_map<int, VansAnimGraphBlendSpaceRuntimeState> blendSpaceStates;
 		std::unordered_map<int, VansAnimGraphBlendAlphaState> blendAlphaStates;
+		std::unordered_map<int, VansAnimGraphEnumBlendState> enumBlendStates;
 		std::unordered_map<int, VansInertializationState> inertializationStates;
 		std::unordered_map<int, bool> activeNodes;
 		std::unordered_set<int> initializedNodes;
 		std::unordered_set<int> updatedNodes;
 		std::unordered_map<std::string, VansAnimGraphSyncGroupState> syncGroups;
+		std::unordered_map<std::string, std::vector<VansBoneTransform>> poseSnapshots;
 	};
 
 	// 可变播放状态、活动节点和帧缓存只属于实例；VansAnimGraph 保持定义数据。
@@ -882,6 +923,9 @@ namespace VansGraphics
 			const std::unordered_map<std::string, VansAnimationClip>& clips);
 		VansAnimGraphRuntimeStateSnapshot CaptureRuntimeState() const;
 		bool RestoreRuntimeState(const VansAnimGraphRuntimeStateSnapshot& snapshot);
+		bool SetPoseSnapshot(const std::string& name,
+		                     const std::vector<VansBoneTransform>& localPose);
+		const std::vector<VansBoneTransform>* FindPoseSnapshot(const std::string& name) const;
 
 	private:
 		AnimGraphPose EvaluateNode(int nodeId, const AnimGraphContext& ctx);
@@ -911,6 +955,7 @@ namespace VansGraphics
 		friend class AnimGraphLayeredBlendPerBoneNode;
 		friend class AnimGraphBlendSpace2DNode;
 		friend class AnimGraphBlendNode;
+		friend class AnimGraphBlendListByEnumNode;
 		friend class AnimGraphStateMachineNode;
 		friend class AnimGraphInertializationNode;
 		friend class VansAnimGraphNode;
@@ -923,6 +968,7 @@ namespace VansGraphics
 		std::unordered_map<int, VansAnimGraphStateMachineRuntimeState> m_StateMachineStates;
 		std::unordered_map<int, VansAnimGraphBlendSpaceRuntimeState> m_BlendSpaceStates;
 		std::unordered_map<int, VansAnimGraphBlendAlphaState> m_BlendAlphaStates;
+		std::unordered_map<int, VansAnimGraphEnumBlendState> m_EnumBlendStates;
 		std::unordered_map<int, VansInertializationState> m_InertializationStates;
 		std::unordered_map<int, int> m_SynchronizedSampleOwners;
 		bool m_UsesStagedPlayback = false;
@@ -937,6 +983,7 @@ namespace VansGraphics
 		std::unordered_map<int, AnimGraphPose> m_EvaluationCache;
 		VansAnimationFrameVector<VansAnimationEventSample> m_StateMachineEvents{std::pmr::new_delete_resource()};
 		std::unordered_map<std::string, AnimGraphPose> m_CachedPoses;
+		std::unordered_map<std::string, std::vector<VansBoneTransform>> m_PoseSnapshots;
 		std::unordered_map<int, bool> m_EvaluatedNodes;
 		std::unordered_map<int, bool> m_EvaluatingNodes;
 		std::unordered_map<int, bool> m_PreviousActiveNodes;

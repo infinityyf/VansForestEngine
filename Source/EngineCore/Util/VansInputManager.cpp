@@ -70,6 +70,7 @@ namespace Vans
 
         m_KeyStates.clear();
         m_MouseButtonStates.clear();
+        m_Gamepads = {};
         m_ActionBindings.clear();
         m_AxisBindings.clear();
         m_Window = nullptr;
@@ -162,6 +163,9 @@ namespace Vans
         {
             state.wasDown = state.isDown;
         }
+        for (auto& gamepad : m_Gamepads)
+            for (auto& button : gamepad.buttons)
+                button.wasDown = button.isDown;
 
         m_KeysUpdatedThisFrame.clear();
         m_MouseButtonsUpdatedThisFrame.clear();
@@ -195,6 +199,22 @@ namespace Vans
             const int state = glfwGetMouseButton(m_Window, button);
             if (state == GLFW_PRESS || state == GLFW_RELEASE)
                 m_MouseButtonStates[button].isDown = (state == GLFW_PRESS);
+        }
+
+        static_assert(GLFW_GAMEPAD_BUTTON_LAST + 1 == 15);
+        static_assert(GLFW_GAMEPAD_AXIS_LAST + 1 == 6);
+        for (std::size_t player = 0; player < m_Gamepads.size(); ++player)
+        {
+            GLFWgamepadstate polled{};
+            const int joystick = GLFW_JOYSTICK_1 + static_cast<int>(player);
+            auto& gamepad = m_Gamepads[player];
+            gamepad.connected = glfwJoystickIsGamepad(joystick) == GLFW_TRUE &&
+                glfwGetGamepadState(joystick, &polled) == GLFW_TRUE;
+            for (std::size_t button = 0; button < gamepad.buttons.size(); ++button)
+                gamepad.buttons[button].isDown = gamepad.connected && m_WindowFocused &&
+                    polled.buttons[button] == GLFW_PRESS;
+            for (std::size_t axis = 0; axis < gamepad.axes.size(); ++axis)
+                gamepad.axes[axis] = gamepad.connected && m_WindowFocused ? polled.axes[axis] : 0.0f;
         }
 
         // Mouse delta
@@ -295,6 +315,42 @@ namespace Vans
     {
         outX = m_ScrollDeltaX;
         outY = m_ScrollDeltaY;
+    }
+
+    bool VansInputManager::IsGamepadConnected(int player) const
+    {
+        return player >= 0 && player < static_cast<int>(m_Gamepads.size()) &&
+            m_WindowFocused && m_Gamepads[static_cast<std::size_t>(player)].connected;
+    }
+
+    bool VansInputManager::IsGamepadButtonDown(int player, int button) const
+    {
+        if (!IsGamepadConnected(player) || button < 0 ||
+            button >= static_cast<int>(m_Gamepads[0].buttons.size())) return false;
+        return m_Gamepads[static_cast<std::size_t>(player)].buttons[static_cast<std::size_t>(button)].isDown;
+    }
+
+    bool VansInputManager::IsGamepadButtonPressed(int player, int button) const
+    {
+        if (!IsGamepadConnected(player) || button < 0 ||
+            button >= static_cast<int>(m_Gamepads[0].buttons.size())) return false;
+        const auto& state = m_Gamepads[static_cast<std::size_t>(player)].buttons[static_cast<std::size_t>(button)];
+        return state.isDown && !state.wasDown;
+    }
+
+    bool VansInputManager::IsGamepadButtonReleased(int player, int button) const
+    {
+        if (player < 0 || player >= static_cast<int>(m_Gamepads.size()) || button < 0 ||
+            button >= static_cast<int>(m_Gamepads[0].buttons.size())) return false;
+        const auto& state = m_Gamepads[static_cast<std::size_t>(player)].buttons[static_cast<std::size_t>(button)];
+        return !state.isDown && state.wasDown;
+    }
+
+    float VansInputManager::GetGamepadAxis(int player, int axis) const
+    {
+        if (!IsGamepadConnected(player) || axis < 0 ||
+            axis >= static_cast<int>(m_Gamepads[0].axes.size())) return 0.0f;
+        return m_Gamepads[static_cast<std::size_t>(player)].axes[static_cast<std::size_t>(axis)];
     }
 
     // -------------------------------------------------------------------------

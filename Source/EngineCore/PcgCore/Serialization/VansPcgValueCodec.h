@@ -66,6 +66,16 @@ public:
 		{ Fail(std::string(name) + " must be an integer in range"); return; }
 		output = static_cast<Integer>(field->intValue);
 	}
+	template <typename Integer> void OptionalIntegerField(const char* name, Integer& output)
+	{
+		const auto* field = OptionalField(name);
+		if (!field) return;
+		if (field->kind != VansSerializedValue::Kind::Int ||
+			static_cast<long double>(field->intValue) < std::numeric_limits<Integer>::lowest() ||
+			static_cast<long double>(field->intValue) > std::numeric_limits<Integer>::max())
+		{ Fail(std::string(name) + " must be an integer in range"); return; }
+		output = static_cast<Integer>(field->intValue);
+	}
 	template <std::size_t N> void Vector(const char* name, std::array<float, N>& output)
 	{
 		const auto* field = Field(name);

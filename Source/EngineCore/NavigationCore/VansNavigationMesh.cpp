@@ -1,4 +1,5 @@
 #include "VansNavigationMesh.h"
+#include "../Util/VansLog.h"
 
 #include <DetourNavMesh.h>
 #include <DetourNavMeshBuilder.h>
@@ -33,7 +34,7 @@ struct VansNavigationQueryScratch
 namespace
 {
 constexpr std::uint32_t kNavigationMagic = 0x56414E56u; // VNAV
-constexpr std::uint32_t kNavigationFormat = 3u;
+constexpr std::uint32_t kNavigationFormat = 4u;
 constexpr std::uint32_t kMaximumSourcePathBytes = 4096u;
 constexpr unsigned short kWalkableFlag = 0x1u;
 constexpr int kMinimumSearchNodes = 4;
@@ -72,6 +73,38 @@ bool ReadString(std::ifstream& stream, std::string& value)
 	value.resize(size);
 	stream.read(value.data(), static_cast<std::streamsize>(size));
 	return static_cast<bool>(stream);
+}
+
+bool WriteAreas(std::ofstream& stream, const VansNavigationAreaSettings& areas)
+{
+	if (!WriteString(stream, areas.defaultArea) ||
+		!WriteValue(stream, static_cast<std::uint32_t>(areas.definitions.size()))) return false;
+	for (const auto& area : areas.definitions)
+	{
+		const std::uint8_t traversable = area.traversable ? 1u : 0u;
+		if (!WriteString(stream, area.name) || !WriteValue(stream, area.id) ||
+			!WriteValue(stream, area.traversalCost) || !WriteValue(stream, traversable)) return false;
+	}
+	return true;
+}
+
+bool ReadAreas(std::ifstream& stream, VansNavigationAreaSettings& areas, std::string& error)
+{
+	std::uint32_t count = 0;
+	if (!ReadString(stream, areas.defaultArea) || !ReadValue(stream, count) ||
+		count == 0u || count > static_cast<std::uint32_t>(kMaximumNavigationAreaId) + 1u) return false;
+	areas.definitions.clear();
+	for (std::uint32_t index = 0; index < count; ++index)
+	{
+		VansNavigationAreaDefinition area;
+		std::uint8_t traversable = 0;
+		if (!ReadString(stream, area.name) || !ReadValue(stream, area.id) ||
+			!ReadValue(stream, area.traversalCost) || !ReadValue(stream, traversable) ||
+			traversable > 1u) return false;
+		area.traversable = traversable != 0;
+		areas.definitions.push_back(std::move(area));
+	}
+	return ValidateNavigationAreaSettings(areas, error);
 }
 
 bool IsFiniteGeometry(const VansNavigationGeometry& geometry)
@@ -296,6 +329,7 @@ VansNavigationMesh::VansNavigationMesh(VansNavigationMesh&& other) noexcept
 	, m_QueryScratch(std::move(other.m_QueryScratch))
 	, m_SerializedData(std::move(other.m_SerializedData))
 	, m_Settings(other.m_Settings)
+	, m_BakedAreas(std::move(other.m_BakedAreas))
 	, m_Source(std::move(other.m_Source))
 {
 	other.m_NavMesh = nullptr;
@@ -312,6 +346,7 @@ VansNavigationMesh& VansNavigationMesh::operator=(VansNavigationMesh&& other) no
 	m_QueryScratch = std::move(other.m_QueryScratch);
 	m_SerializedData = std::move(other.m_SerializedData);
 	m_Settings = other.m_Settings;
+	m_BakedAreas = std::move(other.m_BakedAreas);
 	m_Source = std::move(other.m_Source);
 	other.m_NavMesh = nullptr;
 	other.m_Query = nullptr;
@@ -402,6 +437,7 @@ bool VansNavigationMesh::InitializeFromData(std::vector<unsigned char> data,
 	m_SerializedData = std::move(data);
 	m_Settings = settings;
 	m_Settings.bake = bakedSettings;
+	m_BakedAreas = settings.areas;
 	error.clear();
 	return true;
 }
@@ -588,7 +624,7 @@ bool VansNavigationMesh::Save(const std::filesystem::path& path,
 		return false;
 	}
 	if (!source.IsValid() || std::filesystem::path(source.scene).is_absolute() ||
-		source.settingsHash != HashNavigationSettings(m_Settings))
+		source.bakeSettingsHash != HashNavigationBakeSettings(m_Settings.bake))
 	{
 		error = "Navigation source fingerprint is invalid";
 		return false;
@@ -625,9 +661,9 @@ bool VansNavigationMesh::Save(const std::filesystem::path& path,
 		!WriteValue(stream, bakeSettings.detailSampleDistance) ||
 		!WriteValue(stream, bakeSettings.detailSampleMaxError) ||
 		!WriteString(stream, source.scene) ||
-		!WriteValue(stream, source.sceneHash) ||
-		!WriteValue(stream, source.colliderHash) ||
-		!WriteValue(stream, source.settingsHash) ||
+		!WriteValue(stream, source.geometryHash) ||
+		!WriteValue(stream, source.bakeSettingsHash) ||
+		!WriteAreas(stream, m_BakedAreas) ||
 		!WriteValue(stream, dataSize))
 	{
 		error = "Could not write navigation asset header";
@@ -659,6 +695,7 @@ bool VansNavigationMesh::Load(const std::filesystem::path& path,
 	std::uint32_t format = 0;
 	VansNavigationBakeSettings bakedSettings;
 	VansNavigationSource source;
+	VansNavigationAreaSettings bakedAreas;
 	std::uint64_t dataSize = 0;
 	if (!ReadValue(stream, magic) || !ReadValue(stream, format) ||
 		magic != kNavigationMagic)
@@ -690,9 +727,9 @@ bool VansNavigationMesh::Load(const std::filesystem::path& path,
 		}
 		bakedSettings.detailSamplingEnabled = detailSamplingEnabled != 0;
 		if (!ReadString(stream, source.scene) ||
-			!ReadValue(stream, source.sceneHash) ||
-			!ReadValue(stream, source.colliderHash) ||
-			!ReadValue(stream, source.settingsHash) ||
+			!ReadValue(stream, source.geometryHash) ||
+			!ReadValue(stream, source.bakeSettingsHash) ||
+			!ReadAreas(stream, bakedAreas, error) ||
 			!source.IsValid())
 		{
 			error = "Navigation asset source fingerprint is invalid";
@@ -704,9 +741,9 @@ bool VansNavigationMesh::Load(const std::filesystem::path& path,
 		error = "Navigation asset header is invalid or unsupported";
 		return false;
 	}
-	if (source.settingsHash != HashNavigationSettings(runtimeSettings))
+	if (source.bakeSettingsHash != HashNavigationBakeSettings(bakedSettings))
 	{
-		error = "Navigation asset is stale for the current bake and area settings";
+		error = "Navigation asset bake settings fingerprint is invalid";
 		return false;
 	}
 	if (!ReadValue(stream, dataSize) ||
@@ -724,9 +761,24 @@ bool VansNavigationMesh::Load(const std::filesystem::path& path,
 		error = "Navigation asset payload is truncated";
 		return false;
 	}
-	if (!InitializeFromData(std::move(data), bakedSettings, runtimeSettings, error))
+	// 多边形保留烘焙时的 Area ID；查询成本按当前同名区域更新，已删除区域继续使用烘焙值。
+	VansNavigationSettings effectiveSettings = runtimeSettings;
+	effectiveSettings.areas = bakedAreas;
+	for (auto& area : effectiveSettings.areas.definitions)
+	{
+		if (const auto* current = FindNavigationAreaByName(runtimeSettings.areas, area.name))
+		{
+			area.traversalCost = current->traversalCost;
+			area.traversable = current->traversable;
+		}
+	}
+	if (!InitializeFromData(std::move(data), bakedSettings, effectiveSettings, error))
 		return false;
+	m_BakedAreas = std::move(bakedAreas);
 	m_Source = std::move(source);
+	if (m_Source.bakeSettingsHash != HashNavigationBakeSettings(runtimeSettings.bake))
+		VANS_LOG_WARN("[Navigation] Bake settings changed for '" << path.string()
+			<< "'; using the existing baked navigation mesh; run ForestAssetTool bake-navigation to update it");
 	return true;
 }
 

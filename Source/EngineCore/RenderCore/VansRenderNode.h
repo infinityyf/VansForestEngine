@@ -81,6 +81,9 @@ namespace VansGraphics
 		bool m_RayTracingEnabled = true;
 		// PCG 道路投影使用独立 pass，避免复用普通弹坑贴花的材质语义。
 		bool m_UsesRoadDecalPass = false;
+		bool m_UsesSplineDecalPass = false;
+		// 贴花节点可覆盖材质默认排序值；投影道路总是使用样条排序值。
+		std::optional<int> m_DecalSortPriority;
 		// 由节点渲染角色声明是否接收地表天气。参数始终来自统一帧契约，
 		// 节点不缓存 WeatherCore 或 Terrain 配置。
 		std::uint32_t m_GroundWeatherEffects = VANS_GROUND_WEATHER_NONE;

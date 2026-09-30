@@ -13,6 +13,7 @@ namespace VansGraphics
         std::uint64_t m_SplineDraftState=0;
         bool m_SplinePropertyDrag=false;
         std::string m_RoadMaterial;
+        std::string m_DecalMaterial;
         std::array<float,3> m_NewSplinePosition{};
         std::array<float,4> m_SplineFieldSettings{.5f,.5f,.025f,1.f};
         std::uint64_t m_SplineFieldSettingsState=0;

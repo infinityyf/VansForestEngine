@@ -3,6 +3,7 @@
 #include "VansPhysics.h"
 #include "VansPhysicsNativeAccess.h"
 #include "VansCollisionFilter.h"
+#include "VansCollisionLayerManager.h"
 #include "VansRagdollSystem.h"
 #include "VansPhysicsEvents.h"
 #include "VansCharacterSweepSolver.h"
@@ -16,26 +17,28 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <vector>
 
 namespace VansEngine
 {
 	using namespace physx;
 
-	struct VansCharacterControllerNode::NativeState : PxUserControllerHitReport
+	struct VansCharacterControllerNode::NativeState
 	{
 		PxCapsuleController* controller = nullptr;
 		PxFilterData filterData;
 		PxControllerCollisionFlags lastCollisionFlags{ 0 };
-		std::vector<glm::vec3> contactNormals;
-		NativeState() { contactNormals.reserve(16); }
-		void Record(const PxControllerHit& hit)
+		VansCharacterSweepState sweepState;
+		VansCharacterGroundState groundState;
+		VansPhysicsQueryHit movementBase;
+		float baseRotationDeltaYaw = 0.0f;
+		bool crouched=false;
+		NativeState()
 		{
-			contactNormals.emplace_back(hit.worldNormal.x,hit.worldNormal.y,hit.worldNormal.z);
+			sweepState.randomSeed=static_cast<std::uint32_t>(
+				std::chrono::steady_clock::now().time_since_epoch().count());
 		}
-		void onShapeHit(const PxControllerShapeHit& hit) override { Record(hit); }
-		void onControllerHit(const PxControllersHit& hit) override { Record(hit); }
-		void onObstacleHit(const PxControllerObstacleHit& hit) override { Record(hit); }
 	};
 
     namespace
@@ -123,6 +126,7 @@ namespace VansEngine
 
         m_Properties  = props;
         m_TransformID = transformID;
+        m_CollisionEnabled = true;
 		if (!VansCollisionFilter::Build(
 			props.m_LayerName, VansCollisionFilter::None, 0u, m_Native->filterData))
 		{
@@ -149,7 +153,6 @@ namespace VansEngine
             static_cast<double>(spawnPos.x),
             static_cast<double>(spawnPos.y),
             static_cast<double>(spawnPos.z));
-        desc.reportCallback = m_Native.get();
         desc.userData = this;
 
         m_Native->controller = static_cast<PxCapsuleController*>(
@@ -194,6 +197,10 @@ namespace VansEngine
 		}
 		DiscardPendingMove();
 		m_GameplayMovementBlockCount = 0;
+		m_Native->groundState.valid=false;
+		m_Native->movementBase={};
+		m_Native->baseRotationDeltaYaw=0.0f;
+		m_Native->crouched=false;
 		m_Native->lastCollisionFlags = PxControllerCollisionFlags(0);
 		m_Enabled = true;
         return true;
@@ -209,6 +216,10 @@ namespace VansEngine
 		DiscardPendingMove();
 		m_Locomotion.Clear(glm::vec3(0.0f), 0.0f);
 		m_GameplayMovementBlockCount = 0;
+		m_Native->groundState.valid=false;
+		m_Native->movementBase={};
+		m_Native->baseRotationDeltaYaw=0.0f;
+		m_Native->crouched=false;
 		m_Native->lastCollisionFlags = PxControllerCollisionFlags(0);
         m_Enabled = false;
     }
@@ -223,6 +234,7 @@ namespace VansEngine
         m_HasPendingMove       = true;
         m_PendingModeledMotion = false;
         m_PendingSubsteps = false;
+		m_PendingAnimationRootMotion = false;
     }
 
     VansCharacterMotionFlushResult VansCharacterControllerNode::FlushMoveAndSync()
@@ -235,18 +247,6 @@ namespace VansEngine
             return {};
         }
 
-        if (m_PendingLanding)
-        {
-            if (IsGameplayMovementBlocked())
-            {
-                DiscardPendingMove();
-                return {};
-            }
-            m_Native->lastCollisionFlags |= PxControllerCollisionFlag::eCOLLISION_DOWN;
-            m_Locomotion.ResolveSweptMotionStep(m_PendingLanding->velocity,true,m_PendingLanding->unusedTime);
-            m_PendingLanding.reset();
-        }
-
         // ── Ragdoll 接管路径 ───────────────────────────────────────────
         // 若已绑定 AnimNode 且处于 Physics/Blend 模式，跳过 move()，改用 setPosition 瞬移
         if (m_FollowRagdollKey.IsValid())
@@ -255,15 +255,34 @@ namespace VansEngine
             if (VansEngine::VansRagdollSystem::GetInstance().GetFollowBoneWorldPositionLocked(
                     m_FollowRagdollKey, m_FollowRagdollBone, boneWorldPos))
             {
-                // boneWorldPos 为根骨骼刚体质心。
-                // m_Properties.m_PositionOffset 将胶囊中心对齐到骨骼附近，可在 JSON 中微调。
+                DiscardPendingMove();
+                // 读取骨骼原点，而不是形状中心，保持胶囊/角色 Transform 的相对位置。
                 SetPosition(boneWorldPos + m_Properties.m_PositionOffset);
                 SyncTransformFromController();
                 return {};
             }
         }
 
+        if (m_PendingLanding)
+        {
+            if (IsGameplayMovementBlocked())
+            {
+                DiscardPendingMove();
+                SyncTransformFromController();
+                return {};
+            }
+            m_Native->lastCollisionFlags |= PxControllerCollisionFlag::eCOLLISION_DOWN;
+            m_Native->groundState.floor=FindCurrentFloorLocked();
+            m_Native->groundState.valid=m_Native->groundState.floor.walkable;
+            m_Native->groundState.triedLedgeMove=false;
+            if (m_Native->groundState.valid) SaveMovementBaseLocked(m_Native->groundState.floor.hit);
+            m_Locomotion.ResolveSweptMotionStep(m_PendingLanding->velocity,true,m_PendingLanding->unusedTime);
+            m_PendingLanding.reset();
+        }
+
         // ── 正常脚本驱动路径 ───────────────────────────────────────────
+		// Observe physics-base changes that occurred after regular locomotion preparation.
+		UpdateMovementBaseLocked();
 		std::optional<VansCharacterMovementUpdatedEvent> result;
 		if (m_HasPendingMove)
 		{
@@ -271,6 +290,7 @@ namespace VansEngine
 			{
 				m_FlushStartPosition = GetPosition();
 				m_FlushStarted = true;
+				m_Native->groundState.triedLedgeMove = false;
 			}
 			const glm::vec3 positionBefore = m_FlushStartPosition;
 			const float resolvedDt = m_PendingDt;
@@ -284,7 +304,6 @@ namespace VansEngine
 				Vans::VansCharacterMotionStep step;
 				while (m_Locomotion.NextMotionStep(step))
 				{
-					if (!step.grounded)
 					{
 						VansPhysicsCapsuleSweepRequest shape;
 						shape.origin=GetPosition();shape.axis=m_Properties.m_UpDirection;
@@ -293,10 +312,36 @@ namespace VansEngine
 						shape.filter.ignoredTransformId=m_TransformID;
 						shape.filter.collisionLayerIndex=static_cast<int>(m_Native->filterData.word0);
 						shape.filter.includeTriggers=false;
-						const auto contact=VansCharacterSweepSolver::AdvanceAirLocked(shape,step,m_Properties.m_SlopeLimit);
+						VansCharacterFloorSettings floorSettings;
+						floorSettings.maxStepHeight=m_Properties.m_StepOffset;
+						floorSettings.perchRadiusThreshold=m_Properties.m_PerchRadiusThreshold;
+						floorSettings.perchAdditionalHeight=m_Properties.m_PerchAdditionalHeight;
+						VansCharacterPenetrationSettings penetrationSettings;
+						penetrationSettings.pullbackDistance=m_Properties.m_PenetrationPullbackDistance;
+						penetrationSettings.overlapInflation=m_Properties.m_PenetrationOverlapInflation;
+						penetrationSettings.maxGeometryDistance=m_Properties.m_MaxDepenetrationWithGeometry;
+						penetrationSettings.maxCharacterDistance=m_Properties.m_MaxDepenetrationWithCharacters;
+						VansCharacterGroundSettings groundSettings;
+						groundSettings.maintainHorizontalVelocity=m_Properties.m_MaintainHorizontalGroundVelocity;
+						groundSettings.canWalkOffLedges=m_Properties.m_CanWalkOffLedges &&
+							(!m_Native->crouched || m_Properties.m_CanWalkOffLedgesWhenCrouching);
+						groundSettings.ledgeCheckThreshold=m_Properties.m_LedgeCheckThreshold;
+						if (!step.grounded) m_Native->groundState.valid=false;
+						auto contact=step.grounded ? VansCharacterSweepSolver::AdvanceGroundLocked(
+							shape,step,m_Properties.m_SlopeLimit,m_Native->groundState,floorSettings,
+							penetrationSettings,groundSettings) : VansCharacterSweepSolver::AdvanceAirLocked(
+							shape,step,m_Properties.m_SlopeLimit,m_Native->sweepState,floorSettings,
+							penetrationSettings,m_Properties.m_UseImpactBodyVelocity);
 						m_Native->controller->setPosition(PxExtendedVec3(contact.position.x,contact.position.y,contact.position.z));
+						if (step.grounded && !contact.grounded)
+						{
+							contact.velocity+=GetImpartedMovementBaseVelocityLocked();
+							m_Native->movementBase={};
+						}
+						else if (step.grounded && contact.grounded && m_Native->groundState.floor.walkable)
+							SaveMovementBaseLocked(m_Native->groundState.floor.hit);
 						m_Native->lastCollisionFlags=PxControllerCollisionFlags();
-						if (contact.grounded)
+						if (contact.grounded && !step.grounded)
 						{
 							m_PendingLanding = PendingLanding{contact.velocity,contact.unusedTime};
 							SyncTransformFromController();
@@ -304,28 +349,34 @@ namespace VansEngine
 								contact.position,contact.landingVelocity,contact.landingNormal}};
 						}
 						if (contact.ceiling) m_Native->lastCollisionFlags|=PxControllerCollisionFlag::eCOLLISION_UP;
+						if (contact.grounded) m_Native->lastCollisionFlags|=PxControllerCollisionFlag::eCOLLISION_DOWN;
 						if (contact.blocked) m_Native->lastCollisionFlags|=PxControllerCollisionFlag::eCOLLISION_SIDES;
-						m_Locomotion.ResolveSweptMotionStep(contact.velocity,contact.grounded,contact.unusedTime);
+						m_Locomotion.ResolveSweptMotionStep(contact.velocity,contact.grounded,contact.unusedTime,contact.stopSimulation);
 						continue;
 					}
-					m_Native->contactNormals.clear();
-					m_Native->lastCollisionFlags = m_Native->controller->move(
-						PxVec3(step.displacement.x,step.displacement.y,step.displacement.z),
-						1.e-6f,step.deltaTime,filters);
-					m_Locomotion.ResolveMotionStep(IsGrounded(),
-						m_Native->lastCollisionFlags.isSet(PxControllerCollisionFlag::eCOLLISION_UP),
-						m_Native->contactNormals.data(),m_Native->contactNormals.size());
 				}
 			}
 			else
 			{
-				m_Native->contactNormals.clear();
+				m_Native->groundState.valid=false;
 				m_Native->lastCollisionFlags = m_Native->controller->move(disp, 0.001f, m_PendingDt, filters);
+				if (IsGrounded())
+				{
+					const auto floor=FindCurrentFloorLocked();
+					if (floor.walkable) SaveMovementBaseLocked(floor.hit);
+				}
+				else m_Native->movementBase={};
 			}
 			const glm::vec3 positionAfter = GetPosition();
 			if (resolvedDt > 0.0f)
 				result = VansCharacterMovementUpdatedEvent{ m_TransformID, resolvedDt,
 					positionAfter, (positionAfter - positionBefore) / resolvedDt, IsGrounded() };
+			if (result) result->animationRootMotion = m_PendingAnimationRootMotion;
+			if (result)
+			{
+				result->baseRotationDeltaYaw=m_Native->baseRotationDeltaYaw;
+				m_Native->baseRotationDeltaYaw=0.0f;
+			}
 			if (result && m_PendingSubsteps)
 			{
 				result->motionVelocity = m_Locomotion.GetSimulatedVelocity();
@@ -359,9 +410,93 @@ namespace VansEngine
 		return {result,std::nullopt};
     }
 
+    VansCharacterFloorResult VansCharacterControllerNode::FindCurrentFloorLocked() const
+    {
+        VansPhysicsCapsuleSweepRequest shape;shape.origin=GetPosition();shape.axis=m_Properties.m_UpDirection;
+        shape.radius=m_Properties.m_Radius;shape.halfHeight=.5f*m_Properties.m_Height+m_Properties.m_Radius;
+        shape.filter.ignoredTransformId=m_TransformID;
+        shape.filter.collisionLayerIndex=static_cast<int>(m_Native->filterData.word0);shape.filter.includeTriggers=false;
+        VansCharacterFloorSettings settings;settings.maxStepHeight=m_Properties.m_StepOffset;
+        settings.perchRadiusThreshold=m_Properties.m_PerchRadiusThreshold;
+        settings.perchAdditionalHeight=m_Properties.m_PerchAdditionalHeight;
+        return VansCharacterSweepSolver::FindFloorLocked(shape,m_Properties.m_SlopeLimit,settings,true);
+    }
+
+    void VansCharacterControllerNode::SaveMovementBaseLocked(const VansPhysicsQueryHit& hit)
+    {
+        // The floor hit was queried under this same simulation lock.
+        m_Native->movementBase=hit;
+    }
+
+    glm::vec3 VansCharacterControllerNode::GetImpartedMovementBaseVelocityLocked() const
+    {
+        VansPhysicsQueryHit current;
+        const auto& base=m_Native->movementBase;
+        if (!base.supportMovable || !VansPhysicsQuery::GetBodyMotionLocked(base.actorIdentity,base.transformId,current) ||
+            !current.supportMovable) return glm::vec3(0);
+        const float halfHeight=.5f*m_Properties.m_Height+m_Properties.m_Radius;
+        const auto feet=GetPosition()-glm::vec3(0,halfHeight,0);
+        return VansCharacterSweepSolver::ImpartMovementBaseVelocity(current,feet,
+            glm::bvec3(m_Properties.m_ImpartMovementBaseVelocityX,m_Properties.m_ImpartMovementBaseVelocityY,
+                m_Properties.m_ImpartMovementBaseVelocityZ),m_Properties.m_ImpartMovementBaseAngularVelocity);
+    }
+
+    void VansCharacterControllerNode::UpdateMovementBaseLocked()
+    {
+        auto& saved=m_Native->movementBase;
+        if (!IsGrounded() || !m_CollisionEnabled || m_FollowRagdollKey.IsValid()) return;
+        if (!saved.actorIdentity || !saved.supportMovable) return;
+        VansPhysicsQueryHit current;
+        if (!VansPhysicsQuery::GetBodyMotionLocked(saved.actorIdentity,saved.transformId,current))
+        {
+            saved={};m_Native->groundState.valid=false;return;
+        }
+        if (!current.supportMovable) {saved=current;return;}
+        const auto oldRotation=saved.supportRotation,newRotation=current.supportRotation;
+        const auto oldQ=glm::vec4(oldRotation.x,oldRotation.y,oldRotation.z,oldRotation.w);
+        const auto newQ=glm::vec4(newRotation.x,newRotation.y,newRotation.z,newRotation.w);
+        const bool rotationChanged=!(glm::all(glm::lessThanEqual(glm::abs(oldQ-newQ),glm::vec4(1.e-8f))) ||
+            glm::all(glm::lessThanEqual(glm::abs(oldQ+newQ),glm::vec4(1.e-8f))));
+        const auto translation=current.supportPosition-saved.supportPosition;
+        if (rotationChanged || glm::any(glm::notEqual(translation,glm::vec3(0))))
+        {
+            const auto position=GetPosition();
+            const float halfHeight=.5f*m_Properties.m_Height+m_Properties.m_Radius;
+            const glm::vec3 offset(0,halfHeight,0);
+            const auto localFeet=glm::conjugate(oldRotation)*(position-offset-saved.supportPosition);
+            const auto target=current.supportPosition+newRotation*localFeet+offset;
+            auto delta=target-position;
+            if (!rotationChanged && translation.x==0 && translation.z==0) delta.x=delta.z=0;
+            VansPhysicsCapsuleSweepRequest shape;shape.origin=position;shape.axis=m_Properties.m_UpDirection;
+            shape.radius=m_Properties.m_Radius;shape.halfHeight=halfHeight;
+            shape.filter.ignoredTransformId=m_TransformID;
+            shape.filter.collisionLayerIndex=static_cast<int>(m_Native->filterData.word0);
+            shape.filter.includeTriggers=false;
+            const auto baseTransform=saved.transformId;
+            shape.filter.accept=[baseTransform](const VansPhysicsQueryCandidate& candidate)
+                {return candidate.transformId!=baseTransform;};
+            const auto moved=VansCharacterSweepSolver::SweepMoveLocked(shape,delta);
+            m_Native->controller->setPosition(PxExtendedVec3(moved.position.x,moved.position.y,moved.position.z));
+            if (rotationChanged && m_Properties.m_FollowMovementBaseRotation)
+            {
+                auto transform=Vans::VansTransformStore::Read(m_TransformID);
+				const float oldYaw=transform.m_Rotation.y;
+                const auto yaw=glm::angleAxis(glm::radians(transform.m_Rotation.y),glm::vec3(0,1,0));
+                const auto forward=(newRotation*glm::conjugate(oldRotation)*yaw)*glm::vec3(0,0,1);
+                transform.m_Rotation.y=glm::degrees(std::atan2(forward.x,forward.z));
+				m_Native->baseRotationDeltaYaw+=std::remainder(transform.m_Rotation.y-oldYaw,360.0f);
+                Vans::VansTransformStore::Write(m_TransformID,transform);
+            }
+            SyncTransformFromController();m_Native->groundState.valid=false;
+        }
+        saved=current;
+    }
+
     void VansCharacterControllerNode::SetPosition(const glm::vec3& pos)
     {
         if (!m_Native->controller) return;
+        m_Native->groundState.valid=false;
+        m_Native->movementBase={};
         m_Native->controller->setPosition(PxExtendedVec3(
             static_cast<double>(pos.x),
             static_cast<double>(pos.y),
@@ -375,15 +510,81 @@ namespace VansEngine
 		}
 		m_Locomotion.ResetMotion(pos - m_Properties.m_PositionOffset, facingYaw);
 		m_Native->lastCollisionFlags = PxControllerCollisionFlags(0);
+		SyncTransformFromController();
     }
 
-    bool VansCharacterControllerNode::ResizeCapsule(float cylinderHeight)
+	bool VansCharacterControllerNode::SeedMotionVelocity(const glm::vec3& velocityWorld)
+	{
+		VANS_ASSERT_MAIN_THREAD();
+		if (!m_Native->controller ||
+			!std::isfinite(velocityWorld.x) || !std::isfinite(velocityWorld.y) ||
+			!std::isfinite(velocityWorld.z)) return false;
+		m_Locomotion.SeedVelocity(velocityWorld);
+		return true;
+	}
+
+	bool VansCharacterControllerNode::InitializeContactState(bool preferGrounded)
+	{
+		VANS_ASSERT_MAIN_THREAD();
+		if (!m_Native->controller || !m_CollisionEnabled || !IsEnabled() ||
+			m_FollowRagdollKey.IsValid() || m_PendingSubsteps || m_PendingLanding ||
+			(preferGrounded && glm::length(m_Properties.m_UpDirection-glm::vec3(0,1,0))>1.e-6f)) return false;
+		auto& physics=VansPhysicsSystem::GetInstance();
+		std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+		m_Native->groundState={};m_Native->movementBase={};
+		m_Native->lastCollisionFlags=PxControllerCollisionFlags(0);
+		if (preferGrounded)
+		{
+			VansPhysicsCapsuleSweepRequest shape;shape.origin=GetPosition();shape.axis=m_Properties.m_UpDirection;
+			shape.radius=m_Properties.m_Radius;shape.halfHeight=.5f*m_Properties.m_Height+m_Properties.m_Radius;
+			shape.filter.ignoredTransformId=m_TransformID;
+			shape.filter.collisionLayerIndex=static_cast<int>(m_Native->filterData.word0);shape.filter.includeTriggers=false;
+			VansCharacterFloorSettings floor;
+			floor.maxStepHeight=m_Properties.m_StepOffset;floor.perchRadiusThreshold=m_Properties.m_PerchRadiusThreshold;
+			floor.perchAdditionalHeight=m_Properties.m_PerchAdditionalHeight;
+			VansCharacterPenetrationSettings penetration;
+			penetration.pullbackDistance=m_Properties.m_PenetrationPullbackDistance;
+			penetration.overlapInflation=m_Properties.m_PenetrationOverlapInflation;
+			penetration.maxGeometryDistance=m_Properties.m_MaxDepenetrationWithGeometry;
+			penetration.maxCharacterDistance=m_Properties.m_MaxDepenetrationWithCharacters;
+			VansCharacterGroundSettings ground;ground.maintainHorizontalVelocity=m_Properties.m_MaintainHorizontalGroundVelocity;
+			const auto contact=VansCharacterSweepSolver::InitializeGroundLocked(shape,m_Properties.m_SlopeLimit,
+				m_Native->groundState,floor,penetration,ground);
+			m_Native->controller->setPosition(PxExtendedVec3(contact.position.x,contact.position.y,contact.position.z));
+			// 无支撑基底时直接保留空中状态，避免第一帧先执行地面运动。
+			if (m_Native->groundState.valid && m_Native->groundState.floor.walkable)
+			{
+				m_Native->lastCollisionFlags=PxControllerCollisionFlag::eCOLLISION_DOWN;
+				SaveMovementBaseLocked(m_Native->groundState.floor.hit);
+				m_Locomotion.InitializeGroundVelocity();
+			}
+		}
+		SyncTransformFromController();
+		return true;
+	}
+
+	bool VansCharacterControllerNode::SeedGroundedContact(bool grounded)
+	{
+		VANS_ASSERT_MAIN_THREAD();
+		if (!m_Native->controller || (grounded && !m_CollisionEnabled)) return false;
+		m_Native->lastCollisionFlags = grounded
+			? PxControllerCollisionFlag::eCOLLISION_DOWN
+			: PxControllerCollisionFlags(0);
+		m_Native->groundState.valid=false;
+		if (!grounded) m_Native->movementBase={};
+		return true;
+	}
+
+    bool VansCharacterControllerNode::ResizeCapsule(float cylinderHeight,std::optional<bool> crouched)
     {
         if (!m_Native->controller || !std::isfinite(cylinderHeight) || cylinderHeight <= 0.0f)
             return false;
         const float oldHeight = m_Properties.m_Height;
         if (std::abs(cylinderHeight - oldHeight) <= 1.0e-5f)
+        {
+            if (crouched) m_Native->crouched=*crouched;
             return true;
+        }
 
         const glm::vec3 up = glm::normalize(m_Properties.m_UpDirection);
         if (cylinderHeight > oldHeight)
@@ -414,6 +615,8 @@ namespace VansEngine
 
         m_Native->controller->resize(cylinderHeight);
         m_Properties.m_Height = cylinderHeight;
+        if (crouched) m_Native->crouched=*crouched;
+        m_Native->groundState.valid=false;
         m_Properties.m_PositionOffset += up * ((cylinderHeight - oldHeight) * 0.5f);
         SyncTransformFromController();
         return true;
@@ -471,6 +674,13 @@ namespace VansEngine
 		if (!IsEnabled() || !m_Native->controller || m_TransformID == UINT32_MAX)
 			return;
 
+		glm::vec3 leavingBaseVelocity(0);
+		{
+			std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+			m_Native->baseRotationDeltaYaw=0.0f;
+			UpdateMovementBaseLocked();
+			leavingBaseVelocity=GetImpartedMovementBaseVelocityLocked();
+		}
 		const Vans::VansTransform& transform =
 			Vans::VansTransformStore::Read(m_TransformID);
 		const bool jumpAccepted = m_Locomotion.Prepare(
@@ -479,11 +689,14 @@ namespace VansEngine
 			transform.m_Position,
 			transform.m_Rotation.y,
 			IsGrounded(),
-			IsGameplayMovementBlocked());
+			IsGameplayMovementBlocked(),leavingBaseVelocity);
 		// No simulation mutex is held: callbacks may query Physics and update
 		// animation parameters for the immediately following graph evaluation.
 		if (jumpAccepted)
+		{
+			m_Native->movementBase={};m_Native->groundState.valid=false;
 			Vans::VansEventBus::Get().PublishNow(VansCharacterJumpEvent{ m_TransformID });
+		}
 	}
 
 	void VansCharacterControllerNode::ResolveLocomotion(
@@ -514,6 +727,8 @@ namespace VansEngine
 		m_PendingDisplacement = result.displacementWorld;
 		m_PendingModeledMotion = true;
 		m_PendingSubsteps = result.substepped;
+		m_PendingAnimationRootMotion = rootMotionValid &&
+			authority.mode == Vans::VansLocomotionAuthorityMode::RootMotion && !IsGameplayMovementBlocked();
 		m_PendingDt = result.deltaTime;
 		m_HasPendingMove = true;
 		transform.m_Rotation.y = result.facingYaw;
@@ -535,6 +750,7 @@ namespace VansEngine
 	{
 		m_PendingDisplacement = glm::vec3(0.0f);
 		m_PendingDt = 0.0f;
+		m_PendingAnimationRootMotion = false;
 		m_HasPendingMove = false;
 		m_PendingModeledMotion = false;
 		m_PendingSubsteps = false;
@@ -562,6 +778,37 @@ namespace VansEngine
 
         // 标记 Dirty，通知渲染层更新 GPU 数据
         Vans::VansTransformStore::MarkDirty(m_TransformID);
+    }
+
+    void VansCharacterControllerNode::SetCollisionEnabled(bool enabled)
+    {
+        VANS_ASSERT_MAIN_THREAD();
+        if (m_CollisionEnabled == enabled || !m_Native->controller)
+            return;
+        m_CollisionEnabled = enabled;
+		if (!enabled) m_Native->movementBase={};
+        m_Native->groundState.valid=false;
+        const int layer = static_cast<int>(m_Native->filterData.word0);
+        m_Native->filterData.word1 = enabled
+            ? VansCollisionLayerManager::Get().GetCollisionMask(layer) : 0u;
+        PxRigidDynamic* actor = m_Native->controller->getActor();
+        if (!actor) return;
+        const PxU32 count = actor->getNbShapes();
+        std::vector<PxShape*> shapes(count);
+        actor->getShapes(shapes.data(), count);
+        for (PxShape* shape : shapes)
+        {
+            if (!shape) continue;
+            shape->setSimulationFilterData(m_Native->filterData);
+            shape->setQueryFilterData(m_Native->filterData);
+            shape->setFlag(PxShapeFlag::eSIMULATION_SHAPE, enabled);
+            shape->setFlag(PxShapeFlag::eSCENE_QUERY_SHAPE, enabled);
+        }
+        if (enabled)
+        {
+            if (PxScene* scene = actor->getScene())
+                scene->resetFiltering(*actor);
+        }
     }
 
     void VansCharacterControllerNode::SetFollowRagdoll(

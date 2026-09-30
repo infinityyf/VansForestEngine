@@ -340,6 +340,15 @@ namespace Vans::EditorAPI
 				result->m_ParamName = n.m_ParamName; result->m_CaseCount = n.m_CaseCount;
 				break;
 			}
+			case VansGraphics::VansAnimGraphNodeType::BlendListByEnum:
+			{
+				const auto& n = static_cast<const VansGraphics::AnimGraphBlendListByEnumNode&>(source);
+				result->m_ParamName = n.m_ParamName;
+				result->m_EnumValues = n.m_EnumValues;
+				result->m_BlendTimes = n.m_BlendTimes;
+				result->m_HermiteCubic = n.m_HermiteCubic;
+				break;
+			}
 			case VansGraphics::VansAnimGraphNodeType::AdditiveBlend:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphAdditiveBlendNode&>(source);
@@ -421,6 +430,7 @@ namespace Vans::EditorAPI
 				result->m_LimbSettings.positionTolerance = n.m_Settings.positionTolerance;
 				result->m_LimbSettings.weight = n.m_Settings.weight;
 				result->m_LimbSettings.commitClampedPose = n.m_Settings.commitClampedPose;
+				result->m_LimbSettings.linearPoseBlend = n.m_Settings.linearPoseBlend;
 				break;
 			}
 			case VansGraphics::VansAnimGraphNodeType::RotationDistribution:
@@ -442,12 +452,17 @@ namespace Vans::EditorAPI
 			case VansGraphics::VansAnimGraphNodeType::UseCachedPose:
 				result->m_CacheName = static_cast<const VansGraphics::AnimGraphUseCachedPoseNode&>(source).m_CacheName;
 				break;
+			case VansGraphics::VansAnimGraphNodeType::PoseSnapshot:
+				result->m_CacheName = static_cast<const VansGraphics::AnimGraphPoseSnapshotNode&>(source).m_SnapshotName;
+				break;
 			case VansGraphics::VansAnimGraphNodeType::LayeredBlendPerBone:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphLayeredBlendPerBoneNode&>(source);
 				result->m_LayerMask = ToDTO(n.m_Mask);
 				result->m_LayerBlendMode = BridgeEnum<VansLayerBlendMode>(n.m_BlendMode);
+				result->m_LayerCurveMode = BridgeEnum<VansLayerCurveMode>(n.m_CurveBlendMode);
 				result->m_LayerRotationSpace = BridgeEnum<VansRotationBlendSpace>(n.m_RotationSpace);
+				result->m_LinearRotationBlend = n.m_LinearRotationBlend;
 				result->m_LayerWeightParameter = n.m_WeightParameter;
 				result->m_LayerFixedWeight = n.m_FixedWeight;
 				result->m_UseLayerWeightParameter = n.m_UseWeightParameter;
@@ -571,6 +586,15 @@ namespace Vans::EditorAPI
 				n.m_ParamName = source.m_ParamName; n.m_CaseCount = source.m_CaseCount;
 				break;
 			}
+			case VansGraphics::VansAnimGraphNodeType::BlendListByEnum:
+			{
+				auto& n = static_cast<VansGraphics::AnimGraphBlendListByEnumNode&>(*result);
+				n.m_ParamName = source.m_ParamName;
+				n.m_EnumValues = source.m_EnumValues;
+				n.m_BlendTimes = source.m_BlendTimes;
+				n.m_HermiteCubic = source.m_HermiteCubic;
+				break;
+			}
 			case VansGraphics::VansAnimGraphNodeType::AdditiveBlend:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphAdditiveBlendNode&>(*result);
@@ -650,6 +674,7 @@ namespace Vans::EditorAPI
 				n.m_Settings.positionTolerance = source.m_LimbSettings.positionTolerance;
 				n.m_Settings.weight = source.m_LimbSettings.weight;
 				n.m_Settings.commitClampedPose = source.m_LimbSettings.commitClampedPose;
+				n.m_Settings.linearPoseBlend = source.m_LimbSettings.linearPoseBlend;
 				break;
 			}
 			case VansGraphics::VansAnimGraphNodeType::RotationDistribution:
@@ -671,12 +696,17 @@ namespace Vans::EditorAPI
 			case VansGraphics::VansAnimGraphNodeType::UseCachedPose:
 				static_cast<VansGraphics::AnimGraphUseCachedPoseNode&>(*result).m_CacheName = source.m_CacheName;
 				break;
+			case VansGraphics::VansAnimGraphNodeType::PoseSnapshot:
+				static_cast<VansGraphics::AnimGraphPoseSnapshotNode&>(*result).m_SnapshotName = source.m_CacheName;
+				break;
 			case VansGraphics::VansAnimGraphNodeType::LayeredBlendPerBone:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphLayeredBlendPerBoneNode&>(*result);
 				n.m_Mask = ToNative(source.m_LayerMask);
 				n.m_BlendMode = BridgeEnum<VansGraphics::VansLayerBlendMode>(source.m_LayerBlendMode);
+				n.m_CurveBlendMode = BridgeEnum<VansGraphics::VansLayerCurveMode>(source.m_LayerCurveMode);
 				n.m_RotationSpace = BridgeEnum<VansGraphics::VansRotationBlendSpace>(source.m_LayerRotationSpace);
+				n.m_LinearRotationBlend = source.m_LinearRotationBlend;
 				n.m_WeightParameter = source.m_LayerWeightParameter;
 				n.m_FixedWeight = source.m_LayerFixedWeight;
 				n.m_UseWeightParameter = source.m_UseLayerWeightParameter;
@@ -762,7 +792,9 @@ namespace Vans::EditorAPI
 				AnimatorGraphDTO item;
 				item.id = graph.id; item.name = graph.name;
 				item.role = graph.role == VansGraphics::AnimatorGraphAsset::Role::Pose
-					? AnimatorGraphRole::Pose : AnimatorGraphRole::TargetPostProcess;
+					? AnimatorGraphRole::Pose
+					: graph.role == VansGraphics::AnimatorGraphAsset::Role::TargetPostProcess
+						? AnimatorGraphRole::TargetPostProcess : AnimatorGraphRole::FinalComposition;
 				if (graph.graph) item.graph = ToDTO(*graph.graph);
 				result->graphs.push_back(std::move(item));
 			}
@@ -776,6 +808,7 @@ namespace Vans::EditorAPI
 				item.slotId = layer.slotId;
 				item.blendMode = BridgeEnum<VansLayerBlendMode>(layer.blendMode);
 				item.rotationSpace = BridgeEnum<VansRotationBlendSpace>(layer.rotationSpace);
+				item.linearRotationBlend = layer.linearRotationBlend;
 				item.additiveReference = BridgeEnum<VansAdditiveReferenceMode>(layer.additiveReference);
 				item.referenceClipName = layer.referenceClipName; item.referenceTime = layer.referenceTime;
 				item.weightParameter = layer.weightParameter; item.fixedWeight = layer.fixedWeight;
@@ -867,7 +900,9 @@ namespace Vans::EditorAPI
 				item.id = graph.id; item.name = graph.name;
 				item.role = graph.role == AnimatorGraphRole::Pose
 					? VansGraphics::AnimatorGraphAsset::Role::Pose
-					: VansGraphics::AnimatorGraphAsset::Role::TargetPostProcess;
+					: graph.role == AnimatorGraphRole::TargetPostProcess
+						? VansGraphics::AnimatorGraphAsset::Role::TargetPostProcess
+						: VansGraphics::AnimatorGraphAsset::Role::FinalComposition;
 				item.graph = ToNative(*graph.graph, error);
 				if (!item.graph) return false;
 				result.graphs.push_back(std::move(item));
@@ -882,6 +917,7 @@ namespace Vans::EditorAPI
 				item.slotId = layer.slotId;
 				item.blendMode = BridgeEnum<VansGraphics::VansLayerBlendMode>(layer.blendMode);
 				item.rotationSpace = BridgeEnum<VansGraphics::VansRotationBlendSpace>(layer.rotationSpace);
+				item.linearRotationBlend = layer.linearRotationBlend;
 				item.additiveReference = BridgeEnum<VansGraphics::VansAdditiveReferenceMode>(layer.additiveReference);
 				item.referenceClipName = layer.referenceClipName; item.referenceTime = layer.referenceTime;
 				item.weightParameter = layer.weightParameter; item.fixedWeight = layer.fixedWeight;

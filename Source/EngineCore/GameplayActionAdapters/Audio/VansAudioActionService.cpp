@@ -3,9 +3,11 @@
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../AudioCore/VansAudioManager.h"
 #include "../../SceneRuntime/VansRuntimeWorld.h"
+#include "../../Util/VansLog.h"
 
 #include <algorithm>
 #include <cmath>
+#include <glm/geometric.hpp>
 
 namespace Vans
 {
@@ -35,8 +37,8 @@ bool ReadResource(const VansSerializedValue& payload, VansGenerationHandle& reso
 }
 
 VansAudioActionService::VansAudioActionService(VansRuntimeWorld& world,
-	VansEngine::VansAudioManager& audio, PositionResolver resolvePosition)
-	: m_World(world), m_Audio(audio), m_ResolvePosition(std::move(resolvePosition)) {}
+	VansEngine::VansAudioManager& audio, PositionResolver resolvePosition, ListenerResolver resolveListener)
+	: m_World(world), m_Audio(audio), m_ResolvePosition(std::move(resolvePosition)), m_ResolveListener(std::move(resolveListener)) {}
 
 VansActionCommandResult VansAudioActionService::Execute(const VansActionCommand& command)
 {
@@ -57,17 +59,46 @@ VansActionCommandResult VansAudioActionService::Execute(const VansActionCommand&
 			glm::vec3 position(0.0f);
 			if (spatial)
 			{
+				const auto* worldPosition=FindObjectField(command.payload,"position");
+				if (worldPosition && !worldPosition->objectFields.empty())
+				{
+					const auto x=FindObjectField(*worldPosition,"x"), y=FindObjectField(*worldPosition,"y"), z=FindObjectField(*worldPosition,"z");
+					if (!x || !y || !z || !ReadSerializedStringField(command.payload,"emitter").empty())
+						return Failure("Audio needs exactly one emitter or world position with x, y and z");
+					position=glm::vec3(ReadSerializedNumber(*x,NAN),ReadSerializedNumber(*y,NAN),ReadSerializedNumber(*z,NAN));
+					if (!std::isfinite(glm::length(position))) return Failure("Audio world position is invalid");
+				}
+				else
+				{
 				const auto emitterGuid = ReadSerializedStringField(command.payload, "emitter");
 				const auto emitter = emitterGuid.empty() ? command.context.Entity(VansActionContextSlots::Owner)
 					: m_World.Entities().FindByGuid(emitterGuid);
 				if (!m_World.IsAlive(emitter) || !m_ResolvePosition || !m_ResolvePosition(emitter, position)
 					|| !std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
 					return Failure("Audio emitter has no valid world position");
+				}
 			}
+			float distanceGain=1;
+			if (const auto* curve=FindObjectField(command.payload,"volumeByDistance"); curve && !curve->arrayItems.empty())
+			{
+				glm::vec3 listener(0);
+				if (!spatial || !m_ResolveListener || !m_ResolveListener(listener) || !std::isfinite(glm::length(listener))
+					|| curve->arrayItems.size()>32) return Failure("Audio distance curve needs a listener and at most 32 keys");
+                std::vector<VansEngine::AudioDistanceGainKey> keys;
+                for (const auto& key : curve->arrayItems)
+                    keys.push_back({Number(key,"distance",NAN),Number(key,"gain",NAN),
+                        Number(key,"tangentIn",0),Number(key,"tangentOut",0)});
+                distanceGain=VansEngine::ComputeDistanceGain(glm::length(position-listener),keys);
+                if (!std::isfinite(distanceGain)) return Failure("Audio distance curve keys are invalid");
+			}
+			if (distanceGain<=0) return {};
 			// 射击已经发生后，尾音由音频管理器持有，不随动作结束或取消截断。
-			if (!m_Audio.PlayAssetOneShot(sound, volume, pitch, spatial,
+			if (!m_Audio.PlayAssetOneShot(sound, volume*distanceGain, pitch, spatial,
 				position.x, position.y, position.z).IsValid())
 				return Failure("Audio one-shot could not start: " + sound);
+			if (const auto* p=FindObjectField(command.payload,"position"); p && !p->objectFields.empty())
+				VANS_LOG("[GAF Audio] WorldOneShot sound=" << sound << " gain=" << volume*distanceGain
+					<< " position=" << position.x << "," << position.y << "," << position.z);
 			return {};
 		}
 		auto source = std::make_unique<VansEngine::VansAudioSourceBinding>();

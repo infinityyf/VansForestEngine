@@ -8,7 +8,7 @@
 
 namespace Vans
 {
-enum class VansPcgSplineKind { Road, River };
+enum class VansPcgSplineKind { Road, River, Decal };
 enum class VansPcgRoadRenderMode { Mesh, ProjectedDecal };
 enum class VansPcgSplineTangentMode { Auto, Aligned, Mirrored, Broken };
 enum class VansPcgSplineSegmentMode { Curve, Line };
@@ -41,6 +41,8 @@ struct VansPcgSpline
     bool enabled = true;
     bool locked = false;
     int priority = 0;
+    // 控制投影道路、样条贴花与普通贴花的覆盖顺序，不改变地形重放次序。
+    int decalSortPriority = 0;
     VansAssetGuid material;
     // 投影道路独立材质；其 UV/采样语义与普通道路材质分开维护。
     VansAssetGuid roadDecalMaterial;

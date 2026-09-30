@@ -73,7 +73,7 @@ namespace VansGraphics
 					return false;
 				}
 			}
-			else
+			else if (role == AnimatorGraphAsset::Role::TargetPostProcess)
 			{
 				switch (type)
 				{
@@ -90,6 +90,18 @@ namespace VansGraphics
 				default:
 					break;
 				}
+			}
+			else if (type == VansAnimGraphNodeType::Goal
+				|| type == VansAnimGraphNodeType::AimConstraint
+				|| type == VansAnimGraphNodeType::Grounding
+				|| type == VansAnimGraphNodeType::LimbIK
+				|| type == VansAnimGraphNodeType::ChainIK
+				|| type == VansAnimGraphNodeType::PoseCheckpoint
+				|| type == VansAnimGraphNodeType::RotationDistribution)
+			{
+				error = "Final Composition Graph '" + graphName
+					+ "' cannot contain procedural target nodes";
+				return false;
 			}
 		}
 
@@ -231,6 +243,7 @@ namespace VansGraphics
 		std::unordered_set<std::string> graphIds;
 		std::unordered_map<std::string, AnimatorGraphAsset::Role> graphRoles;
 		std::size_t targetPostProcessGraphCount = 0;
+		std::size_t finalCompositionGraphCount = 0;
 		for (const AnimatorGraphAsset& graph : data.graphs)
 		{
 			if (graph.id.empty() || graph.name.empty() || !graph.graph || !graphIds.insert(graph.id).second)
@@ -243,6 +256,8 @@ namespace VansGraphics
 				return false;
 			if (graph.role == AnimatorGraphAsset::Role::TargetPostProcess)
 				++targetPostProcessGraphCount;
+			if (graph.role == AnimatorGraphAsset::Role::FinalComposition)
+				++finalCompositionGraphCount;
 			std::unordered_set<std::string> checkpointIds;
 			for (const auto& [nodeId, node] : graph.graph->GetNodes())
 			{
@@ -533,6 +548,21 @@ namespace VansGraphics
 						return false;
 					}
 				}
+				else if (node->GetType() == VansAnimGraphNodeType::BlendListByEnum)
+				{
+					const auto* blend = static_cast<const AnimGraphBlendListByEnumNode*>(node.get());
+					std::unordered_set<int> uniqueValues(blend->m_EnumValues.begin(), blend->m_EnumValues.end());
+					if (!hasParameter(blend->m_ParamName, AnimatorParamType::Int)
+						|| blend->m_EnumValues.empty() || uniqueValues.size() != blend->m_EnumValues.size()
+						|| blend->m_BlendTimes.size() != blend->m_EnumValues.size() + 1
+						|| std::any_of(blend->m_BlendTimes.begin(), blend->m_BlendTimes.end(),
+							[](float duration) { return !std::isfinite(duration) || duration < 0.0f; }))
+					{
+						error = "Blend List By Enum node in Graph '" + graph.name
+							+ "' requires unique enum values and one nonnegative blend time per pose";
+						return false;
+					}
+				}
 				else if (node->GetType() == VansAnimGraphNodeType::AdditiveBlend)
 				{
 					const auto* blend = static_cast<const AnimGraphAdditiveBlendNode*>(node.get());
@@ -696,6 +726,11 @@ namespace VansGraphics
 		if (targetPostProcessGraphCount > 1)
 		{
 			error = "Animator can contain at most one Target Post Process Graph";
+			return false;
+		}
+		if (finalCompositionGraphCount > 1)
+		{
+			error = "Animator can contain at most one Final Composition Graph";
 			return false;
 		}
 

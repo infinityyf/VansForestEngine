@@ -101,7 +101,13 @@ namespace
 
 	const char* GraphRoleToString(AnimatorGraphAsset::Role role)
 	{
-		return role == AnimatorGraphAsset::Role::Pose ? "pose" : "targetPostProcess";
+		switch (role)
+		{
+		case AnimatorGraphAsset::Role::Pose: return "pose";
+		case AnimatorGraphAsset::Role::TargetPostProcess: return "targetPostProcess";
+		case AnimatorGraphAsset::Role::FinalComposition: return "finalComposition";
+		}
+		return "pose";
 	}
 
 	bool TryParseGraphRole(const std::string& value, AnimatorGraphAsset::Role& role)
@@ -114,6 +120,11 @@ namespace
 		if (value == "targetPostProcess")
 		{
 			role = AnimatorGraphAsset::Role::TargetPostProcess;
+			return true;
+		}
+		if (value == "finalComposition")
+		{
+			role = AnimatorGraphAsset::Role::FinalComposition;
 			return true;
 		}
 		return false;
@@ -182,16 +193,7 @@ namespace
 
 	const char* ToString(VansLayerCurveMode value)
 	{
-		switch (value)
-		{
-		case VansLayerCurveMode::BaseOnly: return "baseOnly";
-		case VansLayerCurveMode::Override: return "override";
-		case VansLayerCurveMode::Blend: return "blend";
-		case VansLayerCurveMode::Normalize: return "normalize";
-		case VansLayerCurveMode::Min: return "min";
-		case VansLayerCurveMode::Max: return "max";
-		}
-		return "blend";
+		return VansLayerCurveModeName(value);
 	}
 
 	const char* ToString(VansLayerEventMode value)
@@ -350,6 +352,7 @@ namespace
 			{ "blend", {
 				{ "mode", ToString(layer.blendMode) },
 				{ "rotationSpace", ToString(layer.rotationSpace) },
+				{ "linearRotationBlend", layer.linearRotationBlend },
 				{ "additiveReference", {
 					{ "mode", ToString(layer.additiveReference) },
 					{ "clip", layer.referenceClipName },
@@ -434,7 +437,7 @@ namespace
 		const json& outputs = source["outputs"];
 		const json& sync = source["sync"];
 		if (!HasOnlyFields(mask, { "guid", "pathHint" }, unknown)
-			|| !HasOnlyFields(blend, { "mode", "rotationSpace", "additiveReference" }, unknown)
+			|| !HasOnlyFields(blend, { "mode", "rotationSpace", "linearRotationBlend", "additiveReference" }, unknown)
 			|| !HasOnlyFields(weight, { "source", "value", "parameter", "smoothingTime", "curve", "curveSourceLayerId", "curveDefault" }, unknown)
 			|| !HasOnlyFields(activation, { "blendInSeconds", "blendOutSeconds", "curve", "restartOnRise" }, unknown)
 			|| !HasOnlyFields(dynamicAdditive, { "enabled", "weight", "baseLayerId", "referenceLayerId", "weightParameter", "rotationSpace" }, unknown)
@@ -477,6 +480,7 @@ namespace
 			layer.activationBlendOutSeconds = activation.value("blendOutSeconds", 0.0f);
 			layer.restartOnActivation = activation.value("restartOnRise", false);
 			layer.dynamicAdditive = dynamicAdditive.value("enabled", false);
+			layer.linearRotationBlend = blend.value("linearRotationBlend", false);
 			layer.dynamicAdditiveWeight = dynamicAdditive.value("weight", 0.0f);
 			layer.dynamicAdditiveBaseLayerId = dynamicAdditive.value("baseLayerId", "");
 			layer.dynamicAdditiveReferenceLayerId = dynamicAdditive.value("referenceLayerId", "");
@@ -506,10 +510,7 @@ namespace
 				|| !ParseEnum(outputs.at("rootMotion").get<std::string>(),
 					{ { "ignore", VansLayerRootMotionMode::Ignore }, { "base", VansLayerRootMotionMode::Base },
 					  { "blendByRootWeight", VansLayerRootMotionMode::BlendByRootWeight }, { "override", VansLayerRootMotionMode::Override } }, layer.rootMotion)
-				|| !ParseEnum(outputs.at("curves").get<std::string>(),
-					{ { "baseOnly", VansLayerCurveMode::BaseOnly }, { "override", VansLayerCurveMode::Override },
-					  { "blend", VansLayerCurveMode::Blend }, { "normalize", VansLayerCurveMode::Normalize },
-					  { "min", VansLayerCurveMode::Min }, { "max", VansLayerCurveMode::Max } }, layer.curves)
+				|| !VansParseLayerCurveMode(outputs.at("curves").get<std::string>(), layer.curves)
 				|| !ParseEnum(outputs.at("events").get<std::string>(),
 					{ { "ignore", VansLayerEventMode::Ignore }, { "activeOnly", VansLayerEventMode::ActiveOnly }, { "always", VansLayerEventMode::Always } }, layer.events)
 				|| !ParseEnum(outputs.at("nodeTracks").get<std::string>(),
@@ -770,6 +771,22 @@ const VansAnimGraph* AnimatorAssetData::FindTargetPostProcessGraph() const
 {
 	for (const AnimatorGraphAsset& graph : graphs)
 		if (graph.role == AnimatorGraphAsset::Role::TargetPostProcess)
+			return graph.graph.get();
+	return nullptr;
+}
+
+VansAnimGraph* AnimatorAssetData::FindFinalCompositionGraph()
+{
+	for (AnimatorGraphAsset& graph : graphs)
+		if (graph.role == AnimatorGraphAsset::Role::FinalComposition)
+			return graph.graph.get();
+	return nullptr;
+}
+
+const VansAnimGraph* AnimatorAssetData::FindFinalCompositionGraph() const
+{
+	for (const AnimatorGraphAsset& graph : graphs)
+		if (graph.role == AnimatorGraphAsset::Role::FinalComposition)
 			return graph.graph.get();
 	return nullptr;
 }

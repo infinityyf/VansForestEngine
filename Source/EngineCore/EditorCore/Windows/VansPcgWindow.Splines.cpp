@@ -18,7 +18,9 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
     const auto report=[&](const PcgEditorOperationResult& result){m_Message=result.message;};
     const auto command=[&](PcgSplineCommand action) {
         PcgSplineCommandRequest request;request.command=action;request.splineId=snapshot.selectedSpline;
-        request.pointId=snapshot.selectedPoint;request.materialGuid=m_RoadMaterial;request.position=m_NewSplinePosition;
+        request.pointId=snapshot.selectedPoint;
+        request.materialGuid=action==PcgSplineCommand::AddDecal?m_DecalMaterial:m_RoadMaterial;
+        request.position=m_NewSplinePosition;
 		report(pcgAPI.ExecutePcgSplineCommand(request));
     };
     if (ImGui::BeginCombo("Spline asset",snapshot.assetGuid.empty()?"Choose asset":snapshot.assetGuid.c_str()))
@@ -71,21 +73,27 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
 	if (ImGui::Checkbox("Edit splines in Scene",&tool)) report(pcgAPI.SelectPcgSpline(snapshot.selectedSpline,snapshot.selectedPoint,tool));
     ImGui::TextDisabled("Select points or handles in Scene. Drag the gizmo to move. Esc cancels the drag.");
     if (kind==PcgSplineKind::River) ImGui::TextDisabled("Extend an endpoint: Ctrl+click terrain. New points keep the endpoint water level.");
-    else ImGui::TextDisabled("Extend an endpoint: Ctrl+click terrain. New road points take the ground height.");
-    if (kind==PcgSplineKind::Road)
+    else ImGui::TextDisabled(kind==PcgSplineKind::Decal?
+        "Extend an endpoint: Ctrl+click terrain. Projection follows the spline width.":
+        "Extend an endpoint: Ctrl+click terrain. New road points take the ground height.");
+    if (kind!=PcgSplineKind::River)
     {
         const auto materials=assetAPI.QueryAssets({AssetType::Material});
-        if (m_RoadMaterial.empty() && !materials.empty()) m_RoadMaterial=materials.front().guid;
-        if (ImGui::BeginCombo("New road material",m_RoadMaterial.c_str()))
+        auto& selectedMaterial=kind==PcgSplineKind::Decal?m_DecalMaterial:m_RoadMaterial;
+        if (kind==PcgSplineKind::Road && selectedMaterial.empty() && !materials.empty()) selectedMaterial=materials.front().guid;
+        if (ImGui::BeginCombo(kind==PcgSplineKind::Decal?"New decal material":"New road material",
+            selectedMaterial.empty()?"Choose material":selectedMaterial.c_str()))
         {
             for (const auto& asset:materials)
-                if (ImGui::Selectable((asset.name+"##"+asset.guid).c_str(),asset.guid==m_RoadMaterial)) m_RoadMaterial=asset.guid;
+                if (ImGui::Selectable((asset.name+"##"+asset.guid).c_str(),asset.guid==selectedMaterial)) selectedMaterial=asset.guid;
             ImGui::EndCombo();
         }
+        if (kind==PcgSplineKind::Decal) ImGui::TextDisabled("Use a material whose type is Decal.");
     }
     ImGui::InputFloat3("New spline start (world)",m_NewSplinePosition.data());
-    if (ImGui::Button(kind==PcgSplineKind::Road?"Add road":"Add river"))
-        command(kind==PcgSplineKind::Road?PcgSplineCommand::AddRoad:PcgSplineCommand::AddRiver);
+    if (ImGui::Button(kind==PcgSplineKind::Road?"Add road":kind==PcgSplineKind::River?"Add river":"Add spline decal"))
+        command(kind==PcgSplineKind::Road?PcgSplineCommand::AddRoad:
+            kind==PcgSplineKind::River?PcgSplineCommand::AddRiver:PcgSplineCommand::AddDecal);
     if (ImGui::BeginTable("SplineEditor",2,ImGuiTableFlags_Resizable|ImGuiTableFlags_BordersInnerV))
     {
         ImGui::TableSetupColumn("Splines",ImGuiTableColumnFlags_WidthFixed,190);
@@ -124,11 +132,14 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
             const bool renamed=ImGui::InputText("Name",name,sizeof(name));
             if (renamed) m_SplineDraft.name=name;live(renamed);
             if (ImGui::Checkbox("Enabled",&m_SplineDraft.enabled)) submit(PcgSplineEditPhase::Apply);
-            if (ImGui::Checkbox("Exclude grass and trees",&m_SplineDraft.excludeVegetation)) submit(PcgSplineEditPhase::Apply);
-            if (m_SplineDraft.excludeVegetation) live(ImGui::DragFloat("Vegetation edge fade (m)",&m_SplineDraft.vegetationFade,.1f,.05f,1000));
-            live(ImGui::DragInt("Terrain order",&m_SplineDraft.priority,1,-10000,10000));
-            live(ImGui::DragFloat("Terrain shoulder (m)",&m_SplineDraft.shoulder,.1f,0,1000));
-            live(ImGui::DragFloat("Coverage blend (m)",&m_SplineDraft.blendWidth,.05f,.01f,1000));
+            if (kind!=PcgSplineKind::Decal)
+            {
+                if (ImGui::Checkbox("Exclude grass and trees",&m_SplineDraft.excludeVegetation)) submit(PcgSplineEditPhase::Apply);
+                if (m_SplineDraft.excludeVegetation) live(ImGui::DragFloat("Vegetation edge fade (m)",&m_SplineDraft.vegetationFade,.1f,.05f,1000));
+                live(ImGui::DragInt("Terrain order",&m_SplineDraft.priority,1,-10000,10000));
+                live(ImGui::DragFloat("Terrain shoulder (m)",&m_SplineDraft.shoulder,.1f,0,1000));
+                live(ImGui::DragFloat("Coverage blend (m)",&m_SplineDraft.blendWidth,.05f,.01f,1000));
+            }
             if (kind==PcgSplineKind::Road)
             {
                 if (ImGui::BeginCombo("PBR material",m_SplineDraft.materialGuid.c_str()))
@@ -155,12 +166,30 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
                 }
                 if (m_SplineDraft.roadRenderMode==PcgRoadRenderMode::ProjectedDecal)
                 {
+                    live(ImGui::DragInt("Decal sort priority",&m_SplineDraft.decalSortPriority,1,-32768,32767));
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Higher values draw later, above lower-priority road and ordinary decals. Terrain order is separate.");
                     live(ImGui::DragFloat("Projection depth (m)",&m_SplineDraft.projectedDepth,.1f,.05f,100));
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The proxy volume extends downward only to rasterize the road onto terrain.");
                 }
                 live(ImGui::DragFloat("Road surface offset (m)",&m_SplineDraft.surfaceOffset,.005f,0,1));
                 live(ImGui::DragFloat("Along-road repeat (m)",&m_SplineDraft.textureRepeat,.1f,.01f,1000));
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("One texture across the full road width; repeat along the spline. U runs across, V runs along the road.");
+            }
+            else if (kind==PcgSplineKind::Decal)
+            {
+                if (ImGui::BeginCombo("Decal material",m_SplineDraft.materialGuid.empty()?"Choose Decal material":m_SplineDraft.materialGuid.c_str()))
+                {
+                    for (const auto& asset:assetAPI.QueryAssets({AssetType::Material}))
+                        if (ImGui::Selectable((asset.name+"##spline-decal-"+asset.guid).c_str(),asset.guid==m_SplineDraft.materialGuid))
+                        {m_SplineDraft.materialGuid=asset.guid;submit(PcgSplineEditPhase::Apply);}
+                    ImGui::EndCombo();
+                }
+                live(ImGui::DragInt("Decal sort priority",&m_SplineDraft.decalSortPriority,1,-32768,32767));
+                live(ImGui::DragFloat("Projection depth (m)",&m_SplineDraft.projectedDepth,.1f,.05f,100));
+                live(ImGui::DragFloat("Projection height offset (m)",&m_SplineDraft.surfaceOffset,.005f,0,1));
+                live(ImGui::DragFloat("Along-spline repeat (m)",&m_SplineDraft.textureRepeat,.1f,.01f,1000));
+                ImGui::TextDisabled("U spans the strip width; V follows the spline. Texture alpha shapes the tracks.");
+                ImGui::TextDisabled("Side/end alpha fade and optional noise mask are set on the Decal material.");
             }
             else
             {
@@ -185,7 +214,7 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
                 live(ImGui::DragFloat("Downstream fade (m)",&m_SplineDraft.fadeOutDistance,.1f,0,10000));
                 if (ImGui::Checkbox("Normal flow",&m_SplineDraft.normalFlowEnabled)) submit(PcgSplineEditPhase::Apply);
             }
-			if (ImGui::CollapsingHeader("Continuity diagnostics"))
+			if (kind!=PcgSplineKind::Decal && ImGui::CollapsingHeader("Continuity diagnostics"))
 			{
 				ImGui::Text("Coordinate: offset %.3f m, sign %+.0f",
 					selected->coordinateOffset,selected->coordinateSign);
@@ -225,7 +254,7 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
                 if (point.linkedWidth) point.rightWidth=point.leftWidth;live(width);
                 if (!point.linkedWidth) live(ImGui::DragFloat("Right width (m)",&point.rightWidth,.05f,.05f,1000));
                 if (kind==PcgSplineKind::Road) live(ImGui::DragFloat("Bank (degrees)",&point.bankAngleDegrees,.1f,-45,45));
-                else
+                else if (kind==PcgSplineKind::River)
                 {
                     live(ImGui::DragFloat("River depth (m)",&point.depth,.05f,.05f,1000));
                     live(ImGui::SliderFloat("Bank steepness",&point.bankSteepness,0,.9f,"%.2f"));

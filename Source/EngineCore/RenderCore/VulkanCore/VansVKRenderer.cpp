@@ -559,6 +559,7 @@ namespace VansGraphics
 		// Scene UI composites over the display-processed image.
 		renderPassManager->SetupVansSceneUIRenderPass(
 			m_VansVKLogicDevice,
+			m_VansVKPhysicalDevice,
 			renderPassManager->GetFinalDisplayColor().GetImageView(),
 			fsrDisplayExtent);
 

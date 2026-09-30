@@ -23,6 +23,8 @@ public:
     void DeferFirstUpdate() { m_DeferFirstUpdate = true; }
     void Update(float deltaTime);
     void Play();
+    // Capture time-zero bursts at birth, without consuming pre-spawn frame time.
+    void EmitInitialFrame();
     void Pause() { m_Paused = true; }
     void Stop();
     void StopEmitting(bool detach = false);

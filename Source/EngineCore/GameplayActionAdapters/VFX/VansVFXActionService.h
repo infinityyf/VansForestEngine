@@ -4,6 +4,8 @@
 #include "../../RuntimeCore/VansGenerationPool.h"
 #include "../../SceneCore/VansSceneParentReference.h"
 #include <functional>
+#include <optional>
+#include <glm/glm.hpp>
 
 namespace Vans
 {
@@ -13,6 +15,7 @@ struct VansVFXSpawnRequest
     VansEntityHandle owner;
     VansAssetGuid effect;
     VansSceneParentReference source;
+    std::optional<glm::vec3> worldPosition;
     std::uint32_t maxConcurrentPerSource = 16;
 };
 struct VansVFXSceneBackend

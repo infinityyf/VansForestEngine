@@ -82,6 +82,7 @@ namespace VansEngine
 
         // ── Trigger 模式 ────────────────────────────────────────────
         bool isTrigger = false;             // 为 true 时作为触发器，不产生物理碰撞响应
+        bool canCharacterStepUp = true;
         std::string hitRegion;              // 人体分区标识；空值表示普通碰撞体
     };
 

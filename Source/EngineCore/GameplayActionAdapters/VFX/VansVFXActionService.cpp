@@ -1,6 +1,7 @@
 #include "VansVFXActionService.h"
 #include "VansVFXActionCapability.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include <cmath>
 
 namespace Vans
 {
@@ -15,9 +16,20 @@ VansActionCommandResult VansVFXActionService::Execute(const VansActionCommand& c
         request.owner = command.context.Entity(VansActionContextSlots::Owner);
         std::string error;
         const auto* source = FindObjectField(command.payload,"source");
+        const auto* position=FindObjectField(command.payload,"position");
+        if (position && !position->objectFields.empty())
+        {
+            if (!FindObjectField(*position,"x") || !FindObjectField(*position,"y") || !FindObjectField(*position,"z"))
+                return {VansActionError::Rejected,{},{},"VFX position requires x, y and z"};
+            const auto number=[&](const char* key) { return static_cast<float>(ReadSerializedNumber(*FindObjectField(*position,key),NAN)); };
+            const glm::vec3 p(number("x"),number("y"),number("z"));
+            if (!std::isfinite(glm::length(p)) || (source && !source->objectFields.empty()))
+                return {VansActionError::Rejected,{},{},"VFX needs exactly one finite world position or source binding"};
+            request.worldPosition=p;
+        }
         const auto limit = ReadSerializedIntField(command.payload,"maxConcurrentPerSource",16);
         if (!request.owner.IsValid() || !VansAssetGuid::TryParse(ReadSerializedStringField(command.payload,"effect"),request.effect)
-            || !source || !TryReadSceneParentReference(*source,request.source,error) || limit < 1 || limit > 64)
+            || (!request.worldPosition && (!source || !TryReadSceneParentReference(*source,request.source,error))) || limit < 1 || limit > 64)
             return {VansActionError::Rejected,{},{},error.empty() ? "VFX requires an effect GUID, source reference, and capacity in [1,64]" : error};
         request.maxConcurrentPerSource = static_cast<std::uint32_t>(limit);
         if (command.stableName == "VFX.Pulse")

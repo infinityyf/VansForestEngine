@@ -4,28 +4,23 @@
 
 #include <cstdint>
 #include <string>
-#include <vector>
 
 namespace Vans
 {
-struct VansNavigationColliderSource
-{
-	std::string guid;
-	std::uint64_t sourceHash = 0;
-	std::uint64_t metaHash = 0;
-};
-
 struct VansNavigationSource
 {
 	std::string scene;
-	std::uint64_t sceneHash = 0;
-	std::uint64_t colliderHash = 0;
-	std::uint64_t settingsHash = 0;
+	std::uint64_t geometryHash = 0;
+	std::uint64_t bakeSettingsHash = 0;
 
 	bool IsValid() const { return !scene.empty(); }
+	bool MatchesGeometry(std::uint64_t hash) const
+	{
+		return IsValid() && geometryHash != 0 && geometryHash == hash;
+	}
 };
 
-std::uint64_t HashNavigationSettings(const VansNavigationSettings& settings);
-std::uint64_t HashNavigationColliders(
-	std::vector<VansNavigationColliderSource> sources);
+std::uint64_t HashNavigationBakeSettings(const VansNavigationBakeSettings& settings);
+bool ComputeNavigationGeometryHash(const VansNavigationGeometry& geometry,
+	std::uint64_t& hash, std::string& error);
 }

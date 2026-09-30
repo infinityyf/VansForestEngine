@@ -59,12 +59,18 @@ bool VansAnimationSlotRuntime::Configure(
 	m_LifecycleEvents.clear();
 	m_PendingLifecycleEvents.clear();
 	m_NextHandle = 1;
+	m_RootMotionHandle = {};
+	m_QueuedNotifyStates.clear();
+	m_ActiveNotifyStates.clear();
+	m_EndedNotifyStates.clear();
+	m_NotifyStateEvents.clear();
 	return true;
 }
 
 VansSlotPlaybackHandle VansAnimationSlotRuntime::Play(
 	const std::string& slotId,
-	const VansSlotPlayRequest& request)
+	const VansSlotPlayRequest& request,
+	const std::unordered_map<std::string, VansAnimationClip>& clips)
 {
 	auto definitionIt = m_DefinitionById.find(slotId);
 	if (definitionIt == m_DefinitionById.end() || request.clipName.empty()
@@ -74,6 +80,14 @@ VansSlotPlaybackHandle VansAnimationSlotRuntime::Play(
 		|| (request.blendIn && !IsFiniteNonNegative(*request.blendIn))
 		|| (request.blendOut && !IsFiniteNonNegative(*request.blendOut)))
 		return {};
+	const auto clip=clips.find(request.clipName);
+	if (clip==clips.end() || !std::isfinite(clip->second.duration) || clip->second.duration<=0.0f) return {};
+	if (!request.curveOverrideClipName.empty() && clips.find(request.curveOverrideClipName)==clips.end()) return {};
+	std::unordered_set<std::string> notifyIds;
+	for (const auto& notify : request.notifyStates)
+		if (notify.id.empty() || notify.name.empty() || !notifyIds.insert(notify.id).second ||
+			!std::isfinite(notify.startTime) || !std::isfinite(notify.endTime) ||
+			notify.endTime <= notify.startTime || !IsFiniteNonNegative(notify.minimumWeight)) return {};
 
 	const std::size_t slotIndex = definitionIt->second;
 	const VansAnimationSlotDefinition& definition = m_Definitions[slotIndex];
@@ -81,8 +95,13 @@ VansSlotPlaybackHandle VansAnimationSlotRuntime::Play(
 	RequestRuntime runtime;
 	runtime.handle.value = m_NextHandle++;
 	runtime.request = request;
-	runtime.previousTime = request.startTime;
-	runtime.currentTime = request.startTime;
+	if (!runtime.request.notifyStates.empty())
+		runtime.notifyStates = std::make_shared<const std::vector<VansSlotNotifyStateDefinition>>(
+			std::move(runtime.request.notifyStates));
+	runtime.request.startTime = std::clamp(request.startTime,0.0f,clip->second.duration);
+	runtime.previousTime = runtime.request.startTime;
+	runtime.currentTime = runtime.request.startTime;
+	runtime.hasRootMotion = clip->second.rootMotion.enabled;
 	runtime.blendIn = request.blendIn.value_or(definition.defaultBlendIn);
 	runtime.blendOut = request.blendOut.value_or(definition.defaultBlendOut);
 	runtime.weight = runtime.blendIn <= 0.0f ? 1.0f : 0.0f;
@@ -91,7 +110,7 @@ VansSlotPlaybackHandle VansAnimationSlotRuntime::Play(
 	status.slotId = definition.id;
 	status.clipName = request.clipName;
 	status.tag = request.tag;
-	status.playbackTime = request.startTime;
+	status.playbackTime = runtime.currentTime;
 	status.weight = runtime.weight;
 
 	if (!state.active)
@@ -143,6 +162,8 @@ bool VansAnimationSlotRuntime::Drive(
 		runtime.request.externallyDriven = true;
 		runtime.request.weight = weight;
 		runtime.weight = weight;
+		runtime.notifyWeight = weight;
+		runtime.notifyRangePending = true;
 	};
 	for (SlotState& state : m_States)
 	{
@@ -218,8 +239,36 @@ bool VansAnimationSlotRuntime::IsSlotActive(const std::string& slotId) const
 		&& (m_States[found->second].active.has_value() || !m_States[found->second].outgoing.empty());
 }
 
+bool VansAnimationSlotRuntime::HasRootMotionPlayback(const std::string& slotId,
+	const std::unordered_map<std::string, VansAnimationClip>& clips) const
+{
+	const auto found = m_DefinitionById.find(slotId);
+	if (found == m_DefinitionById.end()) return false;
+	const auto extractsRoot = [&](const RequestRuntime& runtime)
+	{
+		const auto clip = clips.find(runtime.request.clipName);
+		return !runtime.reachedEnd && !runtime.request.suppressRootMotion &&
+			clip != clips.end() && clip->second.rootMotion.enabled;
+	};
+	const auto& state = m_States[found->second];
+	// 刚提交的请求尚未推进淡入，也必须在本帧移动前提取根运动。
+	return (state.active && state.active->handle==m_RootMotionHandle && extractsRoot(*state.active)) ||
+		(!state.active && state.outgoing.empty() && !state.queue.empty() && extractsRoot(state.queue.front()));
+}
+
+VansSlotRootMotionFrame VansAnimationSlotRuntime::GetRootMotionFrame(const std::string& slotId) const
+{
+	const auto found=m_DefinitionById.find(slotId);
+	return found==m_DefinitionById.end() ? VansSlotRootMotionFrame{} : m_States[found->second].rootMotionFrame;
+}
+
 void VansAnimationSlotRuntime::Reset()
 {
+	m_RootMotionHandle = {};
+	m_QueuedNotifyStates.clear();
+	m_ActiveNotifyStates.clear();
+	m_EndedNotifyStates.clear();
+	m_NotifyStateEvents.clear();
 	for (SlotState& state : m_States)
 		state = {};
 	m_Statuses.clear();
@@ -233,6 +282,10 @@ void VansAnimationSlotRuntime::TransferRuntimeStateFrom(
 {
 	m_PendingLifecycleEvents.clear();
 	m_NextHandle = std::max(m_NextHandle, previous.m_NextHandle);
+	m_QueuedNotifyStates.clear();
+	m_EndedNotifyStates.clear();
+	m_NotifyStateEvents.clear();
+	m_ActiveNotifyStates = previous.m_ActiveNotifyStates;
 	auto interruptByReload = [&](const VansAnimationSlotDefinition& definition,
 		const RequestRuntime& request)
 	{
@@ -250,12 +303,14 @@ void VansAnimationSlotRuntime::TransferRuntimeStateFrom(
 	auto transferRequest = [&](const VansAnimationSlotDefinition& previousDefinition,
 		const RequestRuntime& request, std::optional<RequestRuntime>& destination)
 	{
-		if (clips.find(request.request.clipName) == clips.end())
+		if (clips.find(request.request.clipName) == clips.end() ||
+			(!request.request.curveOverrideClipName.empty() && clips.find(request.request.curveOverrideClipName)==clips.end()))
 		{
 			interruptByReload(previousDefinition, request);
 			return;
 		}
 		destination = request;
+		destination->hasRootMotion = clips.at(request.request.clipName).rootMotion.enabled;
 		const auto status = previous.m_Statuses.find(request.handle.value);
 		if (status != previous.m_Statuses.end())
 			m_Statuses[request.handle.value] = status->second;
@@ -295,11 +350,16 @@ void VansAnimationSlotRuntime::TransferRuntimeStateFrom(
 				continue;
 			}
 			destination.queue.push_back(request);
+			destination.queue.back().hasRootMotion=clips.at(request.request.clipName).rootMotion.enabled;
 			const auto status = previous.m_Statuses.find(request.handle.value);
 			if (status != previous.m_Statuses.end())
 				m_Statuses[request.handle.value] = status->second;
 		}
 	}
+	m_RootMotionHandle={};
+	for (const auto& state:m_States)
+		if (state.active && state.active->handle==previous.m_RootMotionHandle && state.active->hasRootMotion)
+			m_RootMotionHandle=state.active->handle;
 }
 
 void VansAnimationSlotRuntime::StartRequest(std::size_t slotIndex, RequestRuntime request)
@@ -328,6 +388,8 @@ void VansAnimationSlotRuntime::StartRequest(std::size_t slotIndex, RequestRuntim
 	}
 	SlotState& state = m_States[slotIndex];
 	state.active = std::move(request);
+	// 原始根运动有明确实例身份；停止新实例后不能回退到仍在播放的旧组。
+	if (state.active->hasRootMotion) m_RootMotionHandle=state.active->handle;
 	VansSlotPlaybackStatus& status = m_Statuses[state.active->handle.value];
 	status.state = state.active->blendIn > 0.0f
 		? VansSlotPlaybackState::BlendingIn : VansSlotPlaybackState::Playing;
@@ -343,6 +405,7 @@ void VansAnimationSlotRuntime::BeginBlendOut(
 	SlotState& state = m_States[slotIndex];
 	if (!state.active)
 		return;
+	if (state.active->handle==m_RootMotionHandle) m_RootMotionHandle={};
 	state.outgoing.push_back(std::move(*state.active));
 	auto& outgoing = state.outgoing.back();
 	state.active.reset();
@@ -400,8 +463,11 @@ bool VansAnimationSlotRuntime::SampleRequest(
 	request.currentTime = runtime.currentTime;
 	request.loop = runtime.request.loopCount > 1;
 	request.sourceNodeId = 0;
+	request.extractRootMotion = !runtime.request.suppressRootMotion;
 	if (!VansAnimationSampler::Sample(clip, skeleton, request, payload))
 		return false;
+	// 主动打断后，源 Montage 不再收集自身或序列通知；自然淡出仍可收集。
+	if (runtime.interrupted) payload.events.clear();
 	if (runtime.request.suppressRootMotion)
 		payload.rootMotion.valid = false;
 	payload.sourceWeight = runtime.weight;
@@ -420,6 +486,119 @@ bool VansAnimationSlotRuntime::SampleRequest(
 	return true;
 }
 
+void VansAnimationSlotRuntime::CollectNotifyStates(
+	const RequestRuntime& runtime, const VansAnimationClip& clip)
+{
+	if (!runtime.notifyStates || runtime.interrupted || !runtime.notifyRangePending) return;
+	for (std::size_t index = 0; index < runtime.notifyStates->size(); ++index)
+	{
+		const auto& definition = (*runtime.notifyStates)[index];
+		if (runtime.notifyWeight < definition.minimumWeight) continue;
+		const bool forward = runtime.currentTime >= runtime.previousTime;
+		bool intersects = forward
+			? definition.startTime <= runtime.currentTime && definition.endTime > runtime.previousTime
+			: definition.startTime < runtime.previousTime && definition.endTime >= runtime.currentTime;
+		std::int64_t loopIndex = 0;
+		if (runtime.request.loopCount > 1)
+		{
+			// 只求是否存在交叠周期，不按大帧跨越的循环数分配/遍历。
+			const double duration = clip.duration;
+			const double period = forward
+				? std::floor((double(runtime.previousTime) - definition.endTime) / duration) + 1.0
+				: std::ceil((double(runtime.currentTime) - definition.endTime) / duration);
+			const double start = definition.startTime + period * duration;
+			intersects = forward ? start <= runtime.currentTime : start < runtime.previousTime;
+			loopIndex = static_cast<std::int64_t>(period);
+		}
+		if (!intersects) continue;
+		NotifyStateReference reference;
+		reference.definitions = runtime.notifyStates;
+		reference.index = index;
+		reference.sample.id = VansAnimationStableId(definition.id);
+		reference.sample.clipId = clip.stableId ? clip.stableId : VansAnimationStableId(clip.clipName);
+		reference.sample.name = definition.name;
+		reference.sample.sourceTime = runtime.currentTime;
+		reference.sample.loopIndex = loopIndex;
+		reference.sample.weight = runtime.notifyWeight;
+		reference.sample.forward = forward;
+		reference.sample.payload = definition.payload;
+		reference.sample.sourceInstanceId = runtime.handle.value;
+		m_QueuedNotifyStates.push_back(std::move(reference));
+	}
+}
+
+void VansAnimationSlotRuntime::FinalizeNotifyStates(float deltaTime)
+{
+	std::sort(m_QueuedNotifyStates.begin(), m_QueuedNotifyStates.end(),
+		[](const auto& lhs, const auto& rhs)
+		{
+			return lhs.sample.sourceInstanceId != rhs.sample.sourceInstanceId
+				? lhs.sample.sourceInstanceId < rhs.sample.sourceInstanceId : lhs.index < rhs.index;
+		});
+	// 同一作者通知对象在多实例/多循环中只进入一次队列。
+	for (std::size_t index = 0; index < m_QueuedNotifyStates.size(); ++index)
+		for (std::size_t next = index + 1; next < m_QueuedNotifyStates.size();)
+			if (m_QueuedNotifyStates[index].Definition().id == m_QueuedNotifyStates[next].Definition().id)
+				m_QueuedNotifyStates.erase(m_QueuedNotifyStates.begin() + next);
+			else ++next;
+	for (auto& reference : m_QueuedNotifyStates)
+	{
+		const auto existing = std::find_if(m_ActiveNotifyStates.begin(), m_ActiveNotifyStates.end(),
+			[&](const auto& active) { return active.Definition().id == reference.Definition().id; });
+		if (existing == m_ActiveNotifyStates.end()) reference.sample.phase = VansAnimationEventPhase::Begin;
+		else
+		{
+			reference.sample.phase = VansAnimationEventPhase::Tick;
+			// 保持源 RemoveAtSwap 的未匹配 End 顺序。
+			*existing = std::move(m_ActiveNotifyStates.back());
+			m_ActiveNotifyStates.pop_back();
+		}
+	}
+	m_EndedNotifyStates.swap(m_ActiveNotifyStates);
+	for (const auto& ended : m_EndedNotifyStates)
+	{
+		auto event = ended.sample;
+		event.phase = VansAnimationEventPhase::End;
+		event.deltaTime = 0.0f;
+		m_NotifyStateEvents.push_back(std::move(event));
+	}
+	for (const auto& begun : m_QueuedNotifyStates)
+		if (begun.sample.phase == VansAnimationEventPhase::Begin)
+			m_NotifyStateEvents.push_back(begun.sample);
+	m_ActiveNotifyStates.swap(m_QueuedNotifyStates);
+	for (const auto& active : m_ActiveNotifyStates)
+	{
+		auto event = active.sample;
+		event.phase = VansAnimationEventPhase::Tick;
+		event.deltaTime = deltaTime;
+		m_NotifyStateEvents.push_back(std::move(event));
+	}
+	// 完成事件在普通通知之后派发；零时长自动淡出可能刚收集过范围。
+	// 按实例创建顺序处理终止，同一实例的残余范围从后向前 End/RemoveAtSwap。
+	for (;;)
+	{
+		std::uint64_t completedInstance = std::numeric_limits<std::uint64_t>::max();
+		for (const auto& active : m_ActiveNotifyStates)
+		{
+			const auto status = m_Statuses.find(active.sample.sourceInstanceId);
+			if (status != m_Statuses.end() && status->second.state == VansSlotPlaybackState::Completed)
+				completedInstance = std::min(completedInstance, active.sample.sourceInstanceId);
+		}
+		if (completedInstance == std::numeric_limits<std::uint64_t>::max()) break;
+		for (std::size_t remaining = m_ActiveNotifyStates.size(); remaining > 0; --remaining)
+		{
+			const auto index = remaining - 1;
+			if (m_ActiveNotifyStates[index].sample.sourceInstanceId != completedInstance) continue;
+			m_EndedNotifyStates.push_back(std::move(m_ActiveNotifyStates[index]));
+			auto event = m_EndedNotifyStates.back().sample;
+			event.phase = VansAnimationEventPhase::End;event.deltaTime = 0.0f;
+			m_NotifyStateEvents.push_back(std::move(event));
+			m_ActiveNotifyStates[index] = std::move(m_ActiveNotifyStates.back());
+			m_ActiveNotifyStates.pop_back();
+		}
+	}
+}
+
 void VansAnimationSlotRuntime::Update(
 	float deltaTime,
 	const std::unordered_map<std::string, VansAnimationClip>& clips,
@@ -428,6 +607,9 @@ void VansAnimationSlotRuntime::Update(
 {
 	m_LifecycleEvents = std::move(m_PendingLifecycleEvents);
 	m_PendingLifecycleEvents.clear();
+	m_NotifyStateEvents.clear();
+	m_EndedNotifyStates.clear();
+	m_QueuedNotifyStates.clear();
 	for (auto& [slotId, payload] : outSlotPayloads)
 		payload.poses.clear();
 	deltaTime = std::max(0.0f, deltaTime);
@@ -457,11 +639,13 @@ void VansAnimationSlotRuntime::Update(
 		}
 
 		// UE 顺序：先按帧秒数更新权重，再推进片段时间并触发自动淡出。
+		state.rootMotionFrame={};
 		// 本帧推进过程中触发的淡出从下一次权重更新开始，不能追回本帧 DeltaTime。
-		auto advancePosition = [&](RequestRuntime& runtime, const VansAnimationClip& clip)
+		auto advancePosition = [&](RequestRuntime& runtime, const VansAnimationClip& clip, bool extractRawRoot)
 		{
 			if (runtime.request.externallyDriven) return;
 			runtime.previousTime = runtime.currentTime;
+			runtime.notifyRangePending = !runtime.reachedEnd && deltaTime > 0.0f;
 			if (runtime.reachedEnd) return;
 			const bool forward = runtime.request.playRate > 0.0f;
 			const float start = std::clamp(runtime.request.startTime, 0.0f, clip.duration);
@@ -472,6 +656,16 @@ void VansAnimationSlotRuntime::Update(
 				runtime.reachedEnd = true;
 				// UE 最后一段前向停在 End - KINDA_SMALL_NUMBER/2，避免跨过末端通知。
 				runtime.currentTime = forward ? std::max(start, end - 0.00005f) : end;
+			}
+			// 在终点触发零时长淡出并销毁实例之前提取本帧最后的根运动区间。
+			if (extractRawRoot && !runtime.request.suppressRootMotion && runtime.weight > 0.0f &&
+				runtime.previousTime != runtime.currentTime && runtime.handle.value > state.rootMotionFrame.handle.value)
+			{
+				VansAnimationSampleRequest rootRequest;
+				rootRequest.previousTime=runtime.previousTime;rootRequest.currentTime=runtime.currentTime;
+				rootRequest.loop=runtime.request.loopCount>1;
+				const auto root=VansAnimationSampler::ExtractRootMotion(clip,skeleton,rootRequest);
+				if (root.valid) state.rootMotionFrame={root,runtime.handle};
 			}
 		};
 		auto retireOutgoing = [&]()
@@ -489,12 +683,18 @@ void VansAnimationSlotRuntime::Update(
 		};
 		for (auto& outgoing : state.outgoing)
 		{
+			const float previousWeight = outgoing.weight;
 			outgoing.fadeElapsed += deltaTime;
 			outgoing.weight = outgoing.fadeDuration <= 0.0f ? 0.0f
 				: outgoing.fadeStartWeight * (1.0f - BlendAlpha(
 					outgoing.fadeElapsed / outgoing.fadeDuration, outgoing.fadeOption));
+			outgoing.notifyWeight = std::max(previousWeight, outgoing.weight);
 			const auto clip = clips.find(outgoing.request.clipName);
-			if (clip != clips.end() && outgoing.fadeDuration > 0.0f) advancePosition(outgoing, clip->second);
+			if (clip != clips.end() && outgoing.fadeDuration > 0.0f)
+			{
+				advancePosition(outgoing, clip->second,false);
+				if (outgoing.weight > 0.0f) CollectNotifyStates(outgoing, clip->second);
+			}
 		}
 		retireOutgoing();
 
@@ -505,6 +705,7 @@ void VansAnimationSlotRuntime::Update(
 			auto& status = m_Statuses[active.handle.value];
 			if (clip == clips.end())
 			{
+				if (active.handle==m_RootMotionHandle) m_RootMotionHandle={};
 				status.state = VansSlotPlaybackState::Completed;
 				status.weight = 0.0f;
 				PublishLifecycle(slotIndex, active, VansSlotLifecycleEventType::Completed);
@@ -513,10 +714,13 @@ void VansAnimationSlotRuntime::Update(
 			else
 			{
 				active.blendElapsed += deltaTime;
+				const float previousWeight = active.weight;
 				active.weight = active.request.externallyDriven ? active.request.weight
 					: (active.blendIn <= 0.0f ? 1.0f : BlendAlpha(
 						active.blendElapsed / active.blendIn, active.request.blendInOption));
-				advancePosition(active, clip->second);
+				active.notifyWeight = std::max(previousWeight, active.weight);
+				advancePosition(active, clip->second,active.handle==m_RootMotionHandle);
+				CollectNotifyStates(active, clip->second);
 				status.playbackTime = active.currentTime;
 				status.weight = active.weight;
 				status.state = !active.request.externallyDriven && active.blendElapsed < active.blendIn
@@ -539,16 +743,45 @@ void VansAnimationSlotRuntime::Update(
 		}
 
 		auto destination = outSlotPayloads.find(m_Definitions[slotIndex].id);
-		if (destination == outSlotPayloads.end()) continue;
 		auto sample = [&](RequestRuntime& request)
 		{
 			const auto clip = clips.find(request.request.clipName);
 			VansPosePayload payload;
-			if (clip != clips.end() && SampleRequest(request, clip->second, skeleton, payload))
+			if (destination != outSlotPayloads.end() && clip != clips.end() &&
+				SampleRequest(request, clip->second, skeleton, payload))
+			{
+				const auto curveClip=clips.find(request.request.curveOverrideClipName);
+				if (curveClip!=clips.end())
+				{
+					const float time=VansAnimationSampler::ResolveSampleTime(request.currentTime,0.f,
+						curveClip->second.duration,request.request.loopCount>1);
+					for (const auto& curve:curveClip->second.curves)
+					{
+						if(curve.keys.empty())continue;
+						const auto id=curve.id?curve.id:VansAnimationStableId(curve.name);
+						const float value=VansAnimationSampler::SampleCurve(curve,time);
+						const auto existing=std::find_if(payload.curves.begin(),payload.curves.end(),
+							[id](const auto& sample){return sample.id==id;});
+						if(existing!=payload.curves.end())existing->value=value;
+						else payload.curves.push_back({id,curve.name,value,true});
+					}
+				}
+				if (state.active && request.handle==m_RootMotionHandle && request.request.externallyDriven &&
+					payload.rootMotion.valid && request.previousTime != request.currentTime &&
+					request.handle.value > state.rootMotionFrame.handle.value)
+					state.rootMotionFrame={payload.rootMotion,request.handle};
 				destination->second.poses.push_back(std::move(payload));
+			}
+			// 通知区间的消费不依赖图是否接收该 Slot 姿态或采样是否成功。
+			if (request.request.externallyDriven)
+			{
+				request.previousTime=request.currentTime;
+				request.notifyRangePending = false;
+			}
 		};
 		// 请求按创建顺序传给图，淡出片段不提前归一化，也不被后续替换丢弃。
 		for (auto& outgoing : state.outgoing) sample(outgoing);
 		if (state.active) sample(*state.active);
 	}
+	FinalizeNotifyStates(deltaTime);
 }

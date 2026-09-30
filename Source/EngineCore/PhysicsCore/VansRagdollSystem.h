@@ -6,6 +6,7 @@
 
 #include <string>
 #include <vector>
+#include <unordered_set>
 
 namespace VansGraphics { class VansScene; }
 
@@ -37,6 +38,20 @@ namespace VansEngine
 		int GetJointCount(const Vans::VansRagdollKey& key) const;
 		RagdollDiagnostics GetDiagnostics(const Vans::VansRagdollKey& key) const;
 		std::vector<std::string> GetBodyBoneNames(const Vans::VansRagdollKey& key) const;
+		bool GetBodyState(const Vans::VansRagdollKey& key,
+		                  const std::string& boneName, RagdollBodyState& outState) const;
+		void SetGravityEnabled(const Vans::VansRagdollKey& key, bool enabled);
+		void SetAngularDriveParams(const Vans::VansRagdollKey& key,
+		                           float stiffness, float damping, float forceLimit);
+		// Read-only during simulation; callers hold the simulation mutex or run
+		// within the scene's filter callback while that mutex guards the step.
+		bool IsCollisionPairSuppressedLocked(const physx::PxActor* a, const physx::PxActor* b) const;
+		// 查询调用方已持有物理模拟锁；全部身体共享所属角色的 Transform ID。
+		bool TryGetActorTransformIdLocked(const physx::PxActor* actor, std::uint32_t& transformId) const;
+		// The hit body identifies the movement-base bone; return its world pose,
+		// which may differ from the body's center because of the authored shape offset.
+		bool TryGetActorBoneTransformLocked(const physx::PxActor* actor,
+			glm::vec3& position, glm::quat& rotation) const;
 
 		void ApplyImpulse(const Vans::VansRagdollKey& key,
 		                  const std::string& boneName,
@@ -62,6 +77,8 @@ namespace VansEngine
 
 		// ── 每帧同步 ─────────────────────────────────────────────────
 		void SyncBodiesToAnimationPose(
+			RagdollInstance& inst, const Vans::VansRagdollPoseView& animationPose);
+		void SyncKinematicBodiesToAnimationPose(
 			RagdollInstance& inst, const Vans::VansRagdollPoseView& animationPose);
 		bool BuildPhysicsPose(
 			const RagdollInstance& inst,
@@ -104,5 +121,12 @@ namespace VansEngine
 
 	private:
 		std::vector<RagdollInstance> m_Instances;
+		struct ActorBoneRef
+		{
+			std::uint32_t transformId;
+			const RagdollBoneEntry* entry = nullptr;
+		};
+		std::unordered_map<const physx::PxActor*,ActorBoneRef> m_ActorBones;
+		std::unordered_map<const physx::PxActor*,std::unordered_set<const physx::PxActor*>> m_DisabledCollisionPartners;
 	};
 }

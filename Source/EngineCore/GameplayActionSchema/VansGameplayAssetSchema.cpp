@@ -301,7 +301,7 @@ void CollectConventionalReferences(const VansSerializedValue& value, std::vector
 	{
 		return name == "guid" || name == "assetGuid" || name == "rig" || name == "shake" ||
 			name == "clip" || name == "sound" || name == "effect" ||
-			name == "damageProfile" || name == "projectile" || name == "indicator";
+			name == "damageProfile" || name == "projectile" || name == "indicator" || name == "detonationAction";
 	};
 	if (value.kind == VansSerializedValue::Kind::Array)
 	{

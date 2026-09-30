@@ -134,7 +134,8 @@ vec3 EvaluatePunctualLighting(vec3 worldPosition, vec3 outgoingDirection,
         if (distanceToLight <= 1.0e-4 || distanceToLight >= light.radius)
             continue;
         vec3 lightDirection = toLight / distanceToLight;
-        float coneCosine = dot(normalize(light.direction.xyz), -lightDirection);
+        // direction 与 lightDirection 均指向光源，与表面光照的聚光锥约定一致。
+        float coneCosine = dot(normalize(light.direction.xyz), lightDirection);
         float innerCosine = cos(light.innerConeAngle);
         float outerCosine = cos(light.outerConeAngle);
         float cone = smoothstep(outerCosine, innerCosine, coneCosine);

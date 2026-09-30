@@ -9,6 +9,7 @@
 #include "../VulkanCore/VansVKCommandBuffer.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
 #include "../../Util/VansLog.h"
+#include "../../Util/VansProfiler.h"
 
 namespace VansGraphics
 {
@@ -138,6 +139,10 @@ bool VansRainRenderSystem::RebindSceneTextures()
 		{{ m_SurfaceRippleImage.GetSampler(), m_SurfaceRippleImage.GetImageView(),
 			VK_IMAGE_LAYOUT_GENERAL }});
 	descriptorManager->CommitDescriptorUpdates();
+	const auto& rippleInfo = m_SurfaceRippleImage.GetImageCreateInfo();
+	VANS_LOG("[Rain] Surface ripple ready: seed=" << rippleSeed->GetWidth()
+		<< "x" << rippleSeed->GetHeight() << ", normal=" << rippleInfo.extent.width
+		<< "x" << rippleInfo.extent.height << ", mips=" << rippleInfo.mipLevels);
 	return true;
 }
 
@@ -171,6 +176,7 @@ void VansRainRenderSystem::GenerateSurfaceRipple(VansVKCommandBuffer& commandBuf
 	if (!m_Scene || !m_SurfaceRippleShader || m_SurfaceRippleSets.empty() ||
 		!m_SurfaceRippleImage.HasResources())
 		return;
+	VANS_GPU_SCOPE(commandBuffer.GetVKCommandBuffer(), "Surface Weather Ripple");
 	VkImageMemoryBarrier toCompute{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
 	const VkImageLayout oldLayout = m_SurfaceRippleImage.GetImageLayout();
 	toCompute.srcAccessMask = oldLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_SHADER_READ_BIT;

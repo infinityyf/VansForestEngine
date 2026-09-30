@@ -35,15 +35,20 @@ bool VansPcgSplineAssetCodec::Decode(const Value& root, VansPcgSplineAsset& asse
     {
         VansPcgSpline s; PcgValue::Reader r(&item,"spline",error);
         r.String("id",s.id); r.String("name",s.name);
-        r.EnumField("kind",s.kind,{{"road",VansPcgSplineKind::Road},{"river",VansPcgSplineKind::River}});
+        r.EnumField("kind",s.kind,{{"road",VansPcgSplineKind::Road},{"river",VansPcgSplineKind::River},{"decal",VansPcgSplineKind::Decal}});
         if (s.kind==VansPcgSplineKind::Road)
             r.OptionalEnumField("roadRenderMode",s.roadRenderMode,{{"mesh",VansPcgRoadRenderMode::Mesh},{"projectedDecal",VansPcgRoadRenderMode::ProjectedDecal}});
-        r.Bool("enabled",s.enabled); r.Bool("locked",s.locked); r.IntegerField("priority",s.priority);
+        r.Bool("enabled",s.enabled); r.Bool("locked",s.locked);
+        if (s.kind!=VansPcgSplineKind::Decal) r.IntegerField("priority",s.priority);
+        if (s.kind!=VansPcgSplineKind::River) r.OptionalIntegerField("decalSortPriority",s.decalSortPriority);
         r.Reference("material","material",s.material);
         if (s.kind==VansPcgSplineKind::Road) r.OptionalReference("roadDecalMaterial","material",s.roadDecalMaterial);
-        r.Bool("excludeVegetation",s.excludeVegetation); r.Float("vegetationFade",s.vegetationFade);
-        r.Float("shoulder",s.shoulder); r.Float("blendWidth",s.blendWidth);
-        r.Float("waterSurfaceDrop",s.waterSurfaceDrop);
+        if (s.kind!=VansPcgSplineKind::Decal)
+        {
+            r.Bool("excludeVegetation",s.excludeVegetation); r.Float("vegetationFade",s.vegetationFade);
+            r.Float("shoulder",s.shoulder); r.Float("blendWidth",s.blendWidth);
+            r.Float("waterSurfaceDrop",s.waterSurfaceDrop);
+        }
         if (s.kind==VansPcgSplineKind::River)
         {
             r.Float("waterBlendWidthMeters",s.waterBlendWidthMeters);
@@ -54,11 +59,17 @@ bool VansPcgSplineAssetCodec::Decode(const Value& root, VansPcgSplineAsset& asse
             r.Float("wetnessStrength",s.wetnessStrength);
         }
         r.Float("surfaceOffset",s.surfaceOffset); r.Float("textureRepeat",s.textureRepeat);
-        if (s.kind==VansPcgSplineKind::Road) r.OptionalFloat("projectedDepth",s.projectedDepth);
-        r.IntegerField("flowSign",s.flowSign); r.Float("fadeInDistance",s.fadeInDistance); r.Float("fadeOutDistance",s.fadeOutDistance);
+        if (s.kind!=VansPcgSplineKind::River) r.OptionalFloat("projectedDepth",s.projectedDepth);
+        if (s.kind!=VansPcgSplineKind::Decal)
+        {
+            r.IntegerField("flowSign",s.flowSign); r.Float("fadeInDistance",s.fadeInDistance); r.Float("fadeOutDistance",s.fadeOutDistance);
+        }
         r.Float("coordinateOffset",s.coordinateOffset); r.Float("coordinateSign",s.coordinateSign);
-        r.Bool("continuation",s.continuation); r.Float("envelopeOffset",s.envelopeOffset); r.Float("envelopeLength",s.envelopeLength);
-        r.Bool("normalFlowEnabled",s.normalFlowEnabled);
+        if (s.kind!=VansPcgSplineKind::Decal)
+        {
+            r.Bool("continuation",s.continuation); r.Float("envelopeOffset",s.envelopeOffset); r.Float("envelopeLength",s.envelopeLength);
+            r.Bool("normalFlowEnabled",s.normalFlowEnabled);
+        }
         if (const auto* points=r.Array("points")) for (const auto& value:*points)
         {
             VansPcgSplinePoint p; PcgValue::Reader k(&value,"spline["+s.id+"].point",error);
@@ -67,8 +78,11 @@ bool VansPcgSplineAssetCodec::Decode(const Value& root, VansPcgSplineAsset& asse
                 {"aligned",VansPcgSplineTangentMode::Aligned},{"mirrored",VansPcgSplineTangentMode::Mirrored},{"broken",VansPcgSplineTangentMode::Broken}});
             k.EnumField("outgoing",p.outgoing,{{"curve",VansPcgSplineSegmentMode::Curve},{"line",VansPcgSplineSegmentMode::Line}});
             k.Float("leftWidth",p.leftWidth); k.Float("rightWidth",p.rightWidth); k.Bool("linkedWidth",p.linkedWidth);
-            k.Float("bankAngleDegrees",p.bankAngleDegrees); k.Float("depth",p.depth); k.Float("speed",p.speed);
-            k.Float("bankSteepness",p.bankSteepness);
+            if (s.kind!=VansPcgSplineKind::Decal)
+            {
+                k.Float("bankAngleDegrees",p.bankAngleDegrees); k.Float("depth",p.depth); k.Float("speed",p.speed);
+                k.Float("bankSteepness",p.bankSteepness);
+            }
             k.Finish(); s.points.push_back(std::move(p));
         }
         r.Finish(); decoded.splines.push_back(std::move(s));
@@ -87,26 +101,43 @@ bool VansPcgSplineAssetCodec::Encode(const VansPcgSplineAsset& asset, Value& roo
     for (const auto& s:asset.splines)
     {
         std::vector<Value> points;
-        for (const auto& p:s.points) points.push_back(Value::Object({
+        for (const auto& p:s.points)
+        {
+            std::vector<std::pair<std::string,Value>> pointFields={
             {"id",Value::String(p.id)},{"position",PcgValue::Vector(p.position)},
             {"arrive",PcgValue::Vector(p.arrive)},{"leave",PcgValue::Vector(p.leave)},
             {"tangentMode",Value::String(TangentName(p.tangentMode))},
             {"outgoing",Value::String(p.outgoing==VansPcgSplineSegmentMode::Curve?"curve":"line")},
             {"leftWidth",Value::Float(p.leftWidth)},{"rightWidth",Value::Float(p.rightWidth)},
-            {"linkedWidth",Value::Bool(p.linkedWidth)},{"bankAngleDegrees",Value::Float(p.bankAngleDegrees)},
-            {"depth",Value::Float(p.depth)},{"bankSteepness",Value::Float(p.bankSteepness)},{"speed",Value::Float(p.speed)}}));
+            {"linkedWidth",Value::Bool(p.linkedWidth)}};
+            if (s.kind!=VansPcgSplineKind::Decal)
+            {
+                pointFields.emplace_back("bankAngleDegrees",Value::Float(p.bankAngleDegrees));
+                pointFields.emplace_back("depth",Value::Float(p.depth));
+                pointFields.emplace_back("bankSteepness",Value::Float(p.bankSteepness));
+                pointFields.emplace_back("speed",Value::Float(p.speed));
+            }
+            points.push_back(Value::Object(std::move(pointFields)));
+        }
         std::vector<std::pair<std::string,Value>> splineFields={
             {"id",Value::String(s.id)},{"name",Value::String(s.name)},
-            {"kind",Value::String(s.kind==VansPcgSplineKind::Road?"road":"river")},
-            {"enabled",Value::Bool(s.enabled)},{"locked",Value::Bool(s.locked)},{"priority",Value::Int(s.priority)},
-            {"material",PcgValue::Reference(s.material,"material")},
-            {"excludeVegetation",Value::Bool(s.excludeVegetation)},{"vegetationFade",Value::Float(s.vegetationFade)},
-            {"shoulder",Value::Float(s.shoulder)},{"blendWidth",Value::Float(s.blendWidth)},
-            {"waterSurfaceDrop",Value::Float(s.waterSurfaceDrop)}};
+            {"kind",Value::String(s.kind==VansPcgSplineKind::Road?"road":s.kind==VansPcgSplineKind::River?"river":"decal")},
+            {"enabled",Value::Bool(s.enabled)},{"locked",Value::Bool(s.locked)},
+            {"material",PcgValue::Reference(s.material,"material")}};
+        if (s.kind!=VansPcgSplineKind::Decal)
+        {
+            splineFields.emplace_back("priority",Value::Int(s.priority));
+            splineFields.emplace_back("excludeVegetation",Value::Bool(s.excludeVegetation));
+            splineFields.emplace_back("vegetationFade",Value::Float(s.vegetationFade));
+            splineFields.emplace_back("shoulder",Value::Float(s.shoulder));
+            splineFields.emplace_back("blendWidth",Value::Float(s.blendWidth));
+            splineFields.emplace_back("waterSurfaceDrop",Value::Float(s.waterSurfaceDrop));
+        }
         if (s.kind==VansPcgSplineKind::Road)
         {
             splineFields.emplace_back("roadDecalMaterial",PcgValue::Reference(s.roadDecalMaterial,"material"));
             splineFields.emplace_back("roadRenderMode",Value::String(RoadRenderModeName(s.roadRenderMode)));
+            splineFields.emplace_back("decalSortPriority",Value::Int(s.decalSortPriority));
             splineFields.emplace_back("projectedDepth",Value::Float(s.projectedDepth));
         }
         if (s.kind==VansPcgSplineKind::River)
@@ -118,13 +149,21 @@ bool VansPcgSplineAssetCodec::Encode(const VansPcgSplineAsset& asset, Value& roo
             splineFields.emplace_back("wetBankWidthMeters",Value::Float(s.wetBankWidthMeters));
             splineFields.emplace_back("wetnessStrength",Value::Float(s.wetnessStrength));
         }
+        if (s.kind==VansPcgSplineKind::Decal)
+        {
+            splineFields.emplace_back("decalSortPriority",Value::Int(s.decalSortPriority));
+            splineFields.emplace_back("projectedDepth",Value::Float(s.projectedDepth));
+        }
         splineFields.insert(splineFields.end(),{
-            {"surfaceOffset",Value::Float(s.surfaceOffset)},{"textureRepeat",Value::Float(s.textureRepeat)},
-            {"flowSign",Value::Int(s.flowSign)},{"fadeInDistance",Value::Float(s.fadeInDistance)},{"fadeOutDistance",Value::Float(s.fadeOutDistance)},
-            {"coordinateOffset",Value::Float(s.coordinateOffset)},{"coordinateSign",Value::Float(s.coordinateSign)},
+            {"surfaceOffset",Value::Float(s.surfaceOffset)},{"textureRepeat",Value::Float(s.textureRepeat)}});
+        if (s.kind!=VansPcgSplineKind::Decal) splineFields.insert(splineFields.end(),{
+            {"flowSign",Value::Int(s.flowSign)},{"fadeInDistance",Value::Float(s.fadeInDistance)},{"fadeOutDistance",Value::Float(s.fadeOutDistance)}});
+        splineFields.emplace_back("coordinateOffset",Value::Float(s.coordinateOffset));
+        splineFields.emplace_back("coordinateSign",Value::Float(s.coordinateSign));
+        if (s.kind!=VansPcgSplineKind::Decal) splineFields.insert(splineFields.end(),{
             {"continuation",Value::Bool(s.continuation)},{"envelopeOffset",Value::Float(s.envelopeOffset)},{"envelopeLength",Value::Float(s.envelopeLength)},
-            {"normalFlowEnabled",Value::Bool(s.normalFlowEnabled)},
-            {"points",Value::Array(std::move(points))}});
+            {"normalFlowEnabled",Value::Bool(s.normalFlowEnabled)}});
+        splineFields.emplace_back("points",Value::Array(std::move(points)));
         splines.push_back(Value::Object(std::move(splineFields)));
     }
     root=Value::Object({{"name",Value::String(asset.name)},{"terrain",PcgValue::Reference(asset.terrain,"terrain")},

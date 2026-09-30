@@ -103,6 +103,7 @@ Value DefaultPhysics()
 		{ "mass", Value::Float(1.0) },
 		{ "layer", Value::String("Default") },
 		{ "isTrigger", Value::Bool(false) },
+		{ "canCharacterStepUp", Value::Bool(true) },
 		{ "material", Value::Object({
 			{ "staticFriction", Value::Float(0.5) },
 			{ "dynamicFriction", Value::Float(0.5) },
@@ -125,6 +126,7 @@ Value DefaultAnimation()
 	return Value::Object({
 		{ "name", Value::String("Animation") },
 		{ "root_motion", Value::Bool(false) },
+		{ "extract_graph_root_motion", Value::Bool(true) },
 		{ "animator", Value::String("") }
 	});
 }
@@ -136,6 +138,22 @@ Value DefaultCharacterController()
 		{ "height", Value::Float(1.8) },
 		{ "slopeLimit", Value::Float(0.707) },
 		{ "stepOffset", Value::Float(0.3) },
+		{ "perchRadiusThreshold", Value::Float(0.0) },
+		{ "perchAdditionalHeight", Value::Float(0.4) },
+		{ "penetrationPullbackDistance", Value::Float(0.00125) },
+		{ "penetrationOverlapInflation", Value::Float(0.001) },
+		{ "maxDepenetrationWithGeometry", Value::Float(5.0) },
+		{ "maxDepenetrationWithCharacters", Value::Float(1.0) },
+		{ "useImpactBodyVelocity", Value::Bool(true) },
+		{ "maintainHorizontalGroundVelocity", Value::Bool(true) },
+		{ "canWalkOffLedges", Value::Bool(true) },
+		{ "canWalkOffLedgesWhenCrouching", Value::Bool(false) },
+		{ "ledgeCheckThreshold", Value::Float(.04) },
+		{ "followMovementBaseRotation", Value::Bool(false) },
+		{ "impartMovementBaseVelocityX", Value::Bool(true) },
+		{ "impartMovementBaseVelocityY", Value::Bool(true) },
+		{ "impartMovementBaseVelocityZ", Value::Bool(true) },
+		{ "impartMovementBaseAngularVelocity", Value::Bool(true) },
 		{ "contactOffset", Value::Float(0.08) },
 		{ "climbingMode", Value::String("easy") },
 		{ "layer", Value::String("Default") },

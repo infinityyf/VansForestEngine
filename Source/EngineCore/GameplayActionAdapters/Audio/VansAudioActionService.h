@@ -15,8 +15,9 @@ class VansAudioActionService final : public IVansActionService
 {
 public:
 	using PositionResolver = std::function<bool(VansEntityHandle, glm::vec3&)>;
+	using ListenerResolver = std::function<bool(glm::vec3&)>;
 	VansAudioActionService(VansRuntimeWorld& world, VansEngine::VansAudioManager& audio,
-		PositionResolver resolvePosition);
+		PositionResolver resolvePosition, ListenerResolver resolveListener = {});
 	const VansActionServiceCapability& Capability() const override { return VansAudioActionCapability(); }
 	VansActionCommandResult Execute(const VansActionCommand& command) override;
 	bool Release(VansGenerationHandle resource, std::string& error) override;
@@ -33,6 +34,7 @@ private:
 	VansRuntimeWorld& m_World;
 	VansEngine::VansAudioManager& m_Audio;
 	PositionResolver m_ResolvePosition;
+	ListenerResolver m_ResolveListener;
 	VansGenerationPool<Loop> m_Loops;
 };
 }

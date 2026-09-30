@@ -35,6 +35,9 @@ namespace VansEngine
 		// 运动模型经碰撞约束后的帧末速度；velocity 保留碰撞位移/dt。
 		std::optional<glm::vec3> motionVelocity;
 		int simulationSteps = 1;
+		bool animationRootMotion = false;
+		// Yaw applied by following a rotating movement base this update, in degrees.
+		float baseRotationDeltaYaw = 0.0f;
 	};
 
 	struct VansCharacterMotionFlushResult

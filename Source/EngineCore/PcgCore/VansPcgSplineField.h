@@ -33,7 +33,9 @@ struct VansPcgSplineFieldTile
     bool hasRiver = false;
 };
 
-struct VansPcgRoadVertex
+enum class VansPcgSplineSurfaceMode { RoadMesh, RoadDecal, MaterialDecal };
+
+struct VansPcgSplineSurfaceVertex
 {
     glm::vec3 position{};
     glm::vec3 normal{0, 1, 0};
@@ -41,15 +43,16 @@ struct VansPcgRoadVertex
     glm::vec4 tangent{1, 0, 0, -1};
 };
 
-struct VansPcgRoadMesh
+struct VansPcgSplineSurface
 {
     std::string splineId;
     VansAssetGuid material;
     VansAssetGuid roadDecalMaterial;
-    VansPcgRoadRenderMode renderMode = VansPcgRoadRenderMode::Mesh;
+    VansPcgSplineSurfaceMode mode = VansPcgSplineSurfaceMode::RoadMesh;
+    int decalSortPriority = 0;
     float projectedDepth = 2.0f;
     std::uint64_t fingerprint = 0;
-    std::vector<VansPcgRoadVertex> vertices;
+    std::vector<VansPcgSplineSurfaceVertex> vertices;
     std::vector<std::uint32_t> indices;
 };
 
@@ -63,7 +66,7 @@ struct VansPcgSplineFieldSnapshot
     float texelSize = 0;
     std::uint32_t resolution = 0;
     std::map<std::uint64_t, std::shared_ptr<const VansPcgSplineFieldTile>> tiles;
-    std::map<std::string, std::shared_ptr<const VansPcgRoadMesh>> roads;
+    std::map<std::string, std::shared_ptr<const VansPcgSplineSurface>> surfaces;
     std::shared_ptr<const VansTerrainAsset> effectiveTerrain;
     // 包含本次删除的页，消费者需清除旧位置，而不只是上传新位置。
     std::vector<std::uint64_t> changedTiles;

@@ -220,7 +220,7 @@ void VansGraphics::VansRenderNode::PrepareModelDataForRenderFrame()
 }
 
 // Helper: map node type to its primary render-pass name.
-static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type, bool roadDecal = false)
+static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type, bool roadDecal = false, bool splineDecal = false)
 {
 	using namespace VansGraphics;
 	switch (type)
@@ -232,7 +232,8 @@ static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type, bool ro
 	case TRANSPARENT_NODE:  return VansPass::FORWARD_TRANSPARENT;
 	case POSTPROCESS_NODE:  return VansPass::POST_PROCESS;
 	case DEFERRED_NODE:     return VansPass::DEFERRED;
-	case DECAL_NODE:        return roadDecal ? VansPass::ROAD_DECAL_MODIFIER : VansPass::DECAL_MODIFIER;
+	case DECAL_NODE:        return roadDecal ? VansPass::ROAD_DECAL_MODIFIER :
+		splineDecal ? VansPass::SPLINE_DECAL_MODIFIER : VansPass::DECAL_MODIFIER;
 	default:                return VansPass::GBUFFER;
 	}
 }
@@ -250,10 +251,10 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 		return;
 	}
 
-	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType, m_UsesRoadDecalPass));
+	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType, m_UsesRoadDecalPass, m_UsesSplineDecalPass));
 	if (!shader) return;
 
-	if (!ValidateDescriptorBindings(GetPrimaryPassName(m_NodeType, m_UsesRoadDecalPass), m_UsedDescSetLayouts, m_UsedDescSets))
+	if (!ValidateDescriptorBindings(GetPrimaryPassName(m_NodeType, m_UsesRoadDecalPass, m_UsesSplineDecalPass), m_UsedDescSetLayouts, m_UsedDescSets))
 		return;
 
 	VansMesh* drawMesh = GetDrawMesh();
@@ -348,7 +349,7 @@ bool VansGraphics::VansRenderNode::PreparePipelineForDraw(VkDevice& device, Glob
 	if (GetDrawMesh() == nullptr || m_Material == nullptr)
 		return true;
 
-	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType, m_UsesRoadDecalPass));
+	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType, m_UsesRoadDecalPass, m_UsesSplineDecalPass));
 	return PreparePipelineForShader(device, global_state, shader, m_UsedDescSetLayouts, m_UsedDescSets);
 }
 

@@ -996,6 +996,7 @@ namespace VansGraphics
 			requestedExtent);
 		renderPassManager->SetupVansSceneUIRenderPass(
 			m_VansVKLogicDevice,
+			m_VansVKPhysicalDevice,
 			renderPassManager->GetFinalDisplayColor().GetImageView(),
 			requestedExtent);
 		if (m_Scene != nullptr)

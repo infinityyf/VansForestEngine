@@ -22,7 +22,7 @@ namespace Vans::EditorAPI
 	enum class AnimatorConditionSource { Parameter, MachineWeight, StateElapsedTime };
 	enum class AnimGraphPinType { Pose, Float, Bool, Int };
 	enum class AnimGraphPinKind { Input, Output };
-	enum class AnimatorGraphRole { Pose, TargetPostProcess };
+	enum class AnimatorGraphRole { Pose, TargetPostProcess, FinalComposition };
 	enum class AnimationGoalSource { Binding, Parameters, Fixed, PoseBone };
 	enum class AnimationPlantPivot { Heel, Ball, Ankle };
 	enum class AnimationLimbTipRotationMode { PreserveInput, MatchGoal, FollowChain };
@@ -31,7 +31,7 @@ namespace Vans::EditorAPI
 	enum class VansRotationBlendSpace { Local, Mesh };
 	enum class VansAdditiveReferenceMode { BindPose, FirstFrame, ClipTime, ReferenceClip };
 	enum class VansLayerRootMotionMode { Ignore, Base, BlendByRootWeight, Override };
-	enum class VansLayerCurveMode { BaseOnly, Override, Blend, Normalize, Min, Max };
+	enum class VansLayerCurveMode { BaseOnly, Override, Blend, Normalize, Min, Max, Accumulate };
 	enum class VansLayerEventMode { Ignore, ActiveOnly, Always };
 	enum class VansLayerNodeTrackMode { Ignore, Override };
 	enum class VansLayerSyncMode { Independent, NormalizedTime, MarkerSync, SyncedGraph };
@@ -226,6 +226,7 @@ namespace Vans::EditorAPI
 		float positionTolerance = 0.001f;
 		float weight = 1.0f;
 		bool commitClampedPose = true;
+		bool linearPoseBlend = false;
 	};
 
 	struct AnimationChainIKSettingsDTO
@@ -316,6 +317,9 @@ namespace Vans::EditorAPI
 		bool m_BoolVal = false;
 		int m_IntVal = 0;
 		int m_CaseCount = 2;
+		std::vector<int> m_EnumValues;
+		std::vector<float> m_BlendTimes;
+		bool m_HermiteCubic = false;
 		float m_FixedWeight = 1.0f;
 		float m_FixedSpeed = 1.0f;
 		float m_TeleportDistance = 3.0f;
@@ -336,6 +340,7 @@ namespace Vans::EditorAPI
 		bool m_UseLayerWeightParameter = false;
 		bool m_ApplyLayerAdditiveInput = false;
 		bool m_MeshSpaceRotationOnly = false;
+		VansLayerCurveMode m_LayerCurveMode = VansLayerCurveMode::Blend;
 
 		std::string m_CheckpointId;
 		std::vector<std::string> m_CheckpointBones;
@@ -412,6 +417,7 @@ namespace Vans::EditorAPI
 		VansAnimationLayerKind kind = VansAnimationLayerKind::Overlay;
 		VansLayerBlendMode blendMode = VansLayerBlendMode::Override;
 		VansRotationBlendSpace rotationSpace = VansRotationBlendSpace::Local;
+		bool linearRotationBlend = false;
 		VansAdditiveReferenceMode additiveReference = VansAdditiveReferenceMode::BindPose;
 		std::string referenceClipName;
 		float referenceTime = 0.0f;
@@ -567,6 +573,7 @@ namespace Vans::EditorAPI
 		case VansGraphics::VansAnimGraphNodeType::ComponentBoneTransform: return "ComponentBoneTransform";
 		case VansGraphics::VansAnimGraphNodeType::IfCondition: return "IfCondition";
 		case VansGraphics::VansAnimGraphNodeType::Switch: return "Switch";
+		case VansGraphics::VansAnimGraphNodeType::BlendListByEnum: return "BlendListByEnum";
 		case VansGraphics::VansAnimGraphNodeType::AdditiveBlend: return "AdditiveBlend";
 		case VansGraphics::VansAnimGraphNodeType::Inertialization: return "Inertialization";
 		case VansGraphics::VansAnimGraphNodeType::SpeedScale: return "SpeedScale";
@@ -583,6 +590,7 @@ namespace Vans::EditorAPI
 		case VansGraphics::VansAnimGraphNodeType::PoseCheckpoint: return "PoseCheckpoint";
 		case VansGraphics::VansAnimGraphNodeType::SaveCachedPose: return "SaveCachedPose";
 		case VansGraphics::VansAnimGraphNodeType::UseCachedPose: return "UseCachedPose";
+		case VansGraphics::VansAnimGraphNodeType::PoseSnapshot: return "PoseSnapshot";
 		case VansGraphics::VansAnimGraphNodeType::LayeredBlendPerBone: return "LayeredBlendPerBone";
 		}
 		return "Unknown";
@@ -633,6 +641,14 @@ namespace Vans::EditorAPI
 			pins.push_back(output(0, "Pose"));
 			return pins;
 		}
+		case VansGraphics::VansAnimGraphNodeType::BlendListByEnum:
+		{
+			std::vector<AnimGraphPinDTO> pins{ input(0, "Default") };
+			for (int index = 0; index < static_cast<int>(m_EnumValues.size()); ++index)
+				pins.push_back(input(index + 1, "Enum " + std::to_string(m_EnumValues[index])));
+			pins.push_back(output(0, "Pose"));
+			return pins;
+		}
 		case VansGraphics::VansAnimGraphNodeType::AdditiveBlend: return { input(0, "Base"), input(1, "Additive"), output(0, "Pose") };
 		case VansGraphics::VansAnimGraphNodeType::Inertialization:
 		case VansGraphics::VansAnimGraphNodeType::ModifyCurve:
@@ -652,6 +668,7 @@ namespace Vans::EditorAPI
 		case VansGraphics::VansAnimGraphNodeType::Slot: return { input(0, "Fallback Pose"), output(0, "Pose") };
 		case VansGraphics::VansAnimGraphNodeType::TargetPoseInput: return { output(0, "Target Pose") };
 		case VansGraphics::VansAnimGraphNodeType::UseCachedPose: return { output(0, "Pose") };
+		case VansGraphics::VansAnimGraphNodeType::PoseSnapshot: return { output(0, "Pose") };
 		case VansGraphics::VansAnimGraphNodeType::LayeredBlendPerBone:
 			return { input(0, "Base Pose"), input(1, "Overlay Pose"),
 				input(2, "Additive Pose"), output(0, "Pose") };

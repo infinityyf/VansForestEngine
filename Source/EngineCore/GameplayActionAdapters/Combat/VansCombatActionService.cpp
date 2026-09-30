@@ -37,6 +37,18 @@ const VansActionServiceCapability& VansCombatActionCapability()
 	};
 	static const VansActionServiceCapability capability =
 		VansActionServiceCapabilityDescriptor("Service.Combat", {
+			VansActionCommandCapability("Combat.ApplyRadialBlast", ResourcePolicy::None, {
+				VansActionCommandField("origin",ValueKind::Object,true),
+				VansActionCommandField("blockingLayers",ValueKind::Array,true),
+				VansActionCommandField("healthAttribute",ValueKind::String,false,VansSerializedValue::String("Health")),
+				optionalString("armorAttribute"),
+				VansActionCommandNumberField("radius",ValueKind::Float,true,VansSerializedValue::Float(1),0.001,100000),
+				VansActionCommandNumberField("damage",ValueKind::Float,true,VansSerializedValue::Float(0),0,1000000),
+				VansActionCommandNumberField("armorRatio",ValueKind::Float,false,VansSerializedValue::Float(1),0,1),
+				VansActionCommandNumberField("impulse",ValueKind::Float,false,VansSerializedValue::Float(0),0,1000000),
+				VansActionCommandNumberField("maxVelocityChange",ValueKind::Float,false,VansSerializedValue::Float(8),0.001,1000),
+				VansActionCommandNumberField("upwardBias",ValueKind::Float,false,VansSerializedValue::Float(0),0,10)
+			}),
 			VansActionCommandCapability("Combat.FireHitscan", ResourcePolicy::None, {
 				asset("targetLayer"),
 				optionalString("targetTag"), optionalString("responseAction"),
@@ -420,6 +432,7 @@ VansActionCommandResult VansCombatActionService::Execute(const VansActionCommand
 {
 	if (command.stableName == "Combat.FireHitscan") return FireHitscan(command);
 	if (command.stableName == "Combat.ApplyDamageProfile") return ApplyDamageProfile(command);
+	if (command.stableName == "Combat.ApplyRadialBlast") return ApplyRadialBlast(command);
 	if (command.stableName != "Combat.BeginMeleeWindow")
 	{
 		return { VansActionError::InvalidDefinition, {}, VansSerializedValue::Object({}),
@@ -604,6 +617,122 @@ void VansCombatActionService::EmitWindowEvent(MeleeWindow& window, std::string_v
 	std::string error;
 	if (!m_Runtime.EnqueueActionEvent(window.owner, window.action, std::move(event), error))
 		VANS_LOG_WARN("[GAF Combat] Could not emit window edge: " << error);
+}
+
+VansActionCommandResult VansCombatActionService::ApplyRadialBlast(const VansActionCommand& command)
+{
+    using V=VansSerializedValue;
+    const auto reject=[](const char* reason) { return VansActionCommandResult{VansActionError::Rejected,{},{},reason}; };
+    const auto* point=FindObjectField(command.payload,"origin");
+    if (!point || !FindObjectField(*point,"x") || !FindObjectField(*point,"y") || !FindObjectField(*point,"z"))
+        return reject("Radial blast requires a finite world origin");
+    const auto invalid = std::numeric_limits<float>::quiet_NaN();
+    const glm::vec3 origin(ReadNumberField(*point,"x",invalid),ReadNumberField(*point,"y",invalid),ReadNumberField(*point,"z",invalid));
+    const float radius=ReadNumberField(command.payload,"radius",0), damage=ReadNumberField(command.payload,"damage",0);
+    const float armorRatio=ReadNumberField(command.payload,"armorRatio",1), impulse=ReadNumberField(command.payload,"impulse",0);
+    const float maxVelocity=ReadNumberField(command.payload,"maxVelocityChange",8), upward=ReadNumberField(command.payload,"upwardBias",0);
+    if (!std::isfinite(glm::length(origin)) || !std::isfinite(radius) || radius<=0 || radius>100000
+        || !std::isfinite(damage) || damage<0 || damage>1000000 || !std::isfinite(armorRatio) || armorRatio<0 || armorRatio>1
+        || !std::isfinite(impulse) || impulse<0 || impulse>1000000 || !std::isfinite(maxVelocity) || maxVelocity<=0 || maxVelocity>1000
+        || !std::isfinite(upward) || upward<0 || upward>10) return reject("Radial blast parameters are invalid");
+    const auto health=VansMakeStableId<VansAttributeIdTag>(ReadSerializedStringField(command.payload,"healthAttribute","Health"));
+    if (!m_Assets.Attributes().Resolve(health)) return reject("Radial blast Health attribute is unknown");
+    const auto armorName=ReadSerializedStringField(command.payload,"armorAttribute");
+    const auto armor=VansMakeStableId<VansAttributeIdTag>(armorName);
+    if (!armorName.empty() && !m_Assets.Attributes().Resolve(armor)) return reject("Radial blast Armor attribute is unknown");
+    const auto* blockers=FindObjectField(command.payload,"blockingLayers");
+    if (!blockers || blockers->kind!=V::Kind::Array) return reject("Radial blast needs blocking layer names");
+    std::uint32_t mask=0;
+    for (const auto& name : blockers->arrayItems)
+    {
+        int index=0;
+        if (name.kind!=V::Kind::String || !VansEngine::VansCollisionLayerManager::Get().TryGetLayerIndex(name.stringValue,index))
+            return reject("Radial blast blocking layer is unknown");
+        mask |= 1u<<index;
+    }
+    if (!VansEngine::VansPhysicsQuery::IsAvailable()) return reject("Radial blast Physics is unavailable");
+    // Broad phase includes HurtBody triggers and CCTs; attribution uses current world identity.
+    VansEngine::VansPhysicsSphereOverlapRequest overlap; overlap.center=origin; overlap.radius=radius;
+    std::vector<VansEngine::VansPhysicsQueryHit> hits;
+    VansEngine::VansPhysicsQuery::OverlapSphere(overlap,65536,hits);
+    if (hits.size()>=65536) return reject("Radial blast overlap capacity exceeded");
+    std::unordered_map<std::uint32_t,VansEntityHandle> owners;
+    if (const auto* transforms=m_World.FindStorage<VansRuntimeTransformComponent>(VansRuntimeComponentType_Transform))
+        for (std::size_t i=0;i<transforms->DenseData().size();++i)
+            if (transforms->Headers()[i].effectiveEnabled)
+                owners.emplace(transforms->DenseData()[i].transformStoreId,transforms->Headers()[i].owner);
+    std::unordered_map<std::uint64_t,VansTargetHitResult> targets;
+    for (const auto& hit : hits)
+    {
+        const auto found=owners.find(hit.transformId);
+        if (found==owners.end()) continue;
+        const auto target=ResolveHitTarget(found->second);
+        if (!target.IsValid()) continue;
+        const auto delta=hit.position-origin; const auto distance=glm::length(delta);
+        if (!std::isfinite(distance) || distance>=radius) continue;
+        if (mask && distance>0.002f)
+        {
+            VansEngine::VansPhysicsRaycastRequest ray; ray.origin=origin; ray.direction=delta/distance; ray.distance=distance-0.001f;
+            ray.filter.layerMask=mask; ray.filter.includeTriggers=false; ray.filter.includeControllers=false;
+            ray.filter.ignoredTransformId=hit.transformId;
+            VansEngine::VansPhysicsQueryHit obstruction;
+            if (VansEngine::VansPhysicsQuery::RaycastClosest(ray,obstruction)) continue;
+        }
+        auto& selected=targets[EntityKey(target)];
+        if (selected.entity.IsValid() && selected.distance<=distance) continue;
+        selected.entity=target; selected.hitEntity=found->second; selected.distance=distance;
+        selected.position={hit.position.x,hit.position.y,hit.position.z}; selected.region=hit.hitRegion;
+        // CCT / generic props may have no regional identity. Explosion handlers use damageType.
+        if (const auto* physics=m_World.FindStorage<VansRuntimePhysicsComponent>(VansRuntimeComponentType_Physics))
+            if (const auto* header=physics->GetHeader(physics->FindFirstOwnedBy(found->second))) selected.componentGuid=header->stableGuid;
+    }
+    const auto source=command.context.Entity(VansActionContextSlots::Owner);
+    auto results=V::Array({});
+    for (auto& entry : targets)
+    {
+        const auto& hit=entry.second;
+        double previous=0, protection=0;
+        if (!m_Runtime.ReadAttribute(hit.entity,health,previous) || previous<=0) continue;
+        double amount=damage*(1-hit.distance/radius);
+        if (!armorName.empty() && m_Runtime.ReadAttribute(hit.entity,armor,protection) && protection>0)
+        {
+            const double protectedDamage=amount*armorRatio, cost=(amount-protectedDamage)*0.5;
+            const double spent=(std::min)(cost,protection);
+            amount=cost>protection ? amount-protection*2 : protectedDamage;
+            double remainingArmor=protection;
+            if (!m_Runtime.ApplyBaseAttribute(hit.entity,armor,VansAttributeBaseOperation::Add,-spent,remainingArmor))
+                return reject("Radial blast Armor update failed");
+        }
+        const double applied=(std::min)(previous,amount); double remaining=previous;
+        if (!m_Runtime.ApplyBaseAttribute(hit.entity,health,VansAttributeBaseOperation::Add,-applied,remaining))
+            return reject("Radial blast Health update failed");
+        const glm::vec3 position(hit.position[0],hit.position[1],hit.position[2]);
+        const glm::vec3 direction=hit.distance>0.001 ? glm::normalize(position-origin) : glm::vec3(0,1,0);
+        auto payload=V::Object({{"damageType",V::String("Blast")},{"damage",V::Float(amount)},
+            {"appliedDamage",V::Float(applied)},{"oldHealth",V::Float(previous)},{"newHealth",V::Float(remaining)},
+            {"lethal",V::Bool(remaining<=0)},{"hitRegion",V::String(hit.region)},{"hitComponentGuid",V::String(hit.componentGuid)},
+            {"position",V::Array({V::Float(position.x),V::Float(position.y),V::Float(position.z)})},
+            {"direction",V::Object({{"x",V::Float(direction.x)},{"y",V::Float(direction.y)},{"z",V::Float(direction.z)}})},
+            {"distance",V::Float(hit.distance)},{"hit",VansEncodeTargetData(VansTargetData{{hit}})}});
+        for (const char* name : {"Combat.DamageReceived","Combat.Died"})
+        {
+            if (remaining>0 && std::string_view(name)=="Combat.Died") continue;
+            VansActionEvent event; event.stableName=name; event.type=VansMakeStableId<VansActionFieldIdTag>(name);
+            event.source=source; event.target=hit.entity; event.payload=payload;
+            m_Runtime.PublishGameplayEvent(hit.entity,std::move(event));
+        }
+        results.arrayItems.push_back(payload);
+        VANS_LOG("[GAF Blast] target=" << hit.entity.index << " distance=" << hit.distance
+            << " damage=" << amount << " health=" << previous << "->" << remaining);
+    }
+    if (impulse>0)
+    {
+        VansEngine::VansPhysicsRadialImpulseRequest force;
+        force.center=origin; force.radius=radius; force.impulse=impulse; force.maxVelocityChange=maxVelocity;
+        force.upwardBias=upward; force.blockingLayerMask=mask;
+        m_PendingBlasts.push_back({force});
+    }
+    return {VansActionError::None,{},V::Object({{"targets",std::move(results)}}),{}};
 }
 
 VansActionCommandResult VansCombatActionService::ApplyDamageProfile(const VansActionCommand& command)
@@ -879,6 +1008,15 @@ bool VansCombatActionService::SampleWindow(MeleeWindow& window)
 
 void VansCombatActionService::Tick(double deltaSeconds)
 {
+	// Gameplay events first let victims enter ragdoll physics. The next service tick
+	// applies one world impulse, covering existing and newly created bodies together.
+	for (auto it=m_PendingBlasts.begin();deltaSeconds>0 && it!=m_PendingBlasts.end();)
+	{
+		if (it->justCreated) { it->justCreated=false; ++it; continue; }
+		const auto count=VansEngine::VansPhysicsQuery::ApplyRadialImpulse(it->request);
+		VANS_LOG("[GAF Blast] impulseActors=" << count << " radius=" << it->request.radius);
+		it=m_PendingBlasts.erase(it);
+	}
 	m_DebugSnapshot = {};
 	m_DebugSnapshot.available = true;
 	if (const auto* storage = FindStorage<VansRuntimePhysicsComponent>(

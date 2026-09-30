@@ -84,9 +84,14 @@ Vans::VansVFXSceneBackend VansScene::MakeVFXSceneBackend()
                 binding.source.anchorGuid.ToString());
         }
         glm::mat4 world(1);
-        if (!ResolveParticleSource(binding,world)) { error = "VFX source cannot resolve its current pose"; return {}; }
+        if (request.worldPosition)
+        {
+            world[3]=glm::vec4(*request.worldPosition,1);
+            binding.detached=true;
+        }
+        else if (!ResolveParticleSource(binding,world)) { error = "VFX source cannot resolve its current pose"; return {}; }
         const auto sameSource = [&](const auto& active) {
-            return active.owner == binding.owner && active.effect == binding.effect && active.sourceEntity == binding.sourceEntity
+            return active.owner == binding.owner && active.effect == binding.effect && active.detached == binding.detached && active.sourceEntity == binding.sourceEntity
                 && active.source.kind == binding.source.kind && active.source.anchorGuid == binding.source.anchorGuid
                 && active.source.animationComponentGuid == binding.source.animationComponentGuid
                 && active.anchor.instanceId == binding.anchor.instanceId && active.anchor.instanceGeneration == binding.anchor.instanceGeneration;
@@ -121,6 +126,7 @@ Vans::VansVFXSceneBackend VansScene::MakeVFXSceneBackend()
             return {};
         }
         m_ParticleManager.Queue(binding.instance,VansParticleControl::Play);
+        if (request.worldPosition) m_ParticleManager.Queue(binding.instance,VansParticleControl::EmitInitialFrame);
         m_ParticleManager.Queue(binding.instance,VansParticleControl::DeferFirstUpdate);
         m_ParticleSources.push_back(binding);
         VANS_LOG("[VFX] Spawn effect=" << request.effect.ToString() << " source=" << binding.source.entityGuid.ToString()

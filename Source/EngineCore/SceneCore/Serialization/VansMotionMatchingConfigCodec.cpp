@@ -256,7 +256,8 @@ VansSerializedValue EncodeMotionModel(const VansCharacterMotionSettings& setting
 		{ "root_motion_to_world_scale", VansSerializedValue::Float(settings.rootMotionToWorldScale) },
 		{ "loop_root_motion_weight", VansSerializedValue::Float(settings.loopRootMotionWeight) },
 		{ "transition_root_motion_weight", VansSerializedValue::Float(settings.transitionRootMotionWeight) },
-		{ "root_rotation_weight", VansSerializedValue::Float(settings.rootRotationWeight) }
+		{ "root_rotation_weight", VansSerializedValue::Float(settings.rootRotationWeight) },
+		{ "slot_root_motion_overrides_capsule", VansSerializedValue::Bool(settings.slotRootMotionOverridesCapsule) }
 	});
 }
 }
@@ -301,6 +302,8 @@ bool VansMotionMatchingConfigCodec::DecodeMotionModel(
 		value, "transition_root_motion_weight", settings.transitionRootMotionWeight);
 	settings.rootRotationWeight = ReadFloat(
 		value, "root_rotation_weight", settings.rootRotationWeight);
+	settings.slotRootMotionOverridesCapsule = ReadBool(
+		value, "slot_root_motion_overrides_capsule", settings.slotRootMotionOverridesCapsule);
 	return true;
 }
 

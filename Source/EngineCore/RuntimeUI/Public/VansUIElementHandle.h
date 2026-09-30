@@ -32,8 +32,9 @@ namespace VansRuntime
 
         // ── 属性设置 ──────────────────────────────────────────────
 
-        // 设置任意 XAML DependencyProperty（字符串表示）
-        // 例如：SetProperty("Background", "#FF0000")
+        // 字符串属性入口：Text/Visible/Opacity、Canvas.Left/Top、Width/Height、
+        // TranslateX/Y 和 Rotation（度）。旋转会复用 XAML 的 RotateTransform，
+        // 保留其旋转中心；没有该变换时按 RenderTransformOrigin 旋转。
         void SetProperty(const std::string& property, const std::string& value);
 		bool TryGetProperty(const std::string& property, std::string& value) const;
 

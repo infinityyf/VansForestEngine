@@ -7,7 +7,7 @@
 
 namespace Vans::EditorAPI
 {
-enum class PcgSplineKind { Road, River };
+enum class PcgSplineKind { Road, River, Decal };
 enum class PcgRoadRenderMode { Mesh, ProjectedDecal };
 enum class PcgSplineTangentMode { Auto, Aligned, Mirrored, Broken };
 enum class PcgSplineSegmentMode { Curve, Line };
@@ -35,6 +35,7 @@ struct PcgSplineItem
     bool carveRiverbed=true;
     float wetBankWidthMeters=3.f,wetnessStrength=.85f;
     int priority=0;
+    int decalSortPriority=0;
     float shoulder=3,blendWidth=1,surfaceOffset=.025f,textureRepeat=4;
     float projectedDepth=2;
     float flowSign=1,fadeInDistance=5,fadeOutDistance=5;
@@ -72,7 +73,7 @@ struct PcgSplineEditRequest
     PcgSplineEditPhase phase=PcgSplineEditPhase::Apply;
     PcgSplineItem spline;
 };
-enum class PcgSplineCommand { AddRoad,AddRiver,Duplicate,Remove,Reverse,InsertPoint,RemovePoint,Undo,Redo,Save,Bake,Focus,ConfigureFields };
+enum class PcgSplineCommand { AddRoad,AddRiver,AddDecal,Duplicate,Remove,Reverse,InsertPoint,RemovePoint,Undo,Redo,Save,Bake,Focus,ConfigureFields };
 struct PcgSplineCommandRequest
 {
     PcgSplineCommand command=PcgSplineCommand::AddRoad;

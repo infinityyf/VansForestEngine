@@ -9,10 +9,12 @@ const VansActionServiceCapability& VansVFXActionCapability()
     static const auto capability = VansActionServiceCapabilityDescriptor("Service.VFX", {
         VansActionCommandCapability("VFX.Pulse",R::None,{
             VansActionCommandField("effect",V::String,true),
-            VansActionCommandField("source",V::Object,true)}),
+            VansActionCommandField("source",V::Object,false,VansSerializedValue::Object({})),
+            VansActionCommandField("position",V::Object,false,VansSerializedValue::Object({}))}),
         VansActionCommandCapability("VFX.Spawn",R::Create,{
             VansActionCommandField("effect",V::String,true),
-            VansActionCommandField("source",V::Object,true),
+            VansActionCommandField("source",V::Object,false,VansSerializedValue::Object({})),
+            VansActionCommandField("position",V::Object,false,VansSerializedValue::Object({})),
             VansActionCommandField("maxConcurrentPerSource",V::Int,false,VansSerializedValue::Int(16))}),
         // 停止发射只改变播放状态，资源在真正消散后由账本完成协议释放。
         VansActionCommandCapability("VFX.Stop",R::Update,{

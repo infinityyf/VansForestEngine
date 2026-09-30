@@ -74,6 +74,15 @@ namespace Vans
 		m_History.push_back({ 0.0f, positionWorld });
 	}
 
+	void VansCharacterTrajectoryGenerator::SeedVelocity(const glm::vec3& velocityWorld)
+	{
+		m_PlannedVelocityWorld = { velocityWorld.x, 0.0f, velocityWorld.z };
+		m_ActualVelocityWorld = m_PlannedVelocityWorld;
+		m_RequestedVelocityWorld = m_PlannedVelocityWorld;
+		m_MotionConsumptionRatio = 1.0f;
+		m_HasActualVelocity = true;
+	}
+
 	void VansCharacterTrajectoryGenerator::RecordResolvedMotion(
 		float deltaTime,
 		const glm::vec3& positionWorld,

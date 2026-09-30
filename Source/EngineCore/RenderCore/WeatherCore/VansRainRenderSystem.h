@@ -46,6 +46,7 @@ private:
 	std::vector<VkDescriptorSetLayout> m_Layouts;
 	std::vector<VkDescriptorSet> m_Sets;
 	VansVKImage m_SurfaceRippleImage;
-	static constexpr std::uint32_t SurfaceRippleResolution = 256;
+	// 16×16 个雨滴种子的圆环波带需要至少约两个纹素，避免生成阶段欠采样。
+	static constexpr std::uint32_t SurfaceRippleResolution = 1024;
 };
 }

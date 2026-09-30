@@ -110,6 +110,17 @@ bool CompileShaderModuleData(
 		}
 
 		outModuleData.clear();
+		const std::string folderName = std::filesystem::path(shader_folder).filename().string();
+		auto isCanonicalStage = [&](const std::string& file)
+		{
+			const std::string stem = std::filesystem::path(file).stem().string();
+			return std::equal(stem.begin(), stem.end(), folderName.begin(), folderName.end(),
+				[](unsigned char left, unsigned char right)
+				{
+					return std::tolower(left) == std::tolower(right);
+				});
+		};
+		std::map<VkShaderStageFlagBits, std::vector<std::string>> stageCandidates;
 		for (auto& shader_file : shader_files)
 		{
 			std::string shader_type = GetFileExtensionWithoutDot(shader_file);
@@ -143,9 +154,21 @@ bool CompileShaderModuleData(
 				shader_stage = shader_type_iter->second;
 			}
 
+			stageCandidates[shader_stage].push_back(shader_file);
+		}
+		for (const auto& [shader_stage, candidates] : stageCandidates)
+		{
+			const auto canonical = std::find_if(candidates.begin(), candidates.end(), isCanonicalStage);
+			if (candidates.size() > 1 && canonical == candidates.end())
+			{
+				VANS_LOG_ERROR("ambiguous shader stage in " << shader_folder << ": " << candidates.size()
+					<< " files; register explicit stage files");
+				return false;
+			}
+			const std::string& selected = canonical != candidates.end() ? *canonical : candidates.front();
 			VansGraphics::ShaderModuleData shader_module_data;
-			shader_module_data.m_ShaderType = shader_type;
-			shader_module_data.m_ShaderTextResourceFileName = shader_folder + "\\" + shader_file;
+			shader_module_data.m_ShaderType = GetFileExtensionWithoutDot(selected);
+			shader_module_data.m_ShaderTextResourceFileName = shader_folder + "\\" + selected;
 			outModuleData[shader_stage] = shader_module_data;
 		}
 	}

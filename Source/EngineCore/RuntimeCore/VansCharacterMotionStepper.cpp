@@ -57,10 +57,18 @@ namespace Vans
     }
 
     void VansCharacterMotionStepper::Begin(const VansCharacterMotionIntent& intent,
-        const glm::vec3& velocity, bool grounded, float deltaTime)
+        const glm::vec3& velocity, bool grounded, float deltaTime,
+		std::optional<glm::vec3> animationRootVelocity)
     {
         m_Intent = intent;
         m_Velocity = velocity;
+		m_AnimationRootVelocity = animationRootVelocity;
+		if (m_AnimationRootVelocity)
+		{
+			m_Velocity.x = m_AnimationRootVelocity->x;
+			m_Velocity.z = m_AnimationRootVelocity->z;
+			if (grounded) m_Velocity.y = m_AnimationRootVelocity->y;
+		}
         m_Grounded = grounded;
         m_Remaining = std::isfinite(deltaTime) ? (std::max)(deltaTime,0.0f) : 0.0f;
         m_SimulatedTime = 0.0f;
@@ -74,6 +82,7 @@ namespace Vans
     void VansCharacterMotionStepper::UpdateAirAcceleration()
     {
         if (!m_Intent.accelerationModel) return;
+		if (m_AnimationRootVelocity) { m_AirAcceleration = glm::vec3(0); return; }
         // 连续 Falling 模拟的输入加速度固定，子步不能重新触发低速 boost。
         m_AirAcceleration = ResolveCharacterInputAcceleration(m_InputWorld,
             glm::vec3(m_Velocity.x,0,m_Velocity.z),m_Intent.accelerationModel->airborne);
@@ -92,10 +101,14 @@ namespace Vans
             ? ResolveCharacterInputAcceleration(m_InputWorld,planar,dynamics) : m_AirAcceleration;
         const float speed = (std::max)(m_Intent.desiredSpeed*(std::min)(1.0f,glm::length(m_Intent.moveInputLocal)),
             dynamics.minAnalogSpeed);
-        m_Velocity = IntegrateCharacterVelocity(planar,acceleration,speed,fullStep,dynamics);
+        m_Velocity = m_AnimationRootVelocity ? *m_AnimationRootVelocity :
+			IntegrateCharacterVelocity(planar,acceleration,speed,fullStep,dynamics);
         step = {};
         step.deltaTime = fullStep;
+        step.maximumSpeed = m_Intent.desiredSpeed;
+        step.jumpSpeed = m_Intent.jumpSpeed;
         step.grounded = m_Grounded;
+		step.animationRootMotion = m_AnimationRootVelocity.has_value();
         if (!m_Grounded)
         {
             const auto fall = IntegrateCharacterFallingStep(oldVelocity.y,m_Intent.gravity,fullStep,
@@ -110,8 +123,8 @@ namespace Vans
             }
             m_Velocity.y = fall.velocity;
             step.displacement = .5f*(oldVelocity+m_Velocity)*step.deltaTime;
-            step.velocityWithoutAirControl = IntegrateCharacterVelocity(planar,glm::vec3(0),
-                speed,step.deltaTime,dynamics);
+            step.velocityWithoutAirControl = m_AnimationRootVelocity ? m_Velocity :
+				IntegrateCharacterVelocity(planar,glm::vec3(0),speed,step.deltaTime,dynamics);
             // 源流程的 GravityTime 在顶点切分之前确定；碰撞无输入分支沿用该时长。
             step.velocityWithoutAirControl.y = IntegrateCharacterFallingStep(oldVelocity.y,
                 m_Intent.gravity,fullStep,model.falling,false).velocity;
@@ -120,13 +133,12 @@ namespace Vans
         }
         else
         {
-            m_Velocity.y = 0;
+            if (!m_AnimationRootVelocity) m_Velocity.y = 0;
             step.displacement = m_Velocity*step.deltaTime;
-            // 当前 CCT 接地适配；完整 floor projection 仍待 PhysicsCore 实现。
-            step.displacement.y = -.5f*step.deltaTime;
         }
         step.velocity = m_Velocity;
         m_Remaining -= step.deltaTime;
+        step.remainingTime = m_Remaining;
         m_SimulatedTime += step.deltaTime;
         m_LastStepTime = step.deltaTime;
         ++m_Steps;
@@ -134,34 +146,16 @@ namespace Vans
         return true;
     }
 
-    void VansCharacterMotionStepper::ApplyCollision(bool grounded, bool ceiling,
-        const glm::vec3* normals, std::size_t normalCount)
-    {
-        if (!m_AwaitingCollision) return;
-        for (std::size_t i=0;i<normalCount;++i)
-        {
-            const auto& normal = normals[i];
-            const float lengthSquared = glm::dot(normal,normal);
-            const float inward = glm::dot(m_Velocity,normal);
-            if (lengthSquared > 1.e-8f && inward < 0)
-                m_Velocity -= normal*(inward/lengthSquared);
-        }
-        if ((grounded && m_Velocity.y<0) || (ceiling && m_Velocity.y>0)) m_Velocity.y=0;
-        const bool leftGround = m_Grounded && !grounded;
-        m_Grounded = grounded;
-        if (leftGround) UpdateAirAcceleration();
-        m_AwaitingCollision = false;
-    }
-
     void VansCharacterMotionStepper::ApplySweptCollision(const glm::vec3& velocity,
-        bool grounded, float unusedTime)
+        bool grounded, float unusedTime, bool stopSimulation)
     {
         if (!m_AwaitingCollision) return;
         const float refund = std::clamp(unusedTime,0.0f,m_LastStepTime);
         m_Remaining += refund;
+        if (stopSimulation) m_Remaining = 0;
         m_SimulatedTime -= refund;
         m_Velocity = velocity;
-        if (grounded) m_Velocity.y = 0;
+        if (grounded && !m_AnimationRootVelocity) m_Velocity.y = 0;
         // Falling 每轮结束清除极小横向残速，阈值从 cm²/s² 转为 m²/s²。
         else if (m_Velocity.x*m_Velocity.x+m_Velocity.z*m_Velocity.z <= 1.e-7f)
             m_Velocity.x=m_Velocity.z=0;

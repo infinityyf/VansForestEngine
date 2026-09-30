@@ -12,7 +12,7 @@ namespace VansGraphics
 enum class VansParticleControl
 {
     Play, Pause, Stop, StopEmitting, DetachAndDrain, Restart, Seek, Seed, SimulationRate, Burst, EmitterEnabled, EffectiveEnabled, DeferFirstUpdate, RefreshEmission,
-    SetOwnerWorldTransform, SetEmitterPositionLocal
+    SetOwnerWorldTransform, SetEmitterPositionLocal, EmitInitialFrame
 };
 struct VansParticleCommand
 {

@@ -567,7 +567,6 @@ namespace
 			return 1;
 		}
 		std::unordered_map<std::string, std::unique_ptr<VansGraphics::VansMesh>> meshes;
-		std::vector<Vans::VansNavigationColliderSource> colliderSources;
 		const Vans::VansNavigationMeshResolver resolveMesh =
 			[&](const std::string& guidText,
 				Vans::VansTriangleMeshData& data,
@@ -614,7 +613,6 @@ namespace
 					record->sourcePath.string(), importTangents, {}, false, scaleFactor);
 			}
 			if (!mesh->CopyTriangleMeshData(data, resolveError)) return false;
-			colliderSources.push_back({ guidText, record->sourceHash, record->metaHash });
 			meshes.emplace(guidText, std::move(mesh));
 			return true;
 		};
@@ -630,17 +628,14 @@ namespace
 			std::cerr << "Scene contains no enabled Environment navigation collider geometry.\n";
 			return 1;
 		}
-		Vans::VansFileFingerprint sceneFingerprint;
-		if (!Vans::ComputeFileFingerprint(scenePath, sceneFingerprint, &error))
-		{
-			std::cerr << "Could not fingerprint navigation Scene: " << error << '\n';
-			return 1;
-		}
 		Vans::VansNavigationSource source;
 		source.scene = fs::relative(scenePath, projectRoot).generic_string();
-		source.sceneHash = sceneFingerprint.contentHash;
-		source.colliderHash = Vans::HashNavigationColliders(std::move(colliderSources));
-		source.settingsHash = Vans::HashNavigationSettings(navigationSettings);
+		if (!Vans::ComputeNavigationGeometryHash(geometry, source.geometryHash, error))
+		{
+			std::cerr << "Could not fingerprint navigation geometry: " << error << '\n';
+			return 1;
+		}
+		source.bakeSettingsHash = Vans::HashNavigationBakeSettings(navigationSettings.bake);
 
 		Vans::VansNavigationMesh navigationMesh;
 		if (!navigationMesh.Build(geometry, navigationSettings, error) ||

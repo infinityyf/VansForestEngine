@@ -956,11 +956,32 @@ bool VansSceneMaterialBuilder::PopulateMaterial(
             unit("colorWeight", 1.0f), unit("normalWeight", 1.0f), unit("roughnessWeight", 1.0f));
         decal->m_CustomMaterialPayload.values[2].x = std::round(std::clamp(
             ReadMaterialFloatField(sceneMaterial, "sortPriority", 0.0f), -32768.0f, 32767.0f));
+        // 横向铺开的路径贴图可在样条贴花上交换 UV 轴，普通贴花仍沿用原坐标。
+        decal->m_CustomMaterialPayload.values[2].y = unit("swapSplineUV", 0.0f) >= 0.5f ? 1.0f : 0.0f;
+        // 样条贴花可把第四张纹理作为 AO；覆盖率保持独立且完整。
+        decal->m_CustomMaterialPayload.values[2].z = unit("splineCoverageAsAO", 0.0f) >= 0.5f ? 1.0f : 0.0f;
+        decal->m_CustomMaterialPayload.values[2].w = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "splineCrossScale", 1.0f), 0.01f, 16.0f);
+        decal->m_CustomMaterialPayload.values[3].x = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "splineCrossOffset", 0.0f), -16.0f, 16.0f);
+        decal->m_CustomMaterialPayload.values[3].y = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "splineSideFadeFraction", 0.0f), 0.0f, 0.5f);
+        decal->m_CustomMaterialPayload.values[3].z = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "splineEndFadeMeters", 0.0f), 0.0f, 1000.0f);
+        decal->m_CustomMaterialPayload.values[3].w = unit("splineEdgeNoiseStrength", 0.0f);
+        decal->m_CustomMaterialPayload.values[4].x = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "splineEdgeNoiseScale", 1.0f), 0.01f, 100.0f);
+        decal->m_CustomMaterialPayload.values[5].x = -1.0f;
         decal->m_CustomTextureSlots = {{"basecolor", 0}, {"normal", 1}, {"roughness", 2}, {"coverage", 3}};
         decal->m_CustomTextures["basecolor"] = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
         decal->m_CustomTextures["normal"] = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
         decal->m_CustomTextures["roughness"] = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
         decal->m_CustomTextures["coverage"] = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "coverage_texture", "defaultAo");
+        if (auto* noise=ResolveMaterialTexture(scene,sceneMaterial,"noise_texture"))
+        {
+            decal->m_CustomTextureSlots["noise"] = 4;
+            decal->m_CustomTextures["noise"] = noise;
+        }
         break;
     }
     default:

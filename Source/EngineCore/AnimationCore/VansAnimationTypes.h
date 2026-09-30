@@ -77,10 +77,15 @@ namespace VansGraphics
 		return hash;
 	}
 
+	enum class AnimationCurveInterpolation { Linear, Constant, Cubic };
+
 	struct AnimationCurveKey
 	{
 		float time = 0.0f;
 		float value = 0.0f;
+		AnimationCurveInterpolation interpolation = AnimationCurveInterpolation::Linear;
+		float arriveTangent = 0.0f;
+		float leaveTangent = 0.0f;
 	};
 
 	struct AnimationCurveTrack
@@ -108,6 +113,8 @@ namespace VansGraphics
 		std::string name;
 	};
 
+	enum class AnimationRootLockMode { None, ReferencePose, FirstFrame, Zero };
+
 	struct AnimationRootMotionTrack
 	{
 		bool enabled = true;
@@ -115,6 +122,9 @@ namespace VansGraphics
 		bool extractTranslation = true;
 		bool extractRotation = true;
 		bool extractScale = false;
+		bool normalizeScale = false;
+		AnimationRootLockMode lockMode = AnimationRootLockMode::None;
+		bool forceLock = false;
 	};
 
 	struct SampledNodeTransform

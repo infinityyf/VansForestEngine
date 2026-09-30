@@ -71,8 +71,9 @@ void VansSceneWindow::DrawSplineTools(Vans::EditorAPI::IPcgEditorAPI& api,const 
         {
             const auto spline=std::find_if(snapshot.splines.begin(),snapshot.splines.end(),
                 [&](const auto& item){return item.id==guide.id;});
-            if (spline!=snapshot.splines.end() && spline->kind==PcgSplineKind::Road &&
-                spline->roadRenderMode==PcgRoadRenderMode::ProjectedDecal)
+            if (spline!=snapshot.splines.end() &&
+                (spline->kind==PcgSplineKind::Decal ||
+                    (spline->kind==PcgSplineKind::Road && spline->roadRenderMode==PcgRoadRenderMode::ProjectedDecal)))
             {
                 const float depth=std::max(spline->projectedDepth,.05f);
                 const auto lower=[&](const std::array<float,3>& value) {
@@ -91,7 +92,8 @@ void VansSceneWindow::DrawSplineTools(Vans::EditorAPI::IPcgEditorAPI& api,const 
                 }
                 if (!guide.center.empty())
                     draw->AddText(ImVec2(origin.x+12,origin.y+32),proxyColor,
-                        "Road decal proxy volume (downward)");
+                        spline->kind==PcgSplineKind::Decal?
+                            "Spline decal projection (downward)":"Road decal proxy volume (downward)");
             }
         }
     }

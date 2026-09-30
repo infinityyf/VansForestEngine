@@ -17,6 +17,8 @@ const VansActionServiceCapability& VansProjectileActionCapability()
 				VansActionCommandNumberField("mass", V::Float, false, VansSerializedValue::Float(0.4), 0.001, 100000),
 				// 0 表示不自动回收；正数指定实体寿命（秒）。
 				VansActionCommandNumberField("lifetime", V::Float, false, VansSerializedValue::Float(10), 0, 3600),
+				VansActionCommandNumberField("fuseSeconds", V::Float, false, VansSerializedValue::Float(0), 0, 3600),
+				VansActionCommandField("detonationAction", V::String, false, VansSerializedValue::String({})),
 				VansActionCommandNumberField("restitution", V::Float, false, VansSerializedValue::Float(0.25), 0, 1),
 				VansActionCommandNumberField("friction", V::Float, false, VansSerializedValue::Float(0.6), 0, 10),
 				VansActionCommandField("restitutionCombine", V::String, false, VansSerializedValue::String("Average")),

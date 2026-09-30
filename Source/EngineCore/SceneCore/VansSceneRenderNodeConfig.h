@@ -28,6 +28,7 @@ struct VansSceneRenderNodeConfig
 	std::string submeshSlotName;
 	std::string rayTracingMode = "auto";
 	std::optional<VansSceneImpactDecalConfig> impactPool;
+	std::optional<int> decalSortPriority;
 	std::optional<uint32_t> submesh;
 	std::optional<VansSceneTransformConfig> transform;
 	bool supportShadow = false;

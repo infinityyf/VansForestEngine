@@ -11,8 +11,12 @@ namespace Vans
         glm::vec3 velocityWithoutAirControl{0.0f};
         glm::vec3 airControlAcceleration{0.0f};
         float deltaTime = 0.0f;
+        float maximumSpeed = 0.0f;
+        float jumpSpeed = 0.0f;
+        float remainingTime = 0.0f;
         bool grounded = false;
         bool apex = false;
+		bool animationRootMotion = false;
     };
 
     glm::vec3 CharacterAirSlide(const glm::vec3& delta, float remainingFraction,
@@ -27,11 +31,11 @@ namespace Vans
     {
     public:
         void Begin(const VansCharacterMotionIntent& intent, const glm::vec3& velocity,
-            bool grounded, float deltaTime);
+            bool grounded, float deltaTime,
+			std::optional<glm::vec3> animationRootVelocity = std::nullopt);
         bool Next(VansCharacterMotionStep& step);
-        void ApplyCollision(bool grounded, bool ceiling,
-            const glm::vec3* normals, std::size_t normalCount);
-        void ApplySweptCollision(const glm::vec3& velocity, bool grounded, float unusedTime);
+        void ApplySweptCollision(const glm::vec3& velocity, bool grounded, float unusedTime,
+            bool stopSimulation = false);
         void SetDynamics(const VansCharacterAccelerationModel& model)
         {
             if (m_Intent.accelerationModel) m_Intent.accelerationModel = model;
@@ -47,5 +51,6 @@ namespace Vans
         float m_LastStepTime = 0.0f;
         int m_Iterations = 0, m_ApexAttempts = 0, m_Steps = 0;
         bool m_Grounded = false, m_AwaitingCollision = false;
+		std::optional<glm::vec3> m_AnimationRootVelocity;
     };
 }

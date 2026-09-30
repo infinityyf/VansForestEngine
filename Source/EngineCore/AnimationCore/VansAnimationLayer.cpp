@@ -13,23 +13,33 @@ namespace VansGraphics
 	namespace
 	{
 		constexpr float kLayerEpsilon = 1.0e-6f;
+		constexpr float kLinearPoseWeightEpsilon = 1.0e-5f;
 
 		VansBoneTransform ApplyRelativeAdditive(const VansBoneTransform& base,
 		                                          const VansBoneTransform& source,
 		                                          const VansBoneTransform& reference,
-		                                          float weight)
+		                                          float weight, bool linearRotationBlend = false)
 		{
 			VansBoneTransform delta;
 			delta.translation = source.translation - reference.translation;
-			delta.rotation = glm::normalize(glm::inverse(reference.rotation) * source.rotation);
+			delta.rotation = glm::normalize(linearRotationBlend
+				? source.rotation * glm::inverse(reference.rotation)
+				: glm::inverse(reference.rotation) * source.rotation);
 			delta.scale = glm::vec3(1.0f);
 			for (int axis = 0; axis < 3; ++axis)
 			{
 				const float divisor = reference.scale[axis];
-				delta.scale[axis] = std::abs(divisor) > 1.0e-6f
-					? source.scale[axis] / divisor : 1.0f;
+				const float tolerance=linearRotationBlend ? 1.e-8f : 1.e-6f;
+				delta.scale[axis] = std::abs(divisor) > tolerance
+					? source.scale[axis] / divisor : (linearRotationBlend ? 0.f : 1.f);
 			}
-			return VansPoseMath::ApplyAdditiveTransform(base, delta, weight);
+			if (!linearRotationBlend) return VansPoseMath::ApplyAdditiveTransform(base, delta, weight);
+			const float sign=delta.rotation.w>=0 ? 1.f : -1.f;
+			VansBoneTransform result;
+			result.translation = base.translation + delta.translation * weight;
+			result.scale = base.scale * glm::mix(glm::vec3(1), delta.scale, weight);
+			result.rotation = glm::normalize((glm::quat(1,0,0,0)*(sign*(1-weight))+delta.rotation*weight)*base.rotation);
+			return result;
 		}
 
 		void ApplyLocalBoneMix(VansAnimationFrameVector<VansBoneTransform>& result,
@@ -41,14 +51,24 @@ namespace VansGraphics
 		{
 			for (size_t index = 0; index < result.size(); ++index)
 			{
-				const float boneWeight = std::clamp(weight * mask.weights[index], 0.0f, 1.0f);
-				if (boneWeight <= kLayerEpsilon)
+				float boneWeight = std::clamp(weight * mask.weights[index], 0.0f, 1.0f);
+				if (boneWeight <= (definition.linearRotationBlend ? kLinearPoseWeightEpsilon : kLayerEpsilon))
 					continue;
-				if (definition.blendMode == VansLayerBlendMode::Override)
+				if (definition.linearRotationBlend && definition.blendMode==VansLayerBlendMode::Override && boneWeight>=1-kLinearPoseWeightEpsilon)
+					boneWeight=1;
+				if (definition.blendMode == VansLayerBlendMode::Override && definition.linearRotationBlend)
+				{
+					const auto& source=layer.localPose[index];auto& target=result[index];
+					const float sign=glm::dot(target.rotation,source.rotation)<0 ? -1.f : 1.f;
+					target.translation=glm::mix(target.translation,source.translation,boneWeight);
+					target.scale=glm::mix(target.scale,source.scale,boneWeight);
+					target.rotation=glm::normalize(target.rotation*(sign*(1-boneWeight))+source.rotation*boneWeight);
+				}
+				else if (definition.blendMode == VansLayerBlendMode::Override)
 					result[index] = VansPoseMath::BlendTransforms(result[index], layer.localPose[index], boneWeight);
 				else
 					result[index] = ApplyRelativeAdditive(result[index], layer.localPose[index],
-					                                      reference[index], boneWeight);
+					                                      reference[index], boneWeight,definition.linearRotationBlend);
 			}
 		}
 
@@ -84,26 +104,37 @@ namespace VansGraphics
 			{
 				const std::size_t index = static_cast<std::size_t>(boneIndex);
 				const int parent = skeleton.bones[index].parentIndex;
-				const float boneWeight = std::clamp(weight * mask.weights[index], 0.0f, 1.0f);
+				float boneWeight = std::clamp(weight * mask.weights[index], 0.0f, 1.0f);
+				if (definition.linearRotationBlend && boneWeight<=kLinearPoseWeightEpsilon) boneWeight=0;
+				if (definition.linearRotationBlend && definition.blendMode==VansLayerBlendMode::Override && boneWeight>=1-kLinearPoseWeightEpsilon)
+					boneWeight=1;
 				VansBoneTransform mixed = result[index];
 				glm::quat meshRotation = baseRotation[index];
-				if (boneWeight > kLayerEpsilon)
+				if (boneWeight > (definition.linearRotationBlend ? kLinearPoseWeightEpsilon : kLayerEpsilon))
 				{
 					if (definition.blendMode == VansLayerBlendMode::Override)
 					{
 						mixed.translation = glm::mix(mixed.translation, layer.localPose[index].translation, boneWeight);
 						mixed.scale = glm::mix(mixed.scale, layer.localPose[index].scale, boneWeight);
-						glm::quat target = layerRotation[index];
-						if (glm::dot(meshRotation, target) < 0.0f) target = -target;
-						meshRotation = glm::normalize(meshRotation * (1.0f - boneWeight)
-							+ target * boneWeight);
+						if (definition.linearRotationBlend && boneWeight == 1.0f)
+							meshRotation = layerRotation[index];
+						else
+					{
+							const float sign = glm::dot(meshRotation, layerRotation[index]) < 0.0f ? -1.0f : 1.0f;
+							meshRotation = definition.linearRotationBlend
+								? glm::normalize(meshRotation * (sign * (1.0f - boneWeight))
+									+ layerRotation[index] * boneWeight)
+								: glm::normalize(meshRotation * (1.0f - boneWeight)
+									+ layerRotation[index] * (sign * boneWeight));
+						}
 					}
 					else
 					{
-						mixed = ApplyRelativeAdditive(mixed, layer.localPose[index], reference[index], boneWeight);
+						mixed = ApplyRelativeAdditive(mixed, layer.localPose[index], reference[index], boneWeight,definition.linearRotationBlend);
 						glm::quat delta = glm::normalize(layerRotation[index] * glm::inverse(referenceRotation[index]));
-						if (delta.w < 0.0f) delta = -delta;
-						meshRotation = glm::normalize((glm::quat(1, 0, 0, 0) * (1.0f - boneWeight)
+						const float sign = definition.linearRotationBlend && delta.w < 0.0f ? -1.0f : 1.0f;
+						if (!definition.linearRotationBlend && delta.w < 0.0f) delta = -delta;
+						meshRotation = glm::normalize((glm::quat(1, 0, 0, 0) * (sign * (1.0f - boneWeight))
 							+ delta * boneWeight)
 							* baseRotation[index]);
 					}
@@ -117,10 +148,25 @@ namespace VansGraphics
 		}
 
 		void ApplyCurves(VansPosePayload& result, const VansPosePayload& layer,
-		                 VansLayerCurveMode mode, float weight)
+		                 VansLayerCurveMode mode, float weight, const VansCompiledBoneMask& mask)
 		{
-			if (mode == VansLayerCurveMode::BaseOnly)
+			if (mode == VansLayerCurveMode::BaseOnly || weight <= kLinearPoseWeightEpsilon)
 				return;
+			if (mode == VansLayerCurveMode::Blend)
+			{
+				result.curves = VansPosePayloadMixer::BlendCurveSamples(result.curves, layer.curves, weight);
+				return;
+			}
+			float curveWeight = 0.0f;
+			for (float boneMask : mask.weights)
+				curveWeight = std::max(curveWeight, std::clamp(weight * boneMask, 0.0f, 1.0f));
+			if (curveWeight <= kLinearPoseWeightEpsilon) curveWeight = 0.0f;
+			if ((mode == VansLayerCurveMode::Accumulate || mode == VansLayerCurveMode::Normalize) && curveWeight == 0.0f)
+				return;
+			const float normalization = mode == VansLayerCurveMode::Normalize ? 1.0f / (1.0f + curveWeight) : 1.0f;
+			if (mode == VansLayerCurveMode::Normalize)
+				for (auto& curve : result.curves)
+					if (curve.present) curve.value *= normalization;
 			for (const VansAnimationCurveSample& curve : layer.curves)
 			{
 				if (!curve.present)
@@ -131,15 +177,18 @@ namespace VansGraphics
 				if (found == result.curves.end())
 				{
 					result.curves.push_back(curve);
+					if (mode == VansLayerCurveMode::Accumulate || mode == VansLayerCurveMode::Normalize)
+						result.curves.back().value *= curveWeight * normalization;
 					continue;
 				}
 				float& value = found->value;
 				switch (mode)
 				{
 				case VansLayerCurveMode::BaseOnly: break;
-				case VansLayerCurveMode::Override:
-				case VansLayerCurveMode::Blend:
-				case VansLayerCurveMode::Normalize: value = glm::mix(value, curve.value, weight); break;
+				case VansLayerCurveMode::Override: value = curve.value; break;
+				case VansLayerCurveMode::Blend: break;
+				case VansLayerCurveMode::Normalize:
+				case VansLayerCurveMode::Accumulate: value += curve.value * (curveWeight * normalization); break;
 				case VansLayerCurveMode::Min: value = std::min(value, curve.value); break;
 				case VansLayerCurveMode::Max: value = std::max(value, curve.value); break;
 				}
@@ -161,6 +210,30 @@ namespace VansGraphics
 			result.valid = true;
 			return result;
 		}
+	}
+
+	const char* VansLayerCurveModeName(VansLayerCurveMode mode)
+	{
+		switch (mode)
+		{
+		case VansLayerCurveMode::BaseOnly: return "baseOnly";
+		case VansLayerCurveMode::Override: return "override";
+		case VansLayerCurveMode::Blend: return "blend";
+		case VansLayerCurveMode::Normalize: return "normalize";
+		case VansLayerCurveMode::Min: return "min";
+		case VansLayerCurveMode::Max: return "max";
+		case VansLayerCurveMode::Accumulate: return "accumulate";
+		}
+		return "";
+	}
+
+	bool VansParseLayerCurveMode(const std::string& name, VansLayerCurveMode& mode)
+	{
+		for (int value = static_cast<int>(VansLayerCurveMode::BaseOnly);
+			value <= static_cast<int>(VansLayerCurveMode::Accumulate); ++value)
+			if (name == VansLayerCurveModeName(static_cast<VansLayerCurveMode>(value)))
+			{ mode = static_cast<VansLayerCurveMode>(value); return true; }
+		return false;
 	}
 
 	void VansAnimationLayerMixer::BuildBindPose(const Skeleton& skeleton,
@@ -193,7 +266,7 @@ namespace VansGraphics
 		VansPosePayload adjustedLayer = layer;
 		if (definition.dynamicAdditive && definition.dynamicAdditiveWeight > kLayerEpsilon)
 				adjustedLayer = ApplyDynamicAdditive(base, layer, referencePose, skeleton, mask,
-					std::clamp(definition.dynamicAdditiveWeight, 0.0f, 1.0f), definition.rotationSpace);
+					std::clamp(definition.dynamicAdditiveWeight, 0.0f, 1.0f), definition.rotationSpace,definition.linearRotationBlend);
 		if (!mask.allZero && weight > kLayerEpsilon)
 		{
 			if (definition.rotationSpace == VansRotationBlendSpace::Mesh)
@@ -202,7 +275,7 @@ namespace VansGraphics
 				ApplyLocalBoneMix(result.localPose, adjustedLayer, definition, mask, referencePose, weight);
 		}
 
-		ApplyCurves(result, layer, definition.curves, weight);
+		ApplyCurves(result, layer, definition.curves, weight, mask);
 		if (definition.events == VansLayerEventMode::Always
 		    || (definition.events == VansLayerEventMode::ActiveOnly
 		        && weight >= definition.eventWeightThreshold))
@@ -252,7 +325,7 @@ namespace VansGraphics
 		const Skeleton& skeleton,
 		const VansCompiledBoneMask& mask,
 		float weight,
-		VansRotationBlendSpace rotationSpace)
+		VansRotationBlendSpace rotationSpace,bool linearRotationBlend)
 	{
 		VansPosePayload result = layer;
 		if (!base.valid || !layer.valid || base.localPose.size() != layer.localPose.size()
@@ -285,13 +358,14 @@ namespace VansGraphics
 				const int parent = skeleton.bones[index].parentIndex;
 				const float boneWeight = std::clamp(mask.weights[index] * clampedWeight, 0.0f, 1.0f);
 				glm::quat meshRotation = layerRotation[index];
-				if (boneWeight > kLayerEpsilon)
+				if (boneWeight > (linearRotationBlend ? kLinearPoseWeightEpsilon : kLayerEpsilon))
 				{
 					result.localPose[index] = ApplyRelativeAdditive(
-						layer.localPose[index], base.localPose[index], baseReference[index], boneWeight);
+						layer.localPose[index], base.localPose[index], baseReference[index], boneWeight,linearRotationBlend);
 					glm::quat delta = glm::normalize(baseRotation[index] * glm::inverse(referenceRotation[index]));
-					if (delta.w < 0.0f) delta = -delta;
-					meshRotation = glm::normalize((glm::quat(1, 0, 0, 0) * (1.0f - boneWeight)
+					const float sign = linearRotationBlend && delta.w < 0.0f ? -1.0f : 1.0f;
+					if (!linearRotationBlend && delta.w < 0.0f) delta = -delta;
+					meshRotation = glm::normalize((glm::quat(1, 0, 0, 0) * (sign * (1.0f - boneWeight))
 						+ delta * boneWeight) * layerRotation[index]);
 				}
 				blendedRotation[index] = meshRotation;
@@ -304,13 +378,13 @@ namespace VansGraphics
 		for (std::size_t index = 0; index < layer.localPose.size(); ++index)
 		{
 			const float boneWeight = std::clamp(mask.weights[index] * clampedWeight, 0.0f, 1.0f);
-			if (boneWeight <= kLayerEpsilon)
+			if (boneWeight <= (linearRotationBlend ? kLinearPoseWeightEpsilon : kLayerEpsilon))
 				continue;
 			// Keep the overlay's authored pose and add only the Base movement
 			// delta relative to the selected reference pose.  Root/pelvis/legs
 			// are naturally excluded by the compiled upper-body mask.
 			result.localPose[index] = ApplyRelativeAdditive(
-				layer.localPose[index], base.localPose[index], baseReference[index], boneWeight);
+				layer.localPose[index], base.localPose[index], baseReference[index], boneWeight,linearRotationBlend);
 		}
 		return result;
 	}

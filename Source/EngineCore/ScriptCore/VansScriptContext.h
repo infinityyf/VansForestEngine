@@ -255,6 +255,7 @@ class VansScriptCharacterControllerComponent : public VansScriptComponent
 public:
 	VansScriptCharacterControllerComponent();
 	VansEngine::VansCharacterControllerNode* m_ControllerNode = nullptr;
+	bool m_ScriptMovementBlockOwned = false;
 	void BindFollowRagdoll(VansScriptRagdollComponent* ragdollComp, const std::string& rootBone = "pelvis");
 	void ClearFollowRagdoll();
 	bool IsFollowRagdollEnabled() const;

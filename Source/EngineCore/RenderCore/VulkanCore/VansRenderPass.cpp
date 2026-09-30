@@ -1336,8 +1336,28 @@ void VansGraphics::VansRenderPassManager::SetupVansUIRenderPass(VkDevice& logic_
 }
 
 void VansGraphics::VansRenderPassManager::SetupVansSceneUIRenderPass(
-	VkDevice& logicDevice, VkImageView finalDisplayImageView, const VkExtent2D& displayExtent)
+	VkDevice& logicDevice, VkPhysicalDevice physicalDevice,
+	VkImageView finalDisplayImageView, const VkExtent2D& displayExtent)
 {
+	// Noesis geometry clips use stencil. Keep this attachment independent of
+	// scene depth/stencil so UI cannot modify scene effects or depth contents.
+	VkFormat stencilFormat = VK_FORMAT_UNDEFINED;
+	for (VkFormat candidate : { VK_FORMAT_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT,
+		VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT })
+	{
+		VkFormatProperties properties{};
+		vkGetPhysicalDeviceFormatProperties(physicalDevice, candidate, &properties);
+		if (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+		{
+			stencilFormat = candidate;
+			break;
+		}
+	}
+	if (stencilFormat == VK_FORMAT_UNDEFINED || !m_SceneUIStencilImage.CreateVulkanImage(logicDevice,
+		{ displayExtent.width, displayExtent.height, 1 }, stencilFormat, 1, 1,
+		VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+		VK_SAMPLE_COUNT_1_BIT))
+		throw std::runtime_error("Could not create the runtime UI stencil attachment");
 	// FinalDisplayColor is loaded so Noesis can composite over the scene.
 	// - LOAD_OP_LOAD：保留场景内容，Noesis 叠加渲染
 	// - initialLayout = COLOR_ATTACHMENT_OPTIMAL（调用前已由 barrier 转换）
@@ -1355,7 +1375,12 @@ void VansGraphics::VansRenderPassManager::SetupVansSceneUIRenderPass(
 			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		},
+		{ 0, stencilFormat, VK_SAMPLE_COUNT_1_BIT,
+		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		  VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL },
 	};
+	VkAttachmentReference stencilRef = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 	std::vector<SubpassParameters> subpass_parameters =
 	{
 		{
@@ -1365,12 +1390,12 @@ void VansGraphics::VansRenderPassManager::SetupVansSceneUIRenderPass(
 				{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
 			},
 			{},
-			nullptr,
+			&stencilRef,
 			{}
 		},
 	};
-	// 无 clear，LOAD_OP_LOAD 时 clearValue 无效
-	m_VansSceneUIPass.m_ClearValues = {};
+	// Color is loaded; only the independent UI stencil attachment is cleared.
+	m_VansSceneUIPass.m_ClearValues = { VkClearValue{}, VkClearValue{} };
 
 	std::vector<VkSubpassDependency> subpass_dependencies;
 	m_VansSceneUIPass.CreateRenderPass(
@@ -1391,7 +1416,7 @@ void VansGraphics::VansRenderPassManager::SetupVansSceneUIRenderPass(
 
 	// FinalDisplayColor is one offscreen image, not a swapchain image array.
 	m_VansSceneUIPass.m_FrameBuffers.resize(1);
-	std::vector<VkImageView> image_views = { finalDisplayImageView };
+	std::vector<VkImageView> image_views = { finalDisplayImageView, m_SceneUIStencilImage.GetDepthStencilView() };
 	m_VansSceneUIPass.m_FrameBuffers[0].CreateFrameBuffer(
 		logicDevice, m_VansSceneUIPass.m_RenderPass, image_views,
 		{ displayExtent.width, displayExtent.height, 1 });
@@ -1961,7 +1986,7 @@ void VansGraphics::VansRenderPassManager::DestroySceneResolutionRenderPasses()
 void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 {
 	m_VansDisplayPostProcessPass.DestroyRenderPass(m_LogicDevice);
-	m_VansSceneUIPass.DestroyRenderPass(m_LogicDevice);
+	DestroySceneUIRenderPass();
 	m_FinalDisplayColorImage.DestroyVulkanImage(m_LogicDevice);
 	DestroySceneResolutionRenderPasses();
 
@@ -2000,6 +2025,7 @@ void VansGraphics::VansRenderPassManager::DestroyUIRenderPass()
 void VansGraphics::VansRenderPassManager::DestroySceneUIRenderPass()
 {
 	m_VansSceneUIPass.DestroyRenderPass(m_LogicDevice);
+	m_SceneUIStencilImage.DestroyVulkanImage(m_LogicDevice);
 }
 
 void VansGraphics::VansRenderPassManager::DestroyDisplayPostProcessPass()

@@ -480,14 +480,14 @@ namespace VansGraphics
 		std::shared_ptr<const Vans::VansPcgSplineFieldSnapshot> m_SplineField;
 		std::shared_ptr<const Vans::VansPcgSplineFieldSnapshot> m_PendingSplineField;
 		std::unique_ptr<VansPcgSplineFieldResources> m_SplineFieldResources;
-		struct SplineRoadRuntime
+		struct SplineSurfaceRuntime
 		{
 			VansRenderNode* node = nullptr; // opaque/decal vectors 统一销毁节点。
 			std::shared_ptr<VansMesh> mesh;
 			std::uint64_t fingerprint = 0;
 		};
-		std::map<std::string, SplineRoadRuntime> m_SplineRoads;
-		bool UpdateSplineRoadRenderNodes(const Vans::VansPcgSplineFieldSnapshot& field, std::string& error);
+		std::map<std::string, SplineSurfaceRuntime> m_SplineSurfaces;
+		bool UpdateSplineSurfaceRenderNodes(const Vans::VansPcgSplineFieldSnapshot& field, std::string& error);
 		std::vector<std::shared_ptr<const Vans::VansPcgBatchUpdate>> m_PendingVegetationUpdates;
 		std::vector<VansAnimationNode*> m_AnimationNodes;
 		std::unordered_map<VansAnimationNode*, std::unique_ptr<VansAnimationGpuBinding>>

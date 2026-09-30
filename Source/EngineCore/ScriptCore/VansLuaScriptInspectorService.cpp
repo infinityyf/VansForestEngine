@@ -43,6 +43,12 @@ int LuaStubMouseDelta(lua_State* state)
     return 2;
 }
 
+int LuaStubAxis(lua_State* state)
+{
+    lua_pushnumber(state, 0.0);
+    return 1;
+}
+
 int LuaStubNil(lua_State* state)
 {
     lua_pushnil(state);
@@ -86,6 +92,16 @@ void InstallEditorLuaStubs(lua_State* state)
     lua_setfield(state, -2, "is_key_pressed");
     lua_pushcfunction(state, LuaStubFalse);
     lua_setfield(state, -2, "is_key_released");
+    lua_pushcfunction(state, LuaStubFalse);
+    lua_setfield(state, -2, "is_gamepad_connected");
+    lua_pushcfunction(state, LuaStubFalse);
+    lua_setfield(state, -2, "is_gamepad_button_down");
+    lua_pushcfunction(state, LuaStubFalse);
+    lua_setfield(state, -2, "is_gamepad_button_pressed");
+    lua_pushcfunction(state, LuaStubFalse);
+    lua_setfield(state, -2, "is_gamepad_button_released");
+    lua_pushcfunction(state, LuaStubAxis);
+    lua_setfield(state, -2, "get_gamepad_axis");
     lua_pushcfunction(state, LuaStubMouseDelta);
     lua_setfield(state, -2, "get_mouse_delta");
     lua_pushcfunction(state, LuaStubSetCursorMode);

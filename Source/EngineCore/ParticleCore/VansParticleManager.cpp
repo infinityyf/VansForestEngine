@@ -159,6 +159,7 @@ void VansParticleManager::ApplyCommands(const std::vector<VansParticleCommand>& 
             break;
         case VansParticleControl::EffectiveEnabled: runtime->SetEffectiveEnabled(command.value != 0); break;
         case VansParticleControl::DeferFirstUpdate: runtime->DeferFirstUpdate(); break;
+        case VansParticleControl::EmitInitialFrame: runtime->EmitInitialFrame(); break;
         case VansParticleControl::SetOwnerWorldTransform: runtime->SetOwnerWorldTransform(command.ownerWorld); break;
         case VansParticleControl::SetEmitterPositionLocal: runtime->SetEmitterPositionLocal(command.emitterPositionLocal); break;
         }

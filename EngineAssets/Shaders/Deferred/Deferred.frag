@@ -40,10 +40,14 @@ layout(set = 1, binding = 30) uniform sampler2D decalColorInput;
 layout(set = 1, binding = 31) uniform sampler2D decalNormalInput;
 layout(set = 1, binding = 32) uniform sampler2D decalRoughnessInput;
 
-void ApplySurfaceDecals(vec2 uv, int materialID, inout vec3 albedo, inout vec3 normal, inout float roughness)
+void ApplySurfaceDecals(vec2 uv, int materialID, inout vec3 albedo, inout vec3 normal,
+    inout float roughness, inout float ao)
 {
+    vec4 roughnessModifier=texture(decalRoughnessInput, uv);
     ApplyDecalModifiers(materialID, texture(decalColorInput, uv), texture(decalNormalInput, uv),
-        texture(decalRoughnessInput, uv), albedo, normal, roughness);
+        roughnessModifier, albedo, normal, roughness);
+    // G 已按 A 预乘；B 是 AO 覆盖率，未使用 AO 的贴花保持原值。
+    ao=clamp(ao*(1.0-roughnessModifier.b)+roughnessModifier.g,0.0,1.0);
 }
 
 layout(set = 1, binding = 5, rg16f ) uniform readonly image2D gtao;
@@ -223,7 +227,8 @@ bool EvaluateSubsurfaceSourceAtUV(vec2 uv, int centerMaterialIndex,
     sampleBRDF.albedo = sampleGBuffer0.rgb;
     sampleBRDF.normal = DecalSafeNormal(sampleNormalData.xyz, vec3(0.0, 1.0, 0.0));
     sampleBRDF.roughness = sampleGBuffer0.w;
-    ApplySurfaceDecals(uv, sampleMaterialID, sampleBRDF.albedo, sampleBRDF.normal, sampleBRDF.roughness);
+    ApplySurfaceDecals(uv, sampleMaterialID, sampleBRDF.albedo, sampleBRDF.normal,
+        sampleBRDF.roughness, sampleAO);
     sampleBRDF.albedo = sqrt(max(sampleBRDF.albedo, vec3(0.0)));
     sampleBRDF.roughness = clamp(sampleBRDF.roughness, 0.045, 1.0);
     sampleBRDF.metallic = 0.0;
@@ -343,7 +348,7 @@ void main()
     float ao = gbufferData1.y;
     float materialID = gbufferData1.z;
     int matID = DecodeDecalReceiverMaterialID(materialID);
-    ApplySurfaceDecals(fragTexCoord, matID, color, normal, roughness);
+    ApplySurfaceDecals(fragTexCoord, matID, color, normal, roughness, ao);
     vec3 position_world = gbufferData2.xyz;
     float depth = depthData.x;
     float linearDepth = gbufferData2.w;

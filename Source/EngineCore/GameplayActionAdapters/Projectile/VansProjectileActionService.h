@@ -10,6 +10,7 @@
 namespace Vans
 {
 class VansRuntimeWorld;
+class VansGameplayAssetLibrary;
 struct VansProjectileSpawnRequest
 {
     VansEntityHandle owner;
@@ -35,15 +36,25 @@ struct VansProjectileSceneBackend
 class VansProjectileActionService final : public IVansActionService
 {
 public:
-    VansProjectileActionService(VansRuntimeWorld& world, IVansGameplayServiceRuntime& runtime, VansProjectileSceneBackend backend);
+    VansProjectileActionService(VansRuntimeWorld& world, IVansGameplayServiceRuntime& runtime,
+        const VansGameplayAssetLibrary& assets, VansProjectileSceneBackend backend);
     const VansActionServiceCapability& Capability() const override;
     VansActionCommandResult Execute(const VansActionCommand& command) override;
     bool Release(VansGenerationHandle resource, std::string& error) override;
     void Tick(double deltaSeconds) override;
 private:
-    struct Projectile { VansEntityHandle entity; std::optional<double> remainingSeconds; bool justSpawned = true; };
+    struct Projectile
+    {
+        VansEntityHandle entity;
+        std::optional<double> remainingSeconds;
+        bool justSpawned = true;
+        VansEntityHandle owner, instigator;
+        VansActionId detonationAction;
+        std::optional<double> fuseSeconds;
+    };
     VansRuntimeWorld& m_World;
     IVansGameplayServiceRuntime& m_Runtime;
+    const VansGameplayAssetLibrary& m_Assets;
     VansProjectileSceneBackend m_Backend;
     VansGenerationPool<Projectile> m_Projectiles;
 };

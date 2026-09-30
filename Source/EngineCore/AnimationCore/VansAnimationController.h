@@ -266,6 +266,7 @@ namespace VansGraphics
 		// ─── Root Motion ──────────────────────────────────────────────
 		void EnableRootMotion(bool enable);
 		bool IsRootMotionEnabled() const;
+		void SetGraphRootMotionExtraction(bool enable) { m_ExtractGraphRootMotion = enable; }
 		void SetRootMotionApplyToOwner(bool apply) { m_RootMotionApplyToOwner = apply; }
 		bool ShouldApplyRootMotionToOwner() const { return m_RootMotionApplyToOwner; }
 		void SetNormalizeRootPose(bool normalize) { m_NormalizeRootPose = normalize; }
@@ -274,6 +275,12 @@ namespace VansGraphics
 		glm::quat GetRootRotationDelta() const;
 		bool HasRootMotionDelta() const { return m_LastRootMotionValid; }
 		const VansAnimationFrameVector<VansAnimationEventSample>& GetSampledEvents() const { return m_SampledEvents; }
+		bool ClaimSampledEventPublication()
+		{
+			if (m_SampledEventsPublished) return false;
+			m_SampledEventsPublished = true;
+			return true;
+		}
 		const VansAnimationFrameVector<VansAnimationCurveSample>& GetSampledCurves() const { return m_SampledCurves; }
 		const VansAnimationSyncState& GetSyncState() const { return m_SyncState; }
 		void SetRootBoneIndex(int index) { m_RootBoneIndex = index; }
@@ -304,6 +311,7 @@ namespace VansGraphics
 				&skeleton, &m_CachedLocalTransforms, &m_CachedGlobalTransforms, m_FinalPoseRevision };
 			return view.IsValid() ? view : VansSkeletonPoseView{};
 		}
+		bool SavePoseSnapshot(const std::string& name, const Skeleton& skeleton);
 		const VansAnimationFrameVector<SampledNodeTransform>& GetSampledNodeTransforms() const { return m_SampledNodeTransforms; }
 		std::size_t GetLastFrameScratchAllocations() const { return m_FramePool.GetLastFrameUpstreamAllocations(); }
 		std::size_t GetLastFrameScratchAllocatedBytes() const { return m_FramePool.GetLastFrameUpstreamBytes(); }
@@ -327,6 +335,8 @@ namespace VansGraphics
 			std::string& error);
 		bool SetTargetPostProcessGraph(std::unique_ptr<VansAnimGraph> graph,
 		                               std::string& error);
+		bool SetFinalCompositionGraph(std::unique_ptr<VansAnimGraph> graph,
+		                              std::string& error);
 		bool SetAnimationRig(VansCompiledAnimationRig rig,
 		                     VansGroundQueryProfileResolver queryProfileResolver,
 		                     std::string& error);
@@ -349,9 +359,12 @@ namespace VansGraphics
 		const std::string& GetAnimationRigAssetGuid() const { return m_AnimationRigAssetGuid; }
 		void ClearTargetPostProcessGraph();
 		std::unique_ptr<VansAnimGraph> CloneTargetPostProcessGraph() const;
+		void ClearFinalCompositionGraph();
+		std::unique_ptr<VansAnimGraph> CloneFinalCompositionGraph() const;
 		bool TryGetPoseCheckpointTransform(const std::string& id, int bone, glm::mat4& transform) const;
 		bool HasPoseCheckpointBone(const std::string& id, int bone) const;
 		bool HasTargetPostProcessGraph() const { return m_TargetPostProcessInstance != nullptr; }
+		bool HasFinalCompositionGraph() const { return m_FinalCompositionInstance != nullptr; }
 		bool HasGraphSets() const { return !m_GraphSetRuntimes.empty(); }
 		std::size_t GetLayerCount() const { return m_LayerRuntimes.size(); }
 		VansGraphSetSwitchResult SwitchGraphSet(const std::string& graphSetId);
@@ -373,6 +386,8 @@ namespace VansGraphics
 		bool DriveSlot(VansSlotPlaybackHandle handle, float playbackTime, float weight);
 		VansSlotPlaybackStatus GetSlotStatus(VansSlotPlaybackHandle handle) const;
 		bool IsSlotActive(const std::string& slotId) const;
+		bool HasActiveRootMotionSlot() const;
+		VansRootMotionDelta GetSlotRootMotionDelta() const;
 		const VansAnimationSlotDefinition* FindSlotDefinition(const std::string& slotId) const;
 		const std::vector<VansSlotLifecycleEvent>& GetSlotLifecycleEvents() const;
 
@@ -418,6 +433,7 @@ namespace VansGraphics
 		float                m_GlobalSpeed    = 1.0f;
 		// ─── Root Motion ───
 		bool      m_RootMotionEnabled     = false;
+		bool      m_ExtractGraphRootMotion = true;
 		bool      m_RootMotionApplyToOwner = true;
 		bool      m_NormalizeRootPose = true;
 		int       m_RootBoneIndex         = -1;
@@ -425,6 +441,7 @@ namespace VansGraphics
 		glm::quat m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 		bool      m_LastRootMotionValid = false;
 		VansAnimationFrameVector<VansAnimationEventSample> m_SampledEvents;
+		bool m_SampledEventsPublished = true;
 		VansAnimationFrameVector<VansAnimationCurveSample> m_SampledCurves;
 		VansAnimationSyncState m_SyncState;
 
@@ -485,6 +502,8 @@ namespace VansGraphics
 		std::string m_QueuedGraphSetId;
 		std::unique_ptr<VansAnimGraph> m_TargetPostProcessGraph;
 		std::unique_ptr<VansAnimGraphInstance> m_TargetPostProcessInstance;
+		std::unique_ptr<VansAnimGraph> m_FinalCompositionGraph;
+		std::unique_ptr<VansAnimGraphInstance> m_FinalCompositionInstance;
 		VansAnimationSlotRuntime m_SlotRuntime;
 		std::unordered_map<std::string, VansSlotPoseInputs> m_SlotPayloads;
 		std::unique_ptr<VansMotionMatchingRuntime> m_MotionMatching;
@@ -537,6 +556,9 @@ namespace VansGraphics
 		bool EvaluateTargetPostProcess(float deltaTime, const Skeleton& skeleton,
 		                               const VansPosePayload& input,
 		                               VansPosePayload& output);
+		bool EvaluateFinalComposition(float deltaTime, const Skeleton& skeleton,
+		                              const VansPosePayload& input,
+		                              VansPosePayload& output);
 		bool FinalizeLocalPose(float deltaTime, const Skeleton& skeleton,
 		                       VansPosePayload pose,
 		                       bool normalizeRoot,

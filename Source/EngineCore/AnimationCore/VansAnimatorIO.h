@@ -24,7 +24,8 @@ namespace VansGraphics
 		enum class Role
 		{
 			Pose,
-			TargetPostProcess
+			TargetPostProcess,
+			FinalComposition
 		};
 
 		std::string id;
@@ -60,6 +61,8 @@ namespace VansGraphics
 		const VansAnimGraph* FindGraph(const std::string& graphId) const;
 		VansAnimGraph* FindTargetPostProcessGraph();
 		const VansAnimGraph* FindTargetPostProcessGraph() const;
+		VansAnimGraph* FindFinalCompositionGraph();
+		const VansAnimGraph* FindFinalCompositionGraph() const;
 	};
 
 	// ────────────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ namespace Vans
 	{
 	public:
 		void Reset(const glm::vec3& positionWorld, float facingYaw);
+		void SeedVelocity(const glm::vec3& velocityWorld);
 		void RecordResolvedMotion(float deltaTime,
 		                         const glm::vec3& positionWorld,
 		                         const glm::vec3& actualVelocityWorld,

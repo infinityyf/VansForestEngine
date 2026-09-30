@@ -113,8 +113,13 @@ std::string ResolveUIPath(
                     ownerPath = pathResolver->Resolve(ownerPath.generic_string());
 
                 std::string relative = assetPath.substr(assetGuidLength);
+                // A rooted XAML resource URI is relative to the project content
+                // root, including when its owner is a cooked XAML artifact.
+                const bool projectRooted = !relative.empty() && relative.front() == '/';
                 while (!relative.empty() && relative.front() == '/')
                     relative.erase(relative.begin());
+                if (projectRooted)
+                    return pathResolver->Resolve(relative);
                 return (ownerPath.parent_path() / std::filesystem::path(relative))
                     .lexically_normal().generic_string();
             }

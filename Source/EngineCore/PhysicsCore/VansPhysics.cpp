@@ -3,6 +3,8 @@
 #include "VansPhysicsEventCallback.h"
 #include "VansClothSystem.h"
 #include "VansRagdollTypes.h"
+#include "VansRagdollSystem.h"
+#include "VansCollisionFilter.h"
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
 #include "../RuntimeCore/VansThreadContract.h"
@@ -37,6 +39,21 @@ namespace VansEngine
 		void deallocate(void* ptr) override;
 	};
 
+	class VansPhysicsPairFilterCallback final : public PxSimulationFilterCallback
+	{
+	public:
+		PxFilterFlags pairFound(PxU64, PxFilterObjectAttributes, PxFilterData,
+			const PxActor* a, const PxShape*, PxFilterObjectAttributes, PxFilterData,
+			const PxActor* b, const PxShape*, PxPairFlags&) override
+		{
+			return VansRagdollSystem::GetInstance().IsCollisionPairSuppressedLocked(a,b)
+				? PxFilterFlags(PxFilterFlag::eSUPPRESS) : PxFilterFlags(PxFilterFlag::eDEFAULT);
+		}
+		void pairLost(PxU64, PxFilterObjectAttributes, PxFilterData,
+			PxFilterObjectAttributes, PxFilterData, bool) override {}
+		bool statusChange(PxU64&, PxPairFlags&, PxFilterFlags&) override { return false; }
+	};
+
 	struct VansPhysicsSystem::NativeState
 	{
 		PxFoundation* foundation = nullptr;
@@ -49,6 +66,7 @@ namespace VansEngine
 		PxPvd* pvd = nullptr;
 		PxPvdTransport* pvdTransport = nullptr;
 		VansPhysicsEventCallback* eventCallback = nullptr;
+		VansPhysicsPairFilterCallback pairFilterCallback;
 		VansPhysicsErrorCallback errorCallback;
 		VansPhysicsAllocator allocator;
 	};
@@ -105,6 +123,9 @@ namespace VansEngine
 		          | PxPairFlag::eNOTIFY_TOUCH_LOST
 		          | PxPairFlag::eNOTIFY_CONTACT_POINTS;
 
+		if (filterData0.word3 != 0 && filterData0.word3 == filterData1.word3 &&
+			(filterData0.word2 & filterData1.word2 & VansCollisionFilter::RagdollSelectiveCollision))
+			return PxFilterFlag::eCALLBACK;
 		return PxFilterFlag::eDEFAULT;
 	}
 
@@ -260,6 +281,7 @@ namespace VansEngine
 		sceneDesc.gravity = PxVec3(0.0f, -9.81f, 0.0f);
 		sceneDesc.cpuDispatcher = m_Native->dispatcher;
 		sceneDesc.filterShader = VansCollisionFilterShader;
+		sceneDesc.filterCallback = &m_Native->pairFilterCallback;
 		sceneDesc.kineKineFilteringMode = PxPairFilteringMode::eKEEP;
 		sceneDesc.staticKineFilteringMode = PxPairFilteringMode::eKEEP;
 

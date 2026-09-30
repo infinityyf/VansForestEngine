@@ -5,7 +5,6 @@
 
 #include <functional>
 #include <string>
-#include <vector>
 
 namespace Vans
 {
@@ -24,10 +23,6 @@ public:
 		const VansNavigationAreaSettings& areaSettings,
 		const VansNavigationMeshResolver& resolveMesh,
 		VansNavigationGeometry& geometry,
-		std::string& error);
-	static bool CollectEnvironmentMeshAssets(
-		const VansSceneObjectBuildPlan& sceneObjects,
-		std::vector<std::string>& assetGuids,
 		std::string& error);
 };
 }

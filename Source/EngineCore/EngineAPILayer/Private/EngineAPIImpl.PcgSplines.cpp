@@ -6,6 +6,7 @@
 #include "../../PcgCore/VansPcgTerrainSurface.h"
 #include "../../PcgCore/Storage/VansPcgSplineFieldStorage.h"
 #include "../../PcgCore/Serialization/VansPcgSplineAssetCodec.h"
+#include "../../AssetCore/VansMaterialAuthoringAsset.h"
 #include "../../AuthoringCore/Pcg/VansPcgSplineAuthoringSession.h"
 #include "../../AuthoringCore/VansAssetDocumentRegistry.h"
 #include "../../AuthoringCore/VansAssetDocumentEditService.h"
@@ -39,6 +40,7 @@ PcgSplineItem ToPublic(const VansPcgSpline& source)
     result.roadRenderMode=static_cast<PcgRoadRenderMode>(source.roadRenderMode);result.projectedDepth=source.projectedDepth;
     result.excludeVegetation=source.excludeVegetation;result.vegetationFade=source.vegetationFade;
     result.priority=source.priority;result.shoulder=source.shoulder;result.blendWidth=source.blendWidth;
+    result.decalSortPriority=source.decalSortPriority;
     result.waterSurfaceDrop=source.waterSurfaceDrop;
     result.waterBlendWidthMeters=source.waterBlendWidthMeters;
     result.waterBlendStartMeters=source.waterBlendStartMeters;result.waterBlendEndMeters=source.waterBlendEndMeters;
@@ -64,8 +66,9 @@ bool FromPublic(const PcgSplineItem& source,VansPcgSpline& result,std::string& e
 {
     if (source.kind!=static_cast<PcgSplineKind>(result.kind)) {error="Spline kind cannot change.";return false;}
     result.name=source.name;result.enabled=source.enabled;result.locked=source.locked;result.priority=source.priority;
+    result.decalSortPriority=source.decalSortPriority;
     if (source.materialGuid.empty()) result.material={};
-    else if (!VansAssetGuid::TryParse(source.materialGuid,result.material)) {error="Invalid road material reference.";return false;}
+    else if (!VansAssetGuid::TryParse(source.materialGuid,result.material)) {error="Invalid spline material reference.";return false;}
     if (source.roadDecalMaterialGuid.empty()) result.roadDecalMaterial={};
     else if (!VansAssetGuid::TryParse(source.roadDecalMaterialGuid,result.roadDecalMaterial)) {error="Invalid road decal material reference.";return false;}
     result.excludeVegetation=source.excludeVegetation;result.vegetationFade=source.vegetationFade;
@@ -106,6 +109,15 @@ bool FromPublic(const PcgSplineItem& source,VansPcgSpline& result,std::string& e
     }
     VansPcgSplineEvaluator::ResolveAutoTangents(result);
     return true;
+}
+bool ValidateSplineDecalMaterial(const VansPcgSpline& spline,std::string& error)
+{
+    if (spline.kind!=VansPcgSplineKind::Decal) return true;
+    const auto material=VansProjectManager::Get().GetAssetObjectRepository()
+        .ResolveLatest<VansMaterialAuthoringAsset>(spline.material);
+    if (material && material->materialType=="decal") return true;
+    error="Choose a material whose type is Decal for the spline decal.";
+    return false;
 }
 std::string SceneSplineGuid(const VansSceneDocument* document)
 {
@@ -310,6 +322,7 @@ PcgEditorOperationResult EngineAPIImpl::ApplyPcgSplineEdit(const PcgSplineEditRe
     if (found->locked && request.spline.locked) return {false,"Unlock the spline before editing."};
     std::string error;
     if (!FromPublic(request.spline,*found,error)) return {false,error};
+    if (!ValidateSplineDecalMaterial(*found,error)) return {false,error};
     if (request.phase==PcgSplineEditPhase::Update)
     {
         if (!state.ReplaceDraft(std::move(asset),error)) return {false,error};
@@ -436,13 +449,18 @@ PcgEditorOperationResult EngineAPIImpl::ExecutePcgSplineCommand(const PcgSplineC
         view.pose.rotationDegrees={glm::degrees(std::asin(forward.y)),glm::degrees(std::atan2(forward.z,forward.x)),0};
         camera->ApplyView(view);return {true,{}};
     }
-    if (request.command==PcgSplineCommand::AddRoad || request.command==PcgSplineCommand::AddRiver)
+    if (request.command==PcgSplineCommand::AddRoad || request.command==PcgSplineCommand::AddRiver ||
+        request.command==PcgSplineCommand::AddDecal)
     {
         VansPcgSpline spline;spline.id=VansAssetGuid::New().ToString();
-        spline.kind=request.command==PcgSplineCommand::AddRoad?VansPcgSplineKind::Road:VansPcgSplineKind::River;
-        spline.name=spline.kind==VansPcgSplineKind::Road?"Road":"River";
-        if (spline.kind==VansPcgSplineKind::Road && !VansAssetGuid::TryParse(request.materialGuid,spline.material))
-            return {false,"Choose a road PBR material."};
+        spline.kind=request.command==PcgSplineCommand::AddRoad?VansPcgSplineKind::Road:
+            request.command==PcgSplineCommand::AddRiver?VansPcgSplineKind::River:VansPcgSplineKind::Decal;
+        spline.name=spline.kind==VansPcgSplineKind::Road?"Road":
+            spline.kind==VansPcgSplineKind::River?"River":"Spline Decal";
+        if (spline.kind!=VansPcgSplineKind::River && !VansAssetGuid::TryParse(request.materialGuid,spline.material))
+            return {false,spline.kind==VansPcgSplineKind::Decal?"Choose a Decal material.":"Choose a road PBR material."};
+        if (!ValidateSplineDecalMaterial(spline,error)) return {false,error};
+        if (spline.kind==VansPcgSplineKind::Decal) spline.shoulder=0;
         VansPcgSplinePoint point;point.id=VansAssetGuid::New().ToString();point.position=request.position;
         spline.points.push_back(point);
         VansPcgSplineEvaluator::ResolveAutoTangents(spline);

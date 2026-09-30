@@ -22,8 +22,6 @@
 #include "../AnimationCore/VansBoneMask.h"
 #include "../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../NavigationCore/VansNavigationMesh.h"
-#include "../NavigationCore/VansNavigationSource.h"
-#include "../NavigationCore/VansSceneNavigationGeometry.h"
 #include "../PhysicsCore/VansRagdollTypes.h"
 #include "../ParticleCore/VansParticleAsset.h"
 #include "../RuntimeUI/Serialization/VansUIAssetDocument.h"
@@ -38,7 +36,6 @@
 #include "../TerrainCore/VansTerrainAsset.h"
 #include "../PcgCore/VansPcgResourcePlan.h"
 #include "../Util/VansLog.h"
-#include "../Util/VansFileFingerprint.h"
 
 #include <algorithm>
 #include <cctype>
@@ -602,114 +599,6 @@ namespace
 	{
 		result.errors.push_back(message);
 		VANS_LOG_ERROR("[AssetDatabase] " << message);
-	}
-
-	void ValidateNavigationSources(
-		const VansSerializedValue& entities,
-		const std::filesystem::path& projectRoot,
-		const std::filesystem::path& sceneSourcePath,
-		const std::unordered_map<std::string, VansAssetRecord>& records,
-		const VansAssetObjectRepository& objectRepository,
-		VansSceneAssetDependencyBuildResult& result)
-	{
-		bool hasNavigationMesh = false;
-		for (const std::string& guid : result.requiredAssets)
-		{
-			const auto record = records.find(guid);
-			if (record != records.end() && record->second.type == VansAssetType::NavigationMesh)
-			{
-				hasNavigationMesh = true;
-				break;
-			}
-		}
-		if (!hasNavigationMesh) return;
-
-		VansSceneContentBuildPlan contentPlan;
-		std::string error;
-		if (!VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
-			entities, projectRoot.generic_string(),
-			[&records](VansAssetGuid guid) -> std::optional<VansAssetRecord>
-			{
-				const auto found = records.find(guid.ToString());
-				return found == records.end() ? std::nullopt
-					: std::optional<VansAssetRecord>(found->second);
-			}, contentPlan, error))
-		{
-			AppendDependencyError(result,
-				"Could not project Scene for navigation source validation: " + error);
-			return;
-		}
-		std::vector<std::string> colliderGuids;
-		if (!VansSceneNavigationGeometry::CollectEnvironmentMeshAssets(
-			contentPlan.objects, colliderGuids, error))
-		{
-			AppendDependencyError(result,
-				"Could not collect navigation collider sources: " + error);
-			return;
-		}
-		std::vector<VansNavigationColliderSource> colliderSources;
-		colliderSources.reserve(colliderGuids.size());
-		for (const std::string& guid : colliderGuids)
-		{
-			const auto record = records.find(guid);
-			if (record == records.end() || record->second.type != VansAssetType::Model ||
-				record->second.state == VansAssetState::Missing)
-			{
-				AppendDependencyError(result,
-					"Navigation collider Model is missing: " + guid);
-				return;
-			}
-			colliderSources.push_back({ guid, record->second.sourceHash,
-				record->second.metaHash });
-		}
-
-		VansFileFingerprint sceneFingerprint;
-		if (!ComputeFileFingerprint(sceneSourcePath, sceneFingerprint, &error))
-		{
-			AppendDependencyError(result,
-				"Could not fingerprint navigation source Scene: " + error);
-			return;
-		}
-		std::error_code relativeError;
-		const std::string scene = std::filesystem::relative(
-			sceneSourcePath, projectRoot, relativeError).generic_string();
-		if (relativeError || scene.empty())
-		{
-			AppendDependencyError(result,
-				"Could not resolve the navigation source Scene path");
-			return;
-		}
-		const std::uint64_t colliderHash =
-			HashNavigationColliders(std::move(colliderSources));
-		for (const std::string& guid : result.requiredAssets)
-		{
-			const auto record = records.find(guid);
-			if (record == records.end() ||
-				record->second.type != VansAssetType::NavigationMesh)
-			{
-				continue;
-			}
-			VansAssetGuid assetGuid;
-			VansAssetGuid::TryParse(guid, assetGuid);
-			const auto navigation =
-				objectRepository.ResolveLatest<VansNavigationMesh>(assetGuid);
-			if (!navigation)
-			{
-				AppendDependencyError(result,
-					"Navigation Mesh " + guid +
-					" is unavailable for source validation; run ForestAssetTool bake-navigation");
-				continue;
-			}
-			const VansNavigationSource& source = navigation->GetSource();
-			if (!source.IsValid() || source.scene != scene ||
-				source.sceneHash != sceneFingerprint.contentHash ||
-				source.colliderHash != colliderHash)
-			{
-				AppendDependencyError(result,
-					"Navigation Mesh " + guid + " is stale for Scene '" + scene +
-					"'; run ForestAssetTool bake-navigation");
-			}
-		}
 	}
 
 	void CollectStrictAssetReference(
@@ -2183,9 +2072,6 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			(result.requiredSkinProfiles.count(guid) && type != VansAssetType::SkinProfile))
 			AppendDependencyError(result, "Required asset has the wrong type: " + guid);
 	}
-	if (!result.errors.empty()) return result;
-	ValidateNavigationSources(*entities, projectRoot, sceneSourcePath,
-		assetRecordsByGuid, objectRepository, result);
 	if (!result.errors.empty()) return result;
 	result.success = true;
 	return result;

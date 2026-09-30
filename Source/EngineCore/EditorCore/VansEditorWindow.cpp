@@ -427,7 +427,7 @@ namespace
         const Vans::EditorAPI::RuntimeMultiMeshChildSnapshot& childSnapshot,
         const std::string& slotName)
     {
-        return SerializedObject({
+        auto component = SerializedObject({
             { "id", Vans::VansSerializedValue::String(Vans::VansAssetGuid::New().ToString()) },
             { "type", Vans::VansSerializedValue::String("ModelRenderer") },
             { "version", Vans::VansSerializedValue::Int(1) },
@@ -458,6 +458,10 @@ namespace
                     Vans::ReadSerializedStringField(sourceRendererData, "renderType", "opaque")) }
             }) }
         });
+        if (const auto* priority = Vans::FindObjectField(sourceRendererData, "decalSortPriority"))
+            if (auto* data = Vans::FindObjectField(component, "data"))
+                Vans::SetSerializedObjectField(*data, "decalSortPriority", *priority);
+        return component;
     }
 
     Vans::VansSerializedValue BuildRuntimeExpandedMultiMeshRootComponent(

@@ -1,52 +1,34 @@
 #include "VansNavigationSource.h"
+#include "../Util/VansFileFingerprint.h"
 
 #include <algorithm>
-#include <cstring>
+#include <array>
+#include <cmath>
+#include <vector>
 
 namespace Vans
 {
 namespace
 {
-constexpr std::uint64_t kFnvOffsetBasis = 14695981039346656037ull;
-constexpr std::uint64_t kFnvPrime = 1099511628211ull;
-
 class StableHash
 {
 public:
 	template <typename T>
 	void Append(const T& value)
 	{
-		AppendBytes(&value, sizeof(value));
-	}
-
-	void Append(const std::string& value)
-	{
-		const std::uint64_t size = static_cast<std::uint64_t>(value.size());
-		Append(size);
-		AppendBytes(value.data(), value.size());
+		m_Value = ContinueMemoryFnv1a64(m_Value, &value, sizeof(value));
 	}
 
 	std::uint64_t Value() const { return m_Value; }
 
 private:
-	void AppendBytes(const void* data, std::size_t size)
-	{
-		const auto* bytes = static_cast<const unsigned char*>(data);
-		for (std::size_t index = 0; index < size; ++index)
-		{
-			m_Value ^= static_cast<std::uint64_t>(bytes[index]);
-			m_Value *= kFnvPrime;
-		}
-	}
-
-	std::uint64_t m_Value = kFnvOffsetBasis;
+	std::uint64_t m_Value = VANS_FNV1A64_OFFSET_BASIS;
 };
 }
 
-std::uint64_t HashNavigationSettings(const VansNavigationSettings& settings)
+std::uint64_t HashNavigationBakeSettings(const VansNavigationBakeSettings& bake)
 {
 	StableHash hash;
-	const VansNavigationBakeSettings& bake = settings.bake;
 	hash.Append(bake.cellSize);
 	hash.Append(bake.cellHeight);
 	hash.Append(bake.agentHeight);
@@ -63,44 +45,74 @@ std::uint64_t HashNavigationSettings(const VansNavigationSettings& settings)
 	hash.Append(detailSamplingEnabled);
 	hash.Append(bake.detailSampleDistance);
 	hash.Append(bake.detailSampleMaxError);
-	hash.Append(settings.areas.defaultArea);
-
-	std::vector<VansNavigationAreaDefinition> areas = settings.areas.definitions;
-	std::sort(areas.begin(), areas.end(), [](const auto& left, const auto& right)
-	{
-		if (left.id != right.id) return left.id < right.id;
-		return left.name < right.name;
-	});
-	const std::uint64_t areaCount = static_cast<std::uint64_t>(areas.size());
-	hash.Append(areaCount);
-	for (const VansNavigationAreaDefinition& area : areas)
-	{
-		hash.Append(area.name);
-		hash.Append(area.id);
-	}
 	return hash.Value();
 }
 
-std::uint64_t HashNavigationColliders(
-	std::vector<VansNavigationColliderSource> sources)
+bool ComputeNavigationGeometryHash(const VansNavigationGeometry& geometry,
+	std::uint64_t& output, std::string& error)
 {
-	std::sort(sources.begin(), sources.end(), [](const auto& left, const auto& right)
+	error.clear();
+	if (geometry.vertices.size() % 3u != 0u || geometry.indices.size() % 3u != 0u ||
+		geometry.areas.size() != geometry.TriangleCount())
 	{
-		return left.guid < right.guid;
-	});
-	sources.erase(std::unique(sources.begin(), sources.end(),
-		[](const auto& left, const auto& right) { return left.guid == right.guid; }),
-		sources.end());
-
-	StableHash hash;
-	const std::uint64_t count = static_cast<std::uint64_t>(sources.size());
-	hash.Append(count);
-	for (const VansNavigationColliderSource& source : sources)
-	{
-		hash.Append(source.guid);
-		hash.Append(source.sourceHash);
-		hash.Append(source.metaHash);
+		error = "Navigation source geometry has invalid triangle data";
+		return false;
 	}
-	return hash.Value();
+	using Point = std::array<float, 3>;
+	struct Triangle
+	{
+		std::array<Point, 3> points;
+		std::uint8_t area;
+	};
+	std::vector<Triangle> triangles;
+	triangles.reserve(geometry.TriangleCount());
+	for (std::size_t index = 0; index < geometry.TriangleCount(); ++index)
+	{
+		Triangle triangle{};
+		triangle.area = geometry.areas[index];
+		for (std::size_t corner = 0; corner < 3u; ++corner)
+		{
+			const int vertex = geometry.indices[index * 3u + corner];
+			if (vertex < 0 || static_cast<std::size_t>(vertex) >= geometry.VertexCount())
+			{
+				error = "Navigation source geometry has an out-of-range vertex";
+				return false;
+			}
+			for (std::size_t axis = 0; axis < 3u; ++axis)
+			{
+				const float value = geometry.vertices[static_cast<std::size_t>(vertex) * 3u + axis];
+				if (!std::isfinite(value))
+				{
+					error = "Navigation source geometry contains a non-finite vertex";
+					return false;
+				}
+				triangle.points[corner][axis] = value == 0.0f ? 0.0f : value;
+			}
+		}
+		// 循环旋转保留绕序，排除顶点编号、实体顺序和三角形排列的变化。
+		std::array<Point, 3> canonical = triangle.points;
+		for (std::size_t rotation = 1; rotation < 3u; ++rotation)
+		{
+			const std::array<Point, 3> candidate = { triangle.points[rotation],
+				triangle.points[(rotation + 1u) % 3u], triangle.points[(rotation + 2u) % 3u] };
+			if (candidate < canonical) canonical = candidate;
+		}
+		triangle.points = canonical;
+		triangles.push_back(triangle);
+	}
+	std::sort(triangles.begin(), triangles.end(), [](const Triangle& left, const Triangle& right)
+	{
+		return left.points == right.points ? left.area < right.area : left.points < right.points;
+	});
+	StableHash hash;
+	hash.Append(static_cast<std::uint64_t>(triangles.size()));
+	for (const Triangle& triangle : triangles)
+	{
+		for (const Point& point : triangle.points)
+			for (float axis : point) hash.Append(axis);
+		hash.Append(triangle.area);
+	}
+	output = hash.Value();
+	return true;
 }
 }

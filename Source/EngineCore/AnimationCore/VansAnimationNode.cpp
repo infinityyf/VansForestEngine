@@ -1,6 +1,7 @@
 #include "VansAnimationNode.h"
 #include "MotionMatching/VansMotionMatching.h"
 #include "VansPoseMath.h"
+#include "../PhysicsCore/VansRagdollSystem.h"
 #include "../RenderCore/VansRenderNode.h"
 #include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../RuntimeCore/VansCharacterMotion.h"
@@ -662,6 +663,30 @@ bool VansAnimationNode::ApplyRagdollPose(const Vans::VansRagdollPose& pose)
 		VansExternalPoseEvaluationMode::DirectFinalPose);
 }
 
+bool VansAnimationNode::SavePoseSnapshot(const std::string& name)
+{
+	if (!m_Controller || name.empty()) return false;
+	// Gameplay scripts run before the scene's RenderPrep animation pass. Read
+	// the current physics pose here so a ragdoll exit cannot save last frame's
+	// rendered pose when its bodies moved during the latest physics step.
+	if (m_HasTransformID)
+	{
+		auto& ragdolls = VansEngine::VansRagdollSystem::GetInstance();
+		const Vans::VansRagdollKey key = GetRagdollKey();
+		if (ragdolls.HasRagdoll(key)
+			&& ragdolls.GetDriveMode(key) == VansEngine::RagdollDriveMode::Physics)
+		{
+			Vans::VansRagdollPoseView sourcePose;
+			Vans::VansRagdollPose physicalPose;
+			if (!GetRagdollPoseView(sourcePose)
+				|| !ragdolls.ResolvePose(key, sourcePose, physicalPose)
+				|| !ApplyRagdollPose(physicalPose))
+				return false;
+		}
+	}
+	return m_Controller->SavePoseSnapshot(name, m_Skeleton);
+}
+
 void VansAnimationNode::SetRootBone(const std::string& boneName)
 {
 	const int targetBoneIndex = m_Skeleton.FindBoneIndex(boneName);
@@ -1133,6 +1158,12 @@ const VansAnimationFrameVector<VansAnimationEventSample>& VansAnimationNode::Get
 	if (m_RetargetEnabled && m_SourceController)
 		return m_SourceController->GetSampledEvents();
 	return m_Controller ? m_Controller->GetSampledEvents() : empty;
+}
+
+bool VansAnimationNode::ClaimSampledEventPublication()
+{
+	auto* controller = m_RetargetEnabled && m_SourceController ? m_SourceController.get() : m_Controller.get();
+	return controller && controller->ClaimSampledEventPublication();
 }
 
 // ════════════════════════════════════════════════════════════════

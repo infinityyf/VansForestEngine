@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -41,6 +42,17 @@ namespace VansGraphics
 		bool interruptible = true;
 	};
 
+	// 范围身份由作者数据提供；同一身份在多次播放/循环中只保留一个活动状态。
+	struct VansSlotNotifyStateDefinition
+	{
+		std::string id;
+		std::string name;
+		float startTime = 0.0f;
+		float endTime = 0.0f;
+		float minimumWeight = 0.0f;
+		VansAnimationEventValue payload;
+	};
+
 	struct VansSlotPlayRequest
 	{
 		std::string clipName;
@@ -62,6 +74,9 @@ namespace VansGraphics
 		std::string syncGroup;
 		bool markerSync = false;
 		std::string tag;
+		std::vector<VansSlotNotifyStateDefinition> notifyStates;
+		// 在实例时间采样该 Clip 的曲线并覆盖姿态 Clip 的同名曲线。
+		std::string curveOverrideClipName;
 	};
 
 	struct VansSlotPlaybackHandle
@@ -90,16 +105,27 @@ namespace VansGraphics
 		std::string tag;
 	};
 
+	// 最近一次实际推进的请求原始根增量，独立于该 Slot 的姿态混合权重。
+	struct VansSlotRootMotionFrame
+	{
+		VansRootMotionDelta delta;
+		VansSlotPlaybackHandle handle;
+	};
+
 	class VansAnimationSlotRuntime
 	{
 	public:
 		bool Configure(std::vector<VansAnimationSlotDefinition> definitions, std::string& error);
-		VansSlotPlaybackHandle Play(const std::string& slotId, const VansSlotPlayRequest& request);
+		VansSlotPlaybackHandle Play(const std::string& slotId, const VansSlotPlayRequest& request,
+		                           const std::unordered_map<std::string, VansAnimationClip>& clips);
 		bool Stop(VansSlotPlaybackHandle handle, float blendOut, bool force = false);
 		bool StopSlot(const std::string& slotId, float blendOut, bool force = false);
 		bool Drive(VansSlotPlaybackHandle handle, float playbackTime, float weight);
 		VansSlotPlaybackStatus GetStatus(VansSlotPlaybackHandle handle) const;
 		bool IsSlotActive(const std::string& slotId) const;
+		bool HasRootMotionPlayback(const std::string& slotId,
+			const std::unordered_map<std::string, VansAnimationClip>& clips) const;
+		VansSlotRootMotionFrame GetRootMotionFrame(const std::string& slotId) const;
 		void Reset();
 		void TransferRuntimeStateFrom(
 			const VansAnimationSlotRuntime& previous,
@@ -112,6 +138,7 @@ namespace VansGraphics
 
 		const std::vector<VansSlotLifecycleEvent>& GetLifecycleEvents() const { return m_LifecycleEvents; }
 		const std::vector<VansAnimationSlotDefinition>& GetDefinitions() const { return m_Definitions; }
+		const std::vector<VansAnimationEventSample>& GetNotifyStateEvents() const { return m_NotifyStateEvents; }
 
 	private:
 		struct RequestRuntime
@@ -130,10 +157,22 @@ namespace VansGraphics
 			float weight = 0.0f;
 			bool interrupted = false;
 			bool reachedEnd = false;
+			bool hasRootMotion = false;
+			float notifyWeight = 0.0f;
+			bool notifyRangePending = false;
+			std::shared_ptr<const std::vector<VansSlotNotifyStateDefinition>> notifyStates;
+		};
+		struct NotifyStateReference
+		{
+			std::shared_ptr<const std::vector<VansSlotNotifyStateDefinition>> definitions;
+			std::size_t index = 0;
+			VansAnimationEventSample sample;
+			const VansSlotNotifyStateDefinition& Definition() const { return (*definitions)[index]; }
 		};
 
 		struct SlotState
 		{
+			VansSlotRootMotionFrame rootMotionFrame;
 			std::optional<RequestRuntime> active;
 			std::vector<RequestRuntime> outgoing;
 			std::deque<RequestRuntime> queue;
@@ -146,6 +185,12 @@ namespace VansGraphics
 		std::vector<VansSlotLifecycleEvent> m_LifecycleEvents;
 		std::vector<VansSlotLifecycleEvent> m_PendingLifecycleEvents;
 		std::uint64_t m_NextHandle = 1;
+		VansSlotPlaybackHandle m_RootMotionHandle;
+		std::vector<NotifyStateReference> m_QueuedNotifyStates;
+		std::vector<NotifyStateReference> m_ActiveNotifyStates;
+		// 本帧 End 输出仍引用作者数据；保留其共享所有权直到下一次求值。
+		std::vector<NotifyStateReference> m_EndedNotifyStates;
+		std::vector<VansAnimationEventSample> m_NotifyStateEvents;
 
 		void StartRequest(std::size_t slotIndex, RequestRuntime request);
 		void BeginBlendOut(std::size_t slotIndex, VansSlotLifecycleEventType reason,
@@ -156,5 +201,7 @@ namespace VansGraphics
 		                      VansSlotLifecycleEventType type);
 		bool SampleRequest(RequestRuntime& runtime, const VansAnimationClip& clip,
 		                   const Skeleton& skeleton, VansPosePayload& payload) const;
+		void CollectNotifyStates(const RequestRuntime& runtime, const VansAnimationClip& clip);
+		void FinalizeNotifyStates(float deltaTime);
 	};
 }

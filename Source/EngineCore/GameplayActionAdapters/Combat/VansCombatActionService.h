@@ -1,5 +1,6 @@
 #pragma once
 #include "VansCombatSceneBackend.h"
+#include "../../PhysicsCore/VansPhysicsQuery.h"
 
 #include "../../GameplayActionCore/VansActionServices.h"
 #include "../../GameplayActionCore/VansGameplayServiceRuntime.h"
@@ -137,6 +138,9 @@ private:
 	void EmitWindowEvent(MeleeWindow& window, std::string_view edge);
 	VansActionCommandResult FireHitscan(const VansActionCommand& command);
 	VansActionCommandResult ApplyDamageProfile(const VansActionCommand& command);
+	VansActionCommandResult ApplyRadialBlast(const VansActionCommand& command);
+	struct PendingBlast { VansEngine::VansPhysicsRadialImpulseRequest request; bool justCreated=true; };
+	std::vector<PendingBlast> m_PendingBlasts;
 	// 有界命中凭据：伤害只接受同一 Action 的真实查询结果，不重做射线。
 	struct ShotReceipt
 	{

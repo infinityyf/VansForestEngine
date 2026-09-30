@@ -5,6 +5,7 @@
 #include <NsGui/ContentControl.h>
 #include <NsGui/FrameworkElement.h>
 #include <NsGui/RoutedEvent.h>
+#include <NsGui/RotateTransform.h>
 #include <NsGui/TextBlock.h>
 #include <NsGui/TranslateTransform.h>
 #include <NsGui/UIElement.h>
@@ -151,6 +152,17 @@ namespace VansRuntime
 		if (!ParseFloat(value, parsed))
 			return;
 
+		if (name == "rotation" || name == "rotate.angle")
+		{
+			auto* rotation = Noesis::DynamicCast<Noesis::RotateTransform*>(element->GetRenderTransform());
+			if (!rotation)
+			{
+				rotation = new Noesis::RotateTransform();
+				element->SetRenderTransform(rotation);
+			}
+			rotation->SetAngle(parsed);
+			return;
+		}
 		if (name == "canvas.left" || name == "left")
 		{
 			Noesis::Canvas::SetLeft(element, parsed);
@@ -206,6 +218,12 @@ namespace VansRuntime
 		if (name == "opacity")
 		{
 			value = std::to_string(element->GetOpacity());
+			return true;
+		}
+		if (name == "rotation" || name == "rotate.angle")
+		{
+			auto* rotation = Noesis::DynamicCast<Noesis::RotateTransform*>(element->GetRenderTransform());
+			value = std::to_string(rotation ? rotation->GetAngle() : 0.0f);
 			return true;
 		}
 		if (name == "canvas.left" || name == "left")

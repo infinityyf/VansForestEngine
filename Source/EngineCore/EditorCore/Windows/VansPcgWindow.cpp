@@ -142,11 +142,11 @@ void VansPcgWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api)
             }
             ImGui::EndTabItem();
         }
-        for (int category=2;category<4;++category)
+        for (int category=2;category<5;++category)
         {
-            if (!ImGui::BeginTabItem(category==2?"Roads":"Rivers")) continue;
+            if (!ImGui::BeginTabItem(category==2?"Roads":category==3?"Rivers":"Spline Decals")) continue;
 			if (m_Category!=category) {report(pcgAPI.SelectPcgBrushTarget({},false));m_Category=category;}
-            ShowSplines(api,category==2?PcgSplineKind::Road:PcgSplineKind::River);
+            ShowSplines(api,category==2?PcgSplineKind::Road:category==3?PcgSplineKind::River:PcgSplineKind::Decal);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

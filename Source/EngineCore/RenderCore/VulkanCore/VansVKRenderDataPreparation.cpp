@@ -283,8 +283,10 @@ namespace VansGraphics
         {
             auto* material = static_cast<VansMaterial*>(rawMaterial);
             if (material->m_MaterialType == VAN_DECAL)
+            {
                 material->m_CustomMaterialPayload.textureIndices =
                     materialManager->m_GlobalCustomMaterialParamData[material->m_MaterialIndex].textureIndices;
+            }
         }
 		if (materialManager->m_GlobalClothParamData.size() != materialManager->m_GlobalPBRParamData.size())
 		{
