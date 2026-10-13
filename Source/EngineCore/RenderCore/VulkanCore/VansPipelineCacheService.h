@@ -88,7 +88,8 @@ namespace VansGraphics
 		};
 
 		bool CreateCacheLocked(const std::vector<uint8_t>& initialData, VkPipelineCache& outCache);
-		bool ReadCacheDataLocked(VkPipelineCache cache, std::vector<uint8_t>& outData) const;
+		bool ReadCacheDataLocked(VkPipelineCache cache, std::vector<uint8_t>& outData,
+			std::string* failure = nullptr) const;
 		bool ReadCacheFile(std::vector<uint8_t>& outPayload, bool logFailures) const;
 		bool ValidateVulkanPayload(const std::vector<uint8_t>& payload) const;
 		bool MergeDiskCacheLocked();
@@ -112,6 +113,7 @@ namespace VansGraphics
 		CacheIdentity m_Identity{};
 		std::filesystem::path m_CacheFilePath;
 		std::chrono::steady_clock::time_point m_LastMutation{};
+		std::chrono::steady_clock::time_point m_NextPeriodicFlushAttempt{};
 		uint64_t m_TotalPipelineCreates = 0;
 		uint64_t m_GraphicsPipelineCreates = 0;
 		uint64_t m_ComputePipelineCreates = 0;

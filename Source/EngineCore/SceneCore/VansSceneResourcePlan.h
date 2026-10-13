@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../AssetCore/VansSkeletalMeshImportSettings.h"
+#include "../AssetCore/VansRenderPassAsset.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -104,6 +105,7 @@ struct VansSceneShaderResourceRequest
 	std::string renderPath;
 	std::map<std::string, std::string> stages;
 	std::vector<std::string> materialPasses;
+	std::vector<std::string> colorAttachmentBlends;
 };
 
 struct VansSceneResourceBuildPlan
@@ -113,6 +115,12 @@ struct VansSceneResourceBuildPlan
 	std::vector<VansSceneShaderResourceRequest> shaders;
 	std::vector<VansSceneAudioResourceRequest> audios;
 	std::vector<VansSceneVideoResourceRequest> videos;
+	struct ProjectRenderPass
+	{
+		VansAssetGuid guid;
+		VansRenderPassAsset definition;
+	};
+	std::vector<ProjectRenderPass> projectRenderPasses;
 	bool includeDefaultTextureSet = true;
 	bool loadRegisteredShaders = true;
 };

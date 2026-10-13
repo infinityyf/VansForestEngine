@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <optional>
 #include <vector>
 
 namespace Vans::EditorAPI
@@ -15,6 +16,10 @@ struct PcgPlantPart
     std::string id, mesh, material;
     PcgPartKind kind=PcgPartKind::Surface;
     int submesh=-1;
+};
+struct PcgPlantCollisionPrototype
+{
+    std::string mesh,layer;
 };
 struct PcgPlantVariant
 {
@@ -28,6 +33,7 @@ struct PcgPlantVariant
     float lodMaximumError=.04f;
     std::string lodBuildKey;
     std::vector<ModelLodLevel> lodLevels;
+    std::optional<PcgPlantCollisionPrototype> collision;
 };
 enum class PcgConfigurationFieldKind { Float, Unsigned, Boolean, Float2, Float3, FloatList };
 enum class PcgConfigurationFieldVisibility { Always, DensitySourceOnly };

@@ -174,6 +174,18 @@ void ReparentDroppedEntity(
 }
 }
 
+struct VansHierachuWindow::HierarchyIndex
+{
+    Vans::SceneDocumentSnapshot snapshot;
+    std::unordered_map<std::string, std::vector<std::size_t>> children;
+    std::unordered_set<std::string> entitiesWithAnimation;
+    std::unordered_map<std::string, std::string> parentKeys, anchorOwners;
+    std::vector<std::string> ids, names;
+};
+
+VansHierachuWindow::VansHierachuWindow() : m_Hierarchy(std::make_unique<HierarchyIndex>()) {}
+VansHierachuWindow::~VansHierachuWindow() = default;
+
 void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
 	Vans::EditorAPI::IAnimationEditorAPI& animationAPI = editorAPI;
@@ -194,6 +206,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
     const Vans::VansSerializedValue* entities = Vans::FindObjectField(sceneRoot, "entities");
     if (!entities || entities->kind != Vans::VansSerializedValue::Kind::Array)
     {
+        *m_Hierarchy = HierarchyIndex{};
         ImGui::TextDisabled("No Scene document loaded");
         ImGui::End();
         return;
@@ -312,42 +325,56 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
     }
     ImGui::Separator();
 
-	std::unordered_map<std::string, std::vector<std::size_t>> children;
-	std::unordered_set<std::string> entitiesWithAnimation;
-	std::unordered_map<std::string, std::string> parentKeys, anchorOwners;
-    for (std::size_t index = 0; index < entities->arrayItems.size(); ++index)
+    // Hold the immutable root so identity also catches prefab refresh and document replacement.
+    if (&m_Hierarchy->snapshot.Root() != &snapshot.Root())
     {
-        const Vans::VansSerializedValue& entity = entities->arrayItems[index];
-		const std::string entityGuid = Vans::ReadSerializedStringField(entity, "id");
-		const Vans::VansSerializedValue* components = Vans::FindObjectField(entity, "components");
-		if (components && components->kind == Vans::VansSerializedValue::Kind::Array)
-		{
-			for (const Vans::VansSerializedValue& component : components->arrayItems)
-			{
-				if (Vans::ReadSerializedStringField(component, "type") == "Animation")
-				{
-					entitiesWithAnimation.insert(entityGuid);
-					break;
-				}
-			}
-		}
-		const Vans::VansSerializedValue* parentValue = Vans::FindObjectField(entity, "parent");
-		std::string hierarchyParent;
-		if (parentValue && !parentValue->IsNull())
-		{
-			Vans::VansSceneParentReference parent;
-			std::string error;
-			if (Vans::TryReadSceneParentReference(*parentValue, parent, error))
-			{
-				hierarchyParent = parent.IsAnchor()
-					? AnchorHierarchyKey(parent.animationComponentGuid.ToString(), parent.anchorGuid.ToString())
-					: parent.entityGuid.ToString();
-				if (parent.IsAnchor()) anchorOwners[hierarchyParent] = parent.entityGuid.ToString();
-			}
-		}
-		children[hierarchyParent].push_back(index);
-		parentKeys[entityGuid] = hierarchyParent;
+        *m_Hierarchy = HierarchyIndex{};
+        m_Hierarchy->snapshot = snapshot;
+        m_Hierarchy->ids.resize(entities->arrayItems.size());
+        m_Hierarchy->names.resize(entities->arrayItems.size());
+        auto& children = m_Hierarchy->children;
+        auto& entitiesWithAnimation = m_Hierarchy->entitiesWithAnimation;
+        auto& parentKeys = m_Hierarchy->parentKeys;
+        auto& anchorOwners = m_Hierarchy->anchorOwners;
+        for (std::size_t index = 0; index < entities->arrayItems.size(); ++index)
+        {
+            const Vans::VansSerializedValue& entity = entities->arrayItems[index];
+            const std::string entityGuid = Vans::ReadSerializedStringField(entity, "id");
+            m_Hierarchy->ids[index] = entityGuid;
+            m_Hierarchy->names[index] = Vans::ReadSerializedStringField(entity, "name", "Unnamed Entity");
+            const Vans::VansSerializedValue* components = Vans::FindObjectField(entity, "components");
+            if (components && components->kind == Vans::VansSerializedValue::Kind::Array)
+            {
+                for (const Vans::VansSerializedValue& component : components->arrayItems)
+                {
+                    if (Vans::ReadSerializedStringField(component, "type") == "Animation")
+                    {
+                        entitiesWithAnimation.insert(entityGuid);
+                        break;
+                    }
+                }
+            }
+            const Vans::VansSerializedValue* parentValue = Vans::FindObjectField(entity, "parent");
+            std::string hierarchyParent;
+            if (parentValue && !parentValue->IsNull())
+            {
+                Vans::VansSceneParentReference parent;
+                std::string error;
+                if (Vans::TryReadSceneParentReference(*parentValue, parent, error))
+                {
+                    hierarchyParent = parent.IsAnchor()
+                        ? AnchorHierarchyKey(parent.animationComponentGuid.ToString(), parent.anchorGuid.ToString())
+                        : parent.entityGuid.ToString();
+                    if (parent.IsAnchor()) anchorOwners[hierarchyParent] = parent.entityGuid.ToString();
+                }
+            }
+            children[hierarchyParent].push_back(index);
+            parentKeys[entityGuid] = hierarchyParent;
+        }
     }
+    const auto& children = m_Hierarchy->children;
+    const auto& entitiesWithAnimation = m_Hierarchy->entitiesWithAnimation;
+    const auto& anchorOwners = m_Hierarchy->anchorOwners;
 
     const auto selection = Vans::VansEditorSelectionService::Get().Snapshot();
     const bool reveal = selection.revision != m_SelectionRevision && selection.source != "Hierarchy";
@@ -356,6 +383,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
     std::string revealTarget;
     if (reveal)
     {
+        auto parentKeys = m_Hierarchy->parentKeys;
         const auto& active = selection.active;
         const auto addRigPaths = [&](const std::string& entity)
         {
@@ -543,9 +571,8 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
         for (const std::size_t index : found->second)
         {
             const Vans::VansSerializedValue& entity = entities->arrayItems[index];
-            const std::string id = Vans::ReadSerializedStringField(entity, "id");
-            const std::string name =
-                Vans::ReadSerializedStringField(entity, "name", "Unnamed Entity");
+            const std::string& id = m_Hierarchy->ids[index];
+            const std::string& name = m_Hierarchy->names[index];
 			const bool hasRig = entitiesWithAnimation.find(id) != entitiesWithAnimation.end();
             const bool hasChildren = children.find(id) != children.end() || hasRig;
 

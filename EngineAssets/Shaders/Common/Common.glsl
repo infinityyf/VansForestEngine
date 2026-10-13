@@ -94,14 +94,6 @@ float RandomInterLeaved (vec2 uv)
 //     return std::fmodf(52.9829189 * std::fmodf(0.06711056*float(x) + 0.00583715*float(y), 1.0), 1.0);
 // }
 
-float RandomInterLeavedWithScale(vec2 uv, float t)
-{
-    vec3 magic = vec3(0.06711056f, 0.00587752f,52.9829189f);
-    vec2 scale = vec2(2.083f, 4.867f);
-    uv += t * scale;
-    return RandomInterLeaved(uv);
-}
-
 float RandomWithScale(vec2 uv, float t)
 {
     vec3 magic = vec3(0.06711056f, 0.00587752f,52.9829189f);

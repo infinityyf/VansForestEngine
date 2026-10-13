@@ -822,6 +822,61 @@ namespace VansGraphics
 		bool exact = false;
 		for (float weight : weights)
 			if (weight > 0.0f) { exact = true; break; }
+		if (!exact && count >= 2)
+		{
+			// 共线采样是通用的一维 BlendSpace：只混合投影位置两侧的样本。
+			// 三角形退化时使用反距离权重会错误地混入更远的姿态。
+			int first = 0, last = 0;
+			float spanSquared = 0.0f;
+			for (int a = 0; a < count; ++a)
+				for (int b = a + 1; b < count; ++b)
+				{
+					const float dx = m_Samples[b].x - m_Samples[a].x;
+					const float dy = m_Samples[b].y - m_Samples[a].y;
+					const float distanceSquared = dx * dx + dy * dy;
+					if (distanceSquared > spanSquared)
+					{ first = a; last = b; spanSquared = distanceSquared; }
+				}
+			if (spanSquared > epsilon * epsilon)
+			{
+				const auto& begin = m_Samples[first];
+				const auto& end = m_Samples[last];
+				const float vx = end.x - begin.x, vy = end.y - begin.y;
+				bool collinear = true;
+				std::vector<std::pair<float, int>> positions;
+				positions.reserve(static_cast<size_t>(count));
+				for (int i = 0; i < count; ++i)
+				{
+					const float px = m_Samples[i].x - begin.x;
+					const float py = m_Samples[i].y - begin.y;
+					if (std::abs(vx * py - vy * px) > epsilon * std::sqrt(spanSquared))
+						collinear = false;
+					positions.emplace_back((px * vx + py * vy) / spanSquared, i);
+				}
+				std::sort(positions.begin(), positions.end());
+				for (int i = 1; i < count; ++i)
+					if (positions[i].first - positions[i - 1].first <= epsilon)
+						collinear = false;
+				if (collinear)
+				{
+					const float projected = ((x - begin.x) * vx + (y - begin.y) * vy) / spanSquared;
+					if (projected <= positions.front().first)
+						weights[positions.front().second] = 1.0f;
+					else if (projected >= positions.back().first)
+						weights[positions.back().second] = 1.0f;
+					else
+					{
+						const auto upper = std::upper_bound(positions.begin(), positions.end(), projected,
+							[](float value, const std::pair<float, int>& item) { return value < item.first; });
+						const auto lower = upper - 1;
+						const float alpha = (projected - lower->first) / (upper->first - lower->first);
+						weights[lower->second] = 1.0f - alpha;
+						weights[upper->second] = alpha;
+					}
+					exact = true;
+				}
+			}
+		}
 		if (!exact)
 		{
 			// 先找包含当前参数的采样三角形，顺序稳定且与资产保存顺序无关。
@@ -1541,6 +1596,8 @@ namespace VansGraphics
 					for (const auto& transition : m_Transitions)
 					{
 						if (transition.fromState != sourceName && (transition.fromState != "*" || source->conduit)) continue;
+						// Any State 不重入当前状态，也不能遮住后续显式自身重入。
+						if (transition.fromState == "*" && transition.toState == sourceName) continue;
 						const auto* target = findState(transition.toState);
 						if (!target) continue;
 					if (transition.requireSourceFullyBlended && runtime.GetStateWeight(sourceName) < 1.0f) continue;
@@ -1569,8 +1626,9 @@ namespace VansGraphics
 					return nullptr;
 				};
 				const auto* selected = select(select, runtime.currentStateName);
-				// 找到自身即结束本帧选择；不能继续尝试较低优先级分支。
-				if (!selected || selected->toState == runtime.currentStateName) break;
+				// Any State 命中自身时停止；明确的自身重入仍按资产的 reset 规则执行。
+				if (!selected || (selected->toState == runtime.currentStateName
+					&& selected->fromState != runtime.currentStateName)) break;
 				startTransition(*selected, selectedAdjustment);
 				if (ctx.parameters) for (const auto* edge : path) for (const auto& condition : edge->conditions)
 					if (auto parameter = ctx.parameters->find(condition.paramName); parameter != ctx.parameters->end() && parameter->second.type == AnimatorParamType::Trigger)
@@ -1643,7 +1701,7 @@ namespace VansGraphics
 				stateContext.deltaTime *= speed;
 				return EvaluateNodePose(instance, state.poseNodeId, stateContext, m_NodeId, weight);
 			}
-			if (ctx.preparePlayback)
+			if (!ctx.stagedPlayback || ctx.preparePlayback)
 			{
 				if (!ctx.synchronizedStateFollower)
 				{
@@ -1668,7 +1726,7 @@ namespace VansGraphics
 						}
 					}
 				}
-				return PlaybackPlaceholder();
+				if (ctx.preparePlayback) return PlaybackPlaceholder();
 			}
 			AnimGraphPose pose;
 			if (state.clipName.empty())
@@ -2869,63 +2927,7 @@ namespace VansGraphics
 				clipNode->AdvancePlayback(state, deltaTime * timeScale, ctx);
 				continue;
 			}
-			if (node->GetType() != VansAnimGraphNodeType::StateMachine || !ctx.clips)
-				continue;
-
-			const auto* stateMachine = static_cast<const AnimGraphStateMachineNode*>(node);
-			VansAnimGraphStateMachineRuntimeState& runtime =
-				GetStateMachineState(nodeId, *stateMachine);
-			auto findState = [&](const std::string& name) -> const AnimatorState*
-			{
-				for (const AnimatorState& state : stateMachine->m_States)
-					if (state.name == name)
-						return &state;
-				return nullptr;
-			};
-				auto advanceState = [&](const AnimatorState* state)
-				{
-				if (!state)
-					return;
-				auto clipIt = ctx.clips->find(state->clipName);
-				if (clipIt == ctx.clips->end())
-					return;
-				const float start = state->startTime;
-					const float end = state->endTime < 0.0f ? clipIt->second.duration : state->endTime;
-					const float range = end - start;
-					float& time = runtime.stateTimes[state->name];
-					float& previousTime = runtime.previousStateTimes[state->name];
-					previousTime = time;
-					if (range <= 0.0f)
-					{
-						time = start;
-						previousTime = start;
-						return;
-					}
-					const float timeScale = m_HasActiveTimeScale[nodeId]
-						? m_ActiveTimeScales[nodeId] : 1.0f;
-					float stateSpeed = state->speed;
-					if (!state->speedParameter.empty() && ctx.parameters)
-					{
-						auto parameter = ctx.parameters->find(state->speedParameter);
-						if (parameter != ctx.parameters->end()
-						    && parameter->second.type == AnimatorParamType::Float)
-							stateSpeed *= parameter->second.floatVal;
-					}
-					time += deltaTime * timeScale * stateSpeed;
-					if (!state->loop)
-						time = std::clamp(time, start, end);
-				};
-			std::unordered_set<std::string> advanced;
-			auto advanceOnce = [&](const std::string& name)
-			{
-				if (advanced.insert(name).second) advanceState(findState(name));
-			};
-			advanceOnce(runtime.currentStateName);
-			for (const auto& active : runtime.activeTransitions)
-			{
-				advanceOnce(active.previousStateName);
-				advanceOnce(active.nextStateName);
-			}
+			// 状态机在 Evaluate 中按最终激活状态推进并保留完整事件区间；此处只推进独立 Clip。
 		}
 	}
 

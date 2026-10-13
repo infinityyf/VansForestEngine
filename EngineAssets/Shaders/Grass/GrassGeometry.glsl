@@ -41,12 +41,6 @@ layout(std430, set = 3, binding = 5) readonly buffer InstanceDataBuffer
 
 // Binding 6 — Terrain heightmap (for sub-blade ground placement in VS)
 
-// Binding 7 — P0: Per-instance visibility flags from GPU cull
-layout(std430, set = 3, binding = 7) readonly buffer VisibilityBuffer
-{
-    uint visibilityFlags[];
-};
-
 // ── Dual-bone skinning ─────────────────────────────────────────────────────
 vec3 skinPosition(vec3 localPos, uint globalBoneBase, vec4 bw)
 {

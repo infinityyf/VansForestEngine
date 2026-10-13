@@ -41,13 +41,6 @@ void main()
     // Instance data
     GrassInstance inst = instances[globalInstIdx];
 
-    // P0: GPU 剔除检查 — 不可见实例的顶点直接退化为零面积三角形
-    if (visibilityFlags[globalInstIdx] == 0u)
-    {
-        gl_Position = vec4(0.0);
-        return;
-    }
-
     // P1: 基于距离的子叶片 LOD — 远距离减少子叶片数，大幅降低 VS/FS 开销
     // 用实例 ID 的 golden-ratio hash 做 ±3m 抱动，避免固定距离处密度突变
     {

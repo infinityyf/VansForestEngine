@@ -429,13 +429,24 @@ void main()
         // as the existing PBR payload, so RenderNode binding remains unchanged.
         int clothMaterialIndex = int(round(gbufferData1.w));
         ClothMaterialPayload cloth = GetClothMaterialPayload(clothMaterialIndex);
+        cloth.sheenColorWeight.a = clamp(gbufferData1.x, 0.0, 1.0);
         vec3 clothTangent;
         vec3 clothBitangent;
-        DecodeClothTangentFrame(normal, normalData.w, clothTangent, clothBitangent);
+        DecodeClothTangentFrame(DecalSafeNormal(normalData.xyz, vec3(0.0, 1.0, 0.0)),
+            normalData.w, normal, clothTangent, clothBitangent);
         brdfData.ao = clamp(min(ao, gtaoValue), 0.0, 1.0);
         CalculateDirectLight_Cloth(brdfData, cloth, clothTangent,
 								   punctualShadowMap, sssShadow, lightResult);
-        AmbientBRDF_Cloth(brdfData, cloth, clothTangent, viewDirection,
+        vec3 clothBackIrradiance = vec3(0.0);
+        if (Max3Cloth(cloth.transmittanceRoughness.rgb) > 0.0)
+        {
+            // 背面不能复用面向相机的接收者可见度；沿用已有区域 GI/天空混合。
+            bool frontReceiverValid = receiverRecordValid;
+            receiverRecordValid = false;
+            clothBackIrradiance = GI_BlendRegionLighting(brdfData.positionWS, -normal, 0.0);
+            receiverRecordValid = frontReceiverValid;
+        }
+        AmbientBRDF_Cloth(brdfData, cloth, clothTangent, viewDirection, clothBackIrradiance,
                           lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
     else if (matID == MATERIAL_ID_SUBSURFACE)

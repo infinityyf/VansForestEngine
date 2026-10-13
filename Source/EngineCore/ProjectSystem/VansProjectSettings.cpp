@@ -17,6 +17,7 @@ namespace Vans
 		m_UpscalerSettings = {};
 		m_CommandRecordingSettings = {};
 		m_RenderOutputSettings = {};
+		m_ProjectRenderPasses.clear();
 		m_AtmosphereQualitySettings = {};
 		m_NearMediaQualitySettings = {};
 		m_CloudShadowQualitySettings = {};
@@ -123,17 +124,17 @@ namespace Vans
 		return true;
 	}
 
-	void VansProjectSettings::SetCommandRecordingSettings(
+	bool VansProjectSettings::SetCommandRecordingSettings(
 		bool parallelEnabled,
-		bool frameContextRingEnabled,
 		std::uint32_t framesInFlight,
 		bool asyncComputeEnabled)
 	{
+		if (!VansProjectCommandRecordingSettings::ValidFramesInFlight(framesInFlight))
+			return false;
 		m_CommandRecordingSettings.parallelEnabled = parallelEnabled;
-		m_CommandRecordingSettings.frameContextRingEnabled = frameContextRingEnabled;
-		// 当前只为非 async 主路径启用双帧 ring，配置读取时统一夹取，避免非法项目配置扩大资源生命周期复杂度。
-		m_CommandRecordingSettings.framesInFlight = std::clamp<std::uint32_t>(framesInFlight, 1u, 2u);
+		m_CommandRecordingSettings.framesInFlight = framesInFlight;
 		m_CommandRecordingSettings.asyncComputeEnabled = asyncComputeEnabled;
+		return true;
 	}
 
 	void VansProjectSettings::SetMainCameraHiZCullSettings(const VansProjectMainCameraHiZCullSettings& settings)
@@ -169,12 +170,17 @@ namespace Vans
 		VansProjectSettings candidate = *this;
 		if (!candidate.SetUpscalerSettings(renderSettings.upscalerSettings, &error))
 			return false;
-		candidate.SetCommandRecordingSettings(
+		if (!candidate.SetCommandRecordingSettings(
 			renderSettings.commandRecordingSettings.parallelEnabled,
-			renderSettings.commandRecordingSettings.frameContextRingEnabled,
 			renderSettings.commandRecordingSettings.framesInFlight,
-			renderSettings.commandRecordingSettings.asyncComputeEnabled);
+			renderSettings.commandRecordingSettings.asyncComputeEnabled))
+		{
+			error = "commandRecording.framesInFlight must be 1 or 2";
+			return false;
+		}
 		if (!candidate.SetRenderOutputSettings(renderSettings.renderOutputSettings, &error))
+			return false;
+		if (!candidate.SetProjectRenderPasses(renderSettings.projectRenderPasses, error))
 			return false;
 		candidate.m_AtmosphereQualitySettings = renderSettings.atmosphereQualitySettings;
 		candidate.m_NearMediaQualitySettings = renderSettings.nearMediaQualitySettings;
@@ -206,6 +212,7 @@ namespace Vans
 		settings.upscalerSettings = m_UpscalerSettings;
 		settings.commandRecordingSettings = m_CommandRecordingSettings;
 		settings.renderOutputSettings = m_RenderOutputSettings;
+		settings.projectRenderPasses = m_ProjectRenderPasses;
 		settings.atmosphereQualitySettings = m_AtmosphereQualitySettings;
 		settings.nearMediaQualitySettings = m_NearMediaQualitySettings;
 		settings.cloudShadowQualitySettings = m_CloudShadowQualitySettings;
@@ -220,6 +227,26 @@ namespace Vans
 		settings.timing = m_PhysicsTiming;
 		settings.queryProfiles = m_PhysicsQueryProfiles;
 		return settings;
+	}
+
+	bool VansProjectSettings::SetProjectRenderPasses(const std::vector<VansAssetGuid>& passes, std::string& error)
+	{
+		if (passes.size() > 64)
+		{
+			error = "projectRenderPasses supports at most 64 references";
+			return false;
+		}
+		for (std::size_t i = 0; i < passes.size(); ++i)
+		{
+			if (!passes[i].IsValid() || std::find(passes.begin(), passes.begin() + i, passes[i]) != passes.begin() + i)
+			{
+				error = "projectRenderPasses contains an invalid or duplicate GUID";
+				return false;
+			}
+		}
+		m_ProjectRenderPasses = passes;
+		error.clear();
+		return true;
 	}
 
 }

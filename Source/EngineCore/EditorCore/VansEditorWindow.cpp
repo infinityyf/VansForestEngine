@@ -12,6 +12,7 @@
 #include "IVansEditorAPIHost.h"
 #include "../RenderCore/VansCamera.h"
 #include "../RenderCore/VansRenderSystem.h"
+#include "../RenderCore/VansGraphicsDevice.h"
 #include "../RuntimeUI/Public/VansUISystem.h"
 #include "../VansTimer.h"
 #include "../EngineAPILayer/Public/IEngineEditorAPI.h"
@@ -34,6 +35,7 @@
 #include "Windows/VansInspectorWindow.h"
 #include "Windows/VansGBufferWindow.h"
 #include "Windows/VansRenderDebugWindow.h"
+#include "Windows/VansRenderTexturePreviewWindow.h"
 #include "Windows/VansScriptorWindow.h"
 #include "Windows/VansConsoleWindow.h"
 #include "Windows/VansProfilerWindow.h"
@@ -95,6 +97,7 @@
 #include <string>
 #include <stdexcept>
 #include <filesystem>
+#include <fstream>
 #include <algorithm>
 #include <cctype>
 #include <unordered_map>
@@ -106,6 +109,22 @@
 
 namespace
 {
+    class VansGpuMemoryReadTransaction final : public VansGraphics::IVansRenderThreadTransaction
+    {
+    public:
+        explicit VansGpuMemoryReadTransaction(VansGraphics::VansGpuMemorySnapshot& output)
+            : m_Output(output) {}
+
+        bool Execute(VansGraphics::VansGraphicsDevice& device) override
+        {
+            m_Output = device.QueryGpuMemorySnapshot();
+            return true;
+        }
+
+    private:
+        VansGraphics::VansGpuMemorySnapshot& m_Output;
+    };
+
     Vans::EditorAPI::IEngineEditorAPI& GetMutableEditorAPI();
 
 	class VansEditorRuntimeFramePort final :
@@ -139,6 +158,15 @@ namespace
 		{
 			VANS_PROFILE_SCOPE("GameplayAction::TickEarly", Vans::ProfileCategory::Script);
 			m_RuntimeFrameAPI.UpdateRuntimeActionsEarly(context.m_DeltaSeconds);
+		}
+
+		void PrepareNavigation(const Vans::VansRuntimeFrameContext&) override
+		{
+			m_RuntimeFrameAPI.PrepareRuntimeNavigation();
+		}
+		void UpdateNavigation(const Vans::VansRuntimeFrameContext& context) override
+		{
+			m_RuntimeFrameAPI.UpdateRuntimeNavigation(context.m_DeltaSeconds);
 		}
 
 		void UpdateAI(const Vans::VansRuntimeFrameContext& context) override
@@ -1168,6 +1196,7 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 	m_WindowRegistry.Add<VansParticleDebugWindow>();
 	m_WindowRegistry.Add<VansMotionMatchingDebugWindow>();
 	m_WindowRegistry.Add<VansAIDebugWindow>();
+	m_WindowRegistry.Add<VansRenderTexturePreviewWindow>();
 
 }
 
@@ -1832,6 +1861,34 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
         if (saved)
         {
             Vans::VansProfiler::Get().DumpFrameJson(automationGpuProfileOutputDir.c_str());
+            VansGraphics::VansGpuMemorySnapshot memorySnapshot{};
+            if (renderSystem.ExecuteRenderThreadTransaction(
+                    std::make_unique<VansGpuMemoryReadTransaction>(memorySnapshot))
+                && memorySnapshot.available)
+            {
+                const nlohmann::ordered_json memoryReport = {
+                    {"source", "VMA"},
+                    {"samplePoint", "afterStableCapture"},
+                    {"allocationCount", memorySnapshot.allocationCount},
+                    {"blockCount", memorySnapshot.blockCount},
+                    {"allocationBytes", memorySnapshot.allocationBytes},
+                    {"blockBytes", memorySnapshot.blockBytes},
+                    {"deviceLocalAllocationBytes", memorySnapshot.deviceLocalAllocationBytes},
+                    {"deviceLocalBlockBytes", memorySnapshot.deviceLocalBlockBytes}
+                };
+                std::ofstream memoryFile(
+                    std::filesystem::path(automationGpuProfileOutputDir) / "gpu_memory_snapshot.json",
+                    std::ios::binary);
+                if (memoryFile)
+                {
+                    memoryFile << memoryReport.dump(2) << '\n';
+                    memoryFile.flush();
+                }
+                if (!memoryFile)
+                    VANS_LOG_ERROR("[Profiler] VMA memory snapshot could not be saved");
+            }
+            else
+                VANS_LOG_ERROR("[Profiler] VMA memory snapshot is unavailable");
             VANS_LOG("[Profiler] Stable capture saved samples=" << capture.GetSamples().size()
                 << " first=" << capture.GetSamples().front().frameIndex
                 << " last=" << capture.GetSamples().back().frameIndex
@@ -1874,6 +1931,12 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
             }
 #endif
 			VANS_LOG("[Editor] Automation close timeout reached");
+			glfwSetWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle, true);
+			continue;
+		}
+		if (renderSystem.GetState() == VansRenderSystemState::Fatal)
+		{
+			VANS_LOG_ERROR("[Editor] Render system entered a fatal state; closing the editor loop.");
 			glfwSetWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle, true);
 			continue;
 		}
@@ -1952,9 +2015,17 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
             glfwGetFramebufferSize(m_VansEditorWindow.m_VansGraphicsHandle, &width, &height);
             if (width > 0 && height > 0)
             {
-                renderSystem.RequestSurfaceResize(
+                const bool resized = renderSystem.RequestSurfaceResize(
                     static_cast<uint32_t>(width),
                     static_cast<uint32_t>(height));
+				if (!resized)
+				{
+#if VANS_PROFILER_ENABLED
+					finishAutomationGpuProfileFrame(automationGpuProfileCapture);
+#endif
+					glfwWaitEventsTimeout(0.01);
+					continue;
+				}
 
                 // NOTE: internal render resolution is unchanged, so camera aspect ratio
                 // and all SSGI/SSR/GBuffer render targets are unaffected.
@@ -1967,6 +2038,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
 #if VANS_PROFILER_ENABLED
                 finishAutomationGpuProfileFrame(automationGpuProfileCapture);
 #endif
+                glfwWaitEventsTimeout(0.01);
                 continue;
             }
         }
@@ -2100,6 +2172,8 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
 		{
 			VANS_PROFILE_SCOPE("Render::PublishFrame", Vans::ProfileCategory::CommandRecord);
 			const auto submitResult = renderSystem.SubmitFrame(std::move(editorOverlay));
+			if (submitResult.surfaceResizeRequired)
+				m_VansEditorWindow.m_WindowStatus.swapChainRebuild = true;
 			if (!submitResult)
 				VANS_LOG_ERROR("[Editor] Render-system frame submission failed.");
         }

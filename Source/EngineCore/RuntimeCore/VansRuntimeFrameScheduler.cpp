@@ -39,9 +39,13 @@ void VansRuntimeFrameScheduler::RunGameplay(
 	if (policy.m_IsGameplayActive)
 	{
 		runtimePort.UpdateActionsEarly(context);
+		runtimePort.PrepareNavigation(context);
 		runtimePort.UpdateAI(context);
+		runtimePort.UpdateNavigation(context);
 		runtimePort.PrepareCharacterLocomotion(context);
 	}
+
+	if (!policy.m_IsGameplayActive) runtimePort.PrepareNavigation(context);
 
 	if (policy.m_IsSimulationRunning)
 		runtimePort.FlushCharacterControllerTransforms(context);

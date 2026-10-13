@@ -34,6 +34,12 @@ namespace VansGraphics
 		float positionWeight = 1.0f;
 	};
 
+	struct VansRetargetControlBoneDesc
+	{
+		std::string bone;
+		std::string referenceBone;
+	};
+
 	struct VansRetargetProfileAsset
 	{
 		std::string name;
@@ -44,5 +50,7 @@ namespace VansGraphics
 		VansRetargetModelSpaceAlignment targetModelSpaceAlignment =
 			VansRetargetModelSpaceAlignment::None;
 		std::vector<VansRetargetLimbChainDesc> limbChains;
+		// 重映射结束后从目标参考骨重建控制帧，供目标程序化图使用。
+		std::vector<VansRetargetControlBoneDesc> controlBones;
 	};
 }

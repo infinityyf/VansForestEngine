@@ -53,6 +53,7 @@ namespace VansGraphics
 			desc.rootAlignment = profile.rootAlignment;
 			desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment;
 			desc.limbChains = profile.limbChains;
+			desc.controlBones = profile.controlBones;
 		}
 
 		template <typename T>
@@ -160,6 +161,8 @@ namespace VansGraphics
 			const Skeleton& skeleton,
 			const MotionMatchingSettings* motionMatchingSettings,
 			bool enableRootMotion,
+			bool extractGraphRootMotion,
+			bool normalizeRootPose,
 			const std::string& logOwner)
 		{
 			std::string animatorError;
@@ -180,6 +183,8 @@ namespace VansGraphics
 			options.enableTargetPostProcess = false;
 			options.enableFinalComposition = false;
 			options.enableRootMotion = enableRootMotion;
+			options.extractGraphRootMotion = extractGraphRootMotion;
+			options.normalizeRootPose = normalizeRootPose;
 			options.rigResolver = [](const std::string& guid, std::string& error)
 			{
 				return ResolveConfigAssetObject<VansAnimationRigAsset>(guid,
@@ -531,7 +536,8 @@ namespace VansGraphics
 		animNode->SetSkeleton(meshAsset->m_AnimImportResult.skeleton);
 		animNode->SetRenderNodes(group.childNodes);
 		auto gpuBinding = std::make_unique<VansAnimationGpuBinding>();
-		if (!gpuBinding->Initialize(device, 1, animNode->GetBoneSSBO(), nodeName) ||
+		if (!gpuBinding->Initialize(device, VansCommandRecordingConfig::MaximumFramesInFlight,
+			animNode->GetBoneSSBO(), nodeName) ||
 			!gpuBinding->UploadSkinWeights(meshAsset->m_SubMeshBoneData, nodeName))
 		{
 			VANS_LOG_WARN("[LoadAnimComp] '" << objectName
@@ -598,6 +604,8 @@ namespace VansGraphics
 					sourceSkeleton,
 					mmSettings,
 					enableRootMotion,
+					animConfig.extractGraphRootMotion,
+					animConfig.normalizeRootPose,
 					objectName);
 			if (!sourceController)
 			{

@@ -112,7 +112,7 @@ bool VansPcgPreviewProjector::Project(
 			projection.refreshMaterialTextures(scene);
 
 		if (!scene.GetVegetationCollection()->Apply(
-				scene, native, *projection.update, nullptr, error))
+				scene, *device, *projection.update, error))
 			return false;
 		scene.GetVegetationCollection()->ForEach([](VansVegetationSystem& system)
 		{

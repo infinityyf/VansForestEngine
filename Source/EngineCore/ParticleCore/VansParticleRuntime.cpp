@@ -7,9 +7,16 @@ namespace VansGraphics
 void VansParticleRuntime::SetAsset(std::shared_ptr<const VansParticleAsset> asset)
 {
     Stop(); m_Emitters.clear(); m_Asset = std::move(asset);
+    m_HasEmissionPoints=false;
     if (m_Asset) for (const auto& definition : m_Asset->m_Emitters)
         m_Emitters.push_back(definition ? std::make_unique<VansParticleEmitterRuntime>(*definition) : nullptr);
     SetRandomSeed(m_RandomSeed);
+}
+void VansParticleRuntime::SetEmissionPoints(const std::vector<VansParticleEmissionPoint>& points)
+{
+    m_HasEmissionPoints=true;
+    for (auto& emitter : m_Emitters) if (emitter) emitter->SetEmissionPoints(points);
+    m_FrameDirty = true;
 }
 void VansParticleRuntime::SetOwnerWorldTransform(const glm::mat4& owner)
 {
@@ -78,7 +85,11 @@ void VansParticleRuntime::StopEmitting(bool detach)
     if (IsFinished()) return;
     if (m_State != VansParticlePlaybackState::Draining) m_DrainTime = 0;
     m_State = VansParticlePlaybackState::Draining;
-    for (auto& emitter : m_Emitters) if (emitter) emitter->StopEmitting(detach);
+    for (auto& emitter : m_Emitters) if (emitter)
+    {
+        emitter->m_CollectionTime = m_Time;
+        emitter->StopEmitting(detach);
+    }
     m_FrameDirty = true;
 }
 void VansParticleRuntime::Restart() { Stop(); Play(); }
@@ -107,7 +118,11 @@ void VansParticleRuntime::Burst(uint32_t count)
     if (!m_Asset || count == 0) return;
     count = std::min(count, 65536u);
     if (IsFinished()) { m_State = VansParticlePlaybackState::Draining; m_DrainTime = 0; }
-    for (auto& emitter : m_Emitters) if (emitter && emitter->m_Enabled) emitter->EmitBurst(count,m_LocalToWorld);
+    for (auto& emitter : m_Emitters) if (emitter && emitter->m_Enabled)
+    {
+        emitter->m_CollectionTime = m_Time;
+        emitter->EmitBurst(count,m_LocalToWorld);
+    }
     Capture(); m_Frames[m_Front] = m_Frames[m_Back]; m_FrameReady = false;
 }
 void VansParticleRuntime::SetEmitterEnabled(std::size_t index, bool enabled)
@@ -165,6 +180,7 @@ void VansParticleRuntime::Advance(float seconds, const glm::mat4& transform, boo
         const bool emitting = m_State == VansParticlePlaybackState::Emitting;
         for (auto& emitter : m_Emitters) if (emitter)
         {
+            emitter->m_CollectionTime = m_Time;
             if (skip) emitter->Skip(float(dt),transform,emitting);
             else emitter->Update(float(dt),transform,emitting);
         }
@@ -277,7 +293,9 @@ void VansParticleRuntime::Capture()
         range.renderSortMode = renderer.m_RenderSortMode;
         if (renderer.m_Type != VansParticleRendererType::None)
         {
-            if (renderer.m_Type == VansParticleRendererType::Billboard) emitter->FillInstanceData(frame.instances);
+            if (renderer.m_Type == VansParticleRendererType::Billboard) emitter->FillInstanceData(frame.instances,
+                std::clamp(float(m_Time)/m_Asset->m_Duration,0.0f,1.0f),
+                std::max(0.f,float(m_Time)));
             if (renderer.m_Type == VansParticleRendererType::Ribbon) emitter->FillRibbonData(frame.ribbons);
         }
         if (renderer.m_Volumetric.m_Enabled) emitter->FillVolumetricInstanceData(frame.medium);
@@ -312,5 +330,25 @@ bool VansParticleRuntime::HasRibbon() const
         return emitter && emitter->m_Enabled &&
             emitter->Definition().m_RendererConfig.m_Type == VansParticleRendererType::Ribbon;
     });
+}
+float VansParticleRuntime::SampleVolumetricExtinction(const glm::vec3& position) const
+{
+    if (!m_EffectiveEnabled || !std::isfinite(glm::length(position))) return 0;
+    float extinction=0;
+    for (const auto& point : GetVolumetricRenderBuffer()) {
+        const float radius=point.m_WorldPositionRadius.w;
+        if (radius<=1.e-5f) continue;
+        const float normalized=glm::distance(position,glm::vec3(point.m_WorldPositionRadius))/radius;
+        if (normalized>=1) continue;
+        const float soft=point.m_LightingEdgeCloud.z;
+        float weight=1;
+        if (soft>1.e-5f) {
+            const float edgeStart=std::max(1-soft,0.f);
+            const float t=std::clamp((normalized-edgeStart)/(1-edgeStart),0.f,1.f);
+            weight=1-t*t*(3-2*t);
+        }
+        extinction+=weight*std::max(0.f,point.m_ScatteringAlbedoExtinction.a);
+    }
+    return extinction;
 }
 }

@@ -1,0 +1,43 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../../../EngineAssets/Shaders/BRDF/ClothBSDF.glsl"
+#include "../../../EngineAssets/Shaders/BRDF/ClothAreaLighting.glsl"
+layout(local_size_x=64) in;
+struct Case
+{
+    vec4 view;
+    vec4 surface;
+    vec4 extra;
+    vec4 center;
+    vec4 right;
+    vec4 up;
+};
+layout(set=0,binding=0,std430) readonly buffer InputCases { Case cases[]; } inputCases;
+layout(set=0,binding=1,std430) writeonly buffer Results { vec4 values[]; } results;
+void main()
+{
+    uint i=gl_GlobalInvocationID.x;
+    if(i>=inputCases.cases.length()) return;
+    Case c=inputCases.cases[i];
+    if(c.extra.z>0.5)
+    {
+        float angle=EncodeClothTangentAngle(c.center.xyz,c.up.xyz);
+        if(c.view.z>0.5) angle=unpackHalf2x16(packHalf2x16(vec2(angle,0.0))).x;
+        vec3 tangent,bitangent;
+        DecodeClothTangentFrame(c.center.xyz,angle,c.right.xyz,tangent,bitangent);
+        results.values[i]=vec4(tangent,0.0);
+        return;
+    }
+    float radial=sqrt(max(1.0-c.view.x*c.view.x,0.0));
+    vec3 V=vec3(radial*cos(c.view.y),radial*sin(c.view.y),c.view.x);
+    ClothMaterialPayload cloth;
+    cloth.sheenColorWeight=vec4(1.0,1.0,1.0,c.surface.w);
+    cloth.transmittanceRoughness=vec4(vec3(c.extra.y),c.surface.z);
+    cloth.surface=vec4(c.extra.x,c.surface.y,0.0,0.5);
+    cloth.flags=uvec4(0);
+    ClothShadingData surface=ClothShadingData(vec3(1.0),vec3(0.0,0.0,1.0),V,c.surface.x);
+    ClothAreaLightingData data=PrepareClothAreaLighting(surface,cloth,vec3(1.0,0.0,0.0));
+    vec3 d,g,s;
+    EvaluateClothRectangle(data,cloth,vec3(1.0),c.center.xyz,c.right.xyz*c.right.w,c.up.xyz*c.up.w,d,g,s);
+    results.values[i]=vec4(d.x,g.x,s.x,0.0);
+}

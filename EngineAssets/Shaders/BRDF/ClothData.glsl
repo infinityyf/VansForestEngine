@@ -3,16 +3,13 @@
 
 #include "../Common/Common.glsl"
 
-const int CLOTH_MODEL_FUZZ = 0;
-const int CLOTH_MODEL_SILK = 1;
-const int CLOTH_MODEL_THIN = 2;
-const uint CLOTH_FLAG_ALBEDO_SHEEN_TINT = 1u;
-
+// 与 VansClothGPUParam 的 std430 布局一致；没有版本或旧分型回退。
 struct ClothMaterialPayload
 {
     vec4 sheenColorWeight;
-    vec4 transmissionColorStrength;
-    vec4 controls;
+    vec4 transmittanceRoughness;
+    vec4 surface;
+    uvec4 flags;
 };
 
 layout(set = 0, binding = 16, std430) readonly buffer ClothMaterialData
@@ -20,31 +17,10 @@ layout(set = 0, binding = 16, std430) readonly buffer ClothMaterialData
     ClothMaterialPayload materials[];
 } clothMaterialDataBuffer;
 
-ClothMaterialPayload DefaultClothMaterialPayload()
-{
-    ClothMaterialPayload payload;
-    payload.sheenColorWeight = vec4(1.0, 1.0, 1.0, 0.5);
-    payload.transmissionColorStrength = vec4(1.0, 1.0, 1.0, 0.0);
-    payload.controls = vec4(float(CLOTH_MODEL_FUZZ), 0.0, 1.0,
-                            float(CLOTH_FLAG_ALBEDO_SHEEN_TINT));
-    return payload;
-}
-
 ClothMaterialPayload GetClothMaterialPayload(int materialIndex)
 {
-    if (materialIndex < 0 || materialIndex >= clothMaterialDataBuffer.materials.length())
-        return DefaultClothMaterialPayload();
+    // 准入阶段负责索引校验，不把错误索引伪装成有效材质。
     return clothMaterialDataBuffer.materials[materialIndex];
-}
-
-int ClothModel(ClothMaterialPayload payload)
-{
-    return clamp(int(round(payload.controls.x)), CLOTH_MODEL_FUZZ, CLOTH_MODEL_THIN);
-}
-
-uint ClothFlags(ClothMaterialPayload payload)
-{
-    return uint(max(round(payload.controls.w), 0.0));
 }
 
 void BuildStableClothFrame(vec3 normal, out vec3 frameT, out vec3 frameB)
@@ -70,15 +46,27 @@ float EncodeClothTangentAngle(vec3 normal, vec3 tangent)
     return clamp(atan(dot(T, frameB), dot(T, frameT)) / PI, -1.0, 1.0);
 }
 
-void DecodeClothTangentFrame(vec3 normal, float encodedAngle,
+void DecodeClothTangentFrame(vec3 encodedNormal, float encodedAngle, vec3 shadingNormal,
                              out vec3 tangent, out vec3 bitangent)
 {
-    vec3 N = normalize(normal);
+    // The stored angle belongs to the GBuffer normal's frame. A decal can
+    // change the shading normal without rotating the authored world fiber.
+    // Decode that original axis first, then project onto the new tangent plane.
+    vec3 sourceN = normalize(encodedNormal);
+    vec3 N = normalize(shadingNormal);
     vec3 frameT;
     vec3 frameB;
-    BuildStableClothFrame(N, frameT, frameB);
+    BuildStableClothFrame(sourceN, frameT, frameB);
     float angle = clamp(encodedAngle, -1.0, 1.0) * PI;
-    tangent = normalize(frameT * cos(angle) + frameB * sin(angle));
+    tangent = frameT * cos(angle) + frameB * sin(angle);
+    // The double cross stays perpendicular when a quantized source axis is
+    // almost parallel to N; subtractive projection then normalization can
+    // amplify the residual dot product in that near-degenerate case.
+    tangent = cross(cross(N, tangent), N);
+    if (dot(tangent, tangent) <= 1e-8)
+        BuildStableClothFrame(N, tangent, bitangent);
+    else
+        tangent = normalize(tangent);
     bitangent = normalize(cross(N, tangent));
 }
 

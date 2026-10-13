@@ -1,4 +1,4 @@
-#include "PcgAssetContractTests.h"
+﻿#include "PcgAssetContractTests.h"
 #include "../EngineCore/EngineAPILayer/Private/EngineAPIImpl.h"
 #include "../EngineCore/ProjectSystem/VansProjectManager.h"
 #include "../EngineCore/AuthoringCore/VansAssetDocumentRegistry.h"
@@ -60,6 +60,13 @@ public:
     {
         const Vans::SceneEditResult edited = m_Edits.Set(path, std::move(value));
         return { edited.success, edited.message };
+    }
+
+    Vans::VansSceneAuthoringResult CommitSceneValues(std::vector<Vans::VansSceneAuthoringValue> values,
+        std::uint64_t expectedState,const Vans::VansSceneAuthoringCommit& commit) override
+    {
+        const auto result=m_Edits.CommitValues(std::move(values),expectedState,commit);
+        return {result.success,result.message};
     }
 
 private:
@@ -332,13 +339,15 @@ bool RunPcgEditorConfigurationContractTests()
         "A missing descriptor-driven configuration field was silently accepted")) return false;
     const auto stale=draft;
     draft.name="Edited tree";draft.variants[0].weight=2;draft.variants[0].scale={1.1f,1.2f,1.3f};
+    draft.variants[0].collision=PcgPlantCollisionPrototype{plant.variants[0].parts[0].mesh.ToString(),"Environment"};
     VansIOAudit::Reset();
     const auto applied=api.ApplyPcgPlantConfiguration(draft);
     if (!check(applied.success,applied.message)) return false;
     const auto published=manager.GetAssetObjectRepository().ResolveLatest<VansPlantTypeAsset>(plantGuid);
     if (!check(published && published->name==draft.name && published->variants[0].weight==2 &&
         published->variants[0].parts[0].material==plant.variants[0].parts[0].material &&
-        published->variants[0].parts[1].mesh==plant.variants[0].parts[1].mesh,
+        published->variants[0].parts[1].mesh==plant.variants[0].parts[1].mesh && published->variants[0].collision &&
+        published->variants[0].collision->mesh==plant.variants[0].parts[0].mesh && published->variants[0].collision->layer=="Environment",
         "Plant application lost material/model bindings or did not publish memory")) return false;
     if (!check(!api.ApplyPcgPlantConfiguration(stale).success,"A stale draft overwrote newer edits")) return false;
     for (const auto& event : VansIOAudit::Snapshot())
@@ -366,7 +375,9 @@ bool RunPcgEditorConfigurationContractTests()
     registry.Clear();
     const auto reopened=api.GetPcgPlantConfiguration(plantGuid.ToString());
     if (!check(reopened.available && !reopened.dirty && reopened.name=="Edited tree" &&
-        reopened.variants[0].scale==std::array<float,3>{1.1f,1.2f,1.3f},"Explicit save/reopen lost plant settings")) return false;
+        reopened.variants[0].scale==std::array<float,3>{1.1f,1.2f,1.3f} && reopened.variants[0].collision &&
+        reopened.variants[0].collision->mesh==draft.variants[0].collision->mesh && reopened.variants[0].collision->layer=="Environment",
+        "Explicit save/reopen lost plant settings or collision prototype")) return false;
     PcgLayerCreateRequest create;
     create.name="User grass A";create.recipeName="User-created recipe";create.regionName="User region";
     create.boundsMin={-8,-8};create.boundsMax={8,8};create.cellSize=4;create.maskWidth=32;create.maskHeight=32;

@@ -1,3 +1,4 @@
+#include "../NavigationCore/Storage/VansNavigationSettingsStorage.h"
 #include "VansGamePackageBuilder.h"
 #include "VansPackageResourcePrewarmer.h"
 #include "VansGameplayAssetPackageCooker.h"
@@ -11,6 +12,8 @@
 #include "../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../ProjectSystem/VansProjectConfig.h"
 #include "../ProjectSystem/Storage/VansProjectSettingsStorage.h"
+#include "../ProjectSystem/VansProjectSettingsData.h"
+#include "../RenderCore/GICore/VansGIWorld.h"
 #include "../RenderCore/VansShaderManager.h"
 #include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../RenderCore/VulkanCore/VansPipelineDescriptor.h"
@@ -633,6 +636,20 @@ namespace
 			}
 			programs.push_back({ request.programId, authoringArtifactRoot });
 		}
+		std::vector<Vans::VansShaderCookProgram> giWorldPrograms;
+		if (!VansGraphics::VansGIWorld::CookShaders(
+			(engineRoot / "EngineAssets" / "Shaders").string(),
+			authoringArtifactRoot, giWorldPrograms, error))
+			return false;
+		for (const auto& program : giWorldPrograms)
+		{
+			if (!programIds.insert(program.programId).second)
+			{
+				error = "Duplicate GI world shader program: " + program.programId;
+				return false;
+			}
+			programs.push_back(program);
+		}
 		if (!Vans::VansShaderArtifactCache::Get().ExportCookedArtifacts(
 			programs, packageArtifactRoot, error))
 			return false;
@@ -885,7 +902,15 @@ namespace
 			return false;
 		}
 		Vans::VansNavigationSettings navigationSettings;
-		if (!Vans::VansProjectSettingsStorage::LoadNavigationSettings(
+		Vans::VansProjectRenderSettingsData renderSettings;
+		std::vector<std::string> renderWarnings;
+		if (!Vans::VansProjectSettingsStorage::LoadRenderSettings(
+			(projectRoot / projectConfig.renderSettings).string(), renderSettings, renderWarnings, error))
+		{
+			error = "Cannot load render settings for package planning: " + error;
+			return false;
+		}
+		if (!Vans::VansNavigationSettingsStorage::Load(
 			(projectRoot / projectConfig.navigationSettings).string(),
 			navigationSettings, error))
 		{
@@ -957,7 +982,7 @@ namespace
 				scenePath,
 				projectConfig.runtimeAssetBindings,
 				objectRepository,
-				&builtInDatabase);
+				&builtInDatabase, renderSettings.projectRenderPasses);
 		if (!dependencyResult.success)
 		{
 			error = "Cannot build scene dependency plan for package";
@@ -1000,7 +1025,7 @@ namespace
 					scenePath,
 					projectConfig.runtimeAssetBindings,
 					objectRepository,
-					&builtInDatabase);
+					&builtInDatabase, renderSettings.projectRenderPasses);
 				if (!dependencyResult.success)
 				{
 					error = "Cannot rebuild scene dependency plan after prewarming caches";
@@ -1383,6 +1408,7 @@ namespace
 		{
 			if (sourceRecord.type != Vans::VansAssetType::Material &&
 				sourceRecord.type != Vans::VansAssetType::Shader &&
+				sourceRecord.type != Vans::VansAssetType::RenderPass &&
 				sourceRecord.type != Vans::VansAssetType::SkinProfile &&
 				sourceRecord.type != Vans::VansAssetType::AudioReverbPreset &&
 				sourceRecord.type != Vans::VansAssetType::AudioBusSnapshot &&
@@ -1814,7 +1840,10 @@ namespace Vans
 				std::string rootName = first->string();
 				std::transform(rootName.begin(), rootName.end(), rootName.begin(),
 					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-				return rootName != "shaders" && rootName != "models";
+				// Editor resources and native-test fixtures have no runtime consumer.
+				// Runtime shaders and models are copied through their dependency plans.
+				return rootName != "shaders" && rootName != "models"
+					&& rootName != "editor" && rootName != "validation";
 			};
 			if (!CopyDirectoryToFiltered(
 				engineRoot / "EngineAssets",

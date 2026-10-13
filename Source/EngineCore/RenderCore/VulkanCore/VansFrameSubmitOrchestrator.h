@@ -6,7 +6,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace VansGraphics
@@ -52,6 +54,8 @@ namespace VansGraphics
 	{
 		VkSemaphore semaphore = VK_NULL_HANDLE;
 		VkPipelineStageFlags stages = 0;
+		uint64_t value = 0;
+		bool timeline = false;
 	};
 
 	struct VansSubmitResourceAccess
@@ -64,6 +68,7 @@ namespace VansGraphics
 		bool write = false;
 		bool persistent = false;
 		bool hostReadable = false;
+		VansPhysicalResourceIdentity physical;
 	};
 
 	struct VansFrameSubmitNode
@@ -74,9 +79,41 @@ namespace VansGraphics
 		std::vector<VansSubmitSyncWait> waits;
 		std::vector<VansSyncPoint> signals;
 		std::vector<VansExternalSemaphoreWait> externalWaits;
-		std::vector<VkSemaphore> externalSignals;
+		std::vector<SignalSemaphoreInfo> externalSignals;
 		std::vector<VansSubmitResourceAccess> resources;
 		VkFence fence = VK_NULL_HANDLE;
+	};
+
+	struct VansQueueTimelinePoint
+	{
+		VkSemaphore semaphore = VK_NULL_HANDLE;
+		uint64_t value = 0;
+		explicit operator bool() const { return semaphore != VK_NULL_HANDLE && value != 0; }
+	};
+
+	// One monotonic timeline per actual VkQueue, shared by all frame-slot graphs.
+	// RenderThread serializes allocation and queue submission.
+	class VansQueueTimelines final
+	{
+	public:
+		bool Initialize(VkDevice device, VkQueue graphicsQueue, VkQueue computeQueue);
+		void Shutdown();
+		bool IsReady() const { return m_Graphics.semaphore != VK_NULL_HANDLE; }
+		VansQueueTimelinePoint NextSignal(VkQueue queue) const;
+		void CommitSignal(VkQueue queue, uint64_t value);
+
+	private:
+		struct QueueState
+		{
+			VkQueue queue = VK_NULL_HANDLE;
+			VkSemaphore semaphore = VK_NULL_HANDLE;
+			uint64_t lastSubmittedValue = 0;
+		};
+		const QueueState* Find(VkQueue queue) const;
+		QueueState* Find(VkQueue queue);
+		VkDevice m_Device = VK_NULL_HANDLE;
+		QueueState m_Graphics;
+		QueueState m_Compute;
 	};
 
 	bool HasSubmitDependencyPath(
@@ -94,6 +131,15 @@ namespace VansGraphics
 		void Shutdown();
 		void Reset();
 		void AddNode(VansFrameSubmitNode node);
+		// 已提交的前置阶段：所有节点在任意 GPU stage 开始前等待该 timeline。
+		void AddExternalPrerequisite(VansQueueTimelinePoint completion);
+        // 图构建完成后，为指定队列节点声明共享的采样输入。
+        void AddQueueReadResources(VansQueueRole queue, const std::vector<VansSubmitResourceAccess>& resources);
+		void SetQueueTimelines(VansQueueTimelines* timelines) { m_QueueTimelines = timelines; }
+		void SetCrossFrameResourceLedger(VansCrossFrameResourceLedger* ledger)
+		{
+			m_CrossFrameResourceLedger = ledger;
+		}
 
 		bool Validate(std::string* error = nullptr) const;
 		bool Execute();
@@ -102,6 +148,9 @@ namespace VansGraphics
 		bool HasPendingWork() const { return m_PendingFence != VK_NULL_HANDLE; }
 		std::string BuildDebugSummary() const;
 		const std::string& GetLastError() const { return m_LastError; }
+		bool WasDeviceLost() const { return m_DeviceLost; }
+		std::optional<VansQueueTimelinePoint> GetSubmittedTimelinePoint(
+			const std::string& nodeName) const;
 
 	private:
 		VkQueue ResolveQueue(VansQueueRole role) const;
@@ -118,8 +167,12 @@ namespace VansGraphics
 		std::vector<VansFrameSubmitNode> m_Nodes;
 		std::vector<VkSemaphore> m_ActiveEdgeSemaphores;
 		std::vector<VkSemaphore> m_AvailableEdgeSemaphores;
+		VansQueueTimelines* m_QueueTimelines = nullptr;
+		VansCrossFrameResourceLedger* m_CrossFrameResourceLedger = nullptr;
+		std::vector<std::pair<std::string, VansQueueTimelinePoint>> m_SubmittedTimelinePoints;
 		mutable VansResourceStateTracker m_ResourceStateTracker;
 		std::string m_LastError;
+		bool m_DeviceLost = false;
 	};
 
 	const char* ToString(VansQueueRole role);

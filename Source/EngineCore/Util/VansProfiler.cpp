@@ -58,6 +58,21 @@ namespace
         return static_cast<double>(nanoseconds) * 1.0e-3;
     }
 
+    int64_t GpuTimestampDelta(uint64_t value, uint64_t reference, uint32_t validBits)
+    {
+        if (validBits == 0u)
+            return 0;
+        if (validBits >= 64u)
+            return static_cast<int64_t>(value - reference);
+
+        const uint64_t mask = (uint64_t{ 1 } << validBits) - 1u;
+        const uint64_t signBit = uint64_t{ 1 } << (validBits - 1u);
+        uint64_t difference = (value - reference) & mask;
+        if ((difference & signBit) != 0u)
+            difference |= ~mask;
+        return static_cast<int64_t>(difference);
+    }
+
     const char* CategoryName(Vans::ProfileCategory category)
     {
         switch (category)
@@ -480,7 +495,8 @@ void Vans::VansGpuProfiler::Init(
     void* physDevice,
     uint32_t graphicsQueueFamily,
     uint32_t computeQueueFamily,
-    bool hostQueryResetEnabled)
+    bool hostQueryResetEnabled,
+    bool calibratedTimestampsEnabled)
 {
     Destroy();
 
@@ -498,6 +514,7 @@ void Vans::VansGpuProfiler::Init(
     m_Device = device;
     m_TimestampPeriodUs =
         VansGraphics::VansVKDevice::GetTimestampPeriodMs(vkPhysicalDevice) * 1000.0;
+    m_CalibratedTimestampsEnabled = calibratedTimestampsEnabled;
 
     const uint32_t queueFamilies[LANE_COUNT] = {
         graphicsQueueFamily,
@@ -554,6 +571,7 @@ void Vans::VansGpuProfiler::Destroy()
 
     m_Device = nullptr;
     m_TimestampPeriodUs = 0.0;
+    m_CalibratedTimestampsEnabled = false;
     m_ActiveFrameSlot = INVALID_SLOT;
     std::memset(m_TimestampValidBits, 0, sizeof(m_TimestampValidBits));
     std::memset(m_LaneSupported, 0, sizeof(m_LaneSupported));
@@ -593,7 +611,7 @@ void Vans::VansGpuProfiler::BeginFrame(uint64_t frameIndex)
             continue;
 
         // 复用前在 host 上清除旧 availability；GPU 上尚未执行的 reset 会让
-        // 非阻塞查询误读上次时间戳。Free 只来自未使用槽或所有时间戳已完成的槽。
+        // 非阻塞查询误读上次时间戳。Free 只来自未使用槽或最终提交已退役的槽。
         for (uint32_t lane = 0; lane < LANE_COUNT; ++lane)
             if (m_LaneSupported[lane])
                 VansGraphics::VansVKDevice::ResetQueryPool(static_cast<VkDevice>(m_Device),
@@ -606,6 +624,36 @@ void Vans::VansGpuProfiler::BeginFrame(uint64_t frameIndex)
     }
 
     SubmitDroppedFrame(frameIndex);
+}
+
+uint64_t Vans::VansGpuProfiler::GetRecordingFrameIndex() const
+{
+    return m_ActiveFrameSlot < FRAME_SLOT_COUNT
+        ? m_FrameSlots[m_ActiveFrameSlot].frameIndex
+        : VansCpuProfiler::INVALID_FRAME_INDEX;
+}
+
+void Vans::VansGpuProfiler::MarkSubmittedFrameRetired(uint64_t frameIndex)
+{
+    if (frameIndex == VansCpuProfiler::INVALID_FRAME_INDEX)
+        return;
+    for (FrameSlot& frame : m_FrameSlots)
+    {
+        if ((frame.state == FrameSlotState::Pending ||
+             frame.state == FrameSlotState::Recording) &&
+            frame.frameIndex == frameIndex)
+        {
+            frame.submissionRetired = true;
+            return;
+        }
+    }
+}
+
+void Vans::VansGpuProfiler::ReclaimDiscardedFramesAtDeviceIdle()
+{
+    for (FrameSlot& frame : m_FrameSlots)
+        if (frame.state == FrameSlotState::Retired)
+            frame = FrameSlot{};
 }
 
 void Vans::VansGpuProfiler::BeginQueue(void* cmd, VansGpuQueueLane lane)
@@ -667,6 +715,15 @@ bool Vans::VansGpuProfiler::Push(void* cmd, const char* name, VansGpuQueueLane l
     frame.stackDepth[laneIndex] = stackDepth + 1u;
     frame.scopeCount[laneIndex] = scopeIndex + 1u;
 
+    VkDebugUtilsLabelEXT label{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
+    label.pLabelName = scope.name;
+    label.color[0] = lane == VansGpuQueueLane::Compute ? 0.35f : 0.20f;
+    label.color[1] = 0.65f;
+    label.color[2] = lane == VansGpuQueueLane::Compute ? 0.90f : 0.40f;
+    label.color[3] = 1.0f;
+    VansGraphics::VansVKDevice::CmdBeginDebugLabel(
+        static_cast<VkCommandBuffer>(cmd), label);
+
     VansGraphics::VansVKDevice::CmdWriteTimestamp(
         static_cast<VkCommandBuffer>(cmd),
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -699,24 +756,7 @@ void Vans::VansGpuProfiler::Pop(void* cmd, VansGpuQueueLane lane)
         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
         static_cast<VkQueryPool>(m_Pools[laneIndex][m_ActiveFrameSlot]),
         scope.endQuery);
-}
-
-int64_t Vans::VansGpuProfiler::TimestampDelta(
-    uint64_t value,
-    uint64_t reference,
-    uint32_t validBits)
-{
-    if (validBits == 0u)
-        return 0;
-    if (validBits >= 64u)
-        return static_cast<int64_t>(value - reference);
-
-    const uint64_t mask = (uint64_t{ 1 } << validBits) - 1u;
-    const uint64_t signBit = uint64_t{ 1 } << (validBits - 1u);
-    uint64_t difference = (value - reference) & mask;
-    if ((difference & signBit) != 0u)
-        difference |= ~mask;
-    return static_cast<int64_t>(difference);
+    VansGraphics::VansVKDevice::CmdEndDebugLabel(static_cast<VkCommandBuffer>(cmd));
 }
 
 bool Vans::VansGpuProfiler::TryResolveFrame(
@@ -724,7 +764,7 @@ bool Vans::VansGpuProfiler::TryResolveFrame(
     VansGpuResolvedFrame& result)
 {
     FrameSlot& frame = m_FrameSlots[frameSlotIndex];
-    if (frame.state != FrameSlotState::Pending)
+    if (frame.state != FrameSlotState::Pending || !frame.submissionRetired)
         return false;
 
     // 查询池只属于 Init 时保存的设备；帧末不再接收外部类型擦除的句柄或句柄地址。
@@ -792,7 +832,7 @@ bool Vans::VansGpuProfiler::TryResolveFrame(
             const ScopeSlot& scope = frame.scopes[lane][scopeIndex];
             if (!scope.closed)
                 continue;
-            const int64_t beginTick = TimestampDelta(
+            const int64_t beginTick = GpuTimestampDelta(
                 m_QueryResults[lane][scope.beginQuery].value,
                 referenceTimestamp,
                 commonValidBits);
@@ -802,6 +842,18 @@ bool Vans::VansGpuProfiler::TryResolveFrame(
                 hasEarliestTick = true;
             }
         }
+    }
+
+    if (m_CalibratedTimestampsEnabled && hasEarliestTick &&
+        commonValidBits != 0u && m_TimestampPeriodUs > 0.0)
+    {
+        uint64_t originTicks = referenceTimestamp + static_cast<uint64_t>(earliestTick);
+        if (commonValidBits < 64u)
+            originTicks &= (uint64_t{ 1 } << commonValidBits) - 1u;
+        result.timelineOriginTicks = originTicks;
+        result.timestampValidBits = commonValidBits;
+        result.timestampPeriodUs = m_TimestampPeriodUs;
+        result.timelineComparable = true;
     }
 
     for (uint32_t lane = 0u; lane < LANE_COUNT; ++lane)
@@ -828,11 +880,11 @@ bool Vans::VansGpuProfiler::TryResolveFrame(
             event.trackId = lane + 1u;
             event.category = ProfileCategory::GPU;
             CopyText(event.name, sizeof(event.name), scope.name);
-            const int64_t beginTick = TimestampDelta(
+            const int64_t beginTick = GpuTimestampDelta(
                 m_QueryResults[lane][scope.beginQuery].value,
                 referenceTimestamp,
                 commonValidBits);
-            const int64_t endTick = TimestampDelta(
+            const int64_t endTick = GpuTimestampDelta(
                 m_QueryResults[lane][scope.endQuery].value,
                 referenceTimestamp,
                 commonValidBits);
@@ -867,7 +919,7 @@ void Vans::VansGpuProfiler::PollPendingFrames()
     }
 }
 
-void Vans::VansGpuProfiler::EndFrame()
+void Vans::VansGpuProfiler::EndFrame(bool submitted)
 {
     if (m_ActiveFrameSlot < FRAME_SLOT_COUNT)
     {
@@ -878,7 +930,14 @@ void Vans::VansGpuProfiler::EndFrame()
 
         if (hasScopes)
         {
-            frame.state = FrameSlotState::Pending;
+            if (submitted)
+                frame.state = FrameSlotState::Pending;
+            else
+            {
+                SubmitDroppedFrame(frame.frameIndex, frame.droppedEvents);
+                // Partial submits may still reference this pool. Reclaim only at device idle.
+                frame.state = FrameSlotState::Retired;
+            }
         }
         else
         {
@@ -957,9 +1016,9 @@ void Vans::VansProfiler::BeginRenderFrame(uint64_t frameIndex)
     VansGpuProfiler::Get().BeginFrame(frameIndex);
 }
 
-void Vans::VansProfiler::EndRenderFrame(uint64_t frameIndex)
+void Vans::VansProfiler::EndRenderFrame(uint64_t frameIndex, bool submitted)
 {
-    VansGpuProfiler::Get().EndFrame();
+    VansGpuProfiler::Get().EndFrame(submitted);
     VansCpuProfiler::Get().EndRenderFrame(frameIndex);
 }
 
@@ -1063,6 +1122,10 @@ void Vans::VansProfiler::ComposeAssembly(FrameAssembly& assembly)
     if (assembly.hasGpu)
     {
         frame.gpuDurationUs = assembly.gpu.durationUs;
+        frame.gpuTimelineOriginTicks = assembly.gpu.timelineOriginTicks;
+        frame.gpuTimestampValidBits = assembly.gpu.timestampValidBits;
+        frame.gpuTimestampPeriodUs = assembly.gpu.timestampPeriodUs;
+        frame.gpuTimelineComparable = assembly.gpu.timelineComparable;
         frame.timelineDurationUs = std::max(frame.timelineDurationUs, frame.gpuDurationUs);
         frame.droppedGpuEvents = assembly.gpu.droppedEvents;
         frame.overflow = frame.overflow || assembly.gpu.overflow;
@@ -1410,7 +1473,34 @@ void Vans::VansProfileCapture::Observe(const ProfileFrame& frame, double nowSeco
     }
     m_LastObservedSeconds = nowSeconds;
     ++m_ObservedFrames;
-    const Sample sample{ frame.frameIndex, nowSeconds, frame.frameDurationUs, frame.gpuDurationUs };
+    Sample sample{ frame.frameIndex, nowSeconds, frame.frameDurationUs, frame.gpuDurationUs,
+        frame.gpuTimelineOriginTicks, frame.gpuTimestampValidBits,
+        frame.gpuTimestampPeriodUs, frame.gpuTimelineComparable };
+    if (m_Phase == Phase::Measuring)
+    {
+        for (uint32_t index = 0; index < frame.eventCount; ++index)
+        {
+            const ProfileEvent& event = frame.events[index];
+            if ((event.flags & ProfileEventFlagGpu) == 0u || event.trackId == 0u ||
+                event.trackId > frame.trackCount)
+                continue;
+            const ProfileTrack& track = frame.tracks[event.trackId - 1u];
+            // ComposeAssembly 将 Graphics/Compute 队列分别编码为 threadId 1/2。
+            if (track.type != ProfileTrackType::GpuQueue ||
+                track.threadId == 0u || track.threadId > sample.gpuQueueSpans.size())
+                continue;
+            Sample::GpuQueueSpan& span = sample.gpuQueueSpans[track.threadId - 1u];
+            if (!span.recorded)
+            {
+                span = { true, event.startUs, event.endUs };
+            }
+            else
+            {
+                span.firstUs = std::min(span.firstUs, event.startUs);
+                span.lastUs = std::max(span.lastUs, event.endUs);
+            }
+        }
+    }
     auto& batch = m_Phase == Phase::Measuring ? m_Samples : m_Window;
     batch.push_back(sample);
     if (m_Phase == Phase::Measuring)
@@ -1483,12 +1573,70 @@ bool Vans::VansProfileCapture::DumpJson(const char* outputDir) const
     report["sampleCount"] = m_Samples.size();
     report["samples"] = json::array();
     std::vector<double> cpu, gpu;
+    const auto queueSpanJson = [](const Sample::GpuQueueSpan& span) -> json
+    {
+        return span.recorded ? json{ {"firstUs", span.firstUs}, {"lastUs", span.lastUs} }
+            : json(nullptr);
+    };
     for (const Sample& sample : m_Samples)
     {
         report["samples"].push_back({ {"frameIndex", sample.frameIndex}, {"observedSeconds", sample.observedSeconds},
-            {"cpuUs", sample.cpuUs}, {"gpuUs", sample.gpuUs} });
+            {"cpuUs", sample.cpuUs}, {"gpuUs", sample.gpuUs},
+            {"gpuTimelineComparable", sample.gpuTimelineComparable},
+            {"gpuTimelineOriginTicks", sample.gpuTimelineOriginTicks},
+            {"gpuTimestampValidBits", sample.gpuTimestampValidBits},
+            {"gpuTimestampPeriodUs", sample.gpuTimestampPeriodUs},
+            {"gpuQueueSpansUs", { {"graphics", queueSpanJson(sample.gpuQueueSpans[0])},
+                {"compute", queueSpanJson(sample.gpuQueueSpans[1])} }} });
         cpu.push_back(sample.cpuUs);
         gpu.push_back(sample.gpuUs);
+    }
+    report["gpuCrossFrameTiming"] = { {"comparable", false}, {"pairCount", 0} };
+    bool comparable = m_Samples.size() > 1u;
+    uint32_t commonValidBits = 64u;
+    const double timestampPeriodUs = comparable ? m_Samples.front().gpuTimestampPeriodUs : 0.0;
+    for (const Sample& sample : m_Samples)
+    {
+        comparable = comparable && sample.gpuTimelineComparable
+            && sample.gpuTimestampValidBits != 0u
+            && sample.gpuTimestampPeriodUs == timestampPeriodUs
+            && std::isfinite(sample.gpuTimestampPeriodUs)
+            && sample.gpuTimestampPeriodUs > 0.0;
+        commonValidBits = std::min(commonValidBits, sample.gpuTimestampValidBits);
+    }
+    if (comparable)
+    {
+        std::vector<double> startIntervalsUs;
+        std::vector<double> scopeEnvelopeGapsUs;
+        startIntervalsUs.reserve(m_Samples.size() - 1u);
+        scopeEnvelopeGapsUs.reserve(m_Samples.size() - 1u);
+        for (size_t index = 1u; index < m_Samples.size(); ++index)
+        {
+            const Sample& previous = m_Samples[index - 1u];
+            const Sample& next = m_Samples[index];
+            const int64_t deltaTicks = GpuTimestampDelta(
+                next.gpuTimelineOriginTicks, previous.gpuTimelineOriginTicks, commonValidBits);
+            const double intervalUs = static_cast<double>(deltaTicks) * timestampPeriodUs;
+            if (next.frameIndex != previous.frameIndex + 1u || deltaTicks <= 0 ||
+                !std::isfinite(intervalUs))
+            {
+                comparable = false;
+                break;
+            }
+            startIntervalsUs.push_back(intervalUs);
+            scopeEnvelopeGapsUs.push_back(intervalUs - previous.gpuUs);
+        }
+        if (comparable)
+        {
+            report["gpuCrossFrameTiming"] = {
+                {"comparable", true},
+                {"pairCount", startIntervalsUs.size()},
+                {"startIntervalUs", statisticsJson(Summarize(std::move(startIntervalsUs)))},
+                {"scopeEnvelopeGapUs", statisticsJson(Summarize(scopeEnvelopeGapsUs))},
+                {"positiveGapPairs", std::count_if(scopeEnvelopeGapsUs.begin(), scopeEnvelopeGapsUs.end(),
+                    [](double gapUs) { return gapUs > 0.0; })}
+            };
+        }
     }
     report["cpuFrameUs"] = statisticsJson(Summarize(std::move(cpu)));
     report["gpuTimestampSpanUs"] = statisticsJson(Summarize(std::move(gpu)));
@@ -1508,6 +1656,7 @@ bool Vans::VansProfileCapture::DumpJson(const char* outputDir) const
             {"callsPerFrame", statisticsJson(Summarize(scope.calls))} });
     }
     report["scopeAccounting"] = "Same-name scopes are summed per track per frame; absent scopes contribute zero. CPU exclusive time excludes direct children on the same thread. CPU scopes retain their recorded intervals, including waits extending beyond the main frame. Nested scopes and concurrent threads overlap; their sum is not frame time.";
+    report["gpuCrossFrameTimingScope"] = "Comparable only when calibrated timestamps were enabled on the logical device for every contiguous sample. The gap subtracts the previous frame's recorded GPU scope envelope from the next frame's first recorded scope; it does not measure display cadence or account for GPU work outside recorded scopes.";
     report["acceptanceScope"] = "Timing stability only; verify scene, camera, DLSS initialization and background work separately before using this capture as a performance comparison.";
     try
     {
@@ -1587,6 +1736,10 @@ void Vans::VansProfiler::DumpFrameJson(const char* outputDir) const
     jsonFrame["frameDurationUs"] = frame.frameDurationUs;
     jsonFrame["timelineDurationUs"] = frame.timelineDurationUs;
     jsonFrame["gpuDurationUs"] = frame.gpuDurationUs;
+    jsonFrame["gpuTimelineComparable"] = frame.gpuTimelineComparable;
+    jsonFrame["gpuTimelineOriginTicks"] = frame.gpuTimelineOriginTicks;
+    jsonFrame["gpuTimestampValidBits"] = frame.gpuTimestampValidBits;
+    jsonFrame["gpuTimestampPeriodUs"] = frame.gpuTimestampPeriodUs;
     jsonFrame["fps"] = frame.fps;
     jsonFrame["gpuExpected"] = frame.gpuExpected;
     jsonFrame["gpuComplete"] = frame.gpuComplete;

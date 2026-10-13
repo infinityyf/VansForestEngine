@@ -7,8 +7,10 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <vector>
 
 namespace VansGraphics
 {
@@ -36,6 +38,9 @@ namespace VansGraphics
 	{
 		VansRenderFrameId frameId;
 		VansRenderFrameSubmitStatus status = VansRenderFrameSubmitStatus::InvalidState;
+		// 独立 RT 模式报告上一条已接受帧的结果；同步模式报告当前帧。
+		// 仅当过期帧仍属于当前 surface epoch 时为 true。
+		bool surfaceResizeRequired = false;
 
 		explicit operator bool() const
 		{
@@ -63,6 +68,9 @@ namespace VansGraphics
 		bool BeginFrame(VansCamera& camera);
 		VansRenderFrameSubmitResult SubmitFrame(
 			std::unique_ptr<IVansRenderFrameOverlay> overlay = nullptr);
+		// Main queues retirement while building the next overlay. The callback
+		// follows that overlay through the ordered render queue and its GPU fence.
+		bool QueueFrameRetirement(std::function<void()> destroy);
 
 		bool RequestSurfaceResize(std::uint32_t width, std::uint32_t height);
 		bool WaitForIdle();
@@ -116,6 +124,7 @@ namespace VansGraphics
 		std::atomic<std::uint32_t> m_PublishedRenderWidth{ 0 };
 		std::atomic<std::uint32_t> m_PublishedRenderHeight{ 0 };
 		std::optional<VansRenderFrameSubmission> m_OpenSubmission;
+		std::vector<std::function<void()>> m_PendingFrameRetirements;
 		VansRenderOutcomeLedger m_OutcomeLedger;
 		std::unique_ptr<RenderThreadState> m_RenderThreadState;
 	};

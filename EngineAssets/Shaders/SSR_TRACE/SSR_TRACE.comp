@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
+#include "../Common/SSRRay.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout( set = 1, binding = 0 ) uniform sampler2D inputNormal;
@@ -33,70 +34,29 @@ void main()
         return;
 
     uint tileGridWidth = (uint(screenSize.x) + 7u) / 8u;
-    uint linearTile = tileList[compactTileIndex];
+    uint recordOffset = compactTileIndex * SSR_TILE_RECORD_WORDS;
+    uint linearTile = tileList[recordOffset];
+    uint lane = gl_LocalInvocationIndex;
+    uint activeMask = tileList[recordOffset + (lane < 32u ? 1u : 2u)];
+    // Classification has already initialized rejected pixels (including edge
+    // lanes and back-facing rays). Only active lanes need GBuffer/Hi-Z work.
+    if ((activeMask & (1u << (lane & 31u))) == 0u)
+        return;
     ivec2 tileCoord = ivec2(
         int(linearTile % tileGridWidth),
         int(linearTile / tileGridWidth));
     ivec2 pixelCoord = tileCoord * 8 + ivec2(gl_LocalInvocationID.xy);
 
-    // Edge tiles may contain lanes outside the render extent.
-    if (any(greaterThanEqual(pixelCoord, screenSize)))
-        return;
-
     vec3 normal = texelFetch(inputNormal, pixelCoord, 0).xyz;
     vec3 position = texelFetch(inputPosition, pixelCoord, 0).xyz;
     float roughness = texelFetch(inputRoughness, pixelCoord, 0).a;
 
-    // GBuffer / HIZ 已在当前帧 GBuffer pass 后生成，SSR trace 必须使用当前帧相机空间。
-    vec3 viewDirection = normalize(cameraPosition.xyz - position);
-    vec3 tracePosition = position;
     vec4 traceHitInfo = vec4(0.0);
-    float tracePDFValue = 0.0;
+    float tracePDFValue;
 
-    //计算反射光线的方向
-    vec3 traceDirection =vec3(0,1,0);
-
-    // Early-out: sky / empty GBuffer pixels have no valid world position.
-    if (length(normal) < 0.5)
-    {
-        imageStore(traceHit, pixelCoord, vec4(0.0));
-        imageStore(tracePDF, pixelCoord, vec4(0.0));
-        return;
-    }
-
-    //根据roughness计算采样的PDF
-    if(roughness > 0.1)
-    {
-        // R2 quasi-random sequence with per-pixel hash offset gives much
-        // better stratification over time than the sin-based HashRandom,
-        // reducing structured noise patterns on rough surfaces.
-        uint seed = PixelSeedHash(pixelCoord);
-        vec2 random = R2Sequence(int((seed + uint(FrameIndex)) % 256u));
-        // Do NOT clamp random.y — ImportanceSampleGGX already shapes the lobe
-        // through the roughness parameter.  Clamping it kills spread for rough surfaces.
-        vec4 pdfrandom = ImportanceSampleGGX(random, roughness);
-        tracePDFValue = pdfrandom.w;
-
-        //tangent space to world space
-        vec3 jitterNormal = normalize(TangentToWorld(pdfrandom.xyz, normal));
-        traceDirection = reflect(-viewDirection, jitterNormal);
-    }
-    else
-    {
-        tracePDFValue = 1.0;
-        traceDirection = reflect(-viewDirection, normal);
-    }
-
-    // Reject reflection directions that go into the surface.
-    // This happens when the jittered half-vector diverges too far from the
-    // geometric normal — the reflected ray would immediately hit the back
-    // face of the current surface, producing random flickering hits.
-    if (dot(traceDirection, normal) < 0.0)
-    {
-        imageStore(traceHit, pixelCoord, vec4(0.0));
-        imageStore(tracePDF, pixelCoord, vec4(tracePDFValue, 0.0, 0.0, 0.0));
-        return;
-    }
+    vec3 traceDirection;
+    SSRPrepareRay(pixelCoord, normal, position, roughness,
+                  traceDirection, tracePDFValue);
 
     // ─── HiZ 加速屏幕空间追踪 ───
     // 使用 TraceHiZ_UV，HIZ 存储线性深度（单位米），与射线线性深度直接比较

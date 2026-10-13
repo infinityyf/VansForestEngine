@@ -61,7 +61,7 @@ std::shared_ptr<IVansActionService> CreateCombatService(
 	std::string& error)
 {
 	return VansCombatActionService::Create(
-		context.world, context.gameplay, assets, error, context.combatBackend);
+		context.world, context.gameplay, assets, error, context.combatBackend,context.performance);
 }
 
 std::shared_ptr<IVansActionService> CreateAudioService(
@@ -259,15 +259,20 @@ bool VansDiscoverSceneGameplayContributors(
 {
 	if (!BeginDiscovery(configuration, dependencies, error)) return false;
 	AddSharedContributors(configuration, context.timeline, dependencies);
+    const auto surfaceFields=std::make_shared<VansSurfaceFieldRegistry>();
 	for (const ServiceModule& module : ServiceModules())
 	{
 		if (!Enabled(configuration, module.moduleId)) continue;
 		const ServiceModule* descriptor = &module;
 		dependencies.contributors.push_back(ServiceContributor(module,
-			[descriptor, &context](const VansGameplayAssetLibrary& assets,
+			[descriptor, &context, surfaceFields, performance=configuration.settings.performance](const VansGameplayAssetLibrary& assets,
 				std::string& factoryError)
 			{
-				return descriptor->createSceneService(context, assets, factoryError);
+                auto sceneContext=context;
+                sceneContext.vfxBackend.surfaceFields=surfaceFields;
+                sceneContext.combatBackend.surfaceFields=surfaceFields;
+                sceneContext.performance=performance;
+				return descriptor->createSceneService(sceneContext, assets, factoryError);
 			}));
 	}
 	return true;

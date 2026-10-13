@@ -98,6 +98,7 @@ void main()
     uint textureIndex = packedTextureIndex & GI_TEXTURE_INDEX_MASK;
     bool pureEmissive = (packedTextureIndex & GI_PURE_EMISSIVE_FLAG) != 0u;
     bool pbrEmissive = (packedTextureIndex & GI_PBR_EMISSIVE_FLAG) != 0u;
+    bool cloth = (packedTextureIndex & GI_CLOTH_FLAG) != 0u;
     vec2 uv =
         vec2(v0.uv) * barycentrics.x +
         vec2(v1.uv) * barycentrics.y +
@@ -113,8 +114,13 @@ void main()
     }
 
     vec4 albedo = texture(PBRTextures[nonuniformEXT(textureIndex + ALBEDO_INDEX)], uv);
-    float metallic = clamp(texture(PBRTextures[nonuniformEXT(textureIndex + METALLIC_INDEX)], uv).r, 0.0, 1.0);
+    float metallic = cloth ? 0.0 : clamp(texture(PBRTextures[nonuniformEXT(textureIndex + METALLIC_INDEX)], uv).r, 0.0, 1.0);
     float roughness = texture(PBRTextures[nonuniformEXT(textureIndex + ROUGHNESS_INDEX)], uv).r;
+    if (cloth)
+    {
+        albedo.rgb *= instanceMaterialData.materials[instanceID].clothDiffuseRoughness.rgb;
+        roughness *= instanceMaterialData.materials[instanceID].clothDiffuseRoughness.a;
+    }
     prd.albedoRoughness = vec4(pureEmissive ? vec3(0.0) : albedo.rgb * (1.0 - metallic), roughness);
     if (pureEmissive)
     {

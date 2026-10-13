@@ -1,4 +1,5 @@
 #pragma once
+#include "../TerrainCore/VansTerrainInteraction.h"
 #include "BRDFData/VansLightCookie.h"
 #include "Particles/VansParticleRenderAsset.h"
 #include "../ParticleCore/VansParticleFrameData.h"
@@ -7,6 +8,7 @@
 
 #include "VansRenderBounds.h"
 #include "VansRenderWorld.h"
+#include "VansProjectRenderPassState.h"
 #include "BRDFData/VansLightFrameTypes.h"
 #include "BRDFData/VansPBR.h"
 #include "ShadowCore/VansPunctualShadowTypes.h"
@@ -179,6 +181,7 @@ namespace VansGraphics
 		VansRenderMaterialBufferSnapshot skin;
 		VansRenderMaterialBufferSnapshot custom;
 		bool rewriteBindlessTextures = false;
+		std::uint64_t clothLightingRevision = 0;
 		bool prepared = false;
 	};
 
@@ -237,10 +240,12 @@ namespace VansGraphics
 		std::vector<VansRenderParticleFrameData> particles;
 		std::vector<VansRenderRectLightVideoFrameData> rectLightVideos;
 		VansRenderMaterialFrameData materials;
+		VansProjectRenderPassFrameInput projectPasses;
 		VansRenderGIFrameData gi;
 		VansRenderPostProcessFrameData postProcess;
 		VansSurfaceWeatherFrameData surfaceWeather;
 		std::vector<VansRenderTerrainRegionUpload> terrainUploads;
+		Vans::VansTerrainInteraction terrainInteraction;
 		std::shared_ptr<const Vans::VansPcgSplineFieldSnapshot> splineFieldUpdate;
 		std::vector<std::shared_ptr<const Vans::VansPcgBatchUpdate>> vegetationUpdates;
 		VansMainCameraHiZCullSettings mainCameraHiZCullSettings;

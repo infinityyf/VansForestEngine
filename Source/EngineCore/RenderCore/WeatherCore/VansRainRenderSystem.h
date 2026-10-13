@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 #include <vulkan/vulkan.h>
+#include "../VansRenderRuntimeConfig.h"
 #include "../VulkanCore/VansVKImage.h"
 
 namespace VansGraphics
@@ -25,6 +27,8 @@ public:
 
 	bool Initialize(VansScene& scene);
 	bool RebindSceneTextures();
+	bool SelectFrameDescriptorSets(VkDescriptorSet globalSet,
+		std::uint32_t frameSlot, std::uint32_t gbufferTargetSlot);
 	void Shutdown();
 	void GenerateSurfaceRipple(VansVKCommandBuffer& commandBuffer);
 	void Render(VansVKCommandBuffer& commandBuffer, GlobalStateData& globalState);
@@ -42,6 +46,8 @@ private:
 	VkDescriptorSetLayout m_PassLayout = VK_NULL_HANDLE;
 	VkDescriptorSetLayout m_SurfaceRippleLayout = VK_NULL_HANDLE;
 	std::vector<VkDescriptorSet> m_PassSets;
+	std::array<std::uint32_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_PassTargetSlots{};
+	std::array<std::uint64_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_PassTargetGenerations{};
 	std::vector<VkDescriptorSet> m_SurfaceRippleSets;
 	std::vector<VkDescriptorSetLayout> m_Layouts;
 	std::vector<VkDescriptorSet> m_Sets;

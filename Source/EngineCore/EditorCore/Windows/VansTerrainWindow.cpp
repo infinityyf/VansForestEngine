@@ -1,6 +1,7 @@
 #include "VansTerrainWindow.h"
 #include "../VansEditorWindow.h"
 #include "../../EngineAPILayer/Public/ITerrainEditorAPI.h"
+#include "../../EngineAPILayer/Public/IRenderEditorAPI.h"
 
 #include "imgui.h"
 
@@ -68,6 +69,11 @@ void VansTerrainWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 		!ImGui::IsAnyItemActive())
 	{
 		m_SettingsDraft = currentSettings;
+		if (!m_InteractionDraftDirty || m_SettingsAssetGuid != terrain.assetGuid)
+		{
+			m_InteractionDraft = terrainAPI.GetTerrainInteraction();
+			m_InteractionDraftDirty = false;
+		}
 		m_SettingsAssetGuid = terrain.assetGuid;
 		m_HasSettingsDraft = true;
 	}
@@ -346,6 +352,54 @@ void VansTerrainWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
         ImGui::EndTabBar();
     }
 
+    if (ImGui::CollapsingHeader("Runtime Interaction"))
+    {
+        bool apply=ImGui::Checkbox("Enable Interaction",&m_InteractionDraft.enabled);
+        if (ImGui::Checkbox("Camera-centered Pixel Snapping",&m_InteractionDraft.window.cameraCentered)) m_InteractionDraftDirty=true;
+        if (ImGui::DragFloat2("World Minimum XZ",&m_InteractionDraft.window.worldRect.x,0.1f)) m_InteractionDraftDirty=true;
+        if (ImGui::DragFloat2("World Range XZ (m)",&m_InteractionDraft.window.worldRect.z,0.1f,0.001f,10000)) m_InteractionDraftDirty=true;
+        int resolution[2]={static_cast<int>(m_InteractionDraft.window.resolution.x),static_cast<int>(m_InteractionDraft.window.resolution.y)};
+        if (ImGui::InputInt2("Window Resolution",resolution))
+        {
+            m_InteractionDraftDirty=true;
+            for (int i=0;i<2;++i) m_InteractionDraft.window.resolution[i]=static_cast<unsigned>(std::max(resolution[i],0));
+        }
+        Vans::EditorAPI::IRenderEditorAPI& renderAPI=editorAPI;
+        const auto resources=renderAPI.QueryAvailableRenderTextures({});
+        const auto texture=[&](const char* label,std::string& key)
+        {
+            const auto selected=std::find_if(resources.begin(),resources.end(),[&](const auto& resource){return resource.resourceKey==key;});
+            const char* name=key.empty()?"Neutral":selected==resources.end()?key.c_str():selected->name.c_str();
+            if (ImGui::BeginCombo(label,name))
+            {
+                if (ImGui::Selectable("Neutral",key.empty())) {key.clear();m_InteractionDraftDirty=true;}
+                for (const auto& resource : resources)
+                {
+                    if (resource.layers!=1 || resource.samples!=1) continue;
+                    ImGui::PushID(resource.resourceKey.c_str());
+                    if (ImGui::Selectable(resource.name.c_str(),key==resource.resourceKey))
+                    {key=resource.resourceKey;m_InteractionDraft.window.resolution={resource.width,resource.height};m_InteractionDraftDirty=true;}
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+        };
+        texture("Albedo RT",m_InteractionDraft.albedo);
+        texture("World Normal RT",m_InteractionDraft.normal);
+        texture("Height RT",m_InteractionDraft.height);
+        if (ImGui::SliderFloat("Albedo Strength",&m_InteractionDraft.albedoStrength,0,1)) m_InteractionDraftDirty=true;
+        if (ImGui::SliderFloat("Normal Strength",&m_InteractionDraft.normalStrength,0,1)) m_InteractionDraftDirty=true;
+        if (ImGui::DragFloat4("Height Channel Weights",&m_InteractionDraft.heightWeights.x,0.01f)) m_InteractionDraftDirty=true;
+        if (ImGui::DragFloat("Displacement Bound (m)",&m_InteractionDraft.maxDisplacementMeters,0.001f,0,10)) m_InteractionDraftDirty=true;
+        if (ImGui::DragFloat("Window Edge Fade (m)",&m_InteractionDraft.edgeFadeMeters,0.01f,0,100)) m_InteractionDraftDirty=true;
+        apply=ImGui::Button("Apply Interaction") || apply;
+        if (apply)
+        {
+            const auto result=terrainAPI.ApplyTerrainInteraction(m_InteractionDraft);
+            if (result.success) m_InteractionDraftDirty=false;
+            m_StatusMessage=result.success?"Runtime interaction applied":result.message;
+        }
+    }
     ImGui::End();
 }
 

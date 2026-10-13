@@ -4,6 +4,7 @@
 #include "../EngineCore/RenderCore/VansTemporalProjection.h"
 #include "../EngineCore/RenderCore/VansMaterial.h"
 #include "../EngineCore/RenderCore/VegetationCore/GrassEnergyLUT.h"
+#include "../EngineCore/RenderCore/VegetationCore/VansVegetationSystem.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansDescriptorSetLayouts.h"
 #include <glm/gtc/packing.hpp>
 #include <array>
@@ -62,8 +63,8 @@ namespace
         VkDescriptorSetLayout cameraLayout{}; VkDescriptorSet cameraSet{};
         std::array<VkDescriptorSet, 2> temporalSets{}, atrousSets{};
         std::array<Image, ImageCount> images{};
-        std::array<Buffer, 4> buffers{}; // camera, temporal params, upload, readback
-        std::array<Pipeline, 3> pipelines{};
+        std::array<Buffer, 18> buffers{}; // 0–3 为 SSGI；草工作表与池替换合同按需创建 4–17。
+        std::array<Pipeline, 4> pipelines{};
         VkDeviceSize uploadOffset = 0;
         VansCameraDataGPU camera{};
         std::vector<glm::vec4> position, motion, normal, material, raw;
@@ -109,16 +110,18 @@ namespace
                 if ((bits & (1u << i)) && (properties.memoryTypes[i].propertyFlags & flags) == flags) return i;
             throw std::runtime_error("Required GPU memory type unavailable");
         }
-        void CreateBuffer(uint32_t slot, VkDeviceSize size)
+        void CreateBuffer(uint32_t slot, VkDeviceSize size,
+            VkMemoryPropertyFlags memoryFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
         {
             auto& b = buffers[slot]; b.size = size;
             VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-            info.size = size; info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            info.size = size; info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             Require(vkCreateBuffer(device, &info, nullptr, &b.buffer), "create buffer");
             VkMemoryRequirements requirements; vkGetBufferMemoryRequirements(device, b.buffer, &requirements);
             VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
             allocation.allocationSize = requirements.size;
-            allocation.memoryTypeIndex = MemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            allocation.memoryTypeIndex = MemoryType(requirements.memoryTypeBits, memoryFlags);
             Require(vkAllocateMemory(device, &allocation, nullptr, &b.memory), "allocate buffer");
             Require(vkBindBufferMemory(device, b.buffer, b.memory, 0), "bind buffer");
             Require(vkMapMemory(device, b.memory, 0, size, 0, &b.mapped), "map buffer");
@@ -193,12 +196,14 @@ namespace
             write.descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             write.pImageInfo = &info; vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
         }
-        void BindBuffer(VkDescriptorSet set, uint32_t binding, uint32_t slot)
+        void BindBuffer(VkDescriptorSet set, uint32_t binding, uint32_t slot,
+            VkDescriptorType type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VkDeviceSize range = VK_WHOLE_SIZE)
         {
-            VkDescriptorBufferInfo info{buffers[slot].buffer, 0, buffers[slot].size};
+            VkDescriptorBufferInfo info{buffers[slot].buffer, 0,
+                range == VK_WHOLE_SIZE ? buffers[slot].size : range};
             VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             write.dstSet = set; write.dstBinding = binding; write.descriptorCount = 1;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; write.pBufferInfo = &info;
+            write.descriptorType = type; write.pBufferInfo = &info;
             vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
         }
         void CreatePipeline(uint32_t index, const char* file, const std::vector<VkDescriptorType>& types, uint32_t pushBytes)
@@ -302,8 +307,10 @@ namespace
         Require(vkCreateCommandPool(device, &commandPool, nullptr, &commands), "command pool");
         VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; commandInfo.commandPool = commands; commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; commandInfo.commandBufferCount = 1;
         Require(vkAllocateCommandBuffers(device, &commandInfo, &command), "command buffer");
-        const VkDescriptorPoolSize poolSizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 16}};
-        VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; poolInfo.maxSets = 8; poolInfo.poolSizeCount = 3; poolInfo.pPoolSizes = poolSizes;
+        const VkDescriptorPoolSize poolSizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 16},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 32}};
+        VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; poolInfo.maxSets = 10; poolInfo.poolSizeCount = 4; poolInfo.pPoolSizes = poolSizes;
         Require(vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool), "descriptor pool");
         VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO}; samplerInfo.minFilter = samplerInfo.magFilter = VK_FILTER_NEAREST;
         samplerInfo.addressModeU = samplerInfo.addressModeV = samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -629,4 +636,315 @@ bool TestGrassLightingGpuContract()
         Expect(validationErrors==0,"Grass Vulkan validation errors");
         std::cout<<"GRASS_LIGHTING_GPU_CONTRACT_PASS validationErrors=0\n";return true;
     } catch(const std::exception& e) {std::cerr<<"GRASS_LIGHTING_GPU_CONTRACT_FAIL: "<<e.what()<<'\n';return false;}
+}
+
+bool TestGrassWorksetGpuContract()
+{
+    try
+    {
+        validationErrors = 0;
+        {
+            Fixture gpu;
+            gpu.Initialize();
+            constexpr uint32_t capacity = 256, boneCount = 3;
+            const std::vector<GrassInstanceRange> ranges{ {192, 1, 64}, {0, 65, 128} };
+            const auto groups = BuildGrassWorkgroups(capacity, ranges);
+            std::vector<GrassInstance> instances(capacity);
+            std::vector<GrassBone> bones(capacity * boneCount);
+            std::vector<glm::mat4> matrices(capacity * boneCount * 2u, glm::mat4(9.0f));
+            std::vector<float> lod(capacity, 42.0f);
+            std::vector<uint32_t> flags(capacity, 1u), indices(capacity * 2u, UINT32_MAX);
+            std::array<uint32_t, 2> counts{};
+            std::vector<bool> active(capacity, false), occupiedBones(capacity * boneCount, false);
+            for (auto& bone : bones)
+                bone = {glm::vec4(999.0f), glm::vec4(777.0f), glm::vec4(555.0f)};
+            for (const auto& range : ranges)
+                for (uint32_t local = 0; local < range.instanceCount; ++local)
+                {
+                    const auto instance = range.baseInstance + local;
+                    active[instance] = true;
+                    instances[instance].modelMatrix[3] = glm::vec4(float(instance) * .01f, 0, -5, 1);
+                    for (uint32_t bone = 0; bone < boneCount; ++bone)
+                    {
+                        const auto address = range.baseInstance * boneCount + bone * range.capacity + local;
+                        occupiedBones[address] = true;
+                        const auto position = glm::vec3(instances[instance].modelMatrix[3]) + glm::vec3(0, .5f * bone, 0);
+                        bones[address] = {glm::vec4(position, 1), glm::vec4(position, 0), glm::vec4(0, .5f, 0, 0)};
+                    }
+                }
+            flags[3] = 0u;
+            const void* payloads[] = {instances.data(), bones.data(), matrices.data(), lod.data(),
+                flags.data(), groups.data(), counts.data(), indices.data()};
+            const size_t bytes[] = {instances.size()*sizeof(GrassInstance), bones.size()*sizeof(GrassBone),
+                matrices.size()*sizeof(glm::mat4), lod.size()*sizeof(float), flags.size()*sizeof(uint32_t),
+                groups.size()*sizeof(GrassWorkgroupGPU), sizeof(counts), indices.size()*sizeof(uint32_t)};
+            for (uint32_t index = 0; index < 8; ++index)
+            {
+                gpu.CreateBuffer(4u + index, bytes[index]);
+                std::memcpy(gpu.buffers[4u + index].mapped, payloads[index], bytes[index]);
+            }
+            gpu.camera.cameraPosition = glm::vec4(0);
+            gpu.camera.unjitteredViewProjectionMatrix = glm::mat4(1);
+            std::memcpy(gpu.buffers[0].mapped, &gpu.camera, sizeof(gpu.camera));
+            constexpr auto storage = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            constexpr auto uniform = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            constexpr auto texture = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            gpu.CreatePipeline(2, "GrassBoneSim/GrassBoneSimcomp.spv",
+                {storage, storage, storage, texture, storage, uniform, storage, storage}, sizeof(GrassSimPushConstants));
+            gpu.CreatePipeline(3, "GrassCull/GrassCullcomp.spv",
+                {storage, storage, storage, storage, texture, texture, storage}, sizeof(GrassCullPushConstants));
+            const auto simSet = gpu.Allocate(gpu.pipelines[2].setLayout);
+            const auto cullSet = gpu.Allocate(gpu.pipelines[3].setLayout);
+            gpu.BindBuffer(simSet, VEG_SIM_BINDING_INSTANCE_DATA, 4, storage);
+            gpu.BindBuffer(simSet, VEG_SIM_BINDING_BONE_DATA, 5, storage);
+            gpu.BindBuffer(simSet, VEG_SIM_BINDING_BONE_MATRICES, 6, storage);
+            gpu.BindBuffer(simSet, VEG_SIM_BINDING_LOD_FACTORS, 7, storage);
+            gpu.BindBuffer(simSet, VEG_SIM_BINDING_SCATTER_OFFSETS, 2, uniform, 32u * sizeof(glm::vec4));
+            gpu.BindBuffer(simSet, VEG_SIM_BINDING_VISIBILITY_FLAGS, 8, storage);
+            gpu.BindBuffer(simSet, VEG_SIM_BINDING_WORKGROUPS, 9, storage);
+            gpu.BindBuffer(cullSet, VEG_CULL_BINDING_INSTANCE_DATA, 4, storage);
+            gpu.BindBuffer(cullSet, VEG_CULL_BINDING_VISIBILITY, 8, storage);
+            gpu.BindBuffer(cullSet, VEG_CULL_BINDING_VISIBLE_COUNT, 10, storage);
+            gpu.BindBuffer(cullSet, VEG_CULL_BINDING_VISIBLE_INDICES, 11, storage);
+            gpu.BindImage(cullSet, VEG_CULL_BINDING_HIZ, ImageSlot::Normal);
+            gpu.BindBuffer(cullSet, VEG_CULL_BINDING_WORKGROUPS, 9, storage);
+            const auto submitRead = [&] {
+                VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                host.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+                vkCmdPipelineBarrier(gpu.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host, 0, nullptr, 0, nullptr);
+                gpu.Submit();
+            };
+            const auto dispatch = [&](uint32_t pipeline, VkDescriptorSet set, const void* constants, uint32_t size,
+                uint32_t count) {
+                const auto& p = gpu.pipelines[pipeline];
+                const VkDescriptorSet sets[] = {gpu.cameraSet, set};
+                vkCmdBindPipeline(gpu.command, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline);
+                vkCmdBindDescriptorSets(gpu.command, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout, 0, 2, sets, 0, nullptr);
+                vkCmdPushConstants(gpu.command, p.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, size, constants);
+                vkCmdDispatch(gpu.command, count, 1, 1);
+            };
+            GrassSimPushConstants sim{};
+            sim.deltaTime = 1.f/60; sim.stiffness = 15; sim.damping = .92f; sim.softness = .2f;
+            sim.windDirX = 1; sim.subBladeCount = 1; sim.grassHeight = 1;
+            sim.lodFullDist = .5f; sim.lodFadeDist = 1; sim.cullVisibilityEnabled = 1; sim.boneCount = boneCount;
+            gpu.Begin();
+            dispatch(2, simSet, &sim, sizeof(sim), static_cast<uint32_t>(groups.size()));
+            submitRead();
+            const auto* output = static_cast<const glm::mat4*>(gpu.buffers[6].mapped);
+            for (uint32_t instance = 0; instance < capacity; ++instance)
+                for (uint32_t bone = 0; bone < boneCount; ++bone)
+                {
+                    const auto index = instance * boneCount + bone;
+                    const bool updated = active[instance] && instance != 3u;
+                    Expect(output[index + capacity * boneCount] == glm::mat4(9.0f), "Grass initial history changed");
+                    if (updated)
+                    {
+                        Expect(output[index] != glm::mat4(9.0f), "Sparse grass instance did not produce a draw matrix");
+                        for (uint32_t column = 0; column < 4; ++column)
+                            for (uint32_t row = 0; row < 4; ++row)
+                                Expect(std::isfinite(output[index][column][row]), "Sparse grass matrix is not finite");
+                    }
+                    else Expect(output[index] == glm::mat4(9.0f), "Grass sim touched an inactive or culled instance");
+                }
+            const std::vector<glm::mat4> previous(output, output + capacity * boneCount);
+            static_cast<uint32_t*>(gpu.buffers[8].mapped)[3] = 1u;
+            sim.lodFullDist = 100; sim.lodFadeDist = 200;
+            gpu.Begin();
+            dispatch(2, simSet, &sim, sizeof(sim), static_cast<uint32_t>(groups.size()));
+            submitRead();
+            for (uint32_t instance = 0; instance < capacity; ++instance)
+                for (uint32_t bone = 0; bone < boneCount; ++bone)
+                {
+                    const auto index = instance * boneCount + bone;
+                    if (active[instance])
+                    {
+                        Expect(output[index + capacity * boneCount] == previous[index], "Grass reentry lost its last simulated motion history");
+                        for (uint32_t column = 0; column < 4; ++column)
+                            for (uint32_t row = 0; row < 4; ++row)
+                                Expect(std::isfinite(output[index][column][row]), "Sparse Verlet update is not finite");
+                    }
+                    else Expect(output[index] == glm::mat4(9.0f), "Sparse Verlet update touched a pool hole");
+                }
+            const auto* outputBones = static_cast<const GrassBone*>(gpu.buffers[5].mapped);
+            for (uint32_t address = 0; address < bones.size(); ++address)
+                if (!occupiedBones[address])
+                    Expect(std::memcmp(outputBones + address, bones.data() + address, sizeof(GrassBone)) == 0,
+                        "Sparse Verlet update overwrote another page's reserved bone state");
+            std::memset(gpu.buffers[8].mapped, 0, bytes[4]);
+            GrassCullPushConstants cull{};
+            cull.cullDistance = -1; cull.instanceCount = capacity; cull.subBladeCount = 2; cull.shadowEnabled = 1;
+            gpu.Begin();
+            dispatch(3, cullSet, &cull, sizeof(cull), 1);
+            cull.workgroupOffset = 1;
+            dispatch(3, cullSet, &cull, sizeof(cull), 2);
+            submitRead();
+            const auto* outputCounts = static_cast<const uint32_t*>(gpu.buffers[10].mapped);
+            const auto* outputIndices = static_cast<const uint32_t*>(gpu.buffers[11].mapped);
+            const auto* outputFlags = static_cast<const uint32_t*>(gpu.buffers[8].mapped);
+            Expect(outputCounts[0] == 132 && outputCounts[1] == 132, "Sparse cull or split dispatch produced the wrong indirect instance count");
+            for (uint32_t view = 0; view < 2; ++view)
+            {
+                std::vector<uint32_t> visits(capacity, 0);
+                for (uint32_t index = 0; index < 66; ++index)
+                {
+                    const auto instance = outputIndices[view * capacity + index];
+                    Expect(instance < capacity, "Sparse cull wrote an invalid draw index");
+                    ++visits[instance];
+                }
+                for (uint32_t instance = 0; instance < capacity; ++instance)
+                    Expect(visits[instance] == (active[instance] ? 1u : 0u) &&
+                        outputFlags[instance] == (active[instance] ? 1u : 0u),
+                        "Sparse cull skipped, repeated or included a pool hole");
+            }
+
+            // Grow and relocate both pages using the production copy regions.
+            // Current/history bases differ between pool owners; unchanged Verlet
+            // state must survive before the next real simulation dispatch.
+            constexpr uint32_t grownCapacity = 384;
+            const std::vector<GrassInstanceRange> relocated{ {0, 1, 128}, {256, 65, 128} };
+            const auto relocatedGroups = BuildGrassWorkgroups(grownCapacity, relocated);
+            const size_t grownBytes[] = {grownCapacity*boneCount*sizeof(GrassBone),
+                grownCapacity*boneCount*2u*sizeof(glm::mat4), grownCapacity*sizeof(float),
+                grownCapacity*sizeof(GrassInstance), relocatedGroups.size()*sizeof(GrassWorkgroupGPU),
+                grownCapacity*sizeof(uint32_t)};
+            for (uint32_t index=0; index<6; ++index) gpu.CreateBuffer(12u+index,grownBytes[index]);
+            std::vector<GrassInstance> relocatedInstances(grownCapacity);
+            std::vector<glm::mat4> sentinels(grownCapacity*boneCount*2u,glm::mat4(11.0f));
+            std::memcpy(gpu.buffers[13].mapped,sentinels.data(),grownBytes[1]);
+            const std::vector<glm::mat4> sourceMatrices(output,output+capacity*boneCount*2u);
+            const std::vector<GrassBone> sourceBones(outputBones,outputBones+capacity*boneCount);
+            const auto* sourceLod=static_cast<const float*>(gpu.buffers[7].mapped);
+            gpu.Begin();
+            for (uint32_t page=0; page<ranges.size(); ++page)
+            {
+                for (uint32_t local=0;local<ranges[page].instanceCount;++local)
+                    relocatedInstances[relocated[page].baseInstance+local]=instances[ranges[page].baseInstance+local];
+                for (const auto& region:BuildGrassStateCopyRegions(capacity,grownCapacity,boneCount,ranges[page],relocated[page]))
+                {
+                    const uint32_t sourceSlot=region.buffer==GrassStateBuffer::Bones?5u:
+                        region.buffer==GrassStateBuffer::Matrices?6u:7u;
+                    const uint32_t destinationSlot=region.buffer==GrassStateBuffer::Bones?12u:
+                        region.buffer==GrassStateBuffer::Matrices?13u:14u;
+                    const VkDeviceSize stride=region.buffer==GrassStateBuffer::Bones?sizeof(GrassBone):
+                        region.buffer==GrassStateBuffer::Matrices?sizeof(glm::mat4):sizeof(float);
+                    const VkBufferCopy copy{region.sourceElement*stride,region.destinationElement*stride,region.elementCount*stride};
+                    vkCmdCopyBuffer(gpu.command,gpu.buffers[sourceSlot].buffer,gpu.buffers[destinationSlot].buffer,1,&copy);
+                }
+            }
+            VkMemoryBarrier copyHost{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            copyHost.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;copyHost.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+            vkCmdPipelineBarrier(gpu.command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,
+                0,1,&copyHost,0,nullptr,0,nullptr);
+            gpu.Submit();
+            const auto* relocatedMatrices=static_cast<const glm::mat4*>(gpu.buffers[13].mapped);
+            const auto* relocatedBones=static_cast<const GrassBone*>(gpu.buffers[12].mapped);
+            for (uint32_t page=0;page<ranges.size();++page)
+            {
+                const auto& from=ranges[page];const auto& to=relocated[page];
+                for (uint32_t bone=0;bone<boneCount;++bone)
+                    Expect(std::memcmp(relocatedBones+to.baseInstance*boneCount+bone*to.capacity,
+                        sourceBones.data()+from.baseInstance*boneCount+bone*from.capacity,
+                        from.instanceCount*sizeof(GrassBone))==0,
+                        "Grass pool replacement reset persistent Verlet state");
+                for (uint32_t local=0;local<from.instanceCount;++local)
+                {
+                    const uint32_t oldInstance=from.baseInstance+local,newInstance=to.baseInstance+local;
+                    Expect(static_cast<const float*>(gpu.buffers[14].mapped)[newInstance]==sourceLod[oldInstance],
+                        "Grass pool replacement lost LOD state");
+                    for (uint32_t history=0;history<2;++history)
+                        for (uint32_t bone=0;bone<boneCount;++bone)
+                            Expect(relocatedMatrices[(history*grownCapacity+newInstance)*boneCount+bone]==
+                                sourceMatrices[(history*capacity+oldInstance)*boneCount+bone],
+                                "Grass pool growth or relocation lost current/history matrices");
+                }
+            }
+            std::memcpy(gpu.buffers[15].mapped,relocatedInstances.data(),grownBytes[3]);
+            std::memcpy(gpu.buffers[16].mapped,relocatedGroups.data(),grownBytes[4]);
+            std::fill_n(static_cast<uint32_t*>(gpu.buffers[17].mapped),grownCapacity,1u);
+            gpu.BindBuffer(simSet,VEG_SIM_BINDING_INSTANCE_DATA,15,storage);
+            gpu.BindBuffer(simSet,VEG_SIM_BINDING_BONE_DATA,12,storage);
+            gpu.BindBuffer(simSet,VEG_SIM_BINDING_BONE_MATRICES,13,storage);
+            gpu.BindBuffer(simSet,VEG_SIM_BINDING_LOD_FACTORS,14,storage);
+            gpu.BindBuffer(simSet,VEG_SIM_BINDING_VISIBILITY_FLAGS,17,storage);
+            gpu.BindBuffer(simSet,VEG_SIM_BINDING_WORKGROUPS,16,storage);
+            gpu.Begin();
+            dispatch(2,simSet,&sim,sizeof(sim),static_cast<uint32_t>(relocatedGroups.size()));
+            submitRead();
+            for (uint32_t page=0;page<ranges.size();++page)
+                for (uint32_t local=0;local<ranges[page].instanceCount;++local)
+                    for (uint32_t bone=0;bone<boneCount;++bone)
+                        Expect(relocatedMatrices[(grownCapacity+relocated[page].baseInstance+local)*boneCount+bone]==
+                            sourceMatrices[(ranges[page].baseInstance+local)*boneCount+bone],
+                            "Simulation after pool replacement reset motion history");
+            Expect(relocatedMatrices[128u*boneCount]==glm::mat4(11.0f),
+                "Simulation after pool replacement touched a capacity hole");
+
+            // Update only the larger page in the same physical arena. Verify
+            // every untouched byte, including neighbouring bone planes and
+            // both current/history matrix blocks, against the previous state.
+            const auto pageUpload=BuildGrassPageUploadLayout(grownCapacity,boneCount,relocated[1]);
+            Expect(pageUpload.byteCount==65u*(sizeof(GrassInstance)+boneCount*(sizeof(GrassBone)+2u*sizeof(glm::mat4))+sizeof(float)),
+                "Grass local staging included the whole pool or reserved page holes");
+            std::vector<uint8_t> payload(static_cast<size_t>(pageUpload.byteCount),0);
+            std::vector<GrassInstance> edited(65);
+            std::vector<GrassBone> editedBones(65u*boneCount);
+            std::vector<glm::mat4> resetMatrices(65u*boneCount*2u,glm::mat4(1));
+            for (uint32_t local=0;local<65;++local)
+            {
+                edited[local]=relocatedInstances[256u+local];
+                edited[local].randomSeed+=7u;
+                for (uint32_t bone=0;bone<boneCount;++bone)
+                    editedBones[bone*65u+local]=relocatedBones[256u*boneCount+bone*128u+local];
+            }
+            std::memcpy(payload.data(),edited.data(),edited.size()*sizeof(GrassInstance));
+            std::memcpy(payload.data()+pageUpload.boneOffset,editedBones.data(),editedBones.size()*sizeof(GrassBone));
+            std::memcpy(payload.data()+pageUpload.matrixOffset,resetMatrices.data(),resetMatrices.size()*sizeof(glm::mat4));
+            std::memcpy(gpu.buffers[2].mapped,payload.data(),payload.size());
+            const auto destinationSlot=[](GrassStateBuffer buffer) {
+                return buffer==GrassStateBuffer::Bones?12u:buffer==GrassStateBuffer::Matrices?13u:
+                    buffer==GrassStateBuffer::Lod?14u:15u;
+            };
+            std::array<std::vector<uint8_t>,4> expected;
+            for (uint32_t slot=12;slot<16;++slot)
+            {
+                const auto* begin=static_cast<const uint8_t*>(gpu.buffers[slot].mapped);
+                expected[slot-12].assign(begin,begin+gpu.buffers[slot].size);
+            }
+            gpu.Begin();
+            for (const auto& region:pageUpload.regions)
+            {
+                const auto slot=destinationSlot(region.buffer);
+                Expect(region.sourceOffset+region.byteCount<=payload.size() &&
+                    region.destinationOffset+region.byteCount<=expected[slot-12].size(),
+                    "Grass local upload exceeded its staging or destination buffer");
+                std::memcpy(expected[slot-12].data()+region.destinationOffset,
+                    payload.data()+region.sourceOffset,static_cast<size_t>(region.byteCount));
+                const VkBufferCopy copy{region.sourceOffset,region.destinationOffset,region.byteCount};
+                vkCmdCopyBuffer(gpu.command,gpu.buffers[2].buffer,gpu.buffers[slot].buffer,1,&copy);
+            }
+            vkCmdPipelineBarrier(gpu.command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,
+                0,1,&copyHost,0,nullptr,0,nullptr);
+            gpu.Submit();
+            for (uint32_t slot=12;slot<16;++slot)
+                Expect(std::memcmp(gpu.buffers[slot].mapped,expected[slot-12].data(),expected[slot-12].size())==0,
+                    "Grass local update corrupted an unchanged page, reserved bone plane or history block");
+            gpu.Begin();
+            dispatch(2,simSet,&sim,sizeof(sim),static_cast<uint32_t>(relocatedGroups.size()));
+            submitRead();
+            for (uint32_t local=0;local<65;++local)
+                for (uint32_t bone=0;bone<boneCount;++bone)
+                    Expect(relocatedMatrices[(grownCapacity+256u+local)*boneCount+bone]==glm::mat4(1),
+                        "Grass simulation after local upload used another page's motion history");
+        }
+        Expect(validationErrors == 0, "Grass workset Vulkan validation errors");
+        std::cout << "GRASS_WORKSET_GPU_CONTRACT_PASS sparsePages=2 tailThreads=1 reentry=1 splitDispatch=1 poolGrowth=1 statePreservation=1 localPageUpload=1 validationErrors=0\n";
+        return true;
+    }
+    catch (const std::exception& error)
+    {
+        std::cerr << "GRASS_WORKSET_GPU_CONTRACT_FAIL: " << error.what() << '\n';
+        return false;
+    }
 }

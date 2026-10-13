@@ -11,6 +11,7 @@
 #include "../VansEditorRuntimePreviewProjector.h"
 #include "../VansEditorWindow.h"
 #include "../../EngineAPILayer/Public/IParticleEditorAPI.h"
+#include "../../EngineAPILayer/Public/INavigationEditorAPI.h"
 #include "../../EngineAPILayer/Public/IAnimationEditorAPI.h"
 #include "../../EngineAPILayer/Public/IAssetAuthoringEditorAPI.h"
 #include "../../EngineAPILayer/Public/IRuntimeSceneEditorAPI.h"
@@ -22,7 +23,10 @@
 #include "../../AssetCore/VansAssetGuid.h"
 #include "../../AssetCore/VansAssetDatabase.h"
 #include "../../AssetCore/VansTextureResidentMip.h"
+#include "../../MaterialCore/VansClothMaterialParameters.h"
+#include "../../AssetCore/VansMaterialAuthoringAsset.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../../AssetCore/Serialization/VansSerializedObjectReference.h"
 #include "../../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../../GameplayActionSchema/VansGameplayActionHostAuthoring.h"
 #include "../../SceneCore/VansSceneDocument.h"
@@ -50,6 +54,8 @@
 #include <filesystem>
 #include <limits>
 #include <optional>
+#include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -108,6 +114,8 @@ const char* AssetTypeName(Vans::EditorAPI::AssetType type)
     case Vans::EditorAPI::AssetType::Video: return "Video";
     case Vans::EditorAPI::AssetType::Scene: return "Scene";
     case Vans::EditorAPI::AssetType::Particle: return "Particle";
+    case Vans::EditorAPI::AssetType::NavigationMesh: return "Navigation Mesh";
+    case Vans::EditorAPI::AssetType::AIBehavior: return "AI Behavior";
     case Vans::EditorAPI::AssetType::AnimationClip: return "Animation Clip";
     case Vans::EditorAPI::AssetType::AnimatorController: return "Animator Controller";
     case Vans::EditorAPI::AssetType::BoneMask: return "Bone Mask";
@@ -675,6 +683,14 @@ std::optional<Vans::VansSerializedValue> DefaultSerializedArrayElement(
     return std::nullopt;
 }
 
+const Vans::EditorAPI::NavigationAuthoringField* NavigationField(
+    const Vans::EditorAPI::NavigationAuthoringSchema& schema,const std::string& component,const std::string& field,const std::string& mapId={})
+{
+    for(const auto& item:schema.fields)
+        if(item.componentType==component && item.field==field && (item.mapId.empty() || item.mapId==mapId)) return &item;
+    return nullptr;
+}
+
 bool IsAudioMetaRoot(const Vans::VansSerializedValue& metaRoot)
 {
     return Vans::ReadSerializedStringField(metaRoot, "importer") == "AudioImporter";
@@ -1190,7 +1206,8 @@ bool RebuildRuntimeEntityFromSceneDocument(
     if (entityGuid.empty())
         return false;
 
-    const Vans::VansSerializedValue sceneRoot = document.SerializedRootSnapshot();
+    const auto sceneSnapshot = document.CreateSnapshot();
+    const Vans::VansSerializedValue& sceneRoot = sceneSnapshot.Root();
     const Vans::VansSerializedValue* entities = Vans::FindObjectField(sceneRoot, "entities");
     if (!entities || entities->kind != Vans::VansSerializedValue::Kind::Array)
         return false;
@@ -1546,6 +1563,8 @@ struct VansInspectorWindow::Impl
         const std::string& pointer);
     bool DrawComponent(Vans::EditorAPI::IEngineEditorAPI& api, Vans::VansSerializedValue& component,
         const std::string& pointer, bool& removeRequested);
+    bool DrawNavigationData(Vans::EditorAPI::INavigationEditorAPI& api,Vans::VansSerializedValue& data,
+        const std::string& type,const std::string& id,const std::string& pointer);
     bool LoadAssetDocuments(const std::filesystem::path& sourcePath);
     bool SaveAssetDocuments(bool reloadSceneOnSuccess = true);
 
@@ -1553,11 +1572,17 @@ struct VansInspectorWindow::Impl
     int m_TextureSourceWidth = 0;
     int m_TextureSourceHeight = 0;
     std::shared_ptr<Vans::VansOpenAssetDocument> m_AssetDocuments;
+    bool m_ClothMaterialDocument = false;
     std::string m_Error;
     std::vector<std::string> m_CollisionLayerNames;
     VansEngine::VansAudioPreviewPlayer m_AudioPreview;
     Vans::EditorAPI::IEngineEditorAPI* m_ActiveAPI = nullptr;
     Vans::EditorAPI::ParticleAuthoringSchemaSnapshot m_ParticleSchema;
+    Vans::EditorAPI::NavigationAuthoringSchema m_NavigationSchema;
+    std::string m_NavigationActiveMap;
+    struct NavigationDraft { Vans::VansSerializedValue original,edited; };
+    std::map<std::string,NavigationDraft> m_NavigationDrafts;
+    std::string m_NavigationDraftEntity;
     bool m_PendingVehicleRebuild = false;
     std::string m_PendingVehicleRebuildEntityGuid;
     std::optional<Vans::ObjectReferenceAssignment> m_PendingObjectReferenceEdit;
@@ -1897,6 +1922,70 @@ bool VansInspectorWindow::Impl::DrawSerializedEditorObjectReference(
     return changed;
 }
 
+bool VansInspectorWindow::Impl::DrawNavigationData(Vans::EditorAPI::INavigationEditorAPI& api,
+    Vans::VansSerializedValue& data,const std::string& type,const std::string& id,const std::string& pointer)
+{
+    auto [entry,inserted]=m_NavigationDrafts.try_emplace(id,NavigationDraft{data,data});
+    auto& draft=entry->second;
+    if(!inserted && !Vans::SerializedValuesEqual(draft.original,data)) draft={data,data};
+    const auto pendingReference=m_PendingObjectReferenceEdit;
+    const auto originalShape=Vans::ReadSerializedStringField(draft.edited,"shape");
+    for(auto& [name,value]:draft.edited.objectFields)
+    {
+        m_NavigationActiveMap=Vans::ReadSerializedStringField(draft.edited,"mapId");
+        DrawSerializedValue(name,value,pointer+"/data/"+EscapePointerToken(name),false,type,"data");
+    }
+    m_NavigationActiveMap.clear();
+    // 草稿只修改值；整组 Apply 之前不得向场景作者事务发布引用赋值。
+    m_PendingObjectReferenceEdit=pendingReference;
+    const auto selectedShape=Vans::ReadSerializedStringField(draft.edited,"shape");
+    if(originalShape!=selectedShape) if(const auto* field=NavigationField(m_NavigationSchema,type,"shape"))
+    {
+        const auto choice=std::find_if(field->choices.begin(),field->choices.end(),
+            [&](const auto& item){return item.value.kind==Vans::VansSerializedValue::Kind::String && item.value.stringValue==selectedShape;});
+        if(choice!=field->choices.end() && choice->componentFields.kind==Vans::VansSerializedValue::Kind::Object)
+        {
+            auto replacement=choice->componentFields;
+            for(auto& [name,value]:replacement.objectFields) if(name!="shape")
+                if(const auto* old=Vans::FindObjectField(draft.edited,name)) value=*old;
+            auto& fields=draft.edited.objectFields;
+            fields.erase(std::remove_if(fields.begin(),fields.end(),[&](const auto& member)
+                {return std::find(field->replacedFields.begin(),field->replacedFields.end(),member.first)!=field->replacedFields.end();}),fields.end());
+            for(auto& member:replacement.objectFields) fields.push_back(std::move(member));
+        }
+    }
+    if(type=="NavigationModifier" && originalShape!="Convex" && Vans::ReadSerializedStringField(draft.edited,"shape")=="Convex")
+    {
+        auto* vertices=Vans::FindObjectField(draft.edited,"convexVerticesMeters");
+        const auto* center=Vans::FindObjectField(draft.edited,"centerMeters");
+        const auto* extent=Vans::FindObjectField(draft.edited,"halfExtentsMeters");
+        if(vertices && vertices->arrayItems.empty() && center && extent && center->arrayItems.size()==3 && extent->arrayItems.size()==3)
+        {
+            const auto x=Vans::ReadSerializedNumber(center->arrayItems[0]),z=Vans::ReadSerializedNumber(center->arrayItems[2]);
+            const auto ex=Vans::ReadSerializedNumber(extent->arrayItems[0]),ez=Vans::ReadSerializedNumber(extent->arrayItems[2]);
+            using Value=Vans::VansSerializedValue;
+            *vertices=Value::Array({Value::Array({Value::Float(x-ex),Value::Float(z-ez)}),Value::Array({Value::Float(x+ex),Value::Float(z-ez)}),
+                Value::Array({Value::Float(x+ex),Value::Float(z+ez)}),Value::Array({Value::Float(x-ex),Value::Float(z+ez)})});
+        }
+    }
+    if(type=="NavigationModifier" && originalShape!="Box" && Vans::ReadSerializedStringField(draft.edited,"shape")=="Box")
+        Vans::SetSerializedObjectField(draft.edited,"convexVerticesMeters",Vans::VansSerializedValue::Array({}));
+    const auto validation=api.ValidateNavigationComponent(type,draft.edited);
+    if(!validation.valid) ImGui::TextWrapped("%s",validation.error.c_str());
+    if((type=="NavigationSurface" || type=="NavigationObstacle" || type=="NavigationLink") && !m_NavigationSchema.runtimeDiagnostic.empty())
+        ImGui::TextWrapped("%s",m_NavigationSchema.runtimeDiagnostic.c_str());
+    if(type=="NavigationObstacle" && !m_NavigationSchema.obstacleCapabilities.empty()) ImGui::TextWrapped("%s",m_NavigationSchema.obstacleCapabilities.c_str());
+    const bool dirty=!Vans::SerializedValuesEqual(data,draft.edited);
+    bool applied=false;
+    ImGui::BeginDisabled(!dirty || !validation.valid);
+    if(ImGui::Button("Apply Component"))
+    { data=draft.edited; draft.original=data; applied=true; }
+    ImGui::EndDisabled(); ImGui::SameLine(); ImGui::BeginDisabled(!dirty);
+    if(ImGui::Button("Revert Component")) draft={data,data};
+    ImGui::EndDisabled();
+    return applied;
+}
+
 bool VansInspectorWindow::Impl::DrawSerializedValue(
     const std::string& label,
     Vans::VansSerializedValue& value,
@@ -1907,6 +1996,58 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
 {
     ImGui::PushID(pointer.c_str());
     bool changed = false;
+    if(parentKey=="data" && value.kind==Vans::VansSerializedValue::Kind::Object)
+        if(const auto* field=NavigationField(m_NavigationSchema,componentType,label,m_NavigationActiveMap))
+        {
+            Vans::SerializedObjectReferenceValue reference;
+            if(Vans::TryReadSerializedObjectReference(value,reference) && reference.domain=="SceneComponent")
+            {
+                BeginProperty(label);
+                const auto current=std::find_if(field->choices.begin(),field->choices.end(),
+                    [&](const auto& item){return Vans::SerializedValuesEqual(item.value,value);});
+                const auto caption=current==field->choices.end()?"Select Collider":current->label.c_str();
+                if(ImGui::BeginCombo("##value",caption))
+                {
+                    for(const auto& item:field->choices) if(ImGui::Selectable(item.label.c_str(),Vans::SerializedValuesEqual(item.value,value)))
+                    { value=item.value; changed=true; }
+                    ImGui::EndCombo();
+                }
+                ImGui::PopID(); return changed;
+            }
+        }
+    if (!readOnly && m_ClothMaterialDocument && pointer.rfind("/asset/parameters/", 0) == 0)
+    {
+        float minimum = 0.0f, maximum = 0.0f;
+        if (Vans::GetClothMaterialScalarRange(label, minimum, maximum))
+        {
+            BeginProperty(label);
+            float number = static_cast<float>(Vans::ReadSerializedNumber(value));
+            changed = ImGui::SliderFloat("##value", &number, minimum, maximum, "%.3f");
+            if (changed) value = Vans::VansSerializedValue::Float(number);
+            ImGui::PopID();
+            return changed;
+        }
+        if (label == "alphaMode" && value.kind == Vans::VansSerializedValue::Kind::String)
+        {
+            BeginProperty(label);
+            int selection = value.stringValue == "mask" ? 1 : 0;
+            const char* choices[]{"opaque", "mask"};
+            changed = ImGui::Combo("##value", &selection, choices, 2);
+            if (changed) value = Vans::VansSerializedValue::String(choices[selection]);
+            ImGui::PopID();
+            return changed;
+        }
+        if (label == "diffuseTransmittance" && IsSerializedNumericVector(value, 3, 3))
+        {
+            BeginProperty(label);
+            float color[3];
+            for (size_t i = 0; i < 3; ++i) color[i] = static_cast<float>(Vans::ReadSerializedNumber(value.arrayItems[i]));
+            changed = ImGui::ColorEdit3("##value", color);
+            if (changed) for (size_t i = 0; i < 3; ++i) value.arrayItems[i] = Vans::VansSerializedValue::Float(color[i]);
+            ImGui::PopID();
+            return changed;
+        }
+    }
     if (!readOnly && label == "data" && value.kind == Vans::VansSerializedValue::Kind::Object &&
         (componentType == "DirectionalLight" || componentType == "PointLight" || componentType == "SpotLight" || componentType == "RectLight") &&
         !Vans::FindObjectField(value, "cookie") && ImGui::Button("Add Cookie Settings"))
@@ -2121,6 +2262,27 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
             }
             if (!readOnly)
             {
+                if(const auto* field=NavigationField(m_NavigationSchema,componentType,label,m_NavigationActiveMap))
+                {
+                    if(!field->choices.empty() && ImGui::BeginMenu("Add Item"))
+                    {
+                        for(const auto& choice:field->choices)
+                        {
+                            const bool present=std::any_of(value.arrayItems.begin(),value.arrayItems.end(),[&](const auto& item)
+                            { return Vans::SerializedValuesEqual(item,choice.value); });
+                            if(ImGui::MenuItem(choice.label.c_str(),nullptr,false,!present))
+                            { value.arrayItems.push_back(choice.value); changed=true; }
+                        }
+                        ImGui::EndMenu();
+                    }
+                    if(!field->arrayElement.IsNull())
+                    {
+                        ImGui::BeginDisabled(value.arrayItems.size()>=64);
+                        if(ImGui::SmallButton("Add Vertex"))
+                        { value.arrayItems.push_back(field->arrayElement); changed=true; }
+                        ImGui::EndDisabled();
+                    }
+                }
 				changed |= DrawParticleModuleAddMenu(value, pointer, m_ParticleSchema);
 				if (std::optional<Vans::VansSerializedValue> defaultElement =
 					DefaultSerializedArrayElement(label, pointer, componentType, m_ParticleSchema))
@@ -2360,6 +2522,17 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
         {
             ImGui::TextDisabled("%s", current.c_str());
         }
+        else if(const auto* field=NavigationField(m_NavigationSchema,componentType,parentKey=="data"?label:parentKey,m_NavigationActiveMap))
+        {
+            const auto choice=std::find_if(field->choices.begin(),field->choices.end(),[&](const auto& item){return Vans::SerializedValuesEqual(item.value,value);});
+            const auto& caption=choice==field->choices.end()?current:choice->label;
+            if(ImGui::BeginCombo("##value",caption.c_str()))
+            {
+                for(const auto& item:field->choices) if(ImGui::Selectable(item.label.c_str(),Vans::SerializedValuesEqual(item.value,value)))
+                { value=item.value; changed=true; }
+                ImGui::EndCombo();
+            }
+        }
         else if (Lower(label) == "layer")
         {
             if (ImGui::BeginCombo("##value", current.c_str()))
@@ -2542,7 +2715,9 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
 				if (!handle.guid.empty() && !resolution.found)
 					ImGui::TextColored(ImVec4(1.0f, 0.38f, 0.32f, 1.0f), "Timeline asset GUID is missing");
 			}
-            for (auto& [fieldName, fieldValue] : data->objectFields)
+            const bool navigation=type=="NavigationSurface" || type=="NavigationSource" || type=="NavigationModifier" || type=="NavigationAgent" || type=="NavigationObstacle" || type=="NavigationLink";
+            if(navigation) changed|=DrawNavigationData(api,*data,type,Vans::ReadSerializedStringField(component,"id"),pointer);
+            if(!navigation) for (auto& [fieldName, fieldValue] : data->objectFields)
             {
                 if (type == "Script" &&
                     fieldName == "fields" &&
@@ -2723,7 +2898,8 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
     Vans::VansSceneEditService* editor = VansEditorWindow::GetSceneEditService();
     if (!document || !editor) return;
     const std::string& selected = Vans::VansEditorSelectionService::Get().EntityGuid();
-    const Vans::VansSerializedValue sceneRoot = document->SerializedRootSnapshot();
+    const auto sceneSnapshot = document->CreateSnapshot();
+    const Vans::VansSerializedValue& sceneRoot = sceneSnapshot.Root();
     const Vans::VansSerializedValue* entities = Vans::FindObjectField(sceneRoot, "entities");
     if (!entities || entities->kind != Vans::VansSerializedValue::Kind::Array)
     {
@@ -2760,11 +2936,20 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
             Vans::FindObjectField(editedEntity, "components");
         if (editedComponents && editedComponents->kind == Vans::VansSerializedValue::Kind::Array)
         {
+            std::set<std::string> liveNavigationIds;
+            for(const auto& component:editedComponents->arrayItems) liveNavigationIds.insert(Vans::ReadSerializedStringField(component,"id"));
+            for(auto it=m_NavigationDrafts.begin();it!=m_NavigationDrafts.end();)
+                if(!liveNavigationIds.count(it->first)) it=m_NavigationDrafts.erase(it); else ++it;
             for (std::size_t componentIndex = 0; componentIndex < editedComponents->arrayItems.size();)
             {
                 bool remove = false;
-                changed |= DrawComponent(api, editedComponents->arrayItems[componentIndex],
+                const bool componentChanged=DrawComponent(api, editedComponents->arrayItems[componentIndex],
                     pointer + "/components/" + std::to_string(componentIndex), remove);
+                changed|=componentChanged;
+                if(componentChanged && NavigationField(m_NavigationSchema,Vans::ReadSerializedStringField(editedComponents->arrayItems[componentIndex],"type"),"mapId"))
+                    structuralRuntimeRebuild=true;
+                if(componentChanged && Vans::ReadSerializedStringField(editedComponents->arrayItems[componentIndex],"type")=="NavigationSource")
+                    structuralRuntimeRebuild=true;
                 if (remove)
                 {
                     editedComponents->arrayItems.erase(
@@ -2925,7 +3110,8 @@ void VansInspectorWindow::Impl::DrawSceneSettings()
     Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
     Vans::VansSceneEditService* editor = VansEditorWindow::GetSceneEditService();
     if (!document || !editor) return;
-    const Vans::VansSerializedValue sceneRoot = document->SerializedRootSnapshot();
+    const auto sceneSnapshot = document->CreateSnapshot();
+    const Vans::VansSerializedValue& sceneRoot = sceneSnapshot.Root();
     const Vans::VansSerializedValue* settingsValue = Vans::FindObjectField(sceneRoot, "settings");
     Vans::VansSerializedValue settings = settingsValue
         ? *settingsValue
@@ -3073,6 +3259,52 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
         if (displayRootValue.kind != Vans::VansSerializedValue::Kind::Object)
             displayRootValue = Vans::VansSerializedValue::Object({});
         Vans::MergeMaterialAuthoringSchema(api, displayRootValue);
+        m_ClothMaterialDocument = selectedType == Vans::VansAssetType::Material &&
+            Vans::ReadSerializedStringField(displayRootValue, "materialType") == "cloth";
+        if (m_ClothMaterialDocument && ImGui::BeginCombo("Fabric preset", "Choose optical parameters"))
+        {
+            for (const auto& preset : Vans::GetClothMaterialPresets())
+            {
+                if (!ImGui::Selectable(preset.name)) continue;
+                const auto* parameters = Vans::FindObjectField(displayRootValue, "parameters");
+                Vans::VansClothMaterialParameters current;
+                std::string error;
+                if (!parameters || !Vans::ReadClothMaterialParameters(*parameters, current, error))
+                {
+                    VANS_LOG_ERROR("[Inspector] Invalid Cloth parameters: " << error);
+                    continue;
+                }
+                auto replacement = preset.parameters;
+                replacement.albedo = current.albedo;
+                replacement.ao = current.ao;
+                replacement.fiberRotationRadians = current.fiberRotationRadians;
+                replacement.alphaMode = current.alphaMode;
+                replacement.alphaCutoff = current.alphaCutoff;
+                replacement.doubleSided = current.doubleSided;
+                const auto encoded = Vans::WriteClothMaterialParameters(replacement);
+                auto candidate = displayRootValue;
+                Vans::SetSerializedObjectField(candidate, "parameters", encoded);
+                Vans::VansSerializedValue sourceRoot;
+                if (!Vans::PrepareClothMaterialAuthoringEdit(api, candidate, sourceRoot, error))
+                {
+                    m_Error = error;
+                    VANS_LOG_ERROR("[Inspector] " << error);
+                    continue;
+                }
+                const auto result = Vans::VansAssetDocumentEditService::Set(
+                    m_AssetDocuments->sourceDocument,
+                    Vans::MakeInspectorDocumentPropertyPath("/asset/parameters"), encoded);
+                if (result)
+                {
+                    m_Error.clear();
+                    Vans::SetSerializedObjectField(displayRootValue, "parameters", encoded);
+                    sceneInteractionAPI.ApplyRuntimeMaterialPreviewChange(Vans::BuildRuntimeMaterialPreviewChange(
+                        selected, m_AssetDocuments->sourceDocument.SerializedRootSnapshot(), "/asset/parameters"));
+                }
+                else VANS_LOG_ERROR("[Inspector] " << result.message);
+            }
+            ImGui::EndCombo();
+        }
         if (selectedExtension == ".particle")
             MergeParticleAuthoringSchema(displayRootValue, m_ParticleSchema);
         for (auto& [propertyKey, propertyValue] : displayRootValue.objectFields)
@@ -3081,6 +3313,21 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
             const bool identity = propertyKey == "schemaVersion" || propertyKey == "guid";
             if (DrawSerializedValue(propertyKey, propertyValue, propertyPointer, identity))
             {
+                Vans::VansSerializedValue editedProperty = propertyValue;
+                if (m_ClothMaterialDocument)
+                {
+                    Vans::VansSerializedValue candidateRoot;
+                    std::string error;
+                    if (!Vans::PrepareClothMaterialAuthoringEdit(api, displayRootValue, candidateRoot, error))
+                    {
+                        m_Error = error;
+                        VANS_LOG_ERROR("[Inspector] " << error);
+                        m_PendingObjectReferenceEdit.reset();
+                        break;
+                    }
+                    if (const auto* property = Vans::FindObjectField(candidateRoot, propertyKey))
+                        editedProperty = *property;
+                }
                 bool editApplied = false;
                 if (m_PendingObjectReferenceEdit)
                 {
@@ -3089,7 +3336,7 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
                         Vans::VansAssetDocumentEditService::SetAndAssignObjectReference(
                             m_AssetDocuments->sourceDocument,
                             Vans::MakeInspectorDocumentPropertyPath(propertyPointer),
-                            propertyValue,
+                            editedProperty,
                             edit);
                     if (!result)
                         VANS_LOG_ERROR("[Inspector] " << result.message);
@@ -3102,18 +3349,21 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
                         Vans::VansAssetDocumentEditService::Set(
                             m_AssetDocuments->sourceDocument,
                             Vans::MakeInspectorDocumentPropertyPath(propertyPointer),
-                            propertyValue);
+                            editedProperty);
                     if (!result)
                         VANS_LOG_ERROR("[Inspector] " << result.message);
                     editApplied = static_cast<bool>(result);
                 }
 
                 if (editApplied)
+                {
+                    m_Error.clear();
                     sceneInteractionAPI.ApplyRuntimeMaterialPreviewChange(
                         Vans::BuildRuntimeMaterialPreviewChange(
                             selected,
                             m_AssetDocuments->sourceDocument.SerializedRootSnapshot(),
                             propertyPointer));
+                }
                 break;
             }
         }
@@ -3233,6 +3483,10 @@ void VansInspectorWindow::Impl::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ap
     m_ActiveAPI = &api;
     if (m_ParticleSchema.fields.empty()) m_ParticleSchema = particleAPI.GetParticleAuthoringSchema();
     m_CollisionLayerNames = sceneInteractionAPI.GetRuntimeCollisionLayerNames();
+    m_NavigationSchema=api.GetNavigationAuthoringSchema();
+    const auto selectedNavigationEntity=Vans::VansEditorSelectionService::Get().EntityGuid();
+    if(m_NavigationDraftEntity!=selectedNavigationEntity)
+    { m_NavigationDrafts.clear(); m_NavigationDraftEntity=selectedNavigationEntity; }
     m_PendingObjectReferenceEdit.reset();
 	const Vans::EditorObjectHandle& activeSelection =
 		Vans::VansEditorSelectionService::Get().Snapshot().active;

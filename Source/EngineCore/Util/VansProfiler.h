@@ -84,6 +84,10 @@ namespace Vans
         double       frameDurationUs    = 0.0;
         double       timelineDurationUs = 0.0;
         double       gpuDurationUs      = 0.0;
+        uint64_t     gpuTimelineOriginTicks = 0;
+        uint32_t     gpuTimestampValidBits = 0;
+        double       gpuTimestampPeriodUs = 0.0;
+        bool         gpuTimelineComparable = false;
         double       fps                = 0.0;
         uint32_t     trackCount         = 0;
         uint32_t     eventCount         = 0;
@@ -118,8 +122,19 @@ namespace Vans
         };
         struct Sample
         {
+            struct GpuQueueSpan
+            {
+                bool recorded = false;
+                double firstUs = 0.0;
+                double lastUs = 0.0;
+            };
             uint64_t frameIndex = 0;
             double observedSeconds = 0.0, cpuUs = 0.0, gpuUs = 0.0;
+            uint64_t gpuTimelineOriginTicks = 0;
+            uint32_t gpuTimestampValidBits = 0;
+            double gpuTimestampPeriodUs = 0.0;
+            bool gpuTimelineComparable = false;
+            std::array<GpuQueueSpan, 2> gpuQueueSpans;
         };
 
         void Start(const Settings& settings, uint64_t firstFrameIndex);
@@ -271,6 +286,10 @@ namespace Vans
         uint32_t laneEventCount[2] = {};
         uint32_t droppedEvents = 0;
         double durationUs = 0.0;
+        uint64_t timelineOriginTicks = 0;
+        uint32_t timestampValidBits = 0;
+        double timestampPeriodUs = 0.0;
+        bool timelineComparable = false;
         bool overflow = false;
         ProfileEvent events[MAX_EVENTS] = {};
     };
@@ -285,14 +304,18 @@ namespace Vans
             void* physDevice,
             uint32_t graphicsQueueFamily,
             uint32_t computeQueueFamily,
-            bool hostQueryResetEnabled);
+            bool hostQueryResetEnabled,
+            bool calibratedTimestampsEnabled);
         void Destroy();
 
         void BeginFrame(uint64_t frameIndex);
+        uint64_t GetRecordingFrameIndex() const;
+        void MarkSubmittedFrameRetired(uint64_t frameIndex);
+        void ReclaimDiscardedFramesAtDeviceIdle();
         void BeginQueue(void* cmd, VansGpuQueueLane lane);
         bool Push(void* cmd, const char* name, VansGpuQueueLane lane = VansGpuQueueLane::Graphics);
         void Pop(void* cmd, VansGpuQueueLane lane = VansGpuQueueLane::Graphics);
-        void EndFrame();
+        void EndFrame(bool submitted);
 
         bool IsInitialized() const;
         bool IsFrameCaptureActive() const;
@@ -329,6 +352,7 @@ namespace Vans
         {
             FrameSlotState state = FrameSlotState::Free;
             uint64_t frameIndex = VansCpuProfiler::INVALID_FRAME_INDEX;
+            bool submissionRetired = false;
             bool laneBegun[LANE_COUNT] = {};
             bool overflow = false;
             uint32_t droppedEvents = 0;
@@ -349,10 +373,10 @@ namespace Vans
         bool TryResolveFrame(uint32_t frameSlotIndex, VansGpuResolvedFrame& result);
         void SubmitDroppedFrame(uint64_t frameIndex, uint32_t droppedEvents = 0);
         static void CopyText(char* dst, uint32_t dstSize, const char* src);
-        static int64_t TimestampDelta(uint64_t value, uint64_t reference, uint32_t validBits);
 
         void* m_Device = nullptr;
         double m_TimestampPeriodUs = 0.0;
+        bool m_CalibratedTimestampsEnabled = false;
         uint32_t m_TimestampValidBits[LANE_COUNT] = {};
         bool m_LaneSupported[LANE_COUNT] = {};
         void* m_Pools[LANE_COUNT][FRAME_SLOT_COUNT] = {};
@@ -387,7 +411,7 @@ namespace Vans
         uint64_t GetActiveFrameIndex() const;
 
         void BeginRenderFrame(uint64_t frameIndex);
-        void EndRenderFrame(uint64_t frameIndex);
+        void EndRenderFrame(uint64_t frameIndex, bool submitted);
         void SubmitGpuFrame(const VansGpuResolvedFrame& frame);
 
         void SetCaptureEnabled(bool enabled);

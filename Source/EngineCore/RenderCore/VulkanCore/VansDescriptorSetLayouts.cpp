@@ -1,5 +1,6 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansDescriptorSetLayouts.h"
+#include "../../AssetCore/VansRenderPassAsset.h"
 #include "VansVKDescriptorManager.h"
 #include "../ShadowCore/VansPunctualShadowTypes.h"
 #include "../VansMaterial.h"
@@ -80,11 +81,9 @@ bool VansDescriptorSetLayoutFactory::CreateAndAllocate_Atmosphere(
 // ============================================================
 // Set 0: Global Layout (universal across all pipelines)
 // ============================================================
-void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
-	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets,
-	uint32_t maxBindlessTextures, uint32_t setCount)
+std::vector<VkDescriptorSetLayoutBinding> VansDescriptorSetLayoutFactory::GlobalBindings(uint32_t maxBindlessTextures)
 {
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+	return {
         { GLOBAL_BINDING_SKY_LIGHTING, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, GLOBAL_STAGES, nullptr },
 		// binding 0: Camera UBO
 		{GLOBAL_BINDING_CAMERA_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
@@ -184,11 +183,21 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		 GLOBAL_STAGES, nullptr},
 		{GLOBAL_BINDING_SURFACE_WEATHER_RIPPLE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 			 GLOBAL_STAGES, nullptr},
+        {GLOBAL_BINDING_PROJECT_RENDER_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            Vans::VansProjectRenderTextureSlotCount, VK_SHADER_STAGE_ALL_GRAPHICS, nullptr},
+		{GLOBAL_BINDING_CLOTH_LIGHTING_LUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, IBL_STAGES, nullptr},
 		// binding 50: Bindless PBR textures (fixed max count, no variable descriptor)
 		{GLOBAL_BINDING_BINDLESS_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		 maxBindlessTextures, BINDLESS_TEX_STAGES, nullptr},
 	};
 
+	}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets,
+	uint32_t maxBindlessTextures, uint32_t setCount)
+{
+	const auto bindings = GlobalBindings(maxBindlessTextures);
 	// 为每个 binding 设置标志位：bindless 纹理数组（最后一项）支持 UPDATE_AFTER_BIND，
 	// 且允许只写入实际使用的前 N 个 descriptor，避免未填满 MAX_BINDLESS_TEXTURES 时的动态索引风险。
 	std::vector<VkDescriptorBindingFlags> bindingFlags(bindings.size(), 0);
@@ -450,7 +459,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_GTAODepth(
 }
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_GTAOMain(
-    VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets)
+    VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
     std::vector<VkDescriptorSetLayoutBinding> bindings = {
         { GTAO_MAIN_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
@@ -460,11 +469,11 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_GTAOMain(
         { GTAO_MAIN_RAW, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { GTAO_MAIN_EDGES, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
     };
-    CreateLayoutAndAllocateSets(bindings, outLayout, outSets, 1);
+    CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_GTAODenoise(
-    VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets)
+    VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
     std::vector<VkDescriptorSetLayoutBinding> bindings = {
         { GTAO_DENOISE_RAW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
@@ -474,7 +483,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_GTAODenoise(
         { GTAO_DENOISE_POSITION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { GTAO_DENOISE_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
     };
-    CreateLayoutAndAllocateSets(bindings, outLayout, outSets, 1);
+    CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGI(
@@ -687,6 +696,10 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Terrain(
 		// binding 8: 材质高度的米制强度和距离渐隐参数，仅由细分求值阶段读取。
 		{TERRAIN_BINDING_HEIGHT_DETAIL_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
 		 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, nullptr},
+		{TERRAIN_BINDING_INTERACTION_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL_GRAPHICS, nullptr},
+		{TERRAIN_BINDING_INTERACTION_ALBEDO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{TERRAIN_BINDING_INTERACTION_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{TERRAIN_BINDING_INTERACTION_HEIGHT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_ALL_GRAPHICS, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
@@ -825,20 +838,10 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_SkinTexture(
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_ClothTexture(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		// binding 0: Cloth albedo texture
-		{CLOTH_TEXTURE_BINDING_ALBEDO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 1: Cloth normal texture
-		{CLOTH_TEXTURE_BINDING_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 2: Cloth roughness texture
-		{CLOTH_TEXTURE_BINDING_ROUGHNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 3: Cloth ambient occlusion texture
-		{CLOTH_TEXTURE_BINDING_AO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-	};
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    for (uint32_t binding = 0; binding < CLOTH_TEXTURE_BINDING_COUNT; ++binding)
+        bindings.push_back({binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+            VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
@@ -935,6 +938,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationBoneSim(
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{VEG_SIM_BINDING_VISIBILITY_FLAGS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_SIM_BINDING_WORKGROUPS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -962,9 +967,6 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationDraw(
 		// P6a: terrain heightmap for VS sub-blade Y sampling
 		{VEG_DRAW_BINDING_TERRAIN_HEIGHTMAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
-		// P0: per-instance visibility flags from GPU cull
-		{VEG_DRAW_BINDING_VISIBILITY_FLAGS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -987,6 +989,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationCull(
 		{VEG_CULL_BINDING_TERRAIN_HEIGHTMAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{VEG_CULL_BINDING_HIZ, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_CULL_BINDING_WORKGROUPS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
@@ -1023,6 +1027,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationTreeCull(
 		{VEG_TREE_CULL_BINDING_SPECIES_INFOS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{VEG_TREE_CULL_BINDING_HIZ, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{VEG_TREE_CULL_BINDING_LOD_STATE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
@@ -1216,7 +1222,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterComposite(
 // Hair Debug Pass Set 1: optical depth, nearest depths, weighted color, display array
 // ============================================================
 bool VansDescriptorSetLayoutFactory::CreateAndAllocate_HairDebug(
-    VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets)
+    VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
     const std::vector<VkDescriptorSetLayoutBinding> bindings = {
         {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
@@ -1224,7 +1230,7 @@ bool VansDescriptorSetLayoutFactory::CreateAndAllocate_HairDebug(
         {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
         {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}
     };
-    return CreateLayoutAndAllocateSets(bindings, outLayout, outSets, 1);
+    return CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
 // Hair Composite Set 1: RGB = weighted radiance, A = weight; optical depth supplies coverage.

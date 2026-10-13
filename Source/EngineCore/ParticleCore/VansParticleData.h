@@ -7,6 +7,15 @@
 
 namespace VansGraphics
 {
+    // World-space input snapshot. Stable identity preserves each point's emission phase.
+    struct VansParticleEmissionPoint
+    {
+        uint32_t id = 0, channel = 0;
+        glm::vec3 position{0}, normal{0,1,0};
+        float scale = 1, bornTime = 0;
+        bool active = true;
+    };
+    constexpr uint32_t VansParticleMaxEmissionPoints = 256;
     // ============================================================
     // VansParticlePool — CPU 粒子数据池，SoA 布局
     // SoA（Structure of Arrays）保证每个 Update 模块只访问
@@ -17,6 +26,9 @@ namespace VansGraphics
         // ── 容量与存活数 ─────────────────────────────────────────
         uint32_t m_MaxCount   = 0;
         uint32_t m_AliveCount = 0;
+
+        // 当前出生批次的局部集合秒数，只供 ExecuteInit 读取；不是每粒子年龄。
+        float m_InitializationCollectionAge = 0;
 
         // ── 核心属性 ─────────────────────────────────────────────
         std::vector<glm::vec3> m_Position;      // 世界/局部位置
@@ -37,8 +49,15 @@ namespace VansGraphics
         std::vector<glm::vec3> m_InitialVelocity;   // 初始速度（拉伸 Billboard 用）
         std::vector<float>     m_FrameIndex;         // Sprite Sheet 帧索引
         std::vector<uint32_t>  m_SeedRandom;         // 每粒子随机种子
+        std::vector<glm::vec3> m_SurfaceNormal; // Only allocated for oriented SpriteCards.
         std::vector<uint64_t> m_RibbonId;
         std::vector<uint64_t> m_SpawnSequence;
+        // 仅 AlphaFade 分配：初始 alpha、稳定淡入时长、稳定淡出时长。
+        std::vector<glm::vec3> m_AlphaFade;
+        // 仅 scaleInitialAlpha 颜色模块分配，供当前曲线从出生 alpha 重算。
+        std::vector<float> m_InitialAlpha;
+        // 仅点集合时钟分配，记录所属 emission point 的 bornTime，不是本粒子的出生时间。
+        std::vector<float> m_CollectionBornTime;
 
         // ── 粒子标记位定义 ───────────────────────────────────────
         static constexpr uint32_t FLAG_ALIVE = 1u << 0;
@@ -54,6 +73,8 @@ namespace VansGraphics
         void AllocFrameIndex();
         void AllocSeedRandom();
         void AllocRibbon();
+        void AllocAlphaFade();
+        void AllocInitialAlpha();
         float StepDelta(uint32_t index, float delta) const
         { return m_StepDelta[index] < 0.0f ? delta : std::min(m_StepDelta[index], delta); }
 

@@ -2,6 +2,7 @@
 
 #include "VansSceneAnimationComponentConfig.h"
 #include "VansSceneAIComponentConfig.h"
+#include "VansSceneNavigationComponentConfig.h"
 #include "VansSceneCameraMediaComponentConfig.h"
 #include "VansSceneLightComponentConfig.h"
 #include "VansSceneLocalVolumetricFogComponentConfig.h"
@@ -51,6 +52,11 @@ struct VansSceneObjectBuildConfig
 	std::optional<VansSceneTimelineComponentConfig> timeline;
 	std::optional<VansGameplayActionHostSetup> actionHost;
 	std::optional<VansSceneNavigationAgentConfig> navigationAgent;
+	std::optional<VansSceneNavigationSurfaceConfig> navigationSurface;
+	std::optional<VansSceneNavigationSourceConfig> navigationSource;
+	std::optional<VansSceneNavigationModifierConfig> navigationModifier;
+    std::optional<VansSceneNavigationObstacleConfig> navigationObstacle;
+    std::optional<VansSceneNavigationLinkConfig> navigationLink;
 	std::optional<VansSceneAIAgentConfig> aiAgent;
 	VansScriptComponentDescriptors scriptComponents;
 	VansScriptUIComponentDescriptors uiComponents;

@@ -44,7 +44,35 @@ namespace VansGraphics
     // ============================================================
 
     enum class VansParticleRendererType  { None, Billboard, Ribbon };
-    enum class VansParticleLightingMode  { UnlitFlipbook, SixWayLit };
+    enum class VansParticleLightingMode  { UnlitFlipbook, SixWayLit, SpriteCard };
+
+    enum class VansParticleCardOrientation { Camera, Axis, Surface };
+    enum class VansParticleCardOutput { Alpha, Additive, HalfBlendAdd, BlendAdd };
+    enum class VansParticleCardChannels { RGBA, RGBAlpha, RedAlpha };
+    enum class VansParticleCardBreakup { None, Standard, Zoom };
+    struct VansParticleCardSequence { uint32_t firstFrame = 0, frameCount = 1; };
+    enum class VansParticleCardAlphaClock { NormalizedEffect, EffectSeconds, EmissionPointSeconds };
+    // Explicit opt-in; existing billboard/Ribbon materials retain their program and ABI.
+    struct VansParticleCardConfig
+    {
+        VansParticleCardOrientation orientation = VansParticleCardOrientation::Camera;
+        VansParticleCardOutput output = VansParticleCardOutput::Alpha;
+        VansParticleCardChannels channels = VansParticleCardChannels::RGBA;
+        float aspectRatio = 1, pivotY = 0, softIntersection = 0;
+        float desaturation = 0, overbright = 1, lookupBlend = 0;
+        std::string lookupTextureGuid;
+        // 显式颜色组合选项；默认保持现有材质的替换查表和去饱和顺序。
+        bool lookupMultiply = false, tintBeforeDesaturation = false;
+        VansParticleCardBreakup breakup = VansParticleCardBreakup::None;
+        std::string breakupTextureGuid;
+        bool breakupPreserveAlpha = false;
+        float breakupZoomScale = 0.1f;
+        VansFloatCurve breakupWeightOverEffect;
+        std::vector<VansParticleCardSequence> sequences;
+        VansFloatCurve sizeOverEffect;
+        VansFloatCurve alphaOverEffect;
+        VansParticleCardAlphaClock alphaClock = VansParticleCardAlphaClock::NormalizedEffect;
+    };
 
     enum class VansRibbonRootMode { None, FollowSource };
     enum class VansRibbonStopAttachment { KeepUntilInvisible, DetachOnStop };
@@ -107,6 +135,7 @@ namespace VansGraphics
         VansParticleSixWayLightingConfig m_SixWayLighting;
         VansParticleVolumetricConfig m_Volumetric;
         VansParticleRibbonConfig m_Ribbon;
+        VansParticleCardConfig m_Card;
 
     };
 
@@ -117,6 +146,7 @@ namespace VansGraphics
         std::string m_Name;
         bool m_Enabled = true;
         uint32_t m_MaxParticles = 1000;
+        uint32_t m_EmissionChannel = 0; // Zero accepts all supplied input channels.
         VansParticleSpawnConfig m_SpawnConfig;
         std::vector<std::unique_ptr<const VansParticleModule>> m_InitModules;
         std::vector<std::unique_ptr<const VansParticleModule>> m_UpdateModules;

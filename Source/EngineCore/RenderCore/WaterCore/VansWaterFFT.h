@@ -4,6 +4,7 @@
 #include "VansWaterConfig.h"
 #include "../VulkanCore/VansVKImage.h"
 #include "../VulkanCore/VansVKBuffer.h"
+#include "../VansRenderRuntimeConfig.h"
 #include <string>
 #include <cstdint>
 #include <array>
@@ -103,17 +104,22 @@ namespace VansGraphics
         VansVKImage m_H0Spectrum;
         VansVKImage m_PingPong[2];
 
-        VansVKBuffer m_ParamsBuffer;
-        bool m_ParamsBufferCreated = false;
+        struct FrameParamsResources
+        {
+            VansVKBuffer paramsBuffer;
+            bool paramsBufferCreated = false;
+            VkDescriptorSet initSet = VK_NULL_HANDLE;
+            VkDescriptorSet evolveSet = VK_NULL_HANDLE;
+            std::array<VkDescriptorSet, 2> extractSets{};
+        };
+        std::array<FrameParamsResources,
+            VansCommandRecordingConfig::MaximumFramesInFlight> m_FrameParams;
 
         VkDescriptorSetLayout m_InitLayout = VK_NULL_HANDLE;
-        VkDescriptorSet       m_InitSet = VK_NULL_HANDLE;
         VkDescriptorSetLayout m_EvolveLayout = VK_NULL_HANDLE;
-        VkDescriptorSet       m_EvolveSet = VK_NULL_HANDLE;
         VkDescriptorSetLayout m_IterLayout = VK_NULL_HANDLE;
         VkDescriptorSet       m_IterSet[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
         VkDescriptorSetLayout m_ExtractLayout = VK_NULL_HANDLE;
-        VkDescriptorSet       m_ExtractSet[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
 
         Params m_Params;
         bool m_NeedsReinit = true;

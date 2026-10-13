@@ -6,6 +6,7 @@
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansPhysicsNativeAccess.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
+#include "../SceneRuntime/VansPcgPhysicsInstances.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 
 #include "../PhysicsCore/VansClothNode.h"
@@ -29,6 +30,7 @@
 #include <array>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <glm/gtc/quaternion.hpp>
 
 using namespace physx;
@@ -450,7 +452,16 @@ VansGraphics::VansScenePhysicsComponentBuilder::CreatePhysicsNode(
 	auto physicsNode = std::make_unique<VansPhysicsNode>();
 	if (config.name)
 		physicsNode->SetName(*config.name);
-    physicsNode->Initialize(properties, transformID, mesh);
+	std::shared_ptr<const Vans::VansTriangleMeshData> collisionData;
+	if (mesh && properties.useMeshCollider &&
+		(properties.colliderType == PhysicsColliderType::Mesh || properties.colliderType == PhysicsColliderType::ConvexMesh))
+	{
+		std::string detail;
+		if (!mesh->CaptureTriangleMeshData((std::numeric_limits<std::uint64_t>::max)(), collisionData, detail))
+			VANS_LOG_WARN("[PhysX] Mesh collider source '" << mesh->m_AssetName
+			<< "' for node '" << physicsNode->GetName() << "' is invalid: " << detail);
+	}
+    physicsNode->Initialize(properties, transformID, collisionData);
 	if (properties.enabled && (!physicsNode->IsEnabled() || !physicsNode->HasActor()))
 	{
 		error = "Physics runtime initialization failed for component '" +
@@ -468,6 +479,7 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
 {
 	VANS_ASSERT_MAIN_THREAD();
     VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
+    if(m_PcgPhysicsInstances) m_PcgPhysicsInstances->SynchronizeLifecycle();
 
     using namespace VansEngine;
     

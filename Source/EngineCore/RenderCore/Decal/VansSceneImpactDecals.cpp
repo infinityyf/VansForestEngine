@@ -9,30 +9,36 @@
 
 namespace VansGraphics
 {
-void VansScene::UpdateDecalPassDescriptorSet()
+bool VansScene::UpdateDecalPassDescriptorSet(
+    std::uint32_t slot, std::uint32_t gbufferTargetSlot)
 {
-    if (!m_DecalPassDescriptorSet) return;
+    if (slot >= m_DecalPassDescriptorSets.size() ||
+        m_DecalPassDescriptorSets[slot] == VK_NULL_HANDLE)
+        return false;
     auto* passes = VansRenderPassManager::GetInstance();
+    if (gbufferTargetSlot >= passes->GetGBufferFrameTargetCount())
+        return false;
     const auto image = [](VansVKImage& value) {
         return VkDescriptorImageInfo{value.GetSampler(), value.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     };
-    const std::array<VkDescriptorImageInfo, 3> images{image(passes->GetGbuffer2()),
-        image(passes->GetGbuffer1()), image(passes->GetNormal())};
-    bool changed = m_DecalPassDescriptorsDirty;
+    const std::array<VkDescriptorImageInfo, 3> images{image(passes->GetGbuffer2(gbufferTargetSlot)),
+        image(passes->GetGbuffer1(gbufferTargetSlot)), image(passes->GetNormal(gbufferTargetSlot))};
+    bool changed = m_DecalPassDescriptorsDirty[slot];
     for (size_t i=0; i<images.size(); ++i)
-        changed |= images[i].sampler != m_DecalPassImages[i].sampler
-            || images[i].imageView != m_DecalPassImages[i].imageView;
-    if (!changed) return;
-    // 调用点沿用渲染帧退役后的 descriptor 更新阶段，所有贴花只写这一套绑定。
+        changed |= images[i].sampler != m_DecalPassImages[slot][i].sampler
+            || images[i].imageView != m_DecalPassImages[slot][i].imageView;
+    if (!changed) return true;
+    // 当前槽已在上传前退役；其它 pending 槽的 descriptor 不会被重写。
     auto* descriptors = VansVKDescriptorManager::GetInstance();
     descriptors->BeginDescriptorUpdate();
     const uint32_t bindings[] = {DECAL_PASS_BINDING_GBUFFER2, DECAL_PASS_BINDING_GBUFFER1, DECAL_PASS_BINDING_NORMAL};
     for (size_t i=0; i<images.size(); ++i)
-        descriptors->WriteImageDescriptor(m_DecalPassDescriptorSet, bindings[i],
+        descriptors->WriteImageDescriptor(m_DecalPassDescriptorSets[slot], bindings[i],
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {images[i]});
     descriptors->CommitDescriptorUpdates();
-    m_DecalPassImages = images;
-    m_DecalPassDescriptorsDirty = false;
+    m_DecalPassImages[slot] = images;
+    m_DecalPassDescriptorsDirty[slot] = false;
+    return true;
 }
 
 Vans::VansDecalSceneBackend VansScene::MakeDecalSceneBackend()

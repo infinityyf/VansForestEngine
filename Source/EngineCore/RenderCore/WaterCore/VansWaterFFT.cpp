@@ -82,18 +82,24 @@ bool VansWaterFFT::Initialize(VansVKDevice* device, const std::string& shaderRoo
     createFFTImage(m_PingPong[0], MAX_CASCADE_COUNT * FIELD_COUNT);
     createFFTImage(m_PingPong[1], MAX_CASCADE_COUNT * FIELD_COUNT);
 
-    m_ParamsBufferCreated = m_ParamsBuffer.CreatVulkanBuffer(logicDev,
-        sizeof(FFTParamsGPU),
-        VK_FORMAT_UNDEFINED,
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (!m_ParamsBufferCreated)
+    for (FrameParamsResources& frame : m_FrameParams)
     {
-        return false;
+        frame.paramsBufferCreated = frame.paramsBuffer.CreatVulkanBuffer(logicDev,
+            sizeof(FFTParamsGPU), VK_FORMAT_UNDEFINED,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (!frame.paramsBufferCreated)
+        {
+            Shutdown(logicDev);
+            return false;
+        }
     }
 
     if (!CreateDescriptors())
+    {
+        Shutdown(logicDev);
         return false;
+    }
 
     m_Params.resolution = FFT_RESOLUTION;
     m_Params.cascadeCount = MAX_CASCADE_COUNT;
@@ -110,35 +116,47 @@ bool VansWaterFFT::CreateDescriptors()
 {
     auto* descMgr = VansVKDescriptorManager::GetInstance();
 
-    auto createLayoutAndSet = [&](const std::vector<VkDescriptorSetLayoutBinding>& bindings,
-                                  VkDescriptorSetLayout& layout,
-                                  VkDescriptorSet& set) -> bool
+    auto allocateSets = [descMgr](const std::vector<VkDescriptorSetLayoutBinding>& bindings,
+        VkDescriptorSetLayout& layout, uint32_t count,
+        std::vector<VkDescriptorSet>& sets) -> bool
     {
-        std::vector<VkDescriptorSet> sets;
-        if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(bindings, layout, sets) || sets.empty())
+        const bool allocated = VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+            bindings, layout, sets, count);
+        if (!allocated || sets.size() != count ||
+            std::any_of(sets.begin(), sets.end(), [](VkDescriptorSet set) { return set == VK_NULL_HANDLE; }))
+        {
+            descMgr->DestroyDescriptorSet(sets);
+            descMgr->ReleaseDescriptorSetLayout(layout);
             return false;
-        set = sets[0];
+        }
         return true;
     };
 
-    if (!createLayoutAndSet({
+    std::vector<VkDescriptorSet> sets;
+    const uint32_t frameCount = static_cast<uint32_t>(m_FrameParams.size());
+    if (!allocateSets({
         { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
-    }, m_InitLayout, m_InitSet))
+    }, m_InitLayout, frameCount, sets))
         return false;
+    for (uint32_t slot = 0; slot < frameCount; ++slot)
+        m_FrameParams[slot].initSet = sets[slot];
 
-    if (!createLayoutAndSet({
+    sets.clear();
+    if (!allocateSets({
         { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
-    }, m_EvolveLayout, m_EvolveSet))
+    }, m_EvolveLayout, frameCount, sets))
         return false;
+    for (uint32_t slot = 0; slot < frameCount; ++slot)
+        m_FrameParams[slot].evolveSet = sets[slot];
 
-    std::vector<VkDescriptorSet> sets;
-    if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom({
+    sets.clear();
+    if (!allocateSets({
         { 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
-    }, m_IterLayout, sets, 2) || sets.size() < 2)
+    }, m_IterLayout, 2, sets))
         return false;
     m_IterSet[0] = sets[0];
     m_IterSet[1] = sets[1];
@@ -151,39 +169,45 @@ bool VansWaterFFT::CreateDescriptors()
     };
     if (m_OutputMode == OutputMode::Displacement)
         extractBindings.push_back({ 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr });
-    if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
-        extractBindings, m_ExtractLayout, sets, 2) || sets.size() < 2)
+    if (!allocateSets(extractBindings, m_ExtractLayout, frameCount * 2, sets))
         return false;
-    m_ExtractSet[0] = sets[0];
-    m_ExtractSet[1] = sets[1];
+    for (uint32_t slot = 0; slot < frameCount; ++slot)
+        for (uint32_t pingPong = 0; pingPong < 2; ++pingPong)
+            m_FrameParams[slot].extractSets[pingPong] = sets[slot * 2 + pingPong];
 
-    const VkDescriptorBufferInfo paramsInfo = { m_ParamsBuffer.GetNativeBuffer(), 0, sizeof(FFTParamsGPU) };
     auto storageInfo = [](VansVKImage& image)
     {
         return VkDescriptorImageInfo{ VK_NULL_HANDLE, image.GetImageView(), VK_IMAGE_LAYOUT_GENERAL };
     };
 
     descMgr->BeginDescriptorUpdate();
-    descMgr->WriteBufferDescriptor(m_InitSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo });
-    descMgr->WriteImageDescriptor(m_InitSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_H0Spectrum) });
+    for (FrameParamsResources& frame : m_FrameParams)
+    {
+        const VkDescriptorBufferInfo paramsInfo = {
+            frame.paramsBuffer.GetNativeBuffer(), 0, sizeof(FFTParamsGPU)
+        };
+        descMgr->WriteBufferDescriptor(frame.initSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo });
+        descMgr->WriteImageDescriptor(frame.initSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_H0Spectrum) });
 
-    descMgr->WriteBufferDescriptor(m_EvolveSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo });
-    descMgr->WriteImageDescriptor(m_EvolveSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_H0Spectrum) });
-    descMgr->WriteImageDescriptor(m_EvolveSet, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[0]) });
+        descMgr->WriteBufferDescriptor(frame.evolveSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo });
+        descMgr->WriteImageDescriptor(frame.evolveSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_H0Spectrum) });
+        descMgr->WriteImageDescriptor(frame.evolveSet, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[0]) });
+
+        for (uint32_t pingPong = 0; pingPong < 2; ++pingPong)
+        {
+            const VkDescriptorSet set = frame.extractSets[pingPong];
+            descMgr->WriteBufferDescriptor(set, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo });
+            descMgr->WriteImageDescriptor(set, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[pingPong]) });
+            descMgr->WriteImageDescriptor(set, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(*m_DisplacementImage) });
+            if (m_OutputMode == OutputMode::Displacement)
+                descMgr->WriteImageDescriptor(set, 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(*m_DerivativeImage) });
+        }
+    }
 
     descMgr->WriteImageDescriptor(m_IterSet[0], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[0]) });
     descMgr->WriteImageDescriptor(m_IterSet[0], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[1]) });
     descMgr->WriteImageDescriptor(m_IterSet[1], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[1]) });
     descMgr->WriteImageDescriptor(m_IterSet[1], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[0]) });
-
-    for (uint32_t i = 0; i < 2; ++i)
-    {
-        descMgr->WriteBufferDescriptor(m_ExtractSet[i], 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, { paramsInfo });
-        descMgr->WriteImageDescriptor(m_ExtractSet[i], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(m_PingPong[i]) });
-        descMgr->WriteImageDescriptor(m_ExtractSet[i], 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(*m_DisplacementImage) });
-        if (m_OutputMode == OutputMode::Displacement)
-            descMgr->WriteImageDescriptor(m_ExtractSet[i], 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, { storageInfo(*m_DerivativeImage) });
-    }
 
     descMgr->CommitDescriptorUpdates();
     m_DescriptorsReady = true;
@@ -194,15 +218,36 @@ void VansWaterFFT::Shutdown(VkDevice logicDevice)
 {
     auto* descMgr = VansVKDescriptorManager::GetInstance();
 
+    std::vector<VkDescriptorSet> sets;
+    for (FrameParamsResources& frame : m_FrameParams)
+    {
+        if (frame.initSet != VK_NULL_HANDLE) sets.push_back(frame.initSet);
+        if (frame.evolveSet != VK_NULL_HANDLE) sets.push_back(frame.evolveSet);
+        for (VkDescriptorSet set : frame.extractSets)
+            if (set != VK_NULL_HANDLE) sets.push_back(set);
+        frame.initSet = VK_NULL_HANDLE;
+        frame.evolveSet = VK_NULL_HANDLE;
+        frame.extractSets.fill(VK_NULL_HANDLE);
+    }
+    for (VkDescriptorSet& set : m_IterSet)
+    {
+        if (set != VK_NULL_HANDLE) sets.push_back(set);
+        set = VK_NULL_HANDLE;
+    }
+    descMgr->DestroyDescriptorSet(sets);
+
     if (m_InitLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_InitLayout); m_InitLayout = VK_NULL_HANDLE; }
     if (m_EvolveLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_EvolveLayout); m_EvolveLayout = VK_NULL_HANDLE; }
     if (m_IterLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_IterLayout); m_IterLayout = VK_NULL_HANDLE; }
     if (m_ExtractLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_ExtractLayout); m_ExtractLayout = VK_NULL_HANDLE; }
 
-    if (m_ParamsBufferCreated)
+    for (FrameParamsResources& frame : m_FrameParams)
     {
-        m_ParamsBuffer.DestroyVulkanBuffer(logicDevice);
-        m_ParamsBufferCreated = false;
+        if (frame.paramsBufferCreated)
+        {
+            frame.paramsBuffer.DestroyVulkanBuffer(logicDevice);
+            frame.paramsBufferCreated = false;
+        }
     }
 
     m_H0Spectrum.DestroyVulkanImage(logicDevice);
@@ -214,10 +259,6 @@ void VansWaterFFT::Shutdown(VkDevice logicDevice)
     m_FFTIterShader = nullptr;
     m_DisplacementExtractShader = nullptr;
 
-    m_InitSet = VK_NULL_HANDLE;
-    m_EvolveSet = VK_NULL_HANDLE;
-    m_IterSet[0] = m_IterSet[1] = VK_NULL_HANDLE;
-    m_ExtractSet[0] = m_ExtractSet[1] = VK_NULL_HANDLE;
     m_DisplacementImage = nullptr;
     m_DerivativeImage = nullptr;
     m_Device = nullptr;
@@ -269,7 +310,10 @@ void VansWaterFFT::SetParams(const Params& params)
 
 void VansWaterFFT::UpdateParamsBuffer(float time)
 {
-    if (m_Device == nullptr || !m_ParamsBufferCreated)
+    if (m_Device == nullptr)
+        return;
+    FrameParamsResources& frame = m_FrameParams[m_Device->GetFrameResourceSlot()];
+    if (!frame.paramsBufferCreated)
         return;
 
     FFTParamsGPU gpu = {};
@@ -291,7 +335,7 @@ void VansWaterFFT::UpdateParamsBuffer(float time)
         m_Params.maxWavelength[2], m_Params.maxWavelength[3]);
     gpu.spectralOptions = glm::vec4(m_Params.capillaryCoefficient, 0.0f, 0.0f, 0.0f);
 
-    m_ParamsBuffer.SetBufferData(&gpu, 0, sizeof(FFTParamsGPU));
+    frame.paramsBuffer.SetBufferData(&gpu, 0, sizeof(FFTParamsGPU));
 }
 
 void VansWaterFFT::BarrierImage(VansVKCommandBuffer& cmd, VansVKImage& image,
@@ -322,6 +366,7 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
         return;
 
     UpdateParamsBuffer(time);
+    const FrameParamsResources& frame = m_FrameParams[m_Device->GetFrameResourceSlot()];
 
     const uint32_t N = FFT_RESOLUTION;
     const uint32_t groups = (N + 7u) / 8u;
@@ -346,7 +391,7 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, MAX_CASCADE_COUNT);
         cmd.EnsureComputeShader(*m_InitSpectrumShader, { m_InitLayout });
-        cmd.DispatchCompute(*m_InitSpectrumShader, groups, groups, m_Params.cascadeCount, { m_InitSet });
+        cmd.DispatchCompute(*m_InitSpectrumShader, groups, groups, m_Params.cascadeCount, { frame.initSet });
         BarrierImage(cmd, m_H0Spectrum, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, MAX_CASCADE_COUNT);
@@ -361,7 +406,7 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
     }
 
     cmd.EnsureComputeShader(*m_TimeEvolveShader, { m_EvolveLayout });
-    cmd.DispatchCompute(*m_TimeEvolveShader, groups, groups, m_Params.cascadeCount, { m_EvolveSet });
+    cmd.DispatchCompute(*m_TimeEvolveShader, groups, groups, m_Params.cascadeCount, { frame.evolveSet });
     BarrierImage(cmd, m_PingPong[0], VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, fieldLayers);
@@ -427,7 +472,8 @@ void VansWaterFFT::UpdateFFT(VansVKCommandBuffer& cmd, float time)
             0, MAX_CASCADE_COUNT * 2);
 
     cmd.EnsureComputeShader(*m_DisplacementExtractShader, { m_ExtractLayout });
-    cmd.DispatchCompute(*m_DisplacementExtractShader, groups, groups, m_Params.cascadeCount, { m_ExtractSet[src] });
+    cmd.DispatchCompute(*m_DisplacementExtractShader, groups, groups, m_Params.cascadeCount,
+        { frame.extractSets[src] });
 
     BarrierImage(cmd, *m_DisplacementImage, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, outputReadStage,

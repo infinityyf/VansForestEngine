@@ -18,6 +18,8 @@
 #include "../../GameplayComposition/VansSceneGameplayComposition.h"
 #include "../../GameplayActionCore/VansGameplayRuntime.h"
 #include "../../AICore/VansAIWorld.h"
+#include "../../SceneRuntime/VansSceneNavigationRuntime.h"
+#include "../../PhysicsCore/VansPhysicsNode.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../SceneRuntime/Transform/VansTransformStore.h"
@@ -681,11 +683,12 @@ VansRuntimeEntityPublishResult PublishRuntimeEntity(
 	const RuntimeComponentBuildResults& buildResults,
 	const std::optional<Vans::VansSceneTimelineComponentConfig>& timelineConfig,
 	const std::optional<Vans::VansGameplayActionHostSetup>& actionHostConfig,
-	const std::optional<Vans::VansSceneNavigationAgentConfig>& navigationAgentConfig,
+	const Vans::VansSceneObjectBuildConfig& navigationConfigs,
 	const std::optional<Vans::VansSceneAIAgentConfig>& aiAgentConfig,
 	Vans::VansGameplayRuntime* gameplayRuntime)
 {
 	VansRuntimeEntityPublishResult result;
+	const auto& navigationAgentConfig = navigationConfigs.navigationAgent;
 	if (entityDesc.stableGuid.empty())
 	{
 		result.error = "Runtime entity is missing its stable GUID";
@@ -757,11 +760,26 @@ VansRuntimeEntityPublishResult PublishRuntimeEntity(
 		? FindRuntimeComponentGuid(componentGuids, "navigation_agent") : std::string();
 	if (navigationAgentConfig &&
 		(navigationAgentComponentGuid.empty() ||
-			navigationAgentConfig->runtime.navigationMeshGuid.empty()))
+            !Vans::ValidateNavigationAgentTiming(navigationAgentConfig->runtime,result.error)))
 	{
-		result.error = "NavigationAgent requires stable component and Navigation Mesh asset GUIDs";
+		result.error = "NavigationAgent requires stable component identity and valid Map/Profile/filter/timing";
 		return result;
 	}
+    const auto& navigationSurfaceConfig=navigationConfigs.navigationSurface;
+    const std::string navigationSurfaceComponentGuid=navigationSurfaceConfig?FindRuntimeComponentGuid(componentGuids,"navigation_surface"):std::string();
+    if(navigationSurfaceConfig && navigationSurfaceComponentGuid.empty()) { result.error="NavigationSurface requires stable component identity"; return result; }
+    const auto& navigationSourceConfig=navigationConfigs.navigationSource;
+    const std::string navigationSourceComponentGuid=navigationSourceConfig?FindRuntimeComponentGuid(componentGuids,"navigation_source"):std::string();
+    if(navigationSourceConfig && navigationSourceComponentGuid.empty()) { result.error="NavigationSource requires stable component identity"; return result; }
+    const auto& navigationModifierConfig=navigationConfigs.navigationModifier;
+    const std::string navigationModifierComponentGuid=navigationModifierConfig?FindRuntimeComponentGuid(componentGuids,"navigation_modifier"):std::string();
+    if(navigationModifierConfig && navigationModifierComponentGuid.empty()) { result.error="NavigationModifier requires stable component identity"; return result; }
+    const auto& navigationObstacleConfig=navigationConfigs.navigationObstacle;
+    const std::string navigationObstacleComponentGuid=navigationObstacleConfig?FindRuntimeComponentGuid(componentGuids,"navigation_obstacle"):std::string();
+    if(navigationObstacleConfig && navigationObstacleComponentGuid.empty()) { result.error="NavigationObstacle requires stable component identity"; return result; }
+    const auto& navigationLinkConfig=navigationConfigs.navigationLink;
+    const std::string navigationLinkComponentGuid=navigationLinkConfig?FindRuntimeComponentGuid(componentGuids,"navigation_link"):std::string();
+    if(navigationLinkConfig && navigationLinkComponentGuid.empty()) { result.error="NavigationLink requires stable component identity"; return result; }
 	const std::string aiAgentComponentGuid = aiAgentConfig
 		? FindRuntimeComponentGuid(componentGuids, "ai_agent") : std::string();
 	if (aiAgentConfig &&
@@ -865,6 +883,16 @@ VansRuntimeEntityPublishResult PublishRuntimeEntity(
 			std::move(actionHost),
 			actionHostConfig->enabled);
 	}
+    if(navigationSurfaceConfig) runtimeWorld.Commands().AddNavigationSurfaceComponent(result.entity,
+        navigationSurfaceComponentGuid,navigationSurfaceConfig->runtime,navigationSurfaceConfig->enabled);
+    if(navigationSourceConfig) runtimeWorld.Commands().AddNavigationSourceComponent(result.entity,
+        navigationSourceComponentGuid,navigationSourceConfig->runtime,navigationSourceConfig->enabled);
+    if(navigationModifierConfig) runtimeWorld.Commands().AddNavigationModifierComponent(result.entity,
+        navigationModifierComponentGuid,navigationModifierConfig->runtime,navigationModifierConfig->enabled);
+    if(navigationObstacleConfig) runtimeWorld.Commands().AddNavigationObstacleComponent(result.entity,
+        navigationObstacleComponentGuid,navigationObstacleConfig->runtime,navigationObstacleConfig->enabled);
+    if(navigationLinkConfig) runtimeWorld.Commands().AddNavigationLinkComponent(result.entity,
+        navigationLinkComponentGuid,navigationLinkConfig->runtime,navigationLinkConfig->enabled);
 	if (navigationAgentConfig)
 	{
 		runtimeWorld.Commands().AddNavigationAgentComponent(
@@ -915,6 +943,10 @@ VansRuntimeEntityPublishResult PublishRuntimeEntity(
 		timelineComponentGuid, Vans::VansRuntimeComponentType_Timeline, "Timeline") ||
 		!validateConfiguredComponent(
 			actionHostComponentGuid, Vans::VansRuntimeComponentType_ActionHost, "ActionHost") ||
+        !validateConfiguredComponent(navigationSurfaceComponentGuid,Vans::VansRuntimeComponentType_NavigationSurface,"NavigationSurface") ||
+        !validateConfiguredComponent(navigationSourceComponentGuid,Vans::VansRuntimeComponentType_NavigationSource,"NavigationSource") ||
+        !validateConfiguredComponent(navigationModifierComponentGuid,Vans::VansRuntimeComponentType_NavigationModifier,"NavigationModifier") ||
+        !validateConfiguredComponent(navigationObstacleComponentGuid,Vans::VansRuntimeComponentType_NavigationObstacle,"NavigationObstacle") ||
 		!validateConfiguredComponent(
 			navigationAgentComponentGuid, Vans::VansRuntimeComponentType_NavigationAgent,
 			"NavigationAgent") ||
@@ -1385,7 +1417,7 @@ VansGraphics::VansSceneAssembly::BuildObjectsInternal(
 			runtimeComponentBuildResults,
 			objectConfig.timeline,
 			objectConfig.actionHost,
-			objectConfig.navigationAgent,
+			objectConfig,
 			objectConfig.aiAgent,
 			m_GameplayRuntime.get());
 		if (!runtimePublish.success)
@@ -1754,6 +1786,22 @@ VansGraphics::VansSceneAssembly::BuildObjectsInternal(
 			VansSceneObjectBuildFailure::ClothBindingFailed,
 			clothBinding.error);
 	}
+    return VansSceneObjectBuildResult{true,VansSceneObjectBuildFailure::None,{}};
+}
+
+VansGraphics::VansSceneObjectBuildResult VansGraphics::VansSceneAssembly::InitializeDomains(VansScene& scene)
+{
+    return VansSceneAssembly(scene).InitializeDomainsInternal();
+}
+VansGraphics::VansSceneObjectBuildResult VansGraphics::VansSceneAssembly::InitializeDomainsInternal()
+{
+    const auto failure=[](VansSceneObjectBuildFailure reason,std::string error)
+    { return VansSceneObjectBuildResult{false,reason,std::move(error)}; };
+    // 首次导航校验使用层级解析后的实际静态碰撞姿态。
+    m_TransformGraph.Resolve();
+    for(auto* node:m_Scene.GetPhysicsNodes())
+        if(node && node->IsEnabled() && node->GetProperties().bodyType==VansEngine::PhysicsBodyType::Static)
+            node->SyncActorFromTransform();
     // 批量追加对象不能重新初始化已在运行的 Timeline/AI 或重播已有资源音频。
     const bool initialRuntimeSetup = !m_AIWorld;
 	if (initialRuntimeSetup)
@@ -1768,12 +1816,40 @@ VansGraphics::VansSceneAssembly::BuildObjectsInternal(
 				std::move(timelineError));
 		}
 	}
+    {
+        std::string collisionError;
+        if(!m_Scene.InitializePcgPhysics(collisionError))
+            return failure(VansSceneObjectBuildFailure::ComponentBuildFailed,std::move(collisionError));
+    }
+    if (!m_NavigationRuntime)
+    {
+        auto navigation = std::make_unique<Vans::VansSceneNavigationRuntime>();
+        std::string navigationError;
+        if (!navigation->Initialize(*m_RuntimeWorld,
+            Vans::VansProjectManager::Get().GetAssetObjectRepository(),
+            Vans::VansProjectManager::Get().GetProjectSettings().GetNavigationSettings(), navigationError))
+            return failure(VansSceneObjectBuildFailure::NavigationInitializationFailed, std::move(navigationError));
+        m_NavigationRuntime = std::move(navigation);
+    }
+    {
+        std::string navigationError;
+        if (!m_Scene.SynchronizeNavigation(navigationError))
+        {
+            m_Scene.m_NavigationSyncError=navigationError;
+            if(m_Scene.GetLoadMode()!=VansSceneLoadMode::Editor)
+                return failure(VansSceneObjectBuildFailure::NavigationInitializationFailed, std::move(navigationError));
+            VANS_LOG_ERROR("[Navigation] Authoring navigation is unavailable: "<<navigationError);
+        }
+        else m_Scene.m_NavigationSyncError.clear();
+    }
     if (!m_AIWorld)
     {
         auto ai = std::make_unique<Vans::VansAIWorld>();
         std::string aiError;
         if (!ai->Initialize(*m_RuntimeWorld, m_GameplayRuntime.get(),
-            Vans::VansProjectManager::Get().GetAssetObjectRepository(), aiError))
+            Vans::VansProjectManager::Get().GetAssetObjectRepository(),
+            m_NavigationRuntime->World(), aiError,m_Scene.GetLoadMode()==VansSceneLoadMode::Editor?
+                Vans::VansAIInitializationPolicy::Authoring:Vans::VansAIInitializationPolicy::RequireReadyNavigation))
         {
             VANS_LOG_ERROR("[SceneBuild] Could not initialize AI World: " << aiError);
 			return failure(

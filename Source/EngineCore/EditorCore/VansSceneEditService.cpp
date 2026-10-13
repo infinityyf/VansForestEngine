@@ -1,4 +1,4 @@
-#include "VansSceneEditService.h"
+﻿#include "VansSceneEditService.h"
 #include "../AuthoringCore/VansAssetDocumentRegistry.h"
 
 #include "VansSceneObjectReferenceResolver.h"
@@ -7,6 +7,7 @@
 #include "../SceneCore/VansSceneParentReference.h"
 
 #include <cstddef>
+#include <algorithm>
 #include <exception>
 #include <stdexcept>
 #include <memory>
@@ -861,28 +862,68 @@ SceneEditResult VansSetSceneEntityTransformCommand::Redo(VansSceneDocument& docu
     return RuntimePreviewEditResult(m_EntityGuid);
 }
 
-SceneEditResult VansSceneEditService::Execute(std::unique_ptr<VansSceneEditCommand> command)
+SceneEditResult VansSceneEditService::Execute(std::unique_ptr<VansSceneEditCommand> command,
+    const VansSceneAuthoringCommit& commit)
 {
-    if (!command)
-        return { false, "Scene edit command is null" };
-    SceneEditResult result;
-    const auto authoringBefore = m_Document.AuthoringRootSnapshot();
-    const auto stateBefore = m_Document.CurrentStateId();
-    try { result = command->Execute(m_Document); }
-    catch (const std::exception& error) { return { false, error.what() }; }
-    if (!result)
-        return result;
-    const auto authoringAfter = m_Document.AuthoringRootSnapshot();
-    if (!command->managesPrefabHistory && (FindObjectField(authoringBefore, "prefabInstances") || FindObjectField(authoringAfter, "prefabInstances")))
+    if (!command) return {false,"Scene edit command is null"};
+    const auto authoringBefore=m_Document.AuthoringRootSnapshot();
+    const auto stateBefore=m_Document.CurrentStateId();
+    try
     {
-        command->usesPrefabHistory = true;
-        command->authoringBefore = authoringBefore; command->authoringAfter = authoringAfter;
-        command->authoringBeforeState = stateBefore; command->authoringAfterState = m_Document.CurrentStateId();
+        auto result=command->Execute(m_Document);
+        if(!result) return result;
+        const auto authoringAfter=m_Document.AuthoringRootSnapshot();
+        if(!command->managesPrefabHistory && (FindObjectField(authoringBefore,"prefabInstances") || FindObjectField(authoringAfter,"prefabInstances")))
+        {
+            command->usesPrefabHistory=true;
+            command->authoringBefore=authoringBefore; command->authoringAfter=authoringAfter;
+            command->authoringBeforeState=stateBefore; command->authoringAfterState=m_Document.CurrentStateId();
+        }
+        // 所有可分配的历史数据在外部提交前准备，成功后仅登记已完成的作者命令。
+        if(m_Undo.size()==m_Undo.capacity()) m_Undo.reserve(m_Undo.size()+std::max<std::size_t>(m_Undo.size(),1));
+        std::string error;
+        if(commit && !commit(error))
+        {
+            m_Document.RestoreAuthoringRoot(authoringBefore,stateBefore);
+            return {false,error.empty()?"Scene authoring commit failed":std::move(error)};
+        }
+        m_Undo.push_back({std::move(command),VansAuthoringHistory::IssueEditSequence()});
+        m_Redo.clear(); m_RedoRevision=0;
+        return result;
     }
-	m_Undo.push_back({ std::move(command), VansAuthoringHistory::IssueEditSequence() });
-    m_Redo.clear();
-	m_RedoRevision = 0;
-    return result;
+    catch(const std::exception& error)
+    {
+        if(m_Document.CurrentStateId()!=stateBefore) m_Document.RestoreAuthoringRoot(authoringBefore,stateBefore);
+        return {false,error.what()};
+    }
+}
+
+SceneEditResult VansSceneEditService::CommitValues(std::vector<VansSceneAuthoringValue> values,
+    std::uint64_t expectedState,const VansSceneAuthoringCommit& commit)
+{
+    if(m_Document.CurrentStateId()!=expectedState) return {false,"Scene changed before authoring publication"};
+    auto candidate=m_Document.SerializedRootSnapshot();
+    std::vector<std::string> pointers;
+    for(auto& edit:values)
+    {
+        std::string error;
+        if(edit.path.space!=DocumentPropertySpace::Scene || !ValidateDocumentPropertyPath(edit.path,&error))
+            return {false,error.empty()?"Batch edit must address a Scene property":std::move(error)};
+        const auto pointer=ToDocumentPropertyPointer(edit.path);
+        if(!ValidateDocumentPropertyPointer(pointer,false,&error,"Scene property address")) return {false,std::move(error)};
+        for(const auto& previous:pointers)
+            if(pointer==previous || pointer.rfind(previous+"/",0)==0 || previous.rfind(pointer+"/",0)==0)
+                return {false,"Batch edit contains overlapping property addresses"};
+        pointers.push_back(pointer);
+        if(const auto result=WriteAt(candidate,pointer,std::move(edit.value)); !result) return result;
+    }
+    if(SerializedValuesEqual(candidate,m_Document.SerializedRootSnapshot()))
+    {
+        std::string error;
+        const bool success=!commit || commit(error);
+        return {success,std::move(error)};
+    }
+    return Execute(std::make_unique<VansReplaceSceneRootCommand>(std::move(candidate),SceneEditLifecycleHooks{}),commit);
 }
 
 SceneEditResult VansSceneEditService::Set(const std::string& propertyPointer, VansSerializedValue value)

@@ -10,6 +10,8 @@ struct VansParticleEffectDiagnostics
     Vans::VansGenerationHandle instance;
     std::string effectGuid, sourceGuid, state;
     glm::vec3 sourcePosition{0};
+    glm::vec3 sourceForward{1,0,0};
+    Vans::VansGenerationHandle emissionGroup;
     float playTime = 0;
     bool detached = false;
     std::uint64_t alivePoints = 0, droppedSpawns = 0, breaks = 0, substepOverruns = 0;

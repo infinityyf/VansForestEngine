@@ -176,7 +176,17 @@ bool VansAIBehaviorJsonCodec::Decode(const nlohmann::json& root,
 		}
 		const std::string task = stateJson["task"].get<std::string>();
 		if (task == "Hold") state.task = VansAITaskKind::Hold;
-		else if (task == "MoveToTarget") state.task = VansAITaskKind::MoveToTarget;
+		else if (task == "MoveToTarget")
+		{
+			state.task = VansAITaskKind::MoveToTarget;
+			if(!stateJson.contains("taskConfig") || !stateJson["taskConfig"].is_object() ||
+				stateJson["taskConfig"].size()!=1 || !stateJson["taskConfig"].contains("arrivalRadius") ||
+				!stateJson["taskConfig"]["arrivalRadius"].is_number())
+			{ error="MoveToTarget task requires current numeric arrivalRadius taskConfig"; return false; }
+			state.moveToTarget.arrivalRadius=stateJson["taskConfig"]["arrivalRadius"].get<float>();
+			if(!std::isfinite(state.moveToTarget.arrivalRadius) || state.moveToTarget.arrivalRadius<0)
+			{ error="MoveToTarget arrivalRadius must be finite and nonnegative"; return false; }
+		}
 		else if (task == "Patrol")
 		{
 			state.task = VansAITaskKind::Patrol;
@@ -356,6 +366,12 @@ bool VansAIBehaviorJsonCodec::Encode(const VansAIBehaviorAsset& asset,
 		nlohmann::json stateJson = {
 			{ "id", state.id }, { "task", task }, { "transitions", nlohmann::json::array() }
 		};
+		if(state.task==VansAITaskKind::MoveToTarget)
+		{
+			if(!std::isfinite(state.moveToTarget.arrivalRadius) || state.moveToTarget.arrivalRadius<0)
+			{ error="AI MoveToTarget state has invalid arrivalRadius: "+state.id; return false; }
+			stateJson["taskConfig"]={{"arrivalRadius",state.moveToTarget.arrivalRadius}};
+		}
 		if (state.task == VansAITaskKind::Patrol)
 		{
 			if (!state.patrol)

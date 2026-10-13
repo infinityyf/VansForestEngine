@@ -55,7 +55,6 @@ GIVoxelSource CaptureVoxelSource(VansScene& scene,const Vans::VansPcgBatchSource
 }
 struct VegetationBatch
 {
-    std::string name;
     std::shared_ptr<const Vans::VansPlantTypeAsset> plant;
     float bladeWidth = 0;
     std::vector<GrassRenderConfig> grassParts;
@@ -130,8 +129,47 @@ Vans::VansPcgBounds BatchRootBounds(const Vans::VansPcgBatchSource& source)
     }
     return roots;
 }
+const Vans::VansPlantVariant& FindVariant(const Vans::VansPcgBatchSource& source)
+{
+    const auto found = std::find_if(source.plant->variants.begin(), source.plant->variants.end(),
+        [&](const auto& variant) { return variant.id == source.key.variant; });
+    if (found == source.plant->variants.end())
+        throw std::invalid_argument("PCG model variant is unavailable.");
+    return *found;
+}
+GrassInstance MakeGrassInstance(const Vans::VansPcgBatchSource& source,
+    const Vans::VansPlantVariant& variant, const Vans::VansPcgPoint& point)
+{
+    GrassInstance result;
+    result.modelMatrix = PlacementMatrix(point.position, point.rotation, point.scale) *
+        PlacementMatrix(variant.offset, variant.rotation, variant.scale);
+    const auto& model = result.modelMatrix;
+    const float extent = std::sqrt(glm::dot(glm::vec3(model[0]), glm::vec3(model[0])) +
+        glm::dot(glm::vec3(model[1]), glm::vec3(model[1])) + glm::dot(glm::vec3(model[2]), glm::vec3(model[2])));
+    result.randomSeed = static_cast<uint32_t>(point.id ^ (point.id >> 32));
+    result.boundsRadius = (std::max(variant.cullingRadius, source.plant->grass.bladeHeight) +
+        source.plant->grass.scatterRadiusMax) * extent;
+    return result;
+}
+VansRenderAABB GrassCellBounds(const Vans::VansPcgBatchSource& source)
+{
+    const auto& variant = FindVariant(source);
+    VansRenderAABB result;
+    for (const auto& point : source.points)
+    {
+        const auto instance = MakeGrassInstance(source, variant, point);
+        const glm::vec3 center(instance.modelMatrix[3]);
+        if (!std::isfinite(center.x) || !std::isfinite(center.y) || !std::isfinite(center.z) ||
+            !std::isfinite(instance.boundsRadius) || instance.boundsRadius < 0) return {};
+        const glm::vec3 extent(instance.boundsRadius + 0.01f);
+        result.min = glm::min(result.min, center - extent);
+        result.max = glm::max(result.max, center + extent);
+    }
+    return result;
+}
 std::shared_ptr<VansVegetationSystem> CreateBatch(VansScene& scene,VkDevice device,
-    const Vans::VansPcgBatchSource& source)
+    const Vans::VansPcgBatchSource& source, std::vector<GrassInstance> grassInstances,
+    std::vector<GrassInstanceRange> grassRanges)
 {
     VegetationBatch batch;
     batch.plant=source.plant;
@@ -139,6 +177,7 @@ std::shared_ptr<VansVegetationSystem> CreateBatch(VansScene& scene,VkDevice devi
         [&](const auto& item){return item.id==source.key.variant;});
     if (variant==batch.plant->variants.end()) throw std::invalid_argument("PCG model variant is unavailable.");
     batch.bladeWidth=variant->bladeWidth;
+    batch.grass = std::move(grassInstances);
     ResolveParts(scene,*variant,batch);
     Vans::VansPlantTreeRuntimeBounds treeBounds;
     if(batch.plant->category==Vans::VansPlantCategory::Tree) {
@@ -156,22 +195,12 @@ std::shared_ptr<VansVegetationSystem> CreateBatch(VansScene& scene,VkDevice devi
             for(size_t i=first;i<batch.treeParts.size();++i)batch.treeParts[i].lod=static_cast<uint32_t>(level+1);
         }
     }
+    if (batch.plant->category == Vans::VansPlantCategory::Tree)
     for (const auto& point : source.points)
     {
         const glm::mat4 model=PlacementMatrix(point.position,point.rotation,point.scale) *
             PlacementMatrix(variant->offset,variant->rotation,variant->scale);
-        const float extent=std::sqrt(glm::dot(glm::vec3(model[0]),glm::vec3(model[0]))+
-            glm::dot(glm::vec3(model[1]),glm::vec3(model[1]))+glm::dot(glm::vec3(model[2]),glm::vec3(model[2])));
         const uint32_t seed=static_cast<uint32_t>(point.id^(point.id>>32));
-        if (batch.plant->category==Vans::VansPlantCategory::Grass)
-        {
-            GrassInstance instance;
-            instance.modelMatrix=model;instance.randomSeed=seed;
-            instance.boundsRadius=(std::max(variant->cullingRadius,batch.plant->grass.bladeHeight)+
-                batch.plant->grass.scatterRadiusMax)*extent;
-            batch.grass.push_back(instance);
-        }
-        else
         {
             TreeInstanceGPU instance;
             instance.modelMatrix=model;instance.randomSeed=seed;
@@ -210,7 +239,7 @@ std::shared_ptr<VansVegetationSystem> CreateBatch(VansScene& scene,VkDevice devi
                 static_cast<uint32_t>(manager->m_HIZMipCount),plant.render.hizBias);
     }
 
-    system.Init(device,std::move(batch.grass),std::move(batch.trees),grass.boneCount);
+    system.Init(device,std::move(batch.grass),std::move(batch.trees),grass.boneCount,std::move(grassRanges));
     if (scene.GetGlobalDescriptorSet()!=VK_NULL_HANDLE)
     {
         system.SetGlobalDescriptorSet(scene.GetGlobalDescriptorSetLayout(),scene.GetGlobalDescriptorSet());
@@ -243,13 +272,170 @@ VansVegetationCollection::TreeSources VansVegetationCollection::GroupTreeBatches
     return result;
 }
 
-bool VansVegetationCollection::Apply(VansScene& scene,VkDevice device,
-    const Vans::VansPcgBatchUpdate& update,VansVKDevice* retirementDevice,std::string& error)
+struct VansVegetationCollection::GrassPoolBuild
+{
+    GrassPools pools;
+    size_t replaced = 0, reused = 0, uploadPages = 0, uploadInstances = 0;
+    struct Update
+    {
+        std::shared_ptr<VansVegetationSystem> owner;
+        VansVegetationSystem::GrassPageUploads uploads;
+    };
+    std::vector<Update> updates;
+    void CommitUploads() noexcept
+    {
+        for (auto& update : updates) update.owner->CommitGrassPageUpdates(std::move(update.uploads));
+    }
+    void Log(size_t poolCount) const
+    {
+        VANS_LOG("[GrassPool] pools="<<poolCount<<" replaced="<<replaced<<" reused="<<reused
+            <<" uploadPages="<<uploadPages<<" uploadInstances="<<uploadInstances);
+    }
+};
+
+VansVegetationCollection::GrassPoolBuild VansVegetationCollection::BuildGrassPools(
+    VansScene& scene, VansVKDevice& resourceDevice, const GrassCells& cells) const
+{
+    VANS_PROFILE_SCOPE("Vegetation::BuildGrassPools", Vans::ProfileCategory::RenderPrepare);
+    const auto device=resourceDevice.GetLogicDevice();
+    std::map<TreeBatchKey, CellSources> grouped;
+    for (const auto& entry : cells)
+        if (entry.second.resident)
+            grouped[{ entry.second.source->plant, entry.first.variant }].emplace(entry.first, entry.second.source);
+    GrassPoolBuild build;
+    auto& result = build.pools;
+    for (const auto& group : grouped)
+    {
+        const auto& settings=group.first.first->grass;
+        const auto limit=GrassPoolInstanceLimit(resourceDevice.GetDeviceProperties().limits.maxStorageBufferRange,
+            settings.boneCount,settings.subBladeCount);
+        struct PreviousPage
+        {
+            std::shared_ptr<VansVegetationSystem> owner;
+            std::shared_ptr<const Vans::VansPcgBatchSource> source;
+            GrassInstanceRange range;
+        };
+        std::map<GrassPageKey,PreviousPage> previousPages;
+        for (const auto& pool:m_GrassPools)
+            if (pool.first.first==group.first)
+                for (const auto& page:pool.second.layout.pages)
+                    previousPages.emplace(page.first,PreviousPage{pool.second.system,
+                        pool.second.cells.at(page.first.first),page.second});
+        std::map<GrassPageKey,uint32_t> counts;
+        for (const auto& cell:group.second)
+        {
+            const uint64_t count=cell.second->points.size();
+            for (uint64_t offset=0,ordinal=0;offset<count;offset+=limit,++ordinal)
+            {
+                if (ordinal>std::numeric_limits<uint32_t>::max())
+                    throw std::invalid_argument("Grass cell exceeds its page address capacity.");
+                counts.emplace(GrassPageKey{cell.first,static_cast<uint32_t>(ordinal)},
+                    static_cast<uint32_t>(std::min<uint64_t>(count-offset,limit)));
+            }
+        }
+        const auto partitions=PartitionGrassPages(counts,limit);
+        for (uint32_t index=0;index<partitions.size();++index)
+        {
+            const GrassPoolKey key{group.first,index};
+            const auto& requested=partitions[index];
+            const auto old=m_GrassPools.find(key);
+            CellSources poolCells;
+            for (const auto& page:requested) poolCells.emplace(page.first.first,group.second.at(page.first.first));
+            bool unchanged=old!=m_GrassPools.end() && old->second.cells.size()==poolCells.size() &&
+                old->second.layout.pages.size()==requested.size();
+            if (unchanged)
+                for (const auto& page:requested)
+                {
+                    const auto previous=old->second.layout.pages.find(page.first);
+                    const auto priorSource=old->second.cells.find(page.first.first);
+                    const auto& source=poolCells.at(page.first.first);
+                    if (previous==old->second.layout.pages.end() || previous->second.instanceCount!=page.second ||
+                        priorSource==old->second.cells.end() || (priorSource->second!=source &&
+                            !Vans::EqualPcgBatchSources(*priorSource->second,*source)))
+                    { unchanged=false;break; }
+                }
+            if (unchanged) { ++build.reused;result.emplace(key,old->second);continue; }
+            GrassPool pool;
+            pool.cells=std::move(poolCells);
+            pool.layout=BuildGrassPoolLayout(old==m_GrassPools.end()?GrassPoolLayout<GrassPageKey>{}:old->second.layout,requested);
+            // Fragmentation can no longer fit in one descriptor range. Replace
+            // its layout, preserving each surviving bone plane with its stride.
+            if (pool.layout.capacity>limit) pool.layout=BuildGrassPoolLayout(GrassPoolLayout<GrassPageKey>{},requested);
+            // Reuse the physical arena only if every unchanged page already
+            // belongs to it at the same address/stride. Changed pages are staged
+            // now and written by the next GPU submission, never by the CPU.
+            bool reusable=old!=m_GrassPools.end() && CanUpdateGrassPoolInPlace(old->second.layout,pool.layout,counts);
+            std::vector<VansVegetationSystem::GrassPageUpdate> updates;
+            if (reusable)
+                for (const auto& page:pool.layout.pages)
+                {
+                    const auto& source=pool.cells.at(page.first.first);
+                    const auto previous=previousPages.find(page.first);
+                    const bool sameSource=previous!=previousPages.end() &&
+                        (previous->second.source==source || Vans::EqualPcgBatchSources(*previous->second.source,*source));
+                    if (sameSource)
+                    {
+                        const auto& from=previous->second.range;
+                        if (previous->second.owner!=old->second.system || from.baseInstance!=page.second.baseInstance ||
+                            from.capacity!=page.second.capacity || from.instanceCount!=page.second.instanceCount)
+                        { reusable=false;break; }
+                    }
+                    else
+                    {
+                        VansVegetationSystem::GrassPageUpdate update;
+                        update.range=page.second;
+                        const auto& variant=FindVariant(*source);
+                        const uint64_t offset=uint64_t(page.first.second)*limit;
+                        update.instances.reserve(page.second.instanceCount);
+                        for (uint32_t local=0;local<page.second.instanceCount;++local)
+                            update.instances.push_back(MakeGrassInstance(*source,variant,source->points.at(offset+local)));
+                        updates.push_back(std::move(update));
+                    }
+                }
+            if (reusable)
+            {
+                ++build.reused;
+                build.uploadPages+=updates.size();
+                for (const auto& update:updates) build.uploadInstances+=update.instances.size();
+                pool.system=old->second.system;
+                auto uploads=pool.system->PrepareGrassPageUpdates(updates);
+                if (!uploads.empty()) build.updates.push_back({pool.system,std::move(uploads)});
+                result.emplace(key,std::move(pool));
+                continue;
+            }
+            std::vector<GrassInstance> instances(pool.layout.capacity);
+            std::vector<GrassInstanceRange> storage;
+            std::map<std::shared_ptr<VansVegetationSystem>,std::vector<VansVegetationSystem::GrassStateTransfer>> preserved;
+            for (const auto& page:pool.layout.pages)
+            {
+                const auto& source=pool.cells.at(page.first.first);
+                const auto& range=page.second;
+                const auto& variant=FindVariant(*source);
+                const uint64_t offset=uint64_t(page.first.second)*limit;
+                for (uint32_t local=0;local<range.instanceCount;++local)
+                    instances[range.baseInstance+local]=MakeGrassInstance(*source,variant,source->points.at(offset+local));
+                storage.push_back(range);
+                const auto previous=previousPages.find(page.first);
+                if (previous!=previousPages.end() && (previous->second.source==source ||
+                    Vans::EqualPcgBatchSources(*previous->second.source,*source)))
+                    preserved[previous->second.owner].push_back({previous->second.range,range});
+            }
+            pool.system=CreateBatch(scene,device,*pool.cells.begin()->second,std::move(instances),std::move(storage));
+            ++build.replaced;
+            for (auto& source:preserved) pool.system->PreserveGrassState(source.first,std::move(source.second));
+            result.emplace(key,std::move(pool));
+        }
+    }
+    return build;
+}
+bool VansVegetationCollection::Apply(VansScene& scene,VansVKDevice& resourceDevice,
+    const Vans::VansPcgBatchUpdate& update,std::string& error)
 {
     error.clear();
+    const auto device=resourceDevice.GetLogicDevice();
     try
     {
-        auto next=m_Batches;
+        auto next=m_GrassCells;
         auto treeCells=m_TreeCells;
         for(auto it=treeCells.begin();it!=treeCells.end();)
             if(update.Contains(it->first))
@@ -270,18 +456,17 @@ bool VansVegetationCollection::Apply(VansScene& scene,VkDevice device,
         for(const auto& entry:treeSources) {
             const auto old=trees.find(entry.first);
             if(old!=trees.end() && Vans::EqualPcgBatchSources(*old->second.source,*entry.second))continue;
-            Batch batch;batch.source=entry.second;batch.active=true;
-            batch.system=CreateBatch(scene,device,*entry.second);
+            Batch batch;batch.source=entry.second;
+            batch.system=CreateBatch(scene,device,*entry.second,{},{});
             trees[entry.first]=std::move(batch);
         }
         std::vector<std::shared_ptr<VansVegetationSystem>> retired;
-        for (const auto& entry : m_Batches)
+        for (const auto& entry : m_GrassCells)
         {
             if (!update.Contains(entry.first)) continue;
             const auto source=update.batches.find(entry.first);
             if (source!=update.batches.end() && source->second &&
                 Vans::EqualPcgBatchSources(*entry.second.source,*source->second)) continue;
-            if (entry.second.system) retired.push_back(entry.second.system);
             next.erase(entry.first);
         }
         for (const auto& entry : update.batches)
@@ -289,12 +474,20 @@ bool VansVegetationCollection::Apply(VansScene& scene,VkDevice device,
             if (!entry.second || !(entry.first==entry.second->key) || !update.Contains(entry.first))
                 throw std::invalid_argument("PCG batch update contains a foreign target.");
             if (entry.second->plant->category==Vans::VansPlantCategory::Tree || next.count(entry.first)) continue;
-            Batch batch;
+            GrassCell batch;
             batch.source=entry.second;batch.roots=BatchRootBounds(*entry.second);batch.cellSize=update.cellSize;
+            batch.worldBounds=GrassCellBounds(*entry.second);
             const auto& render=batch.source->plant->render;
-            batch.active=batch.source->plant->category==Vans::VansPlantCategory::Tree || !render.cullingEnabled || (m_HasView && WithinDistance(batch.roots,m_CameraX,m_CameraZ,render.cullDistance));
-            if (batch.active) batch.system=CreateBatch(scene,device,*entry.second);
+            batch.active=!render.cullingEnabled || (m_HasView && WithinDistance(batch.roots,m_CameraX,m_CameraZ,render.cullDistance));
+            batch.resident=batch.active;
             next.emplace(entry.first,std::move(batch));
+        }
+        auto grassBuild=BuildGrassPools(scene,resourceDevice,next);
+        auto& grassPools=grassBuild.pools;
+        for(const auto& entry:m_GrassPools) {
+            const auto replacement=grassPools.find(entry.first);
+            if(replacement==grassPools.end() || replacement->second.system!=entry.second.system)
+                retired.push_back(entry.second.system);
         }
         for(const auto& entry:m_TreeBatches) {
             const auto replacement=trees.find(entry.first);
@@ -302,8 +495,8 @@ bool VansVegetationCollection::Apply(VansScene& scene,VkDevice device,
                 retired.push_back(entry.second.system);
         }
         // 保留旧资源至当前帧槽的 fence 完成；普通刷绘无需让整个设备空闲。
-        if (retirementDevice && !retired.empty())
-            retirementDevice->EnqueueDeferredDelete([retired=std::move(retired)](){});
+        if (!retired.empty())
+            resourceDevice.EnqueueDeferredDelete([retired=std::move(retired)](){});
         GIVoxelSourceChanges giChanges;
         std::set<Vans::VansPcgBatchKey> giChangedTreeCells;
         std::set<std::string> giRemovedSources;
@@ -335,7 +528,9 @@ bool VansVegetationCollection::Apply(VansScene& scene,VkDevice device,
                 }
             }
         }
-        m_Batches.swap(next);m_TreeBatches.swap(trees);m_TreeCells.swap(treeCells);
+        grassBuild.CommitUploads();
+        m_GrassCells.swap(next);m_GrassPools.swap(grassPools);m_TreeBatches.swap(trees);m_TreeCells.swap(treeCells);
+        grassBuild.Log(m_GrassPools.size());
         if(!giChanges.Empty() && !scene.GetGIVoxelSourceManager().Submit(std::move(giChanges)))
         {
             // GI 世界可能尚未分配或正在切换；保留键，下一帧由管理器重试，不能把一次拒绝当成删除。
@@ -358,8 +553,16 @@ bool VansVegetationCollection::Apply(VansScene& scene,VkDevice device,
 }
 void VansVegetationCollection::ForEach(const std::function<void(VansVegetationSystem&)>& visit) const
 {
-    for (const auto& entry : m_Batches)
-        if (entry.second.active && entry.second.system) visit(*entry.second.system);
+    for (const auto& entry : m_GrassPools)
+        visit(*entry.second.system);
+    for (const auto& entry : m_TreeBatches)
+        if (entry.second.system) visit(*entry.second.system);
+}
+void VansVegetationCollection::ForEachViewRelevant(const std::function<void(VansVegetationSystem&)>& visit) const
+{
+    for (const auto& entry : m_GrassPools)
+        if (entry.second.viewRelevant || entry.second.system->HasGrassStateTransfer())
+            visit(*entry.second.system);
     for (const auto& entry : m_TreeBatches)
         if (entry.second.system) visit(*entry.second.system);
 }
@@ -370,57 +573,78 @@ bool VansVegetationCollection::WithinDistance(const Vans::VansPcgBounds& roots,
     const double z=std::max({static_cast<double>(roots.min[1])-cameraZ,0.0,static_cast<double>(cameraZ)-roots.max[1]});
     return x*x+z*z<=static_cast<double>(distance)*distance;
 }
-bool VansVegetationCollection::UpdateResidency(VansScene& scene,VkDevice device,VansVKDevice& retirementDevice,
-    float cameraX,float cameraZ,std::string& error)
+bool VansVegetationCollection::UpdateResidency(VansScene& scene,VansVKDevice& resourceDevice,
+    float cameraX,float cameraZ,const glm::mat4& worldToClip,uint32_t frameSlot,std::string& error)
 {
     VANS_PROFILE_SCOPE("Vegetation::Residency", Vans::ProfileCategory::RenderPrepare);
     error.clear();
     if (!std::isfinite(cameraX) || !std::isfinite(cameraZ)) {error="Invalid vegetation view position.";return false;}
     try {
-        std::vector<std::pair<Batch*,std::shared_ptr<VansVegetationSystem>>> created;
-        std::vector<Batch*> evicted;
-        for (auto& entry:m_Batches) {
+        for (auto& pool:m_GrassPools) pool.second.system->RetireGrassStateTransfer(resourceDevice);
+        auto next=m_GrassCells;
+        std::size_t created=0,evicted=0,activeBatches=0,viewRelevantBatches=0,grass=0,viewGrass=0,trees=0;
+        for (auto& entry:next) {
             auto& batch=entry.second;
             const auto& render=batch.source->plant->render;
-            const bool active=batch.source->plant->category==Vans::VansPlantCategory::Tree || !render.cullingEnabled || WithinDistance(batch.roots,cameraX,cameraZ,render.cullDistance);
-            if (active && !batch.system) created.emplace_back(&batch,CreateBatch(scene,device,*batch.source));
+            batch.active=!render.cullingEnabled || WithinDistance(batch.roots,cameraX,cameraZ,render.cullDistance);
+            if (batch.active && !batch.resident) { batch.resident=true;++created; }
             // 留一格缓存避免在边界来回移动时反复创建；缓存格不参与模拟、主画面或阴影。
             float exitDistance=0;
             if (!Vans::ResolvePcgGrassResidencyExitDistance(render.cullDistance,batch.cellSize,exitDistance))
                 throw std::invalid_argument("Invalid PCG grass residency distance or cell size.");
-            if (!active && batch.system && !WithinDistance(batch.roots,cameraX,cameraZ,exitDistance))
-                evicted.push_back(&batch);
+            if (!batch.active && batch.resident && !WithinDistance(batch.roots,cameraX,cameraZ,exitDistance))
+            { batch.resident=false;++evicted; }
+            batch.viewRelevant = batch.active &&
+                (render.castShadows || !render.cullingEnabled || !batch.worldBounds.IsValid() ||
+                    RenderAABBIntersectsClipFrustum(batch.worldBounds.min,batch.worldBounds.max,worldToClip));
+            if (batch.active) { ++activeBatches;grass+=batch.source->points.size(); }
+            if (batch.viewRelevant) { ++viewRelevantBatches;viewGrass+=batch.source->points.size(); }
         }
+        GrassPoolBuild build;
+        if (created || evicted) build=BuildGrassPools(scene,resourceDevice,next);
+        else build.pools=m_GrassPools;
+        auto& pools=build.pools;
         std::vector<std::shared_ptr<VansVegetationSystem>> retired;
-        for (auto* batch:evicted) retired.push_back(std::move(batch->system));
-        for (auto& item:created) item.first->system=std::move(item.second);
-        if (!retired.empty()) retirementDevice.EnqueueDeferredDelete([retired=std::move(retired)](){});
-        std::size_t activeBatches=0,grass=0,trees=0;
+        for (const auto& old:m_GrassPools) {
+            const auto replacement=pools.find(old.first);
+            if (replacement==pools.end() || replacement->second.system!=old.second.system)
+                retired.push_back(old.second.system);
+        }
         auto* manager=scene.GetMaterialManager();
         auto* hzb=manager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_OCCLUSION_RESULT);
-        for (auto& entry:m_Batches) {
-            auto& batch=entry.second;const auto& render=batch.source->plant->render;
-            batch.active=batch.source->plant->category==Vans::VansPlantCategory::Tree || !render.cullingEnabled || WithinDistance(batch.roots,cameraX,cameraZ,render.cullDistance);
-            if (!batch.active) continue;
-            // 分辨率变化或缓存区块重新进入范围时，使用当前 HZB；绑定未变则不更新描述符。
-            if (render.hizEnabled && hzb && batch.system)
-                batch.system->SetHiZDepth(hzb->GetImage().GetImageView(),hzb->GetImage().GetSampler(),
+        std::size_t poolGroups=0;
+        for (auto& entry:pools) {
+            auto& pool=entry.second;
+            std::vector<GrassInstanceRange> work;
+            for (const auto& page:pool.layout.pages)
+                if (next.at(page.first.first).viewRelevant) work.push_back(page.second);
+            pool.viewRelevant=!work.empty();
+            for (const auto& range:work)
+                poolGroups+=(uint64_t(range.instanceCount)+GrassWorkgroupWidth-1u)/GrassWorkgroupWidth;
+            pool.system->SetGrassWorkRanges(frameSlot,work);
+            const auto& render=entry.first.first.first->render;
+            if (render.hizEnabled && hzb)
+                pool.system->SetHiZDepth(hzb->GetImage().GetImageView(),hzb->GetImage().GetSampler(),
                     static_cast<uint32_t>(manager->m_HIZMipCount),render.hizBias);
-            ++activeBatches;
-            if (batch.source->plant->category==Vans::VansPlantCategory::Grass) grass+=batch.source->points.size();
-            else trees+=batch.source->points.size();
         }
         for(auto& entry:m_TreeBatches) {
             auto& batch=entry.second;const auto& render=batch.source->plant->render;
             if(render.hizEnabled && hzb && batch.system)
                 batch.system->SetHiZDepth(hzb->GetImage().GetImageView(),hzb->GetImage().GetSampler(),
                     static_cast<uint32_t>(manager->m_HIZMipCount),render.hizBias);
-            ++activeBatches;trees+=batch.source->points.size();
+            ++activeBatches;++viewRelevantBatches;trees+=batch.source->points.size();
         }
-        if (!m_HasView || !created.empty() || !evicted.empty())
-            VANS_LOG("[Vegetation] Nearby batches="<<activeBatches<<"/"<<BatchCount()
-                <<" grassCandidates="<<grass<<" treeCandidates="<<trees
-                <<" created="<<created.size()<<" retired="<<evicted.size());
+        if (!retired.empty()) resourceDevice.EnqueueDeferredDelete([retired=std::move(retired)](){});
+        build.CommitUploads();
+        m_GrassCells.swap(next);m_GrassPools.swap(pools);
+        if (created || evicted) build.Log(m_GrassPools.size());
+        if (!m_HasView || created || evicted)
+            VANS_LOG("[Vegetation] Nearby batches="<<activeBatches<<"/"<<(m_GrassCells.size()+m_TreeBatches.size())
+                <<" viewRelevant="<<viewRelevantBatches
+                <<" grassCandidates="<<grass<<" viewGrassCandidates="<<viewGrass
+                <<" treeCandidates="<<trees
+                <<" grassPools="<<m_GrassPools.size()<<" grassWorkgroups="<<poolGroups
+                <<" created="<<created<<" retired="<<evicted);
         m_HasView=true;m_CameraX=cameraX;m_CameraZ=cameraZ;
         {std::lock_guard<std::mutex> lock(m_StatusMutex);m_LastUpdateError.clear();}
         return true;

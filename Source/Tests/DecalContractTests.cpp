@@ -111,8 +111,10 @@ bool TestDecalRenderingContract()
         decalPass.find("VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL") != std::string::npos,
         "Decal attachments must be independently cleared color images")) return false;
     const auto node = Read(root / "Source/EngineCore/RenderCore/VansRenderNode.cpp");
-    if (!Check(node.find("frameBufferInputDescriptorSets[hasDecal ? 0 : 1]") != std::string::npos &&
-        node.find("rp->GetEmptyDecal()") != std::string::npos, "Skipped pass must bind zero modifiers")) return false;
+    if (!Check(node.find("2u * frameSlot + (hasDecal ? 0u : 1u)") != std::string::npos &&
+        node.find("rp->GetEmptyDecal()") != std::string::npos &&
+        decalPass.find("SetDecalFrameTargetCount(frameTargetCount)") != std::string::npos,
+        "Decal frame slot must select its own modifiers or zero fallback")) return false;
     std::cout << "[DecalContract] PASS material/frame/runtime instance, blend, graph, attachments and skip contracts\n";
     return true;
 }

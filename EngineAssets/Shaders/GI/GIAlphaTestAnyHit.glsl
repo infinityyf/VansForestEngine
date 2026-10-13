@@ -1,7 +1,6 @@
-// Probe GI only includes opaque and alpha-tested surfaces in its TLAS.  The
-// base-color alpha channel is the canonical cutout coverage for that subset;
-// blended/transmissive materials do not enter this path at all.
-// TLAS 中只有启用裁剪的实例进入 any-hit；不透明实例不读取纹理。
+// PBR coverage: base-color A. Cloth coverage: dedicated opacity R (slot 2).
+// Cloth also uses any-hit for single-sided rejection; its solid interior need
+// not fetch coverage when cutoff is zero. Blended materials remain excluded.
 struct Vertex
 {
     f16vec3 position;
@@ -40,7 +39,16 @@ void main()
     if (packedTextureIndex == 0xFFFFFFFFu)
         return;
 
-    const uint textureIndex = packedTextureIndex & GI_TEXTURE_INDEX_MASK;
+    GIInstanceMaterial material = instanceMaterialData.materials[instanceID];
+    if (GIRejectMaterialFace(material, gl_HitKindEXT != gl_HitKindBackFacingTriangleEXT))
+    {
+        ignoreIntersectionEXT;
+        return;
+    }
+    if (instanceMaterialData.materials[instanceID].alphaCutoff <= 0.0)
+        return;
+
+    const uint textureIndex = GICoverageTextureIndex(material);
     if (textureIndex >= 2048u)
         return;
 
@@ -55,9 +63,7 @@ void main()
         vec2(v1.uv) * barycentrics.y +
         vec2(v2.uv) * barycentrics.z;
 
-    // Pure-emissive instances reuse their emission map in slot zero; PBR and
-    // PBR-emissive instances use the base-color map in the same slot.
-    if (textureLod(PBRTextures[nonuniformEXT(textureIndex)], uv, 0.0).a <
-        instanceMaterialData.materials[instanceID].alphaCutoff)
+    const vec4 coverageSample = textureLod(PBRTextures[nonuniformEXT(textureIndex)], uv, 0.0);
+    if (GIRejectMaterialCoverage(material, coverageSample))
         ignoreIntersectionEXT;
 }

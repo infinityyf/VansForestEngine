@@ -2,6 +2,7 @@
 
 #include "EngineDTOs.h"
 #include "IAIEditorAPI.h"
+#include "INavigationEditorAPI.h"
 #include "IAnimationEditorAPI.h"
 #include "IAnimationPreviewEditorAPI.h"
 #include "IAssetAuthoringEditorAPI.h"
@@ -37,6 +38,7 @@
 namespace Vans::EditorAPI
 {
 	class IEngineEditorAPI : public IAIEditorAPI,
+		public INavigationEditorAPI,
 		public IAnimationEditorAPI,
 		public IAnimationPreviewEditorAPI,
 		public IAssetAuthoringEditorAPI,

@@ -21,7 +21,7 @@ struct TreeInstanceGPU
     uint speciesIndex;
     uint regionIndex;
     uint randomSeed;
-    uint flags;
+    uint padding;
 };
 
 layout(std430, set = 3, binding = 0) readonly buffer TreeInstances

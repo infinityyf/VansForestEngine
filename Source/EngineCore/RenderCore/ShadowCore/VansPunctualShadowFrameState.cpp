@@ -1,6 +1,7 @@
 #include "VansPunctualShadowFrameState.h"
 
 #include "../VansRenderBounds.h"
+#include "../GeometryCore/VansRenderBoundsIndex.h"
 #include "../../Util/VansProfiler.h"
 
 #include <algorithm>
@@ -94,7 +95,7 @@ bool VansGraphics::VansPunctualShadowFrameState::PrepareFrame(
 		frameIndex);
 	ResolveLightMetaIndices(snapshot.punctualShadow.lights, snapshot.light);
 	snapshot.punctualShadowJobs = m_Manager.GetRenderJobs();
-	BuildCasterLists(snapshot.punctualShadowJobs);
+	BuildCasterLists(snapshot.punctualShadow.casters, snapshot.punctualShadowJobs);
 	snapshot.features.hasPunctualShadowJobs = !snapshot.punctualShadowJobs.empty();
 	PublishDebugSnapshot();
 	return true;
@@ -158,21 +159,28 @@ void VansGraphics::VansPunctualShadowFrameState::UpdateCasterState(
 }
 
 void VansGraphics::VansPunctualShadowFrameState::BuildCasterLists(
+	const std::vector<VansRenderPunctualShadowCasterInput>& casters,
 	std::vector<VansPunctualShadowRenderJob>& jobs) const
 {
+	VANS_PROFILE_SCOPE("Shadow::SelectJobCandidates", Vans::ProfileCategory::RenderPrepare);
+	if (jobs.empty())
+		return;
+	std::vector<VansRenderBoundsIndex::Entry> entries;
+	entries.reserve(casters.size());
+	for (std::uint32_t i = 0; i < casters.size(); ++i)
+		entries.push_back({ i, casters[i].bounds, casters[i].hasBounds,
+			casters[i].shadowCasterMask });
+	VansRenderBoundsIndex index;
+	index.Build(std::move(entries));
+	std::vector<std::uint32_t> candidates;
 	for (VansPunctualShadowRenderJob& job : jobs)
 	{
+		index.QueryClipFrustum(job.worldToShadow, job.shadowCasterMask, candidates);
 		job.casterHandles.clear();
-		job.casterHandles.reserve(m_Casters.size());
-		for (const auto& caster : m_Casters)
+		job.casterHandles.reserve(candidates.size());
+		for (std::uint32_t casterIndex : candidates)
 		{
-			if ((caster.second.shadowCasterMask & job.shadowCasterMask) == 0u)
-				continue;
-			if (!caster.second.hasBounds ||
-				RenderBoundsIntersectsClipFrustum(caster.second.bounds, job.worldToShadow))
-			{
-				job.casterHandles.insert(caster.first);
-			}
+			job.casterHandles.push_back(casters[casterIndex].proxy);
 		}
 	}
 }

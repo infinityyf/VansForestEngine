@@ -117,6 +117,9 @@ namespace VansGraphics
 	{
 		float currentWeight = 1.0f;
 		float targetWeight = 1.0f;
+		float activationStartWeight = 1.0f;
+		float activationElapsed = 0.0f;
+		float activationDuration = 0.0f;
 		bool activationRisePending = false;
 		bool inertializationActive = false;
 		float inertializationElapsed = 0.0f;

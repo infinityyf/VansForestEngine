@@ -57,6 +57,8 @@ namespace VansGraphics
         RandomBetweenCurves,  // 两条曲线之间随机
     };
 
+    enum class VansParticleRandomDistribution { Uniform, StandardBias, ExponentialBias };
+
     // ── Float Curve ────────────────────────────────────────────────────────
     struct VansFloatCurve
     {
@@ -64,6 +66,8 @@ namespace VansGraphics
         float                 m_Value   = 1.f;     // Constant
         float                 m_Min     = 0.f;     // RandomBetween
         float                 m_Max     = 1.f;     // RandomBetween
+        VansParticleRandomDistribution m_RandomDistribution = VansParticleRandomDistribution::Uniform;
+        float m_RandomBias = 0.f;
         std::vector<CurveKey> m_Keys;              // Curve
         std::vector<CurveKey> m_MinKeys;           // RandomBetweenCurves
         std::vector<CurveKey> m_MaxKeys;           // RandomBetweenCurves

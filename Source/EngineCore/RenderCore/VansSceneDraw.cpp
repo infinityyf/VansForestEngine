@@ -29,18 +29,55 @@ bool VansGraphics::VansScene::FinalizeDrawSubmission(
 		VansDrawSubmission::Finalize(vkDevice->GetDrawInstanceArena(), sortPolicy, submission);
 }
 
-void VansGraphics::VansScene::DrawShadowNodes()
+VansGraphics::VansCascadeShadowDrawPlan
+VansGraphics::VansScene::BuildCascadeShadowDrawPlan() const
+{
+    VANS_PROFILE_SCOPE("Shadow::SelectCascadeCandidates", Vans::ProfileCategory::RenderPrepare);
+    VansCascadeShadowDrawPlan plan;
+    const auto* vkDevice = dynamic_cast<const VansVKDevice*>(m_GraphicsDevice);
+    if (vkDevice == nullptr)
+        return plan;
+
+    const auto& directionalLights =
+        vkDevice->GetCurrentRenderSceneSnapshot().light.directionalLights;
+    const auto appendNode = [&](VansRenderNode* node, std::uint64_t order)
+    {
+        const VansShadowDrawCandidate candidate{ node, order };
+        plan.withoutCascade.push_back(candidate);
+        const VansRenderProxyHandle proxy = FindMainRenderProxyHandle(node);
+        const auto* caster = vkDevice->FindCurrentShadowCaster(proxy);
+        for (std::size_t cascade = 0; cascade < plan.cascades.size(); ++cascade)
+        {
+            if (directionalLights.empty() || caster == nullptr || !caster->hasBounds ||
+                RenderBoundsIntersectsClipFrustum(
+                    caster->bounds, directionalLights[0].m_ShadowMatrix[cascade]))
+            {
+                plan.cascades[cascade].push_back(candidate);
+            }
+        }
+    };
+    std::uint64_t stableOrder = 0;
+    for (VansRenderNode* node : m_OpaqueRenderNodes)
+        appendNode(node, stableOrder++);
+    for (VansRenderNode* node : m_HairRenderNodes)
+        appendNode(node, stableOrder++);
+    return plan;
+}
+
+void VansGraphics::VansScene::DrawShadowNodes(const VansCascadeShadowDrawPlan& plan)
 {
     VANS_ASSERT_FRAME_PHASE(VansFramePhase::GPURecord);
 
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    DrawShadowNodes(vkDevice->GetCommandBuffer(), vkDevice->GetGlobalRenderStateData());
+    DrawShadowNodes(vkDevice->GetCommandBuffer(), vkDevice->GetGlobalRenderStateData(), plan);
 }
 
-void VansGraphics::VansScene::DrawShadowNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData)
+void VansGraphics::VansScene::DrawShadowNodes(
+    VansVKCommandBuffer& cmd, GlobalStateData globalStateData,
+    const VansCascadeShadowDrawPlan& plan)
 {
-    VansDrawSubmissionList submission;
-    if (BuildShadowDrawSubmission(globalStateData, submission))
+    VansDrawSubmissionList& submission = m_ShadowDrawSubmissionScratch;
+    if (BuildShadowDrawSubmission(globalStateData, submission, plan))
     {
         VANS_PROFILE_SCOPE("Shadow::RecordBatches", Vans::ProfileCategory::CommandRecord);
         VansDrawSubmission::Record(cmd, submission, 0, submission.batches.size());
@@ -50,7 +87,8 @@ void VansGraphics::VansScene::DrawShadowNodes(VansVKCommandBuffer& cmd, GlobalSt
 
 bool VansGraphics::VansScene::BuildShadowDrawSubmission(
     GlobalStateData globalStateData,
-    VansDrawSubmissionList& submission)
+    VansDrawSubmissionList& submission,
+    const VansCascadeShadowDrawPlan& plan)
 {
     VANS_PROFILE_SCOPE("Shadow::BuildSubmission", Vans::ProfileCategory::CommandRecord);
     VANS_ASSERT_FRAME_PHASE(VansFramePhase::GPURecord);
@@ -60,33 +98,15 @@ bool VansGraphics::VansScene::BuildShadowDrawSubmission(
     if (vkDevice == nullptr)
         return false;
 
-    const VansRenderSceneFrameSnapshot& frameScene =
-        vkDevice->GetCurrentRenderSceneSnapshot();
-    const glm::mat4* cascadeWorldToClip = nullptr;
-    const auto& directionLights = frameScene.light.directionalLights;
-    if (!directionLights.empty() &&
-        globalStateData.cascadeIndex >= 0 &&
-        globalStateData.cascadeIndex < 4)
-    {
-        cascadeWorldToClip = &directionLights[0].m_ShadowMatrix[globalStateData.cascadeIndex];
-    }
-
-    std::uint64_t stableOrder = 0;
+    const auto& candidates = globalStateData.cascadeIndex >= 0 &&
+        globalStateData.cascadeIndex < static_cast<int>(plan.cascades.size())
+        ? plan.cascades[globalStateData.cascadeIndex]
+        : plan.withoutCascade;
     const auto appendCaster = [&](VansRenderNode* node, std::uint64_t order)
     {
         if (!IsRenderNodeEnabledForCurrentFrame(node)) return;
         auto* opaque = static_cast<VansCommonRenderNode*>(node);
         if (!opaque->m_SupportShadow) return;
-        if (cascadeWorldToClip != nullptr)
-        {
-            const VansRenderProxyHandle proxy = FindMainRenderProxyHandle(node);
-            const auto* caster = vkDevice->FindCurrentShadowCaster(proxy);
-            if (caster != nullptr && caster->hasBounds &&
-                !RenderBoundsIntersectsClipFrustum(caster->bounds, *cascadeWorldToClip))
-            {
-                return;
-            }
-        }
         if (!node->m_Material)
 		{
 			VANS_LOG_ERROR("[VansScene] Skipping cascade shadow for node '" << node->m_NodeName
@@ -114,10 +134,8 @@ bool VansGraphics::VansScene::BuildShadowDrawSubmission(
         }
     };
 
-    for (VansRenderNode* node : m_OpaqueRenderNodes)
-        appendCaster(node, stableOrder++);
-    for (VansRenderNode* node : m_HairRenderNodes)
-        appendCaster(node, stableOrder++);
+    for (const VansShadowDrawCandidate& candidate : candidates)
+        appendCaster(candidate.node, candidate.stableOrder);
 
     VANS_PROFILE_SCOPE("Shadow::FinalizeSubmission", Vans::ProfileCategory::CommandRecord);
     return FinalizeDrawSubmission(VansDrawSortPolicy::State, submission);
@@ -129,7 +147,65 @@ void VansGraphics::VansScene::DrawVegetationShadowNode(VansVKCommandBuffer& cmd,
         static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawShadow(cmd, globalStateData);
 }
 
-void VansGraphics::VansScene::DrawPunctualShadowJob(const VansPunctualShadowRenderJob& job)
+VansGraphics::VansScene::PunctualShadowNodeLookup
+VansGraphics::VansScene::BuildPunctualShadowNodeLookup() const
+{
+    VANS_PROFILE_SCOPE("Shadow::BuildNodeLookup", Vans::ProfileCategory::RenderPrepare);
+    PunctualShadowNodeLookup lookup;
+    lookup.reserve(m_OpaqueRenderNodes.size() + m_HairRenderNodes.size());
+    std::uint64_t stableOrder = 0;
+    const auto appendNode = [&](VansRenderNode* node)
+    {
+        const std::uint64_t order = stableOrder++;
+        const VansRenderProxyHandle handle = FindMainRenderProxyHandle(node);
+        if (handle.IsValid())
+            lookup.emplace(handle, VansShadowDrawCandidate{ node, order });
+    };
+    for (VansRenderNode* node : m_OpaqueRenderNodes)
+        appendNode(node);
+    for (VansRenderNode* node : m_HairRenderNodes)
+        appendNode(node);
+    return lookup;
+}
+
+VansGraphics::VansPunctualShadowDrawPlan
+VansGraphics::VansScene::BuildPunctualShadowDrawPlan(
+    const std::vector<VansPunctualShadowRenderJob>& jobs) const
+{
+    VANS_PROFILE_SCOPE("Shadow::ResolveCandidates", Vans::ProfileCategory::RenderPrepare);
+    VansPunctualShadowDrawPlan plan(jobs.size());
+    if (jobs.empty())
+        return plan;
+
+    const PunctualShadowNodeLookup nodeLookup = BuildPunctualShadowNodeLookup();
+    for (std::size_t jobIndex = 0; jobIndex < jobs.size(); ++jobIndex)
+    {
+        const VansPunctualShadowRenderJob& job = jobs[jobIndex];
+        if (job.shadowViewIndex == VANS_INVALID_SHADOW_INDEX ||
+            job.shadowViewIndex >= VANS_MAX_PUNCTUAL_SHADOW_VIEWS)
+            continue;
+
+        auto& selectedNodes = plan[jobIndex];
+        selectedNodes.reserve(job.casterHandles.size());
+        for (const VansRenderProxyHandle& handle : job.casterHandles)
+        {
+            const auto range = nodeLookup.equal_range(handle);
+            for (auto it = range.first; it != range.second; ++it)
+                selectedNodes.push_back(it->second);
+        }
+        std::sort(selectedNodes.begin(), selectedNodes.end(),
+            [](const VansShadowDrawCandidate& a,
+                const VansShadowDrawCandidate& b)
+            {
+                return a.stableOrder < b.stableOrder;
+            });
+    }
+    return plan;
+}
+
+void VansGraphics::VansScene::DrawPunctualShadowJob(
+    const VansPunctualShadowRenderJob& job,
+    const std::vector<VansShadowDrawCandidate>& selectedNodes)
 {
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	if (vkDevice == nullptr)
@@ -157,20 +233,12 @@ void VansGraphics::VansScene::DrawPunctualShadowJob(const VansPunctualShadowRend
 		return;
 	const int shaderViewIndex = static_cast<int>(job.shadowViewIndex);
 
-	const auto isSelectedCaster = [&](const VansRenderNode* node)
-	{
-		const VansRenderProxyHandle casterHandle =
-			FindMainRenderProxyHandle(node);
-		return casterHandle.IsValid() &&
-			job.casterHandles.find(casterHandle) != job.casterHandles.end();
-	};
-
-    VansDrawSubmissionList submission;
-    std::uint64_t stableOrder = 0;
-    const auto appendCaster = [&](VansRenderNode* node)
+    VansDrawSubmissionList& submission = m_ShadowDrawSubmissionScratch;
+    submission.Clear();
+    submission.packets.reserve(selectedNodes.size());
+    const auto appendCaster = [&](VansRenderNode* node, std::uint64_t order)
     {
-        const std::uint64_t order = stableOrder++;
-        if (!IsRenderNodeEnabledForCurrentFrame(node) || !isSelectedCaster(node) || node->m_Material == nullptr)
+        if (!IsRenderNodeEnabledForCurrentFrame(node) || node->m_Material == nullptr)
             return;
         auto* commonNode = static_cast<VansCommonRenderNode*>(node);
         if (!commonNode->m_SupportShadow)
@@ -188,13 +256,22 @@ void VansGraphics::VansScene::DrawPunctualShadowJob(const VansPunctualShadowRend
         }
     };
 
-    for (VansRenderNode* node : m_OpaqueRenderNodes)
-        appendCaster(node);
-    for (VansRenderNode* node : m_HairRenderNodes)
-        appendCaster(node);
+    {
+        VANS_PROFILE_SCOPE("Shadow::BuildPackets", Vans::ProfileCategory::CommandRecord);
+        for (const VansShadowDrawCandidate& selected : selectedNodes)
+            appendCaster(selected.node, selected.stableOrder);
+    }
 
-    if (FinalizeDrawSubmission(VansDrawSortPolicy::State, submission))
+    bool finalized = false;
+    {
+        VANS_PROFILE_SCOPE("Shadow::FinalizeSubmission", Vans::ProfileCategory::CommandRecord);
+        finalized = FinalizeDrawSubmission(VansDrawSortPolicy::State, submission);
+    }
+    if (finalized)
+    {
+        VANS_PROFILE_SCOPE("Shadow::RecordBatches", Vans::ProfileCategory::CommandRecord);
         VansDrawSubmission::Record(cmd, submission, 0, submission.batches.size());
+    }
 
 }
 
@@ -257,12 +334,16 @@ bool VansGraphics::VansScene::BuildOpaqueDrawSubmission(
 
 void VansGraphics::VansScene::DrawTerrainNode(bool shadowPass)
 {
-    if(m_TerrainRenderNode== nullptr)
-    {
-        return;
-	}
-    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    DrawTerrainNode(vkDevice->GetCommandBuffer(), vkDevice->GetGlobalRenderStateData(), shadowPass);
+    if(m_TerrainRenderNode== nullptr) return;
+    auto* vkDevice=static_cast<VansVKDevice*>(m_GraphicsDevice);
+    DrawTerrainNode(vkDevice->GetCommandBuffer(),vkDevice->GetGlobalRenderStateData(),shadowPass);
+}
+
+std::vector<VansGraphics::VansSubmitResourceAccess> VansGraphics::VansScene::TerrainInteractionReadResources() const
+{
+    if (!IsRenderNodeEnabledForCurrentFrame(m_TerrainRenderNode)) return {};
+    const auto* terrain=static_cast<const VansTerrainRenderNode*>(m_TerrainRenderNode)->GetTerrain();
+    return terrain?terrain->InteractionReadResources():std::vector<VansSubmitResourceAccess>{};
 }
 
 void VansGraphics::VansScene::DrawTerrainNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, bool shadowPass)
@@ -356,26 +437,97 @@ void VansGraphics::VansScene::RecordVegetationCompute(VansVKCommandBuffer& cmd)
     const auto* device = dynamic_cast<const VansVKDevice*>(m_GraphicsDevice);
     if (!device) return;
     const auto& timing = device->GetCurrentRenderTimingSnapshot();
+	const uint32_t frameSlot = device->GetFrameResourceSlot();
     const bool sameQueue = !device->IsAsyncComputeEnabled();
     const auto lane=sameQueue ? Vans::VansGpuQueueLane::Graphics : Vans::VansGpuQueueLane::Compute;
-    struct Work { VansVegetationSystem* system; bool cullReady=false; };
+	struct Work { VansVegetationSystem* system; bool grassCullReady=false; bool treeCullReady=false; };
     std::vector<Work> work;
     work.reserve(m_VegetationCollection->BatchCount());
-    m_VegetationCollection->ForEach([&](VansVegetationSystem& value)
+    m_VegetationCollection->ForEachViewRelevant([&](VansVegetationSystem& value)
     {
-        work.push_back({&value,false});
+		work.push_back({&value,false,false});
     });
+    bool stateTransferred=false;
+    for (auto& item:work)
+        if (item.system->HasGrassStateTransfer()) {
+            item.system->RecordGrassStateTransfer(cmd);
+            stateTransferred=true;
+        }
+    if (stateTransferred) {
+        VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,{barrier});
+    }
     // 按阶段记录固定数量的 GPU 时间戳，避免每区块采样耗尽 query pool。
     {
         VANS_PROFILE_SCOPE("Vegetation::GrassCull", Vans::ProfileCategory::CommandRecord);
         VANS_GPU_SCOPE_LANE(cmd.GetVKCommandBuffer(), "Vegetation Grass Cull", lane);
+		bool hasGrassCull = false;
         for (auto& item:work)
-            item.cullReady=item.system->DispatchCullPass(cmd,item.system->GetCullDistance(),sameQueue);
+		{
+			item.grassCullReady = item.system->PrepareGrassCull(cmd);
+			hasGrassCull |= item.grassCullReady;
+		}
+		if (hasGrassCull)
+		{
+			VkMemoryBarrier barrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+			cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, { barrier });
+			for (auto& item : work)
+				if (item.grassCullReady)
+					item.system->DispatchGrassCull(cmd, item.system->GetCullDistance(), frameSlot);
+			barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+			cmd.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+					(sameQueue ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : 0u), { barrier });
+			for (auto& item : work)
+				if (item.grassCullReady)
+					item.system->CopyGrassCullCounts(cmd);
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+			cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, { barrier });
+		}
     }
     {
         VANS_PROFILE_SCOPE("Vegetation::TreeCull", Vans::ProfileCategory::CommandRecord);
         VANS_GPU_SCOPE_LANE(cmd.GetVKCommandBuffer(), "Vegetation Tree Cull", lane);
-        for (auto& item:work) item.system->DispatchTreeCullPass(cmd,sameQueue);
+		bool hasTreeCull = false;
+		for (auto& item : work)
+		{
+			item.treeCullReady = item.system->PrepareTreeCull(cmd, frameSlot);
+			hasTreeCull |= item.treeCullReady;
+		}
+		if (hasTreeCull)
+		{
+			const bool shadowViewValid =
+				!device->GetCurrentRenderSceneSnapshot().light.directionalLights.empty();
+			VkMemoryBarrier barrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+			cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, { barrier });
+			for (auto& item : work)
+				if (item.treeCullReady)
+					item.system->DispatchTreeCull(cmd, shadowViewValid, frameSlot);
+			barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT |
+				(sameQueue ? VK_ACCESS_SHADER_READ_BIT : 0u);
+			cmd.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT |
+					(sameQueue ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : 0u), { barrier });
+			for (auto& item : work)
+				if (item.treeCullReady)
+					item.system->CopyTreeCullCounts(cmd, frameSlot);
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+			cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, { barrier });
+		}
     }
     {
         VANS_PROFILE_SCOPE("Vegetation::GrassSimulation", Vans::ProfileCategory::CommandRecord);
@@ -387,7 +539,7 @@ void VansGraphics::VansScene::RecordVegetationCompute(VansVKCommandBuffer& cmd)
             system->GetWindSpeed(), system->GetWindBendMult(), system->GetStiffness(),
             system->GetDamping(), system->GetSoftness(), system->GetLodFullDist(),
             // 投影草必须更新主相机视野外的骨骼，阴影不能读取过期或未初始化的形变。
-            system->GetLodFadeDist(), item.cullReady && !system->CastsShadows(), sameQueue);
+			 system->GetLodFadeDist(), item.grassCullReady && !system->CastsShadows(), sameQueue, frameSlot);
         }
     }
 }

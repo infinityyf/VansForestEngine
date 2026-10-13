@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <memory>
 using namespace VansGraphics;
 
 struct aiScene;
@@ -76,6 +77,8 @@ namespace VansGraphics
 		//VansVKBuffer m_VertexPositionBuffer;
 
 		VansVKBuffer m_IndexBuffer;
+		mutable std::uint64_t m_CpuTriangleSnapshotHash = 0;
+		mutable std::shared_ptr<const Vans::VansTriangleMeshData> m_CpuTriangleSnapshot;
 
 		// GPU 上传时确定实际索引格式。可表示为 16 位的普通网格使用 UINT16；
 		// 光追命中着色器仍按 uint[] 读取，因此光追网格继续使用 UINT32。
@@ -111,6 +114,9 @@ namespace VansGraphics
 		const std::vector<int>& GetMeshTriangleIndex() const { return m_MeshTriangleIndex; }
 		const std::vector<float>& GetMeshRawTexCoordData() const { return m_MeshRawTexCoordData; }
 		bool CopyTriangleMeshData(Vans::VansTriangleMeshData& data, std::string& error) const;
+		// CPU 几何消费者共享不可变快照；实际源数据变化后才重新分配。
+		bool CaptureTriangleMeshData(std::uint64_t maximumBytes,
+			std::shared_ptr<const Vans::VansTriangleMeshData>& data, std::string& error) const;
 		bool HasLocalBounds() const { return m_HasLocalBounds; }
 		glm::vec3 GetLocalBoundsMin() const { return m_LocalBoundsMin; }
 		glm::vec3 GetLocalBoundsMax() const { return m_LocalBoundsMax; }

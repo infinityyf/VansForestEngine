@@ -4,6 +4,7 @@
 #include "../VansMaterial.h"
 #include "VansVKCommandBuffer.h"
 #include "VansRenderPass.h"
+#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "../../Util/VansProfiler.h"
 #include "../../Util/VansLog.h"
 #include <stdexcept>
@@ -19,7 +20,7 @@ namespace VansGraphics
 				!GISettingsResourceLayoutEquals(rayTracingContext.GetAppliedSettings(), settings);
 			if (rebuild)
 			{
-				if (!rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene, settings))
+				if (!rayTracingContext.CreateRayTracingResource(this, &m_MaintenanceGraphicsCommandBuffer, m_Scene, settings))
 					return false;
 				if (auto* materials = m_Scene->GetMaterialManager())
 				{
@@ -57,7 +58,10 @@ namespace VansGraphics
 		if (!rebuildProbeResources && !updateParams)
 			return;
 
-		if (rebuildProbeResources) WaitForDevice();
+		// Both rebuilds and parameter-only edits replace the shared GI UBO that
+		// already submitted frames may still read. Drain at this settings boundary.
+		if (!WaitForDevice())
+			throw std::runtime_error("Failed to retire GPU work before GI settings update");
 		// 帧内仍只消费本帧快照。Inspector 的显式应用在渲染事务中报告失败；
 		// 非交互场景准备失败必须显式终止，不能让新配置配上旧资源继续渲染。
 		if (!ApplyGISettingsAtSafePoint(giFrame.settings, rebuildProbeResources))
@@ -66,11 +70,22 @@ namespace VansGraphics
 
 	void VansVKDevice::UpdateRayTracing(VansVKCommandBuffer& computeCmd)
 	{
+        // Feedback 只依赖上帧 RayTracing 节点完成；不要求上帧最终 Graphics fence
+        // 已退役。这样调度器仍按原顺序消费反馈，未来可让 Graphics 尾段在途。
+        if (const VkFence feedbackFence = rayTracingContext.GetPendingGIProbeFeedbackFence();
+            feedbackFence != VK_NULL_HANDLE)
+        {
+            VANS_PROFILE_WAIT("Vulkan::WaitFence.GIProbeFeedback");
+            if (VansGraphics::vkWaitForFences(m_VansVKLogicDevice, 1, &feedbackFence,
+                    VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+                throw std::runtime_error("Failed to wait for previous GI probe feedback");
+            rayTracingContext.CompleteGIProbeUpdate(feedbackFence);
+        }
         rayTracingContext.SetWorldViewCenter(m_CurrentRenderView.position);
 		VansMaterialManager* materialManager = m_Scene->GetMaterialManager();
 		rayTracingContext.PrepareGIProbeUpdate(
 			m_CurrentRenderSceneSnapshot.light, materialManager,
-            m_AsyncComputeEnabled ? m_CurrentFrameContext.rayTracingFence : m_CurrentFrameContext.graphicsFence);
+            m_AsyncComputeEnabled ? CurrentFrameContext().rayTracingFence : CurrentFrameContext().graphicsFence);
 		const VkCommandBuffer commandBuffer = computeCmd.GetVKCommandBuffer();
 		const Vans::VansGpuQueueLane queueLane = m_AsyncComputeEnabled
 			? Vans::VansGpuQueueLane::Compute

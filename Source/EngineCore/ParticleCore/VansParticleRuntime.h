@@ -32,7 +32,7 @@ public:
     bool RefreshEmission();
     void Restart();
     bool Seek(float seconds, float step = 1.0f/60.0f);
-    bool CanSeek() const { return !HasRibbon() || !m_HasMovingSource; }
+    bool CanSeek() const { return !m_HasEmissionPoints && (!HasRibbon() || !m_HasMovingSource); }
     void SetRandomSeed(uint32_t seed);
     uint32_t GetRandomSeed() const { return m_RandomSeed; }
     void SetSimulationRate(float rate);
@@ -56,6 +56,9 @@ public:
     const std::vector<VansParticleInstanceData>& GetRenderBuffer() const { return GetFrameData().instances; }
     const std::vector<VansVolumetricParticleInstanceData>& GetVolumetricRenderBuffer() const { return GetFrameData().medium; }
     bool HasVolumetricInjectionEnabled() const;
+    // Sample the published sphere-density material before view-dependent froxel
+    // integration. The owner must use the same synchronized read phase as rendering.
+    float SampleVolumetricExtinction(const glm::vec3& position) const;
     bool HasRibbon() const;
 private:
     friend class VansParticleManager;
@@ -65,6 +68,7 @@ private:
     bool HasPendingResimulation() const { return m_ResimulationKind != VansParticleResimulationKind::None; }
     bool NeedsWorkerTick() const { return m_FrameDirty || HasPendingResimulation(); }
     void SetEmitterEnabled(std::size_t index, bool enabled);
+    void SetEmissionPoints(const std::vector<VansParticleEmissionPoint>& points);
     void Advance(float seconds, const glm::mat4& transform, bool skip = false);
     void Capture();
     void Finish();
@@ -75,6 +79,7 @@ private:
     VansParticlePlaybackState m_State = VansParticlePlaybackState::Stopped;
     bool m_Paused = false, m_EffectiveEnabled = true, m_DeferFirstUpdate = false, m_Prewarmed = false;
     bool m_OwnerInitialized = false, m_HasMovingSource = false;
+    bool m_HasEmissionPoints = false;
     bool m_FrameDirty = false, m_FrameReady = false;
     glm::mat4 m_PreviousOwner{1.0f};
     double m_Time = 0, m_CycleTime = 0, m_Accumulator = 0, m_DrainTime = 0, m_DelayRemaining = 0;

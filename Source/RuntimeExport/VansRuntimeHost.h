@@ -81,5 +81,6 @@ class VansRuntimeHost final
 	std::unique_ptr<VansGraphics::VansCamera> m_Camera;
 	std::unique_ptr<VansScriptContext> m_ScriptContext;
 	bool m_FrameExecutionStarted = false;
+	bool m_SurfaceResizePending = false;
 };
 } // namespace Vans

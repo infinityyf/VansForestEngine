@@ -39,6 +39,7 @@ const std::vector<VansParticleFieldRule>& VansParticleAuthoringSchema::Fields()
         range("/global/drainFade", 0, 60);
         const std::string emitter = "/emitters/*/", renderer = emitter + "renderer/";
         range(emitter + "maxParticles", 1, 65536, 1);
+        range(emitter + "emissionChannel", 0, 255, 1);
         choice(emitter + "spawn/type", {"RateOverTime", "Burst"});
         range(emitter + "spawn/rate", 0, 65536, 0.1);
         range(emitter + "spawn/bursts/*/time", 0, 3600);
@@ -48,7 +49,30 @@ const std::vector<VansParticleFieldRule>& VansParticleAuthoringSchema::Fields()
         choice(renderer + "type", {"None", "Billboard", "Ribbon"});
         choice(renderer + "simulationOrder", {"Stable", "OldestFirst", "NewestFirst"});
         choice(renderer + "renderSortMode", {"None", "ByDistance"});
-        choice(renderer + "lightingMode", {"UnlitFlipbook", "SixWayLit"});
+        choice(renderer + "lightingMode", {"UnlitFlipbook", "SixWayLit", "SpriteCard"});
+        choice(renderer + "spriteCard/orientation", {"Camera", "Axis", "Surface"});
+        choice(renderer + "spriteCard/output", {"Alpha", "Additive", "HalfBlendAdd", "BlendAdd"});
+        choice(renderer + "spriteCard/channelMix", {"RGBA", "RGBAlpha", "RedAlpha"});
+        choice(renderer + "spriteCard/breakup", {"None", "Standard", "Zoom"});
+        range(renderer + "spriteCard/breakupZoomScale", 0, 100);
+        range(renderer + "spriteCard/aspectRatio", 0.01, 100);
+        range(renderer + "spriteCard/pivotY", -1, 1);
+        range(renderer + "spriteCard/softIntersection", 0, 10);
+        range(renderer + "spriteCard/desaturation", 0, 1);
+        range(renderer + "spriteCard/lookupBlend", 0, 1);
+        range(renderer + "spriteCard/overbright", 0, 100);
+        range(renderer + "spriteCard/sequences/*/firstFrame", 0, 65535, 1);
+        range(renderer + "spriteCard/sequences/*/frameCount", 1, 65536, 1);
+        choice(renderer + "spriteCard/alphaClock", {"NormalizedEffect", "EffectSeconds", "EmissionPointSeconds"});
+        for (const char* curve : {"sizeOverEffect", "alphaOverEffect", "breakupWeightOverEffect"})
+        {
+            const auto prefix = renderer + "spriteCard/" + curve + "/";
+            for (auto field : VansParticleEmitterJsonCodec::FloatCurveFields(renderer + "spriteCard/" + curve,
+                std::string(curve) == "alphaOverEffect" ? 3600 : 1))
+                result.push_back(std::move(field));
+            for (const char* scalar : {"value","min","max","keys/*/value","minKeys/*/value","maxKeys/*/value"})
+                range(prefix + scalar, 0, std::string(curve) == "sizeOverEffect" ? 100 : 1);
+        }
         choice(renderer + "ribbon/rootMode", {"None", "FollowSource"});
         choice(renderer + "ribbon/stopAttachment", {"KeepUntilInvisible", "DetachOnStop"});
         range(renderer + "ribbon/rootWidth", 0, 100, 0.001);

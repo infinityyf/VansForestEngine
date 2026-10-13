@@ -43,6 +43,8 @@ namespace VansGraphics
 		void ClearTextures();
 		void ClearMaterials();
 		void RemoveSceneSubMesh(VansAsset* asset);
+        void RemoveMesh(VansAsset* asset);
+        void RemoveTexture(VansAsset* asset);
 		void RemoveMaterial(VansAsset* asset);
 
 		const std::vector<VansAsset*>& GetMeshes() const { return m_Meshes; }

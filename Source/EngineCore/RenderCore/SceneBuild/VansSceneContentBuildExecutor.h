@@ -27,6 +27,7 @@ namespace VansGraphics
 		VegetationBuildFailed,
 		WaterBuildFailed,
 		DeferredNodeBuildFailed,
+		DomainInitializationFailed,
 	};
 
 	struct VansSceneContentBuildResult

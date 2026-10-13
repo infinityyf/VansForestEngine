@@ -28,6 +28,7 @@ class VansParticleEmitterJsonCodec
 {
 public:
     static const std::vector<VansParticleModuleSchema>& ModuleSchemas();
+    static std::vector<VansParticleFieldRule> FloatCurveFields(const std::string& path, double maximumTime = 1);
     static Vans::VansSerializedValue ModuleDefaults();
     static Vans::VansSerializedValue EncodeEmitter(const VansParticleEmitter& emitter);
 

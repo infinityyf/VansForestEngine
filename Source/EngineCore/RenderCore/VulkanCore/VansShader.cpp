@@ -596,6 +596,7 @@ void VansGraphics::VansGraphicsShader::ApplyGraphicsStateDesc(const VansGraphics
 	m_DrawStateData.additiveBlendAttachmentMask = graphicsState.additiveBlendAttachmentMask;
 	m_DrawStateData.enablePremultipliedAlphaBlend = graphicsState.enablePremultipliedAlphaBlend ? VK_TRUE : VK_FALSE;
 	m_ColorAttachmentCount = graphicsState.colorAttachmentCount;
+	m_ColorAttachmentBlends = graphicsState.colorAttachmentBlends;
 	SyncPipelineGraphicsStateDesc();
 	TriggerReCreateGraphicsPipeline();
 }
@@ -634,6 +635,7 @@ void VansGraphics::VansGraphicsShader::SyncPipelineGraphicsStateDesc()
 	graphicsState.alphaToCoverage = m_DrawStateData.alphaToCoverageEnable;
 	graphicsState.alphaToOne = m_DrawStateData.alphaToOneEnable;
 	graphicsState.colorAttachmentCount = m_ColorAttachmentCount;
+	graphicsState.colorAttachmentBlends = m_ColorAttachmentBlends;
 	graphicsState.enableAlphaBlend = m_DrawStateData.enableAlphaBlend == VK_TRUE;
 	graphicsState.enableDecalBlend = m_DrawStateData.enableDecalBlend == VK_TRUE;
 	graphicsState.enableAdditiveBlend = m_DrawStateData.enableAdditiveBlend == VK_TRUE;
@@ -880,6 +882,25 @@ void VansGraphics::VansGraphicsShader::InitGraphicsPipelinInfo(GlobalStateData& 
 	//需要根据deferred的模式，设置每个rt的blend state，不然shader写不到对应的rt上
 	
 	InitAttachmentBlendStates(m_GraphicsPipelineCreateInfo.attachment_blend_states, enableDeferred, m_DrawStateData.enableAlphaBlend, m_DrawStateData.enableDecalBlend, m_DrawStateData.enableAdditiveBlend, m_DrawStateData.enablePremultipliedAlphaBlend, m_ColorAttachmentCount, m_DrawStateData.additiveBlendAttachmentMask);
+    for (size_t i = 0; i < m_ColorAttachmentBlends.size(); ++i)
+    {
+        auto& state = m_GraphicsPipelineCreateInfo.attachment_blend_states.at(i);
+        const auto& blend = m_ColorAttachmentBlends[i];
+        if (blend == "disabled") continue;
+        state.blendEnable = VK_TRUE;
+        state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        if (blend == "alpha")
+        {
+            state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            state.dstColorBlendFactor = state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            state.colorBlendOp = state.alphaBlendOp = VK_BLEND_OP_ADD;
+        }
+        else
+        {
+            state.srcColorBlendFactor = state.dstColorBlendFactor = state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            state.colorBlendOp = state.alphaBlendOp = blend == "max" ? VK_BLEND_OP_MAX : VK_BLEND_OP_MIN;
+        }
+    }
 }
 
 bool VansGraphics::VansGraphicsShader::CreateGraphicsPipeline(VkDevice& logic_device, GlobalStateData& global_state_data)
@@ -918,6 +939,17 @@ void VansGraphics::VansGraphicsShader::TriggerReCreateGraphicsPipeline()
 	m_LastGraphicsPipelineVariant = nullptr;
 	m_GraphicsPipelineVariants.clear();
 	m_GraphicsPipelineCreateInfo.Clear();
+}
+void VansGraphics::VansGraphicsShader::RetireRenderPassPipelineVariants(VkRenderPass renderPass)
+{
+	std::lock_guard<std::mutex> lock(m_GraphicsPipelineMutex);
+	for (auto it = m_GraphicsPipelineVariants.begin(); it != m_GraphicsPipelineVariants.end();)
+	{
+		if (it->second.identity.runtimeDesc.renderPass != renderPass) { ++it; continue; }
+		if (m_LastGraphicsPipelineVariant == &it->second) m_LastGraphicsPipelineVariant = nullptr;
+		if (m_GraphicsPipeline == it->second.pipeline) m_GraphicsPipeline.reset();
+		it = m_GraphicsPipelineVariants.erase(it);
+	}
 }
 
 

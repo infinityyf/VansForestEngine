@@ -801,6 +801,7 @@ namespace VansGraphics
 	{
 		uint64_t frameNumber = 0;
 		uint32_t swapchainImageIndex = 0;
+		uint32_t gbufferTargetSlot = 0;
 
 		VkSemaphore imageAcquiredSemaphore = VK_NULL_HANDLE;
 		VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
@@ -819,6 +820,7 @@ namespace VansGraphics
 		VkFence giDataFence = VK_NULL_HANDLE;
 
 		bool frameSubmitSucceeded = true;
+		bool surfaceResizeRequired = false;
 		bool gtaoRawRecorded = false;
 		bool graphicsScreenRecorded = false;
 		bool shadowMapsRecorded = false;
@@ -827,12 +829,16 @@ namespace VansGraphics
 		bool vegetationRecorded = false;
 		bool earlyAuxRecorded = false;
 		bool asyncAtmosphereRecorded = false;
+		bool atmosphereStaticLutsWritten = false;
+		bool punctualShadowDebugPreviewWritten = false;
+		bool hairDebugPreviewWritten = false;
+		bool fsrReactiveMaskWritten = false;
+		bool fsrTransparencyMaskWritten = false;
 		bool asyncHZBRecorded = false;
 		bool rayTracingRecorded = false;
 		bool giDataRecorded = false;
 		uint64_t lastDeferredDeleteFlushCount = 0;
 		uint64_t pendingDeferredDeleteCount = 0;
 
-		VansDeferredDeleteQueue deferredDeletes;
 	};
 }

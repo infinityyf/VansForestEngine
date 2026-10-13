@@ -89,6 +89,15 @@ class VansRuntimeSceneFramePort final : public IVansRuntimeFramePort
 		m_Scene.UpdateActionsEarly(context.m_DeltaSeconds);
 	}
 
+	void PrepareNavigation(const VansRuntimeFrameContext&) override
+	{
+		m_Scene.PrepareNavigation();
+	}
+	void UpdateNavigation(const VansRuntimeFrameContext& context) override
+	{
+		m_Scene.UpdateNavigation(context.m_DeltaSeconds);
+	}
+
 	void UpdateAI(const VansRuntimeFrameContext& context) override
 	{
 		m_Scene.UpdateAI(context.m_DeltaSeconds);
@@ -283,6 +292,7 @@ void VansRuntimeHost::RollbackSceneSession()
 
 void VansRuntimeHost::ShutdownGraphics()
 {
+	m_SurfaceResizePending = false;
 	VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback(nullptr);
 
 	if (m_RenderSystem)
@@ -333,6 +343,9 @@ void VansRuntimeHost::ShutdownGraphics()
 	// uninitialized main-thread contract.
 	if (m_Window)
 		Vans::VansInputManager::Get().Shutdown();
+    // 项目 Pass 的旧代际仍持有 Shader 管线引用；在 Shader owner 释放前完成退役。
+    if (m_Device && !m_Device->DrainDeferredDeletesAfterDeviceIdle())
+        std::terminate();
 	VansGraphics::VansShaderManager::Get().Clear();
 	m_Scene.reset();
 	::m_Scene = nullptr;
@@ -432,7 +445,8 @@ bool VansRuntimeHost::LoadPackage(const char* manifestPath)
 	openRequest.m_Options.m_UpdateLastOpenedAt = false;
 	openRequest.m_Options.m_UpdateRecentProjects = false;
 	openRequest.m_Options.m_LoadProjectSettings = true;
-	openRequest.m_Options.m_ScanAssets = resourcePlan.empty();
+	openRequest.m_Options.m_AssetLoadMode = resourcePlan.empty()
+		? VansProjectAssetLoadMode::Objects : VansProjectAssetLoadMode::None;
 	openRequest.m_Options.m_AssetPolicy = VansAssetOperationPolicy::ReadOnly();
 	if (!projectManager.OpenProject(openRequest).m_Opened)
 	{
@@ -701,18 +715,31 @@ bool VansRuntimeHost::RenderFrame()
 		return false;
 	}
 
-	if (m_Window->ConsumeFramebufferResize())
+	m_SurfaceResizePending = m_Window->ConsumeFramebufferResize() || m_SurfaceResizePending;
+	if (m_SurfaceResizePending)
 	{
 		int width = 0;
 		int height = 0;
 		glfwGetFramebufferSize(m_Window->GetGLFWWindow(), &width, &height);
-		if (width > 0 && height > 0)
-			m_RenderSystem->RequestSurfaceResize(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+		if (width <= 0 || height <= 0)
+			return true;
+		if (!m_RenderSystem->RequestSurfaceResize(
+			static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)))
+		{
+			SetError("Runtime surface resize failed");
+			return false;
+		}
+		m_SurfaceResizePending = false;
 	}
 
 	Vans::VansEventBus::Get().Flush(Vans::VansEventLane::RenderPrep);
-	m_RenderSystem->BeginFrame(*m_Camera);
+	if (!m_RenderSystem->BeginFrame(*m_Camera))
+	{
+		SetError("Render-system frame preparation failed");
+		return false;
+	}
 	const VansGraphics::VansRenderFrameSubmitResult submitResult = m_RenderSystem->SubmitFrame();
+	m_SurfaceResizePending = m_SurfaceResizePending || submitResult.surfaceResizeRequired;
 	if (!submitResult)
 	{
 		SetError("Render-system frame submission failed");

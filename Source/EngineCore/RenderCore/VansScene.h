@@ -1,6 +1,7 @@
-#include "../SceneRuntime/Transform/VansTransform.h"
+﻿#include "../SceneRuntime/Transform/VansTransform.h"
 #include "Particles/VansSceneParticleDiagnostics.h"
 #pragma once
+#include <optional>
 #include <array>
 #include "../ParticleCore/VansParticleManager.h"
 #include "Particles/VansParticleRenderSystem.h"
@@ -12,6 +13,8 @@
 #include "VansRenderFrame.h"
 #include "VansRenderFrameSource.h"
 #include "VansRenderThreadTransaction.h"
+#include "VansRenderRuntimeConfig.h"
+#include "VansProjectRenderPassState.h"
 
 #include "VansShaderManager.h"
 
@@ -63,7 +66,10 @@ namespace Vans { struct VansPackagedResourcePlan; }
 namespace Vans { struct VansSerializedValue; }
 namespace Vans { class VansTimelineRuntimeSystem; }
 namespace Vans { class VansGameplayRuntime; }
-namespace Vans { class VansAIWorld; }
+namespace Vans { class VansAIWorld; class VansSceneNavigationRuntime; class VansNavigationWorld; class VansRuntimeNavigationSources; }
+namespace Vans { struct VansNavigationSettings; struct VansNavigationSourceSnapshot; }
+namespace Vans { struct VansPcgCollisionPlan; class VansPcgPhysicsInstances; }
+namespace VansEngine { struct VansPhysicsHeightfieldSnapshot; }
 namespace VansGraphics { class VansCameraControlArbiter; }
 namespace VansGraphics { class VansVirtualCameraParameterStore; }
 
@@ -141,6 +147,7 @@ namespace VansEngine
 {
 	class VansPhysicsNode;
 	class VansClothNode;
+	class VansClothMaterial;
 	class VansCharacterControllerNode;
 }
 
@@ -217,6 +224,7 @@ namespace VansGraphics
 		AnchorParentFailed,
 		ClothBindingFailed,
 		TimelineSetupFailed,
+		NavigationInitializationFailed,
 		AIInitializationFailed
 	};
 
@@ -285,6 +293,7 @@ namespace VansGraphics
 
 		VansScene();
 		~VansScene();
+		std::uint64_t GetRenderSceneEpoch() const { return m_RenderSceneEpoch; }
 
 		void BindRenderThreadTransactionExecutor(
 			IVansRenderThreadTransactionExecutor* executor)
@@ -316,6 +325,7 @@ namespace VansGraphics
 	VansLightManager m_LightManager;
 
 		VansMaterialManager m_MaterialManager;
+		uint64_t m_LastClothLightingRevision = 0;
 
 
 
@@ -424,10 +434,13 @@ namespace VansGraphics
 		std::vector<VansRenderNode*> m_OpaqueRenderNodes;
 		// GBuffer 提交列表跨帧复用容量，避免大量模型场景每帧重复分配 packet/batch/instance 数组。
 		VansDrawSubmissionList m_OpaqueDrawSubmissionScratch;
+		// Shadow views record serially; reuse packet, batch and instance capacity across views.
+		VansDrawSubmissionList m_ShadowDrawSubmissionScratch;
 		std::vector<VansRenderNode*> m_HairRenderNodes;
 		VansRenderNode* m_TerrainRenderNode = nullptr;
 		VansRenderNode* m_VegetationRenderNode = nullptr;
 		std::unique_ptr<VansVegetationCollection> m_VegetationCollection;
+		std::unique_ptr<Vans::VansPcgCollisionPlan> m_CommittedPcgCollisionPlan;
 		VansGIVoxelSourceManager m_GIVoxelSourceManager;
 		VansRenderNode* m_WaterRenderNode = nullptr;
 		VansWaterMaterial* m_WaterMaterial = nullptr;
@@ -446,6 +459,7 @@ namespace VansGraphics
         struct ParticleSourceBinding
         {
             Vans::VansGenerationHandle instance;
+            Vans::VansGenerationHandle emissionGroup;
             Vans::VansEntityHandle owner;
             Vans::VansEntityHandle sourceEntity;
             Vans::VansAssetGuid effect;
@@ -533,15 +547,23 @@ namespace VansGraphics
 		std::vector<std::string> m_PendingEntityDestructionGuids;
 		VansParticleManager m_ParticleManager;
 		std::unique_ptr<Vans::VansRuntimeWorld> m_RuntimeWorld;
+		std::unique_ptr<Vans::VansPcgPhysicsInstances> m_PcgPhysicsInstances;
 		std::unique_ptr<Vans::VansGameplayRuntime> m_GameplayRuntime;
 		std::unique_ptr<VansImpactDecalSystem> m_ImpactDecals;
 		std::unique_ptr<VansSceneSurfaceQuery> m_CombatSurfaces;
+		std::unique_ptr<Vans::VansSceneNavigationRuntime> m_NavigationRuntime;
+		std::unique_ptr<Vans::VansRuntimeNavigationSources> m_NavigationSources;
+		std::unique_ptr<VansEngine::VansPhysicsHeightfieldSnapshot> m_NavigationTerrain;
+        std::optional<std::uint64_t> m_NavigationSourceObservation;
 		std::unique_ptr<Vans::VansAIWorld> m_AIWorld;
+		std::string m_NavigationSyncError;
 		std::unique_ptr<Vans::VansTimelineRuntimeSystem> m_TimelineRuntime;
 		std::unique_ptr<VansCameraControlArbiter> m_CameraControlArbiter;
 		std::unique_ptr<VansVirtualCameraParameterStore> m_VirtualCameraParameters;
 		friend class Vans::VansSceneGameplayComposition;
 		friend class VansSceneAssembly;
+		friend class VansProjectRenderPassRuntime;
+        friend class VansProjectRenderPassProjector;
 
 
 	public:
@@ -559,6 +581,9 @@ namespace VansGraphics
 		void SetWaterSystem(VansWaterSystem* waterSystem) { m_WaterSystem = waterSystem; }
 
 		VansRenderNode* GetTerrainRenderNode() const { return m_TerrainRenderNode; }
+		bool SetTerrainInteraction(const Vans::VansTerrainInteraction& input, std::string& error);
+		const Vans::VansTerrainInteraction& GetTerrainInteraction() const { return m_TerrainInteraction; }
+		std::vector<VansSubmitResourceAccess> TerrainInteractionReadResources() const;
 
 		VansRenderNode* GetWaterRenderNode() const { return m_WaterRenderNode; }
 
@@ -567,6 +592,8 @@ namespace VansGraphics
 		void SetTerrainPhysicsNode(VansEngine::VansTerrainPhysicsNode* terrainPhysicsNode);
 
 		void SetVegetationCollection(std::unique_ptr<VansVegetationCollection> collection);
+		void SetCommittedPcgCollisionPlan(Vans::VansPcgCollisionPlan plan);
+		bool InitializePcgPhysics(std::string& error);
         void CollectGIVoxelSources(std::vector<GIVoxelSource>& sources);
 		VansGIVoxelSourceManager& GetGIVoxelSourceManager() { return m_GIVoxelSourceManager; }
 		VansVegetationCollection* GetVegetationCollection() const { return m_VegetationCollection.get(); }
@@ -580,6 +607,8 @@ namespace VansGraphics
 		VansPcgSplineFieldResources* GetSplineFieldResources() const { return m_SplineFieldResources.get(); }
 
 		const std::vector<VansRenderNode*>& GetOpaqueRenderNodes() const { return m_OpaqueRenderNodes; }
+		VansProjectRenderPassState& ProjectRenderPasses() { return m_ProjectRenderPasses; }
+		const VansProjectRenderPassState& ProjectRenderPasses() const { return m_ProjectRenderPasses; }
 		VansDrawSubmissionList& GetOpaqueDrawSubmissionScratch() { return m_OpaqueDrawSubmissionScratch; }
 
 		const std::vector<VansRenderNode*>& GetHairRenderNodes() const { return m_HairRenderNodes; }
@@ -609,6 +638,8 @@ namespace VansGraphics
 		const Vans::VansRuntimeWorld* GetRuntimeWorld() const { return m_RuntimeWorld.get(); }
 		Vans::VansGameplayRuntime* GetGameplayRuntime() { return m_GameplayRuntime.get(); }
 		const Vans::VansGameplayRuntime* GetGameplayRuntime() const { return m_GameplayRuntime.get(); }
+		Vans::VansNavigationWorld* GetNavigationWorld();
+		const Vans::VansNavigationWorld* GetNavigationWorld() const;
 		Vans::VansAIWorld* GetAIWorld() { return m_AIWorld.get(); }
 		const Vans::VansAIWorld* GetAIWorld() const { return m_AIWorld.get(); }
 		VansSkeletonInstanceHandle RegisterSkeletonInstance(VansAnimationNode& animationNode)
@@ -695,8 +726,8 @@ namespace VansGraphics
 
 		VkDescriptorSetLayout GetGlobalTransformDataSetLayout() const { return m_GlobalTransformDataSetLayout; }
 		const std::vector<VkDescriptorSet>& GetGlobalTransformDataDescriptorSets() const { return m_GlobalTransformDataDescriptorSets; }
-		VansVKBuffer& GetInstanceTransformDataBuffer() { return m_InstanceTransformDataBuffer; }
-		const VansVKBuffer& GetInstanceTransformDataBuffer() const { return m_InstanceTransformDataBuffer; }
+		VansVKBuffer& GetInstanceTransformDataBuffer(std::uint32_t slot) { return m_InstanceTransformDataBuffers.at(slot); }
+		const VansVKBuffer& GetInstanceTransformDataBuffer(std::uint32_t slot) const { return m_InstanceTransformDataBuffers.at(slot); }
 		uint32_t AllocateTransformSlot();
 		bool CreateInstanceTransformBuffer(
 			VkDevice& device,
@@ -710,9 +741,7 @@ namespace VansGraphics
 	private:
 		void UpdateMappedInstanceTransformData(const ModelDataStruct& data, uint32_t slot);
 
-		VansVKBuffer m_InstanceTransformDataBuffer;
-
-		std::vector<ModelDataStruct> m_InstanceTransformData;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_InstanceTransformDataBuffers;
 
 		VkDescriptorSetLayout m_GlobalTransformDataSetLayout = VK_NULL_HANDLE;
 
@@ -730,13 +759,17 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_GlobalDescriptorSetLayout = VK_NULL_HANDLE;
 
 		VkDescriptorSet m_GlobalDescriptorSet = VK_NULL_HANDLE;
-		VansVKBuffer m_SurfaceWeatherFrameBuffer;
+		std::vector<VkDescriptorSet> m_GlobalDescriptorSets;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_SurfaceWeatherFrameBuffers;
 
 	public:
 
 		VkDescriptorSetLayout GetGlobalDescriptorSetLayout() const { return m_GlobalDescriptorSetLayout; }
 
 		VkDescriptorSet GetGlobalDescriptorSet() const { return m_GlobalDescriptorSet; }
+        bool BindProjectRenderPassOutputs(VkDescriptorSet globalSet);
+		const std::vector<VkDescriptorSet>& GetGlobalDescriptorSets() const { return m_GlobalDescriptorSets; }
+		bool BindFrameDescriptorSetsForSlot(std::uint32_t slot, std::uint32_t gbufferTargetSlot);
 
 
 
@@ -746,6 +779,7 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_ObjectDescriptorSetLayout = VK_NULL_HANDLE;
 
 		VkDescriptorSet m_ObjectDescriptorSet = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_ObjectDescriptorSets;
 
 	public:
 
@@ -785,13 +819,16 @@ namespace VansGraphics
 		VkDescriptorSet GetEmptyPassDescriptorSet() const { return m_EmptyPassDescriptorSet; }
 
 		VkDescriptorSetLayout GetDecalPassLayout() const { return m_DecalPassLayout; }
-		VkDescriptorSet GetDecalPassDescriptorSet() const { return m_DecalPassDescriptorSet; }
-		void UpdateDecalPassDescriptorSet();
+		VkDescriptorSet GetDecalPassDescriptorSet(std::uint32_t slot) const
+		{
+			return slot < m_DecalPassDescriptorSets.size() ? m_DecalPassDescriptorSets[slot] : VK_NULL_HANDLE;
+		}
+		bool UpdateDecalPassDescriptorSet(std::uint32_t slot, std::uint32_t gbufferTargetSlot);
 	private:
 		VkDescriptorSetLayout m_DecalPassLayout = VK_NULL_HANDLE;
-		VkDescriptorSet m_DecalPassDescriptorSet = VK_NULL_HANDLE;
-		bool m_DecalPassDescriptorsDirty = true;
-		std::array<VkDescriptorImageInfo, 3> m_DecalPassImages{};
+		std::vector<VkDescriptorSet> m_DecalPassDescriptorSets;
+		std::array<bool, VansCommandRecordingConfig::MaximumFramesInFlight> m_DecalPassDescriptorsDirty{};
+		std::array<std::array<VkDescriptorImageInfo, 3>, VansCommandRecordingConfig::MaximumFramesInFlight> m_DecalPassImages{};
 	public:
 
 
@@ -824,17 +861,17 @@ namespace VansGraphics
 			return m_VolumetricCloudSystem.get();
 		}
 
-		void UpdateGlobalDescriptorSet();		// Writes only TileLight bindings (9, 10) into the global descriptor set.
+		void UpdateGlobalDescriptorSet();
+		void UpdateGlobalDescriptorSetFor(VkDescriptorSet set, std::uint32_t slot);
 
 		// Called after PrepareTileLightData() creates the TileLight SSBO buffers.
 
 		void UpdateGlobalTileLightDescriptors();
+		void UpdateGlobalTileLightDescriptorsFor(VkDescriptorSet set, std::uint32_t slot);
 
 		bool PrepareReflectionProbeRuntime(VansVKDevice& device);
 
 		void BindWaterSystemGlobalDescriptors();
-
-		void BindMaterialVideoDescriptorSet();
 
 		void CreateSceneNodeDescriptorSets() { CreateNodeDescriptorSets(); }
 
@@ -1056,6 +1093,7 @@ namespace VansGraphics
 
 		// Synchronous migration boundary for backend-owned buffer preparation.
 		// This remains on Main until RenderWorld owns the copied dynamic data.
+		void PrepareRenderObjectFrameData(const VansRenderSceneFrameSnapshot& snapshot, const VansRenderWorld& renderWorld);
 		void PrepareRenderBackendData(
 			const VansRenderViewSnapshot& view,
 			const VansRenderSceneFrameSnapshot& sceneSnapshot,
@@ -1091,7 +1129,14 @@ namespace VansGraphics
 		void UploadAnimationRenderData(const VansRenderSceneFrameSnapshot& snapshot);
 		void AdvanceCameraRuntime(double deltaSeconds);
 		void UpdateActionsEarly(double deltaSeconds);
+		void PrepareNavigation();
+		bool SynchronizeNavigation(std::string& error);
+        bool CaptureNavigationSources(const Vans::VansNavigationSettings& settings,
+            Vans::VansNavigationSourceSnapshot& snapshot, std::uint64_t& observation, std::string& error);
+        std::optional<std::uint64_t> GetNavigationSourceObservation() const { return m_NavigationSourceObservation; }
+        const std::string& GetNavigationSynchronizationError() const { return m_NavigationSyncError; }
 		void UpdateAI(double deltaSeconds);
+		void UpdateNavigation(double deltaSeconds);
 		bool RunActionLateContinuation();
 		void UpdateTimelinesPostScript(double deltaSeconds);
 		void BeginCameraControlFrame();
@@ -1296,9 +1341,12 @@ namespace VansGraphics
 
 
 
-		void DrawShadowNodes();
-		void DrawShadowNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
-		bool BuildShadowDrawSubmission(GlobalStateData globalStateData, VansDrawSubmissionList& submission);
+		VansCascadeShadowDrawPlan BuildCascadeShadowDrawPlan() const;
+		void DrawShadowNodes(const VansCascadeShadowDrawPlan& plan);
+		void DrawShadowNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData,
+			const VansCascadeShadowDrawPlan& plan);
+		bool BuildShadowDrawSubmission(GlobalStateData globalStateData,
+			VansDrawSubmissionList& submission, const VansCascadeShadowDrawPlan& plan);
 		void DrawVegetationShadowNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
 
 
@@ -1306,7 +1354,14 @@ namespace VansGraphics
 
 
 
-		void DrawPunctualShadowJob(const VansPunctualShadowRenderJob& job);
+		using PunctualShadowNodeLookup = std::unordered_multimap<
+			VansRenderProxyHandle, VansShadowDrawCandidate, VansRenderProxyHandleHash>;
+		PunctualShadowNodeLookup BuildPunctualShadowNodeLookup() const;
+		VansPunctualShadowDrawPlan BuildPunctualShadowDrawPlan(
+			const std::vector<VansPunctualShadowRenderJob>& jobs) const;
+		void DrawPunctualShadowJob(
+			const VansPunctualShadowRenderJob& job,
+			const std::vector<VansShadowDrawCandidate>& selectedNodes);
 
 
 
@@ -1389,6 +1444,7 @@ namespace VansGraphics
 
 
 		VansMaterialManager* GetMaterialManager() { return &m_MaterialManager; }
+		void RefreshClothLightingTextures(const VansClothMaterial& material);
 
 
 
@@ -1589,6 +1645,10 @@ namespace VansGraphics
 		bool m_UsingPackagedProjectAssets = false;
 
 		VansVKDevice* m_RuntimeResourceDevice = nullptr;
+		VansProjectRenderPassState m_ProjectRenderPasses;
+		Vans::VansTerrainInteraction m_TerrainInteraction;
+		void ExtractProjectRenderPassFrame(VansRenderSceneFrameSnapshot& snapshot, const glm::vec3& cameraPosition);
+        void CollectProjectRenderPassDraws(VansProjectRenderPassFrameInput& frame) const;
 		IVansRenderThreadTransactionExecutor* m_RenderThreadTransactionExecutor = nullptr;
 
 

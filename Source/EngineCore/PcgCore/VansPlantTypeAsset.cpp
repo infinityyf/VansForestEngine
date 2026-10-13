@@ -69,6 +69,8 @@ bool ResolvePlantTreeRuntimeBounds(
 std::vector<VansAssetGuid> VansPlantTypeAsset::Dependencies() const
 {
 	std::vector<VansAssetGuid> result;
+	for (const auto& variant : variants)
+		if (variant.collision && variant.collision->mesh.IsValid()) result.push_back(variant.collision->mesh);
 	for (const auto& variant : variants) for (const auto& part : variant.parts)
 	{
 		if (part.mesh.IsValid()) result.push_back(part.mesh);
@@ -107,6 +109,9 @@ std::vector<std::string> ValidatePlantTypeAsset(const VansPlantTypeAsset& asset,
 	for (const auto& variant : asset.variants)
 	{
 		const std::string label = "Plant variant '" + variant.id + "'";
+		if (variant.collision && (variant.collision->layer.size() > 128 ||
+			(requireReady && (!variant.collision->mesh.IsValid() || variant.collision->layer.empty()))))
+			errors.push_back(label + " collision requires an explicit CPU Model and collision layer");
 		if (variant.id.empty() || !variantIds.insert(variant.id).second) errors.push_back("Plant variant IDs must be nonempty and unique");
 		if (variant.geometry < VansPlantGeometry::Unassigned || variant.geometry > VansPlantGeometry::ProceduralBlade)
 			errors.push_back(label + " has invalid geometry mode");

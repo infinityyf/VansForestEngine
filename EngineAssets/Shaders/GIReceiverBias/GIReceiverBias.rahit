@@ -13,11 +13,18 @@ layout(set=0,binding=50) uniform sampler2D PBRTextures[];
 hitAttributeEXT vec2 attribs;
 void main()
 {
-    uint packed=instanceMaterialData.materials[gl_InstanceID].packedTextureIndex;
-    uint textureIndex=packed&GI_TEXTURE_INDEX_MASK;
+    GIInstanceMaterial material=instanceMaterialData.materials[gl_InstanceID];
+    uint packed=material.packedTextureIndex;
+    if(GIRejectMaterialFace(material,gl_HitKindEXT!=gl_HitKindBackFacingTriangleEXT))
+    {
+        ignoreIntersectionEXT;
+        return;
+    }
+    if(material.alphaCutoff<=0.0) return;
+    uint textureIndex=GICoverageTextureIndex(material);
     if(packed==0xffffffffu || textureIndex>=2048u) return;
     uint mesh=receiverInstances.instances[gl_InstanceID];
     vec2 uv=ReceiverInterpolatedAttribute(mesh,ReceiverTriangle(mesh),vec3(1.0-attribs.x-attribs.y,attribs),1u).xy;
-    if(textureLod(PBRTextures[nonuniformEXT(textureIndex)],uv,0.0).a<instanceMaterialData.materials[gl_InstanceID].alphaCutoff)
+    if(GIRejectMaterialCoverage(material,textureLod(PBRTextures[nonuniformEXT(textureIndex)],uv,0.0)))
         ignoreIntersectionEXT;
 }

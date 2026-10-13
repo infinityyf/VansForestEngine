@@ -58,6 +58,9 @@ struct VansLocalTransform
 	static bool TryFromMatrix(const glm::mat4& matrix, VansLocalTransform& outTransform);
 };
 
+// 世界 TRS 的唯一存储投影；离线组合和运行图采用相同 Euler/scale 结果。
+bool TryResolveWorldTransform(const glm::mat4& matrix, VansTransform& output);
+
 struct VansTransformGraphLink
 {
 	std::uint32_t childTransformId = UINT32_MAX;

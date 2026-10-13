@@ -232,7 +232,7 @@ namespace VansGraphics
 		m_State->m_MetadataBuffer.DestroyVulkanBuffer(device);
 		m_State->m_SpatialIndexBuffer.DestroyVulkanBuffer(device);
 		m_State->m_SpatialIndex.Clear();
-		m_State->m_GlobalDescriptorSet = VK_NULL_HANDLE;
+		m_State->m_GlobalDescriptorSets.clear();
 		VANS_LOG("[ReflectionProbe] Metadata buffer released");
 		m_State->m_SpecularPages.clear(); m_State->m_CaptureTexture.reset(); m_State->m_PageLayout = {};
 		VANS_LOG("[ReflectionProbe] Specular pages released");
@@ -319,6 +319,8 @@ namespace VansGraphics
 		if (m_State->m_CaptureSkyShader) m_State->m_CaptureSkyShader->TriggerReCreateGraphicsPipeline();
 		m_State->m_PrefilterShader = nullptr;
 		m_State->m_CaptureGeometryShader = nullptr;
+		if (m_State->m_CaptureClothShader) m_State->m_CaptureClothShader->TriggerReCreateGraphicsPipeline();
+		m_State->m_CaptureClothShader = nullptr;
 		m_State->m_CaptureSkyShader = nullptr;
 	}
 
@@ -328,7 +330,7 @@ namespace VansGraphics
 		// 先准备退役记录；若分配记录失败，当前描述符和布局仍未被修改。
 		// 当前 GUI 帧可能已引用旧 face view，沿用现有帧完成后的释放机制。
 		device.EnqueueDeferredDelete([pending]() {});
-		pending->UpdateGlobalDescriptors(m_State->m_GlobalDescriptorSet);
+		pending->UpdateGlobalDescriptors(m_State->m_GlobalDescriptorSets);
 		m_State.swap(pending->m_State);
 		pending->ReleaseSharedPipelines();
 	}
@@ -367,7 +369,7 @@ namespace VansGraphics
 				// 新元数据与查询索引先完整生成，再一起发布，不原地缩容或扩容。
 				if (!pending->InitializeMetadataResources(device))
 				{ m_State->m_PlacementError = pending->m_State->m_PlacementError; return false; }
-				pending->WriteGlobalDescriptors(m_State->m_GlobalDescriptorSet, m_State->m_SpecularPages);
+				pending->WriteGlobalDescriptors(m_State->m_GlobalDescriptorSets, m_State->m_SpecularPages);
 				const size_t active = m_State->m_ActiveBakeIndex;
 				if (active < m_State->config.m_Probes.size() &&
 					m_State->config.m_Probes[active].capturePosition != pending->m_State->config.m_Probes[active].capturePosition)
@@ -887,8 +889,8 @@ namespace VansGraphics
 		std::memcpy(bytes.data() + sizeof(header), words.data(), words.size() * sizeof(uint32_t));
 		if (!m_State->m_SpatialIndexBuffer.SetBufferData(bytes.data(), 0, byteCount))
 			throw std::runtime_error("Failed to upload reflection probe spatial index");
-		if (resize && m_State->m_GlobalDescriptorSet != VK_NULL_HANDLE)
-			UpdateGlobalDescriptors(m_State->m_GlobalDescriptorSet);
+		if (resize && !m_State->m_GlobalDescriptorSets.empty())
+			UpdateGlobalDescriptors(m_State->m_GlobalDescriptorSets);
 	}
 
 	void VansReflectionProbeSystem::RefreshLightingParams()
@@ -900,18 +902,17 @@ namespace VansGraphics
 	}
 
 
-	void VansReflectionProbeSystem::UpdateGlobalDescriptors(VkDescriptorSet globalSet)
+	void VansReflectionProbeSystem::UpdateGlobalDescriptors(const std::vector<VkDescriptorSet>& globalSets)
 	{
-		WriteGlobalDescriptors(globalSet, m_State->m_SpecularPages);
+		WriteGlobalDescriptors(globalSets, m_State->m_SpecularPages);
 	}
 
-	void VansReflectionProbeSystem::WriteGlobalDescriptors(VkDescriptorSet globalSet,
+	void VansReflectionProbeSystem::WriteGlobalDescriptors(const std::vector<VkDescriptorSet>& globalSets,
 		const std::vector<std::unique_ptr<VansTexture>>& pages)
 	{
-		if (pages.empty() || globalSet == VK_NULL_HANDLE || m_State->m_MetadataBuffer.GetNativeBuffer() == VK_NULL_HANDLE ||
+		if (pages.empty() || globalSets.empty() || m_State->m_MetadataBuffer.GetNativeBuffer() == VK_NULL_HANDLE ||
 			m_State->m_SpatialIndexBuffer.GetNativeBuffer() == VK_NULL_HANDLE) return;
-		m_State->m_GlobalDescriptorSet = globalSet;
-		NameProbeResource(m_State->m_Device, VK_OBJECT_TYPE_DESCRIPTOR_SET, reinterpret_cast<uint64_t>(globalSet), "Scene.GlobalDescriptors");
+		m_State->m_GlobalDescriptorSets = globalSets;
 		auto* desc = VansVKDescriptorManager::GetInstance();
 		desc->BeginDescriptorUpdate();
 		std::vector<VkDescriptorImageInfo> pageDescriptors;
@@ -921,12 +922,17 @@ namespace VansGraphics
 			auto& image = pages[page < pages.size() ? page : 0]->GetImage();
 			pageDescriptors.push_back({image.GetSampler(), image.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
 		}
-		desc->WriteImageDescriptor(globalSet, GLOBAL_BINDING_REFLECTION_PROBE_SPECULAR,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, pageDescriptors);
-		desc->WriteBufferDescriptor(globalSet, GLOBAL_BINDING_REFLECTION_PROBE_BUFFER,
-			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_State->m_MetadataBuffer.GetNativeBuffer(), 0, m_State->m_MetadataBuffer.GetBufferSize() }});
-		desc->WriteBufferDescriptor(globalSet, GLOBAL_BINDING_REFLECTION_PROBE_INDEX,
-			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_State->m_SpatialIndexBuffer.GetNativeBuffer(), 0, m_State->m_SpatialIndexBuffer.GetBufferSize() }});
+		for (VkDescriptorSet globalSet : globalSets)
+		{
+			if (globalSet == VK_NULL_HANDLE) continue;
+			NameProbeResource(m_State->m_Device, VK_OBJECT_TYPE_DESCRIPTOR_SET, reinterpret_cast<uint64_t>(globalSet), "Scene.GlobalDescriptors");
+			desc->WriteImageDescriptor(globalSet, GLOBAL_BINDING_REFLECTION_PROBE_SPECULAR,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, pageDescriptors);
+			desc->WriteBufferDescriptor(globalSet, GLOBAL_BINDING_REFLECTION_PROBE_BUFFER,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_State->m_MetadataBuffer.GetNativeBuffer(), 0, m_State->m_MetadataBuffer.GetBufferSize() }});
+			desc->WriteBufferDescriptor(globalSet, GLOBAL_BINDING_REFLECTION_PROBE_INDEX,
+				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_State->m_SpatialIndexBuffer.GetNativeBuffer(), 0, m_State->m_SpatialIndexBuffer.GetBufferSize() }});
+		}
 		desc->CommitDescriptorUpdates();
 	}
 
@@ -958,6 +964,10 @@ namespace VansGraphics
     {
         if (m_State->skyLightingSourceKey == sourceKey) return;
         m_State->skyLightingSourceKey = sourceKey;
+        InvalidateCapturedLighting();
+    }
+    void VansReflectionProbeSystem::InvalidateCapturedLighting()
+    {
         if (m_State->m_Device == VK_NULL_HANDLE) return;
         // 保留上次完整发布直到新捕获完成，禁止把灯光/自发光混合缓存整体缩放。
         m_State->m_ActiveBakeFace = 0;
@@ -1094,7 +1104,8 @@ namespace VansGraphics
 
 		m_State->m_CaptureGeometryShader = VansShaderManager::Get().FindGraphicsShader("ReflectionProbeCapture");
 		m_State->m_CaptureSkyShader = VansShaderManager::Get().FindGraphicsShader("ReflectionProbeCaptureSky");
-		if (!m_State->m_CaptureGeometryShader || !m_State->m_CaptureSkyShader) return fail();
+		m_State->m_CaptureClothShader = VansShaderManager::Get().FindGraphicsShader("ClothProbeCapture");
+		if (!m_State->m_CaptureGeometryShader || !m_State->m_CaptureSkyShader || !m_State->m_CaptureClothShader) return fail();
 		return true;
 	}
 
@@ -1130,6 +1141,8 @@ namespace VansGraphics
 		if (m_State->m_CaptureGeometryShader)
 			m_State->m_CaptureGeometryShader->TriggerReCreateGraphicsPipeline();
 		m_State->m_CaptureGeometryShader = nullptr;
+		if (m_State->m_CaptureClothShader) m_State->m_CaptureClothShader->TriggerReCreateGraphicsPipeline();
+		m_State->m_CaptureClothShader = nullptr;
 		if (m_State->m_CaptureSkyShader)
 			m_State->m_CaptureSkyShader->TriggerReCreateGraphicsPipeline();
 		m_State->m_CaptureSkyShader = nullptr;
@@ -1217,12 +1230,24 @@ namespace VansGraphics
 				draw.params.x = 1.0f;
 				draw.params.w = float(emissive->m_MaterialIndex);
 			}
+			auto drawLayouts = layouts;
+			auto drawSets = sets;
+			auto* shader = m_State->m_CaptureGeometryShader;
+			if (auto* cloth = dynamic_cast<VansClothMaterial*>(node->m_Material))
+			{
+				if (!cloth->m_ClothOwnedLayout || cloth->m_ClothOwnedDescSets.empty())
+					throw std::runtime_error("Cloth probe capture requires its material descriptors");
+				draw.params.w = float(cloth->m_MaterialIndex);
+				shader = m_State->m_CaptureClothShader;
+				drawLayouts.push_back(cloth->m_ClothOwnedLayout);
+				drawSets.push_back(cloth->m_ClothOwnedDescSets[0]);
+			}
 			commandBuffer.BindMesh(*node->m_Mesh, 0, state);
-			commandBuffer.EnsureGraphicsShader(*m_State->m_CaptureGeometryShader, state, layouts);
-			commandBuffer.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_State->m_CaptureGeometryShader, 0, sets, {});
-			commandBuffer.UpdatePushConstants(*m_State->m_CaptureGeometryShader->GetGraphicsPipeline(),
+			commandBuffer.EnsureGraphicsShader(*shader, state, drawLayouts);
+			commandBuffer.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0, drawSets, {});
+			commandBuffer.UpdatePushConstants(*shader->GetGraphicsPipeline(),
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(draw), &draw);
-			commandBuffer.DrawMesh(*node->m_Mesh, *m_State->m_CaptureGeometryShader, 1);
+			commandBuffer.DrawMesh(*node->m_Mesh, *shader, 1);
 		}
 		commandBuffer.EndRenderPass();
 		if (!commandBuffer.EndCommandBufferRecord()) { commandBuffer.ResetCommandBuffer(false); return false; }

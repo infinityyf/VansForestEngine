@@ -53,14 +53,6 @@ layout(set = PBRLutSetBind, binding = 7) uniform sampler2D SkinPreIntegratedLUT;
 // Profile-indexed skin scattering LUT array. Layer contents initially mirror binding 7.
 layout(set = PBRLutSetBind, binding = 19) uniform sampler2DArray SkinProfilePreIntegratedLUTArray;
 
-// Cloth pre-integrated DFG LUT  (EngineAssets/Textures/ClothBRDFLUT.png)
-// U = NoV [0..1],  V = perceptualRoughness [0..1]
-// R = split-sum term when sheen color is 0
-// G = split-sum term when sheen color is 1
-// B = additional pre-baked cloth sheen scale
-// Usage: E = mix(dfg.rrr, dfg.ggg, sheenColor) * scale(dfg.b)
-layout(set = PBRLutSetBind, binding = 8) uniform sampler2D ClothBRDFLUT;
-
 // =============================================================================
 // LTC (Linearly Transformed Cosines) LUTs for area-light BRDF.
 //   Source data : selfshadow/ltc_code (MIT)

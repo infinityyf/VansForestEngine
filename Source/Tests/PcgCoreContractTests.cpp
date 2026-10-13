@@ -14,6 +14,7 @@
 #include "../EngineCore/RenderCore/WaterCore/VansRiverWaveSimulation.h"
 #include "../EngineCore/RenderCore/Decal/VansSplineDecalGeometry.h"
 #include "../EngineCore/RenderCore/VegetationCore/VansVegetationCollection.h"
+#include "../EngineCore/RenderCore/VegetationCore/VansGrassWorkset.h"
 
 #include <algorithm>
 #include <cmath>
@@ -432,6 +433,81 @@ bool TestChunkSpacingAndLocality()
 
 bool RunPcgCoreContractTests()
 {
+	if (![] {
+		using namespace VansGraphics;
+		if (!Check(GrassPoolInstanceLimit(128u*1024u*1024u,64u,1u)==16384u,
+			"Grass pool ignored a device's storage buffer range")) return false;
+		const auto partitions=PartitionGrassPages(std::map<int,uint32_t>{{1,65},{2,63},{3,1}},128u);
+		if (!Check(partitions.size()==2 && partitions[0].size()==1 && partitions[1].size()==2,
+			"Grass pool capacity partition lost pages or exceeded its device limit")) return false;
+		const auto initial = BuildGrassPoolLayout(GrassPoolLayout<int>{},
+			std::map<int, uint32_t>{ {1, 65}, {2, 63}, {3, 1} });
+		if (!Check(initial.capacity == 256 && initial.pages.at(1).capacity == 128 &&
+			initial.pages.at(2).baseInstance == 128 && initial.pages.at(3).baseInstance == 192,
+			"Grass pool layout did not reserve aligned, separate cell pages")) return false;
+		const auto replacement = BuildGrassPoolLayout(initial,
+			std::map<int, uint32_t>{ {1, 60}, {3, 1}, {4, 64} });
+		if (!Check(replacement.capacity == initial.capacity && replacement.pages.at(1).baseInstance == 0 &&
+			replacement.pages.at(1).capacity == 128 && replacement.pages.at(3).baseInstance == 192 &&
+			replacement.pages.at(4).baseInstance == 128 && initial.pages.count(2) == 1,
+			"Grass pool replacement moved unchanged pages, failed hole reuse or mutated its previous owner")) return false;
+		const auto growth = BuildGrassPoolLayout(replacement,
+			std::map<int, uint32_t>{ {1, 129}, {3, 1}, {4, 64} });
+		if (!Check(CanUpdateGrassPoolInPlace(initial,replacement,
+			std::map<int,uint32_t>{{1,60},{3,1},{4,64}}) &&
+			!CanUpdateGrassPoolInPlace(initial,replacement,
+				std::map<int,uint32_t>{{1,60},{2,63},{3,1},{4,64}}) &&
+			!CanUpdateGrassPoolInPlace(replacement,growth,
+				std::map<int,uint32_t>{{1,129},{3,1},{4,64}}),
+			"Grass arena reuse overwrote a surviving cross-pool migration source or ignored growth")) return false;
+		if (!Check(growth.capacity == 448 && growth.pages.at(1).baseInstance == 256 &&
+			growth.pages.at(3).baseInstance == 192 && growth.pages.at(4).baseInstance == 128,
+			"Grass pool growth did not preserve unchanged addresses")) return false;
+		std::vector<GrassInstanceRange> ranges;
+		for (const auto& page : growth.pages) ranges.push_back(page.second);
+		const auto groups = BuildGrassWorkgroups(growth.capacity, ranges);
+		return Check(groups.size() == 5 && BuildGrassPoolLayout(growth, std::map<int, uint32_t>{}).pages.empty(),
+			"Grass pool work dispatch included capacity holes or retained removed cells");
+	}()) return false;
+	// 稀疏实例段只派发活实例；保留容量、尾部线程和骨层地址不能互相覆盖。
+	const auto grassWorksetContract = [] {
+		using namespace VansGraphics;
+		constexpr uint32_t poolCapacity = 512, boneCount = 3;
+		const std::vector<GrassInstanceRange> ranges{ { 256, 65, 128 }, { 64, 63, 64 }, { 448, 1, 64 } };
+		const auto groups = BuildGrassWorkgroups(poolCapacity, ranges);
+		std::vector<uint32_t> visits(poolCapacity, 0), boneVisits(poolCapacity * boneCount, 0);
+		for (const auto& group : groups)
+			for (uint32_t thread = 0; thread < GrassWorkgroupWidth; ++thread)
+			{
+				const uint32_t local = group.localBase + thread;
+				if (local >= group.instanceCount) continue;
+				++visits.at(group.baseInstance + local);
+				for (uint32_t bone = 0; bone < boneCount; ++bone)
+					++boneVisits.at(group.baseInstance * boneCount + bone * group.stateStride + local);
+			}
+		uint32_t active = 0;
+		for (uint32_t index = 0; index < poolCapacity; ++index)
+		{
+			const bool expected = (index >= 256 && index < 321) || (index >= 64 && index < 127) || index == 448;
+			if (!Check(visits[index] == (expected ? 1u : 0u), "Grass workset skipped, repeated or touched an inactive instance")) return false;
+			active += visits[index];
+		}
+		if (!Check(groups.size() == 4 && active == 129 &&
+			std::count(boneVisits.begin(), boneVisits.end(), 1u) == active * boneCount &&
+			*std::max_element(boneVisits.begin(), boneVisits.end()) == 1u,
+			"Grass workset aliases bone state across reserved pages")) return false;
+		if (!Check(BuildGrassWorkgroups(poolCapacity, {}).empty(), "Empty grass workset emitted a dispatch")) return false;
+		const auto rejected = [](uint32_t capacity, const std::vector<GrassInstanceRange>& invalid) {
+			try { BuildGrassWorkgroups(capacity, invalid); return false; }
+			catch (const std::invalid_argument&) { return true; }
+		};
+		return Check(rejected(512, { { 64, 65, 64 } }) &&
+			rejected(512, { { 64, 1, 128 }, { 128, 1, 64 } }) &&
+			rejected(512, { { 480, 1, 64 } }) &&
+			rejected(UINT32_MAX, { { UINT32_MAX - 8u, 1, 9 } }),
+			"Grass workset accepted overlapping, overflowing or out-of-range pages");
+	};
+	if (!grassWorksetContract()) return false;
 	const auto splineContracts = [] {
 		VansPcgSpline river;
 		river.id="river";river.name="River";river.kind=VansPcgSplineKind::River;

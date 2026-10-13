@@ -301,7 +301,10 @@ namespace VansEngine
         PxQueryFilterCallback* roadQueryFilterCallback = nullptr;
         if (m_Tuning.useRoadQueryLayerFilter)
         {
-            roadQueryFlags |= PxQueryFlag::ePREFILTER;
+            // Our filter stores a layer index in word0 and a query mask in word1.
+            // PhysX's default bitwise equation uses a different ABI and can reject
+            // an Environment-only request before the authoritative callback runs.
+            roadQueryFlags |= PxQueryFlag::ePREFILTER | PxQueryFlag::eDISABLE_HARDCODED_FILTER;
             roadQueryFilterCallback = &g_VehicleRoadQueryFilter;
         }
 
@@ -529,6 +532,47 @@ namespace VansEngine
 
         m_TransmissionCommandState.targetGear = manualGear;
         return true;
+    }
+
+    bool VansPhysicsVehicle::GetWheelContact(uint32_t wheelIndex, VansVehicleWheelContact& contact) const
+    {
+        VANS_ASSERT_MAIN_THREAD();
+        if (!m_PhysicsSystem) return false;
+        std::lock_guard<std::mutex> lock(m_PhysicsSystem->GetSimulationMutex());
+        if (wheelIndex >= GetNumWheels() || !m_State.physxActor.rigidBody) return false;
+        const auto& road = m_State.roadGeomStates[wheelIndex];
+        const auto& grip = m_State.tireGripStates[wheelIndex];
+        if (!road.hitState || grip.load <= 0.0f || !road.plane.n.isFinite() || road.plane.n.magnitudeSquared() < 0.5f)
+            return false;
+        VansVehicleWheelContact sample;
+        const auto center = GetWheelWorldPose(wheelIndex).p;
+        sample.normal = road.plane.n.getNormalized();
+        sample.position = center - road.plane.n * (road.plane.distance(center) / road.plane.n.magnitudeSquared());
+        sample.forward = m_State.tireDirectionStates[wheelIndex].directions[PxVehicleTireDirectionModes::eLONGITUDINAL];
+        if (!sample.forward.isFinite() || sample.forward.magnitudeSquared() < 0.5f) return false;
+        sample.forward.normalize();
+        sample.width = 2.0f * GetWheelHalfWidth(wheelIndex);
+        sample.load = grip.load;
+        const float restLoad = m_Params.rigidBodyParams.mass * 9.81f / float(GetNumWheels());
+        sample.normalizedLoad = std::clamp(grip.load / std::max(restLoad, 1.0f), 0.0f, 2.0f);
+        sample.longitudinalSlip = m_State.tireSlipStates[wheelIndex].slips[PxVehicleTireDirectionModes::eLONGITUDINAL];
+        sample.longitudinalSpeed = m_State.tireSpeedStates[wheelIndex].speedStates[PxVehicleTireDirectionModes::eLONGITUDINAL];
+        if (!sample.position.isFinite() || !std::isfinite(sample.load) || !std::isfinite(sample.longitudinalSlip) ||
+            !std::isfinite(sample.longitudinalSpeed)) return false;
+        contact = sample;
+        return true;
+    }
+
+    float VansPhysicsVehicle::GetForwardSpeed() const
+    {
+        VANS_ASSERT_MAIN_THREAD();
+        if (!m_PhysicsSystem) return 0.0f;
+        std::lock_guard<std::mutex> lock(m_PhysicsSystem->GetSimulationMutex());
+        const auto* body = m_State.physxActor.rigidBody;
+        if (!body) return 0.0f;
+        const auto forward = body->getGlobalPose().q.rotate(m_Params.frame.getLngAxis());
+        const float speed = body->getLinearVelocity().dot(forward);
+        return std::isfinite(speed) ? speed : 0.0f;
     }
 
     PxTransform VansPhysicsVehicle::GetTransform() const

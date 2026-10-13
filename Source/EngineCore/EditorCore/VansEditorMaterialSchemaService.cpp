@@ -1,11 +1,14 @@
 #include "VansEditorMaterialSchemaService.h"
 
 #include "../AssetCore/VansMaterialAuthoringAsset.h"
+#include "../MaterialCore/VansClothMaterialParameters.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../EngineAPILayer/Public/IAssetAuthoringEditorAPI.h"
+#include "../EngineAPILayer/Public/IAssetEditorAPI.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -48,11 +51,77 @@ void MergeMaterialAuthoringSchema(
     if (materialRoot.kind != VansSerializedValue::Kind::Object)
         return;
 
+    if (ReadSerializedStringField(materialRoot, "materialType") == "cloth")
+    {
+        auto& parameters = EnsureSerializedObjectField(materialRoot, "parameters");
+        VansClothMaterialParameters parsed;
+        std::string error;
+        if (ReadClothMaterialParameters(parameters, parsed, error))
+            parameters = WriteClothMaterialParameters(parsed);
+        auto& textures = EnsureSerializedObjectField(materialRoot, "textures");
+        for (const char* slot : VansClothTextureSlots)
+            if (!FindObjectField(textures, slot))
+                SetSerializedObjectField(textures, slot, VansSerializedValue::Object({
+                    {"guid", VansSerializedValue::String("")}}));
+        return;
+    }
+
     const VansSerializedValue shaderParameters = LoadShaderAuthoringParameters(api, materialRoot);
     if (shaderParameters.kind != VansSerializedValue::Kind::Object)
         return;
 
     MergeMaterialAuthoringParameterSchema(materialRoot, shaderParameters);
+}
+
+bool PrepareClothMaterialAuthoringEdit(EditorAPI::IAssetEditorAPI& api,
+    const VansSerializedValue& displayRoot, VansSerializedValue& sourceRoot,
+    std::string& error)
+{
+    error.clear();
+    auto candidate = displayRoot;
+    if (auto* textures = FindObjectField(candidate, "textures");
+        textures && textures->kind == VansSerializedValue::Kind::Object)
+    {
+        auto& slots = textures->objectFields;
+        slots.erase(std::remove_if(slots.begin(), slots.end(), [](const auto& item)
+        {
+            const auto* guid = FindObjectField(item.second, "guid");
+            return IsClothTextureSlot(item.first) && item.second.objectFields.size() == 1 &&
+                guid && guid->kind == VansSerializedValue::Kind::String && guid->stringValue.empty();
+        }), slots.end());
+    }
+    VansMaterialAuthoringAsset asset;
+    if (!ReadMaterialAuthoringAsset(candidate, asset, error)) return false;
+    // A material-type edit still uses the existing material parser. Cloth
+    // display placeholders must not escape into the new material's source.
+    if (asset.materialType == "cloth")
+    for (const auto& [slot, reference] : asset.textures.objectFields)
+    {
+        const std::string guid = ReadSerializedStringField(reference, "guid");
+        const auto resolved = api.ResolveAssetGuid(guid);
+        const std::string context = "Cloth texture '" + slot + "' (" + guid + "): ";
+        if (!resolved.found || resolved.asset.type != EditorAPI::AssetType::Texture)
+        {
+            error = context + "does not resolve to a Texture asset";
+            return false;
+        }
+        if (!resolved.textureImport.available)
+        {
+            error = context + "import metadata is unavailable";
+            return false;
+        }
+        std::string reason;
+        if (!ValidateClothTextureImport(slot, VansClothTextureImportSettings{
+            resolved.textureImport.linear, resolved.textureImport.channelCount}, reason))
+        {
+            error = context + reason;
+            return false;
+        }
+    }
+    SetSerializedObjectField(candidate, "parameters", asset.parameters);
+    SetSerializedObjectField(candidate, "textures", asset.textures);
+    sourceRoot = std::move(candidate);
+    return true;
 }
 
 void MergeMaterialAuthoringParameterSchema(

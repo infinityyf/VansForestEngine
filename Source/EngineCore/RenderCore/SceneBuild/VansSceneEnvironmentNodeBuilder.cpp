@@ -376,7 +376,7 @@ bool VansSceneEnvironmentNodeBuilder::BuildWaterNode(
     // VansWaterSystem 管理 Water GBuffer 纹理、波形仿真、Pre-Water Compute 和 Composite pass。
     // 通过 m_Scene->GetWaterSystem() 供 VansVKRenderer 在渲染循环中调度。
     {
-        VansWaterSystem* waterSystem = new VansWaterSystem();
+        auto waterSystem = std::make_unique<VansWaterSystem>();
         waterSystem->SetWaterLevel(config.m_WaterLevel);
         waterSystem->SetWaterMaterial(mat);
         waterSystem->SetDetailNormalTextures(detailNormalTexture, neutralNormalTexture);
@@ -390,8 +390,13 @@ bool VansSceneEnvironmentNodeBuilder::BuildWaterNode(
             rp,
             scene.GetGlobalDescriptorSetLayout(),
             scene.GetGlobalDescriptorSet());
-
-        scene.SetWaterSystem(waterSystem);
+        if (!waterSystem->IsDescriptorsReady())
+        {
+            error = "Water GPU resources or descriptors could not be prepared";
+            waterSystem->Shutdown();
+            return false;
+        }
+        scene.SetWaterSystem(waterSystem.release());
     }
     return true;
 }

@@ -10,16 +10,6 @@
 
 namespace Vans
 {
-enum class VansAIPathRequestReason
-{
-	None,
-	InitialTarget,
-	TargetMoved,
-	ForceTargetMoved,
-	PathRecovery,
-	Patrol
-};
-
 struct VansAILineOfSightDiagnostics
 {
 	bool tested = false;
@@ -47,7 +37,7 @@ struct VansAIAgentDiagnostics
 	VansNavigationPathStatus pathStatus = VansNavigationPathStatus::None;
 	VansNavigationPathFailure pathFailure = VansNavigationPathFailure::None;
 	std::string pathDiagnostic;
-	VansAIPathRequestReason lastPathRequestReason = VansAIPathRequestReason::None;
+	VansNavigationRequestReason lastPathRequestReason = VansNavigationRequestReason::None;
 	std::size_t waypointCount = 0;
 	std::size_t waypointIndex = 0;
 	bool hasPatrolDestination = false;

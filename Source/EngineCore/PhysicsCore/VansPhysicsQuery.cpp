@@ -814,7 +814,23 @@ namespace VansEngine
 			BuildFilterData(request.filter),
 			&callback);
 		hits.reserve(buffer.nbTouches);
-		for (physx::PxU32 index = 0; index < buffer.nbTouches; ++index)
-			hits.push_back(BuildOverlapHit(buffer.touches[index], controllers));
+		for (physx::PxU32 index = 0; index < buffer.nbTouches; ++index) {
+            const auto& native=buffer.touches[index];
+            auto hit=BuildOverlapHit(native,controllers);
+            if (request.returnClosestPoint) {
+                if (!native.actor || !native.shape) continue;
+                const auto point=physx::PxVec3(request.center.x,request.center.y,request.center.z);
+                physx::PxVec3 closest=point;
+                const auto pose=native.actor->getGlobalPose()*native.shape->getLocalPose();
+                const float squared=physx::PxGeometryQuery::pointDistance(point,native.shape->getGeometry(),pose,&closest);
+                if (squared<0 || !std::isfinite(squared)) continue;
+                if (squared==0) closest=point;
+                hit.position={closest.x,closest.y,closest.z}; hit.distance=std::sqrt(squared);
+                const auto bounds=physx::PxShapeExt::getWorldBounds(*native.shape,*native.actor,1.f);
+                hit.hasBounds=true; hit.boundsMin={bounds.minimum.x,bounds.minimum.y,bounds.minimum.z};
+                hit.boundsMax={bounds.maximum.x,bounds.maximum.y,bounds.maximum.z};
+            }
+            hits.push_back(std::move(hit));
+        }
 	}
 }

@@ -8,13 +8,18 @@
 // 修复: 通过地形高度图采样获取实例真实 Y 坐标，构建正确的包围球。
 //       包围球半径额外扩展 scatterRadiusMax 以覆盖子叶片散布范围。
 //
-// Dispatch: (instanceCount / 64, 1, 1)
+// Dispatch: 每个工作组读取实例段工作表。
 // =============================================================================
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 // Set 0: global camera UBO (same pattern as all other engine compute passes)
 #include "../Common/CameraData.glsl"
+#include "../Grass/GrassWorkgroup.glsl"
+layout(std430, set = 1, binding = 6) readonly buffer GrassWorkBuffer
+{
+    GrassWorkgroup grassWorkgroups[];
+};
 
 // Set 1: culling-specific buffers
 // ── Instance data (read only) ───────────────────────────────────────────────
@@ -66,6 +71,8 @@ layout(push_constant) uniform CullPushConstants
     float hizSampleBias;     // 保守偏差，单位为米；线性深度下推荐 0.1-0.5
     int   hizMipCount;       // Hi-Z 金字塔 mip 层数
     int   hizEnabled;        // 是否启用 Hi-Z 遮挡剔除
+    uint  shadowEnabled;     // 当前绘制需求是否包含草阴影
+    uint  workgroupOffset;
 } pc;
 
 // ── 视锥裁剪: 从 VP 矩阵提取六个平面 ───────────────────────────────────────
@@ -86,9 +93,11 @@ void main()
     }
     barrier();
 
-    uint instanceID = gl_GlobalInvocationID.x;
-    if (instanceID >= pc.instanceCount)
+    GrassWorkgroup work = grassWorkgroups[pc.workgroupOffset + gl_WorkGroupID.x];
+    uint localInstance = work.localBase + gl_LocalInvocationID.x;
+    if (localInstance >= work.instanceCount)
         return;
+    uint instanceID = work.baseInstance + localInstance;
 
     GrassInstance inst = instances[instanceID];
 
@@ -99,8 +108,11 @@ void main()
         visibilityFlags[instanceID] = 1u;
         uint slot = atomicAdd(visibleCount, pc.subBladeCount) / pc.subBladeCount;
         visibleIndices[slot] = instanceID;
-        uint shadowSlot = atomicAdd(shadowCount, pc.subBladeCount) / pc.subBladeCount;
-        visibleIndices[pc.instanceCount + shadowSlot] = instanceID;
+		if (pc.shadowEnabled != 0u)
+		{
+			uint shadowSlot = atomicAdd(shadowCount, pc.subBladeCount) / pc.subBladeCount;
+			visibleIndices[pc.instanceCount + shadowSlot] = instanceID;
+		}
         return;
     }
 
@@ -116,8 +128,11 @@ void main()
     }
 
     // 阴影列表只做距离筛选，不受主相机视锥和遮挡影响。
-    uint shadowSlot = atomicAdd(shadowCount, pc.subBladeCount) / pc.subBladeCount;
-    visibleIndices[pc.instanceCount + shadowSlot] = instanceID;
+    if (pc.shadowEnabled != 0u)
+    {
+        uint shadowSlot = atomicAdd(shadowCount, pc.subBladeCount) / pc.subBladeCount;
+        visibleIndices[pc.instanceCount + shadowSlot] = instanceID;
+    }
 
     // ── 视锥剔除 ─────────────────────────────────────────────────────
     // 包围球: 中心 = 地面修正后的位置 + 半高偏移，半径 = 草高 + 散布半径

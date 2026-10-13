@@ -63,12 +63,18 @@ struct VansAIPatrolTaskConfig
 	float waitSeconds = 1.25f;
 };
 
+struct VansAIMoveToTargetTaskConfig
+{
+	float arrivalRadius = 0.2f;
+};
+
 struct VansAIStateDefinition
 {
 	std::string id;
 	VansAITaskKind task = VansAITaskKind::Hold;
 	std::optional<VansAIPatrolTaskConfig> patrol;
 	std::vector<VansAITransitionDefinition> transitions;
+	VansAIMoveToTargetTaskConfig moveToTarget;
 };
 
 struct VansAIBehaviorBindings

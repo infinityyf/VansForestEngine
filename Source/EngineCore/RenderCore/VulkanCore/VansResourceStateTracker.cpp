@@ -16,6 +16,64 @@ namespace
 
 }
 
+void VansGraphics::VansCrossFrameResourceLedger::CollectWaits(
+	const VansPhysicalResourceIdentity& identity,
+	bool write, VkPipelineStageFlags stages,
+	std::vector<VansCrossFrameResourceWait>& waits) const
+{
+	if (!identity.IsValid() || m_Poisoned)
+		return;
+	const auto found = m_Entries.find(identity);
+	if (found == m_Entries.end())
+		return;
+	const Entry& entry = found->second;
+	const auto append = [&](const Completion& completion)
+	{
+		// 同一 VkQueue 的提交顺序不提供跨提交内存可见性；timeline
+		// signal/wait 同样覆盖它，避免共享 history 的下一帧读到旧内容。
+		if (completion.semaphore != VK_NULL_HANDLE && completion.value != 0)
+			waits.push_back({ completion.semaphore, completion.value, stages });
+	};
+	append(entry.writer);
+	if (write)
+	{
+		for (const Completion& reader : entry.readers)
+			append(reader);
+	}
+}
+
+void VansGraphics::VansCrossFrameResourceLedger::PublishAccess(
+	const VansPhysicalResourceIdentity& identity,
+	bool write, VkQueue queue, VkSemaphore semaphore, uint64_t value)
+{
+	if (!identity.IsValid() || m_Poisoned || queue == VK_NULL_HANDLE ||
+		semaphore == VK_NULL_HANDLE || value == 0)
+		return;
+	Entry& entry = m_Entries[identity];
+	const Completion completion{ queue, semaphore, value };
+	if (write)
+	{
+		entry.writer = completion;
+		entry.readers.clear();
+		return;
+	}
+	for (Completion& reader : entry.readers)
+	{
+		if (reader.queue == queue)
+		{
+			reader = completion;
+			return;
+		}
+	}
+	entry.readers.push_back(completion);
+}
+
+void VansGraphics::VansCrossFrameResourceLedger::Clear()
+{
+	m_Entries.clear();
+	m_Poisoned = false;
+}
+
 bool VansGraphics::VansResourceStateTracker::ValidateAndBuild(
 	const std::vector<VansFrameSubmitNode>& nodes,
 	std::string* error)
@@ -62,6 +120,10 @@ bool VansGraphics::VansResourceStateTracker::ValidateAndBuild(
 				return fail("invalid resource contract in submit node: " + node.name);
 			if (access.image && access.layout == VK_IMAGE_LAYOUT_UNDEFINED)
 				return fail("image resource contract has undefined layout: " + access.name);
+			if ((access.physical.image != VK_NULL_HANDLE && access.physical.buffer != VK_NULL_HANDLE) ||
+				(access.physical.image != VK_NULL_HANDLE && !access.image) ||
+				(access.physical.buffer != VK_NULL_HANDLE && access.image))
+				return fail("physical resource identity does not match access type: " + access.name);
 			if (access.write && access.hostReadable && node.fence == VK_NULL_HANDLE)
 				return fail("host-readable resource writer has no completion fence: " + access.name);
 
@@ -69,6 +131,9 @@ bool VansGraphics::VansResourceStateTracker::ValidateAndBuild(
 			if (previous != lastAccesses.end())
 			{
 				const ResourceAccessState& prior = previous->second;
+				if ((prior.access.physical.IsValid() || access.physical.IsValid()) &&
+					!(prior.access.physical == access.physical))
+					return fail("submit graph uses inconsistent physical resource identity: " + access.name);
 				const bool hazard = prior.access.write || access.write;
 				if (hazard && prior.queue != node.queue
 					&& !HasSubmitDependencyPath(prior.nodeIndex, nodeIndex, dependencyEdges))

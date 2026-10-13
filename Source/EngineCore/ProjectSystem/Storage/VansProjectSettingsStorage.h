@@ -7,7 +7,6 @@ namespace Vans
 {
 	struct VansProjectPhysicsSettingsData;
 	struct VansProjectRenderSettingsData;
-	struct VansNavigationSettings;
 
 	class VansProjectSettingsStorage
 	{
@@ -33,14 +32,5 @@ namespace Vans
 			const VansProjectPhysicsSettingsData& settings,
 			std::string& error);
 
-		static bool LoadNavigationSettings(
-			const std::string& filePath,
-			VansNavigationSettings& settings,
-			std::string& error);
-
-		static bool SaveNavigationSettings(
-			const std::string& filePath,
-			const VansNavigationSettings& settings,
-			std::string& error);
 	};
 }

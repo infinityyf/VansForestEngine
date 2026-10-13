@@ -4,7 +4,7 @@
 // =============================================================================
 // GrassBoneSim.comp — Verlet-based bone physics for GPU-driven grass
 //
-// Dispatch: (instanceCount / 64, 1, 1)
+// Dispatch: 每个工作组读取实例段工作表。
 // Each thread processes all bones of one grass instance.
 // =============================================================================
 
@@ -12,6 +12,11 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 // Set 0: global camera UBO (same pattern as all other engine compute passes)
 #include "../Common/CameraData.glsl"
+#include "../Grass/GrassWorkgroup.glsl"
+layout(std430, set = 1, binding = 7) readonly buffer GrassWorkBuffer
+{
+    GrassWorkgroup grassWorkgroups[];
+};
 
 // Set 1: vegetation simulation buffers
 // ── Instance data (read only) ───────────────────────────────────────────────
@@ -36,7 +41,7 @@ layout(std430, set = 1, binding = 1) buffer BoneBuffer
     GrassBone bones[];
 };
 
-// 当前和上一帧骨骼矩阵：更新前保存历史，供草的运动向量使用。
+// 当前矩阵和上一轮更新的矩阵共享一个连续缓冲区。
 layout(std430, set = 1, binding = 2) buffer BoneMatrixBuffer
 {
     mat4 boneMatrices[];
@@ -87,6 +92,7 @@ layout(push_constant) uniform PushConstants
     float grassHeight;         // blade height in world units — controls segment length
     uint  cullVisibilityEnabled; // GrassCull 已在本帧写入 visibilityFlags 时为 1
     uint  boneCount;          // number of bones per instance (must match CPU m_BoneCountPerInstance)
+    uint  workgroupOffset;
 } pc;
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -171,25 +177,29 @@ vec3 buildBoneMatrixPT(vec3 pos, vec3 tangent, vec3 prevRight, out mat4 m)
 
 void main()
 {
-    uint instanceID = gl_GlobalInvocationID.x;
-    if (instanceID >= instances.length())
+    GrassWorkgroup work = grassWorkgroups[pc.workgroupOffset + gl_WorkGroupID.x];
+    uint localInstance = work.localBase + gl_LocalInvocationID.x;
+    if (localInstance >= work.instanceCount)
+        return;
+    uint instanceID = work.baseInstance + localInstance;
+
+    // 不可见实例不会绘制；矩阵保持为上次实际模拟的结果。
+    if (pc.cullVisibilityEnabled != 0 && visibilityFlags[instanceID] == 0u)
         return;
 
     uint historyOffset=uint(instances.length())*pc.boneCount;
     for(uint j=0u;j<pc.boneCount;++j)
         boneMatrices[historyOffset+instanceID*pc.boneCount+j]=boneMatrices[instanceID*pc.boneCount+j];
 
-    // cull 已判定不可见的实例不再执行 terrain / LOD / wind / Verlet / matrix 写入。
-    // 当前绘制路径会通过 visibilityFlags 或 compact visibleIndices 跳过它，保留旧矩阵是安全的。
-    if (pc.cullVisibilityEnabled != 0 && visibilityFlags[instanceID] == 0u)
-        return;
-
     GrassInstance inst = instances[instanceID];
     // Derive segment length from the runtime blade height so JSON can control blade size.
     uint  BONE_COUNT = pc.boneCount;  // runtime bone count from push constant
     float segLength = (pc.grassHeight / float(BONE_COUNT - 1u)) * length(inst.modelMatrix[1].xyz);
     float dt = pc.deltaTime;
-    uint boneBase = instanceID * BONE_COUNT;
+    // Persistent bone state is bone-major; skinning matrices remain instance-major
+    // so the main and shadow vertex shaders keep contiguous per-blade reads.
+    uint rootBoneIndex = work.baseInstance * BONE_COUNT + localInstance;
+    uint stateStride = work.stateStride;
 
     // ── LOD: compute XZ distance to camera (position from CameraData UBO) ──────
     vec2 camXZ   = vec2(cameraPosition.x, cameraPosition.z);
@@ -197,8 +207,8 @@ void main()
     float dist   = distance(instXZ, camXZ);
 
     vec3 rootPos = grassRoot(inst);
-    bones[boneBase].position = vec4(rootPos, 1.0);
-    bones[boneBase].velocity = vec4(rootPos, 0.0);
+    bones[rootBoneIndex].position = vec4(rootPos, 1.0);
+    bones[rootBoneIndex].velocity = vec4(rootPos, 0.0);
 
     // ── Beyond fade distance: skip Verlet entirely, render in frozen rest-pose ─
     if (dist >= pc.lodFadeDist)
@@ -212,7 +222,7 @@ void main()
         vec3 prevRight = seedRight;
         for (uint j = 0; j < BONE_COUNT; ++j)
         {
-            uint idx = boneBase + j;
+            uint idx = j * stateStride + rootBoneIndex;
             vec3 pos = bones[idx].position.xyz;
             vec3 tangent;
             if (j == 0)
@@ -223,17 +233,18 @@ void main()
             }
             else if (j < BONE_COUNT - 1)
             {
-                tangent = normalize(bones[idx + 1].position.xyz - pos);
+                tangent = normalize(bones[idx + stateStride].position.xyz - pos);
             }
             else
             {
-                tangent = normalize(pos - bones[idx - 1].position.xyz);
+                tangent = normalize(pos - bones[idx - stateStride].position.xyz);
             }
             mat4 boneMat;
             // Store root-relative position so the vertex shader can add subRoot.xyz
             // (world-space) without double-counting the instance world translation.
             prevRight = buildBoneMatrixPT(pos - rootPos, tangent, prevRight, boneMat);
-            boneMatrices[instanceID * BONE_COUNT + j] = boneMat * grassInverseBind(inst, float(j) * segLength);
+            mat4 skinMatrix = boneMat * grassInverseBind(inst, float(j) * segLength);
+            boneMatrices[instanceID * BONE_COUNT + j] = skinMatrix;
         }
         return;
     }
@@ -257,10 +268,10 @@ void main()
     // Simulate bones 1..5 (Verlet integration)
     for (uint j = 1; j < BONE_COUNT; ++j)
     {
-        uint idx = boneBase + j;
+        uint idx = j * stateStride + rootBoneIndex;
         vec3 curPos  = bones[idx].position.xyz;
         vec3 prevPos = bones[idx].velocity.xyz;  // velocity.xyz stores prevPosition
-        vec3 parentPos = bones[idx - 1].position.xyz;
+        vec3 parentPos = bones[idx - stateStride].position.xyz;
 
         // Rest-pose target for this bone
         vec3 restDir   = normalize(bones[idx].restOffset.xyz);
@@ -311,7 +322,7 @@ void main()
     vec3 prevRight = seedRight;
     for (uint j = 0; j < BONE_COUNT; ++j)
     {
-        uint idx = boneBase + j;
+        uint idx = j * stateStride + rootBoneIndex;
         vec3 pos = bones[idx].position.xyz;
         vec3 tangent;
         if (j == 0)
@@ -321,17 +332,18 @@ void main()
         }
         else if (j < BONE_COUNT - 1)
         {
-            tangent = normalize(bones[idx + 1].position.xyz - pos);
+            tangent = normalize(bones[idx + stateStride].position.xyz - pos);
         }
         else
         {
-            tangent = normalize(pos - bones[idx - 1].position.xyz);
+            tangent = normalize(pos - bones[idx - stateStride].position.xyz);
         }
 
         mat4 boneMat;
         // Store root-relative position so the vertex shader can add subRoot.xyz
         // (world-space) without double-counting the instance world translation.
         prevRight = buildBoneMatrixPT(pos - rootPos, tangent, prevRight, boneMat);
-        boneMatrices[instanceID * BONE_COUNT + j] = boneMat * grassInverseBind(inst, float(j) * segLength);
+        mat4 skinMatrix = boneMat * grassInverseBind(inst, float(j) * segLength);
+        boneMatrices[instanceID * BONE_COUNT + j] = skinMatrix;
     }
 }

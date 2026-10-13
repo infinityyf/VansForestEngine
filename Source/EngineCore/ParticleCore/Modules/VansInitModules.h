@@ -12,11 +12,16 @@ namespace VansGraphics
     // 所有模块重写 ExecuteInit；Execute 不做任何事。
     // ============================================================
 
+    enum class VansParticleLifetimeAgeOperation { None, Multiply, Replace };
+
     // ── InitLifetime — 初始化粒子生命周期 ─────────────────────────────────
     class VansInitLifetimeModule : public VansParticleModule
     {
     public:
         VansFloatCurve m_Lifetime;  // 生命周期曲线（RandomBetween 最常用）
+        VansParticleLifetimeAgeOperation m_CollectionAgeOperation = VansParticleLifetimeAgeOperation::None;
+        VansFloatCurve m_CollectionAgeCurve;
+        float m_CollectionAgeLoopPeriod = 0; // 0 为端点保持；正数为从零开始的秒制周期。
 
         VansInitLifetimeModule()
         {
@@ -33,8 +38,8 @@ namespace VansGraphics
     };
 
     // ── InitVelocity — 初始化粒子初速度 ───────────────────────────────────
-    // 支持 Cone 圆锥发射和 Random 全向随机两种模式
-    enum class VansInitVelocityMode { Cone, Random };
+    // 支持 Cone 圆锥发射、Random 全向随机与 Box 分轴速度范围。
+    enum class VansInitVelocityMode { Cone, Random, Box };
 
     class VansInitVelocityModule : public VansParticleModule
     {
@@ -42,6 +47,7 @@ namespace VansGraphics
         VansInitVelocityMode m_VelocityMode = VansInitVelocityMode::Cone;
         float                m_ConeAngle    = 25.f;  // 圆锥半角（度）
         float                m_Speed        = 2.f;   // 初速度大小
+        glm::vec3 m_MinVelocity{0}, m_MaxVelocity{0};
 
         void Execute(VansParticlePool&, float, const glm::mat4&) const override {}
 
@@ -75,6 +81,8 @@ namespace VansGraphics
     {
     public:
         glm::vec4 m_Color = glm::vec4(1.f);
+        // 独立的初始化 alpha 倍率；默认空，不消耗随机数或分配粒子缓存。
+        std::vector<VansFloatCurve> m_AlphaScales;
 
         void Execute(VansParticlePool&, float, const glm::mat4&) const override {}
 
@@ -118,6 +126,16 @@ namespace VansGraphics
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
                          uint32_t endIndex, const glm::mat4& localToWorld) const override;
 
+    };
+
+    class VansInitPositionOffsetModule : public VansParticleModule
+    {
+    public:
+        glm::vec3 m_MinOffset{0},m_MaxOffset{0};
+        bool m_LocalCoordinates=true;
+        void Execute(VansParticlePool&,float,const glm::mat4&) const override {}
+        void ExecuteInit(VansParticlePool& pool,uint32_t startIndex,uint32_t endIndex,
+                         const glm::mat4& localToWorld) const override;
     };
 
 } // namespace VansGraphics

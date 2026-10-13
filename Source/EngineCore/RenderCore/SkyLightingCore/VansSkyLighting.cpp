@@ -18,7 +18,7 @@ namespace VansGraphics
         m_Radiance = std::make_unique<VansTexture>();
         m_SourceHash = m_Radiance->LoadCubeTexture(commandBuffer, sourceDirectory);
         // 发布包只含 cooked shader，使用实际加载的二进制哈希，避免运行时依赖源码路径。
-        for (const char* name : {"PreConDiffuseEnvironment", "PreConSpecularEnvironment", "ReflectionProbeCapture", "ReflectionProbeCaptureSky"})
+        for (const char* name : {"PreConDiffuseEnvironment", "PreConSpecularEnvironment", "ReflectionProbeCapture", "ClothProbeCapture", "ReflectionProbeCaptureSky"})
         {
             const auto* shader = VansShaderManager::Get().FindShader(name);
             if (!shader || !shader->GetShaderBinaryHash()) throw std::runtime_error(std::string("Sky shader missing: ") + name);
@@ -223,10 +223,19 @@ namespace VansGraphics
 		device.WaitForDevice();
 
         if (!submitted) throw std::runtime_error("Sky lighting convolution failed");
-        if (!m_Parameters.CreatVulkanBuffer(logicalDevice, sizeof(glm::vec4), VK_FORMAT_R32_SFLOAT,
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
-            throw std::runtime_error("Sky lighting parameter allocation failed");
-        if (!UploadFrame({})) throw std::runtime_error("Sky lighting parameter upload failed");
+        for (std::uint32_t slot = 0; slot < m_Parameters.size(); ++slot)
+        {
+            if (!m_Parameters[slot].CreatVulkanBuffer(logicalDevice, sizeof(glm::vec4),
+                VK_FORMAT_R32_SFLOAT, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
+                !UploadFrame({}, slot))
+            {
+                for (VansVKBuffer& allocated : m_Parameters)
+                    if (allocated.GetNativeBuffer() != VK_NULL_HANDLE)
+                        allocated.DestroyVulkanBuffer(logicalDevice);
+                throw std::runtime_error("Sky lighting frame parameter initialization failed");
+            }
+        }
         VANS_LOG("[SkyLighting] Static HDR source ready: format=" << m_Radiance->GetImage().GetImageCreateInfo().format
             << " resolution=" << m_Radiance->GetImage().GetImageDimension().width
             << " sourceKey=" << CaptureSourceKey(1.0f));
@@ -238,14 +247,18 @@ namespace VansGraphics
         std::ostringstream key; key << std::hex << m_SourceHash << '-' << intensityBits;
         return key.str();
     }
-    bool VansSkyLighting::UploadFrame(const VansSkyLightingFrame& frame)
+    bool VansSkyLighting::UploadFrame(const VansSkyLightingFrame& frame, std::uint32_t slot)
     {
         const glm::vec4 data(frame.radianceScale, 0.0f, 0.0f, 0.0f);
-        return m_Parameters.GetNativeBuffer() != VK_NULL_HANDLE && m_Parameters.SetBufferData(&data, 0, sizeof(data));
+        return slot < m_Parameters.size() &&
+            m_Parameters[slot].GetNativeBuffer() != VK_NULL_HANDLE &&
+            m_Parameters[slot].SetBufferData(&data, 0, sizeof(data));
     }
     void VansSkyLighting::Destroy(VkDevice device)
     {
         m_Radiance.reset(); m_Diffuse.reset(); m_Specular.reset();
-        m_SH.DestroyVulkanBuffer(device); m_Parameters.DestroyVulkanBuffer(device);
+        m_SH.DestroyVulkanBuffer(device);
+        for (VansVKBuffer& buffer : m_Parameters)
+            buffer.DestroyVulkanBuffer(device);
     }
 }

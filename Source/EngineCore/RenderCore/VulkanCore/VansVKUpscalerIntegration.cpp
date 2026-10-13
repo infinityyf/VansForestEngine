@@ -20,6 +20,7 @@ namespace VansGraphics
 		auto* renderPassManager = VansRenderPassManager::GetInstance();
 		if (renderPassManager == nullptr)
 			return false;
+		const std::uint32_t gbufferTargetSlot = GetCurrentGBufferTargetSlot();
 
 		// These are the final layouts declared by the scene-color, GBuffer and
 		// motion-vector render passes. Render-pass implicit transitions do not pass
@@ -53,7 +54,7 @@ namespace VansGraphics
 			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) ||
 			!synchronizeReadOnlyInput(
-				renderPassManager->GetDepth(),
+				renderPassManager->GetDepth(gbufferTargetSlot),
 				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
 					VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
 					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -62,7 +63,7 @@ namespace VansGraphics
 					VK_ACCESS_SHADER_READ_BIT,
 				VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) ||
 			!synchronizeReadOnlyInput(
-				renderPassManager->GetMotionVector(),
+				renderPassManager->GetMotionVector(gbufferTargetSlot),
 				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
 					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 				VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
@@ -100,9 +101,10 @@ namespace VansGraphics
 		if (renderPassManager == nullptr || !m_HasCurrentRenderView)
 			return false;
 
+		const std::uint32_t gbufferTargetSlot = GetCurrentGBufferTargetSlot();
 		VansVKImage& color = renderPassManager->GetColor();
-		VansVKImage& depth = renderPassManager->GetDepth();
-		VansVKImage& motion = renderPassManager->GetMotionVector();
+		VansVKImage& depth = renderPassManager->GetDepth(gbufferTargetSlot);
+		VansVKImage& motion = renderPassManager->GetMotionVector(gbufferTargetSlot);
 		const VkExtent2D outputExtent = CalculateUpscalerOutputExtent();
 		const VansTemporalCameraSnapshot cameraSnapshot =
 			CaptureTemporalCameraSnapshot();
@@ -122,7 +124,7 @@ namespace VansGraphics
 		output.renderHeight = m_RenderHeight;
 		output.outputWidth = outputExtent.width;
 		output.outputHeight = outputExtent.height;
-		output.frameIndex = cameraSnapshot.frameIndex;
+		output.frameTokenIndex = static_cast<std::uint32_t>(CurrentFrameContext().frameNumber);
 		output.jitterPixels = cameraSnapshot.jitter.samplePixels;
 		output.motionVectorScale = { -1.0f, -1.0f };
 		output.view = cameraSnapshot.view;
@@ -168,8 +170,9 @@ namespace VansGraphics
 			return false;
 		}
 
-		auto& depth = renderPassManager->GetDepth();
-		auto& motionVector = renderPassManager->GetMotionVector();
+		const std::uint32_t gbufferTargetSlot = GetCurrentGBufferTargetSlot();
+		auto& depth = renderPassManager->GetDepth(gbufferTargetSlot);
+		auto& motionVector = renderPassManager->GetMotionVector(gbufferTargetSlot);
 		auto& sceneColorHDR = renderPassManager->GetColor();
 		const VkExtent2D displayExtent = m_FSRController.GetDisplayExtent();
 		const VansTemporalCameraSnapshot cameraSnapshot =
@@ -315,7 +318,7 @@ namespace VansGraphics
 		if (renderPassManager == nullptr)
 			return;
 
-		VansVKImage& opaqueOnly = renderPassManager->GetOpaqueSceneColor();
+		VansVKImage& opaqueOnly = renderPassManager->GetOpaqueSceneColor(GetFrameResourceSlot());
 		VansVKImage& sceneColor = renderPassManager->GetColor();
 		VansVKImage& reactive = m_FSRController.GetReactiveMaskImage();
 		VansVKImage& transparency = m_FSRController.GetTransparencyAndCompositionImage();
@@ -339,6 +342,7 @@ namespace VansGraphics
 			opaqueOnly.GetImageCreateInfo(),
 			sceneColor.GetImage(),
 			sceneColor.GetImageCreateInfo());
+		CurrentFrameContext().fsrReactiveMaskWritten = reactiveGenerated;
 
 		const VkImageLayout transparencyLayout = transparency.GetImageLayout();
 		if (reactiveGenerated)
@@ -379,6 +383,7 @@ namespace VansGraphics
 				transparency,
 				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 				{ maskCopy });
+			CurrentFrameContext().fsrTransparencyMaskWritten = true;
 
 			VansRenderGraphVulkanSyncRecorder::RecordImageTransition(
 				commandBuffer,
@@ -420,6 +425,7 @@ namespace VansGraphics
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 		VkClearColorValue zeroMask{};
 		commandBuffer.ClearColorImage(transparency, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, zeroMask);
+		CurrentFrameContext().fsrTransparencyMaskWritten = true;
 		VansRenderGraphVulkanSyncRecorder::RecordImageTransition(
 			commandBuffer,
 			transparency,
@@ -431,6 +437,32 @@ namespace VansGraphics
 			VK_IMAGE_LAYOUT_GENERAL);
 		input.transparencyAndComposition = transparency.GetImage();
 		input.transparencyAndCompositionCreateInfo = transparency.GetImageCreateInfo();
+	}
+
+	void VansVKDevice::RestoreFSRDepthLayout(VansVKCommandBuffer& commandBuffer)
+	{
+		auto* passes = VansRenderPassManager::GetInstance();
+		if (passes == nullptr)
+			return;
+
+		// FidelityFX returns COMPUTE_READ depth to shader-read layout. Its depth
+		// view excludes stencil, which retained the depth/stencil read layout.
+		VansVKImage& depth = passes->GetDepth(GetCurrentGBufferTargetSlot());
+		VkImageMemoryBarrier depthBarrier{};
+		depthBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		depthBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		depthBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+			VK_ACCESS_SHADER_READ_BIT;
+		depthBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		depthBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+		depthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		depthBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		depthBarrier.image = depth.GetImage();
+		depthBarrier.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0,
+			VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
+		commandBuffer.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, {}, {}, { depthBarrier });
+		depth.SetTrackedImageLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 	}
 
 	void VansVKDevice::RecordFinalDisplayToSwapchain()
@@ -562,7 +594,8 @@ namespace VansGraphics
 			m_RenderHeight,
 			outputExtent.width,
 			outputExtent.height,
-			m_UpscalerOutputImage);
+			m_UpscalerOutputImage,
+			m_ConfiguredFramesInFlight);
 		if (!m_FSREnabled)
 		{
 			VANS_LOG_ERROR("[FSR] Failed to initialize upscaling context; using native HDR display fallback");
@@ -776,13 +809,15 @@ namespace VansGraphics
 		m_RenderWidth = renderExtent.width;
 		m_RenderHeight = renderExtent.height;
 		renderPassManager->SetupVansDeferredRenderPass(
-			m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue,
-			renderExtent);
+			m_VansVKLogicDevice, m_MaintenanceGraphicsCommandBuffer, m_VansVKGraphicsQueue,
+			renderExtent, m_ConfiguredFramesInFlight);
 		renderPassManager->SetupVansSkyMotionVectorRenderPass(m_VansVKLogicDevice, renderExtent);
-		renderPassManager->SetupVansHairVisibilityPass(m_VansVKLogicDevice, m_VansVKPhysicalDevice, renderExtent);
+		renderPassManager->SetupVansHairVisibilityPass(m_VansVKLogicDevice, m_VansVKPhysicalDevice,
+			renderExtent);
 		renderPassManager->SetupVansHairDepthResolvePass(m_VansVKLogicDevice, renderExtent);
-		renderPassManager->SetupVansHairLightingPass(m_VansVKLogicDevice, renderExtent);
-		renderPassManager->SetupVansDecalRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, renderExtent);
+		renderPassManager->SetupVansHairLightingPass(m_VansVKLogicDevice, renderExtent,
+			m_ConfiguredFramesInFlight);
+		renderPassManager->SetupVansDecalRenderPass(m_VansVKLogicDevice, m_MaintenanceGraphicsCommandBuffer, m_VansVKGraphicsQueue, renderExtent, m_ConfiguredFramesInFlight);
 		renderPassManager->SetupVansWaterGBufferPass(m_VansVKLogicDevice, renderExtent);
 		PrepareResolutionDependentRenderingData();
 		if (!m_Scene->ReinitializeEnvironmentRendering(
@@ -897,20 +932,37 @@ namespace VansGraphics
 		const uint32_t requestedOutputHeight = config.output.HasExplicitExtent()
 			? config.output.height
 			: outputHeight;
+		const VansUpscalerManager previousUpscalerManager = m_UpscalerManager;
+		const VkExtent2D previousOutputExtent = m_RequestedUpscalerOutputExtent;
+		const bool previousUpscalerConfigDirty = m_UpscalerConfigDirty;
+		const float previousFsrSharpness = m_FSRController.GetSharpness();
+		const bool previousFsrDebugView = m_FSRController.IsDebugViewEnabled();
 		VansUpscalerSelectionChange selection = RequestUpscalerConfig(
 			config.upscaler,
 			requestedOutputWidth,
 			requestedOutputHeight);
 		if (!selection.accepted)
 			return selection;
+		if (!ApplyCommandRecordingSettings(
+			config.commandRecording.parallelEnabled,
+			config.commandRecording.framesInFlight,
+			config.commandRecording.asyncComputeEnabled))
+		{
+			m_UpscalerManager = previousUpscalerManager;
+			m_RequestedUpscalerOutputExtent = previousOutputExtent;
+			m_UpscalerConfigDirty = previousUpscalerConfigDirty;
+			m_FSRController.SetSharpness(previousFsrSharpness);
+			m_FSRController.SetDebugViewEnabled(previousFsrDebugView);
+			// Preserve the old requested settings, but do not restore a selected
+			// FSR backend whose SDK context failed during the frame-ring change.
+			DeactivateFailedFSRContext();
+			selection.accepted = false;
+			selection.error = "Command-recording frame resources could not be applied";
+			return selection;
+		}
 		m_AtmosphereQualityConfig = config.atmosphere;
 		m_NearMediaQualityConfig = config.nearMedia;
 		m_CloudShadowQualityConfig = config.cloudShadow;
-		ApplyCommandRecordingSettings(
-			config.commandRecording.parallelEnabled,
-			config.commandRecording.frameContextRingEnabled,
-			config.commandRecording.framesInFlight,
-			config.commandRecording.asyncComputeEnabled);
 		return selection;
 	}
 
@@ -1010,6 +1062,19 @@ namespace VansGraphics
 			<< " mipBias=" << GetTemporalUpscaleMipBias());
 	}
 
+	void VansVKDevice::DeactivateFailedFSRContext()
+	{
+		if (!m_FSRController.HasContextDestructionFailure())
+			return;
+		m_FSREnabled = false;
+		m_UpscalerManager.ActivateRuntimeFallback(
+			VansUpscalerBackend::Off,
+			VansUpscaleQualityMode::NativeAA,
+			VansUpscalerFallbackReason::RuntimeUnavailable,
+			"FSR context destruction failed; using native output until renderer restart");
+		m_UpscalerConfigDirty = true;
+	}
+
 	VansUpscalerCapabilities VansVKDevice::GetUpscalerCapabilities(
 		VansUpscalerBackend backend) const
 	{
@@ -1032,13 +1097,25 @@ namespace VansGraphics
 			break;
 		case VansUpscalerBackend::FSR:
 			capabilities.compiledIn = true;
-			capabilities.runtimeAvailable = VansFSR::QueryRuntimeCapability(
-				capabilities.featureVersion,
-				capabilities.unavailableReason);
+			if (m_FSRController.HasContextDestructionFailure())
+			{
+				capabilities.runtimeAvailable = false;
+				capabilities.unavailableReason =
+					"FSR context destruction failed; restart the renderer before using FSR";
+				capabilities.unavailableReasonCode =
+					VansUpscalerFallbackReason::RuntimeUnavailable;
+			}
+			else
+			{
+				capabilities.runtimeAvailable = VansFSR::QueryRuntimeCapability(
+					capabilities.featureVersion,
+					capabilities.unavailableReason);
+			}
 			capabilities.deviceSupported = capabilities.runtimeAvailable &&
 				m_VansVKPhysicalDevice != VK_NULL_HANDLE &&
 				m_VansVKLogicDevice != VK_NULL_HANDLE;
-			if (!capabilities.runtimeAvailable)
+			if (!capabilities.runtimeAvailable &&
+				capabilities.unavailableReasonCode == VansUpscalerFallbackReason::None)
 			{
 				capabilities.unavailableReasonCode =
 					VansUpscalerFallbackReason::RuntimeUnavailable;

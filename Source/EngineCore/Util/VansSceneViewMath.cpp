@@ -13,6 +13,29 @@ bool IsFinite(glm::vec3 value)
 }
 } // namespace
 
+bool VansSceneViewMath::IntersectTriangle(const glm::vec3& origin,const glm::vec3& direction,
+    const std::array<glm::vec3,3>& triangle,float limit,float& distance)
+{
+    distance=0;
+    if(!IsFinite(origin) || !IsFinite(direction) || !std::isfinite(limit) || limit<=0 ||
+        std::abs(glm::length(direction)-1.f)>.01f) return false;
+    for(const auto& point:triangle) if(!IsFinite(point)) return false;
+    const auto edge1=glm::dvec3(triangle[1])-glm::dvec3(triangle[0]);
+    const auto edge2=glm::dvec3(triangle[2])-glm::dvec3(triangle[0]);
+    const auto cross=glm::cross(glm::dvec3(direction),edge2);
+    const auto determinant=glm::dot(edge1,cross);
+    if(std::abs(determinant)<1.e-12) return false;
+    const auto fromVertex=glm::dvec3(origin)-glm::dvec3(triangle[0]);
+    const auto u=glm::dot(fromVertex,cross)/determinant;
+    if(u<0 || u>1) return false;
+    const auto q=glm::cross(fromVertex,edge1);
+    const auto v=glm::dot(glm::dvec3(direction),q)/determinant;
+    if(v<0 || u+v>1) return false;
+    const auto t=glm::dot(edge2,q)/determinant;
+    if(!std::isfinite(t) || t<0 || t>limit) return false;
+    distance=static_cast<float>(t); return true;
+}
+
 bool VansSceneViewMath::BuildRay(
 	const glm::mat4& viewProjection,
 	glm::vec2 normalizedPosition,

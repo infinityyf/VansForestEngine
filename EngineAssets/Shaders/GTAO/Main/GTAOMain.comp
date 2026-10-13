@@ -48,6 +48,25 @@ float HorizonSample(vec2 uv, vec3 center, vec3 view, float baseline, float mip)
     return mix(baseline, clamp(dot(delta / distance, view), -1.0, 1.0), weight);
 }
 
+vec2 SpatialNoise(ivec2 pixel)
+{
+    // XeGTAO 的 Hilbert + R2 分布：相邻像素覆盖不同方向/距离，避免白噪声聚团。
+    // 固定空间序列，不依赖帧号；直接计算 64x64 索引，不增加 LUT 纹理或 descriptor。
+    uvec2 p = uvec2(pixel) & 63u;
+    uint index = 0u;
+    for (uint level = 32u; level > 0u; level >>= 1u)
+    {
+        uvec2 region = uvec2(greaterThan(p & level, uvec2(0u)));
+        index += level * level * ((3u * region.x) ^ region.y);
+        if (region.y == 0u)
+        {
+            if (region.x != 0u) p = 63u - p;
+            p = p.yx;
+        }
+    }
+    return fract(0.5 + float(index) * vec2(0.75487766624669276, 0.56984029099805327));
+}
+
 float IntegrateGTAO(ivec2 pixel, float depth, vec3 normal)
 {
     const float pi = 3.14159265358979323846;
@@ -56,9 +75,7 @@ float IntegrateGTAO(ivec2 pixel, float depth, vec3 normal)
     vec3 center = GTAOViewPosition(uv, depth * 0.99999);
     vec3 view = normalize(-center);
     vec3 n = normalize(mat3(ViewMatrix) * normal);
-    // Stable spatial stratification; temporal noise requires an explicit history consumer.
-    vec2 noise = vec2(RandomInterLeavedWithScale(vec2(pixel), 0.0),
-                      RandomInterLeavedWithScale(vec2(pixel) + vec2(17.0, 31.0), 1.0));
+    vec2 noise = SpatialNoise(pixel);
     vec2 projectedRadius = gtaoParams.radiusMeters * abs(vec2(ProjectionMatrix[0][0], ProjectionMatrix[1][1])) * vec2(size) * 0.5 / depth;
     float visibility = 0.0;
     for (int slice = 0; slice < gtaoParams.sliceCount; ++slice)

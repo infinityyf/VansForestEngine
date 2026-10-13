@@ -543,35 +543,42 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 			ImGui::Separator();
 			Vans::EditorAPI::CommandRecordingSettingsSnapshot commandRecording =
 				renderAPI.GetCommandRecordingSettings();
+			const auto applyCommandRecording = [this, &renderAPI](
+				const Vans::EditorAPI::CommandRecordingSettingsSnapshot& settings)
+			{
+				const auto result = renderAPI.SetCommandRecordingSettings(settings);
+				m_CommandRecordingApplySucceeded = result.accepted;
+				m_CommandRecordingApplyMessage = result.message;
+			};
 			bool parallelRecording = commandRecording.parallelEnabled;
 			if (ImGui::Checkbox("Parallel Command Recording", &parallelRecording))
 			{
 				commandRecording.parallelEnabled = parallelRecording;
-				renderAPI.SetCommandRecordingSettings(commandRecording);
-			}
-			bool frameContextRing = commandRecording.frameContextRingEnabled;
-			if (ImGui::Checkbox("Frame Context Ring", &frameContextRing))
-			{
-				commandRecording.frameContextRingEnabled = frameContextRing;
-				if (commandRecording.framesInFlight < 2)
-					commandRecording.framesInFlight = 2;
-				renderAPI.SetCommandRecordingSettings(commandRecording);
+				applyCommandRecording(commandRecording);
 			}
 			int framesInFlight = static_cast<int>(commandRecording.framesInFlight);
-			ImGui::BeginDisabled(!commandRecording.frameContextRingEnabled);
 			ImGui::SetNextItemWidth(120.0f);
 			if (ImGui::SliderInt("Frames In Flight", &framesInFlight, 1, 2))
 			{
 				commandRecording.framesInFlight = static_cast<std::uint32_t>(framesInFlight);
-				renderAPI.SetCommandRecordingSettings(commandRecording);
+				applyCommandRecording(commandRecording);
 			}
-			ImGui::EndDisabled();
+			ImGui::TextDisabled("实际 GPU 在途帧上限：%u", commandRecording.effectiveFramesInFlight);
+			ImGui::TextDisabled("本次配置已观测在途峰值：%u", commandRecording.observedSubmittedFramePeak);
+			if (commandRecording.framesInFlight > commandRecording.effectiveFramesInFlight)
+				ImGui::TextDisabled("当前渲染路径仍按单帧复用 GPU 资源。");
 			bool asyncCompute = commandRecording.asyncComputeRequested;
 			if (ImGui::Checkbox("Async Compute", &asyncCompute))
 			{
 				commandRecording.asyncComputeRequested = asyncCompute;
-				renderAPI.SetCommandRecordingSettings(commandRecording);
+				applyCommandRecording(commandRecording);
 			}
+			if (!m_CommandRecordingApplyMessage.empty())
+				ImGui::TextColored(
+					m_CommandRecordingApplySucceeded
+						? ImVec4(0.45f, 0.85f, 0.55f, 1.0f)
+						: ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+					"%s", m_CommandRecordingApplyMessage.c_str());
 			ImGui::TextDisabled(
 				commandRecording.asyncComputeEnabled
 					? "独立 Compute Queue 已启用，GI 等计算任务将自动并行。"
@@ -580,10 +587,54 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 						: (commandRecording.asyncComputeRequested
 							? "设备没有独立 Compute Queue，已自动使用兼容渲染路径。"
 							: "设备没有独立 Compute Queue。")));
-			ImGui::TextDisabled("关闭 Frame Context Ring 时会回到旧的 CPU 等待提交路径。");
+			ImGui::TextDisabled("共享 GPU 资源会在上一帧退役后复用。");
 			ImGui::EndTabItem();
 		}
 
+        if (ImGui::BeginTabItem("Project Render Passes"))
+        {
+            const auto state=renderAPI.GetProjectRenderPassSettings();
+            const auto root=projectAPI.GetProjectRootPath();
+            if(!m_ProjectPassEditInitialized||m_ProjectPassProjectRoot!=root)
+            {m_ProjectPassGuids=state.assetGuids;m_ProjectPassProjectRoot=root;m_ProjectPassEditInitialized=true;m_ProjectPassApplyMessage.clear();}
+            ImGui::TextUnformatted("BeforeBuiltInRender");
+            DrawStringList("ProjectPassRoots",m_ProjectPassGuids,"");
+            ImGui::BeginDisabled(!state.available);
+            if(ImGui::Button("Apply Project Passes"))
+            {
+                const auto result=renderAPI.ApplyProjectRenderPassSettings(m_ProjectPassGuids);
+                m_ProjectPassApplySucceeded=result.accepted;
+                m_ProjectPassApplyMessage=result.accepted?"Applied in memory. Save project documents to persist.":result.error;
+            }
+            ImGui::SameLine();
+            if(ImGui::Button("Reload Pass List")){m_ProjectPassGuids=state.assetGuids;m_ProjectPassApplyMessage.clear();}
+            ImGui::EndDisabled();
+            if(!m_ProjectPassApplyMessage.empty())ImGui::TextColored(m_ProjectPassApplySucceeded?ImVec4(.45f,.85f,.55f,1):ImVec4(.95f,.45f,.4f,1),"%s",m_ProjectPassApplyMessage.c_str());
+            ImGui::Text("%u passes | %u drawn instances | generation %llu | %.2f MiB payload",state.passCount,state.draws,
+                static_cast<unsigned long long>(state.generation),state.allocatedBytes/(1024.0*1024.0));
+            if(!state.runtimeError.empty())ImGui::TextWrapped("%s",state.runtimeError.c_str());
+            for(const auto& pass:state.passes)
+            {
+                if(!ImGui::TreeNode(pass.passId.c_str()))continue;
+                ImGui::Text("%s | %s",pass.enabled?"Enabled":"Disabled",pass.submitted?"Submitted":"No submission");
+                if(pass.commandSlot!=UINT32_MAX)ImGui::Text("CB slot %u",pass.commandSlot);
+                if(pass.targetSlot!=UINT32_MAX)ImGui::Text("RT physical slot %u (GENERAL after submission)",pass.targetSlot);
+                ImGui::Text("%u batches | %u instances | %u image barriers",pass.batches,pass.instances,pass.imageBarriers);
+                ImGui::Text("Upload %.2f KiB | payload %.2f MiB",pass.uploadedBytes/1024.0,pass.payloadBytes/(1024.0*1024.0));
+                ImGui::Text("Unique scene candidates: %u",pass.candidates);
+                ImGui::Text("Inactive %u | Shader mismatch %u | Layer excluded %u",pass.inactive,pass.unmatchedShader,pass.excludedLayer);
+                ImGui::Text("Missing proxy %u | Dynamic unsupported %u | Capacity exceeded %u | Culled %u",
+                    pass.missingProxy,pass.unsupportedDynamic,pass.capacityExceeded,pass.cameraCulled);
+                for(const auto& shader:pass.shaders)ImGui::TextWrapped("Shader: %s",shader.c_str());
+                ImGui::TreePop();
+            }
+            ImGui::EndTabItem();
+        }
+		if (ImGui::BeginTabItem("Navigation"))
+		{
+			DrawNavigationSettings(editorAPI);
+			ImGui::EndTabItem();
+		}
 		if (ImGui::BeginTabItem("Physics"))
 		{
 			ImGui::SetNextItemWidth(160.0f);

@@ -176,11 +176,6 @@ namespace VansGraphics
 			VANS_LOG_ERROR("Could not get the number of swapchain images.");
 			return false;
 		}
-		else
-		{
-			VANS_LOG("get the number of swapchain images : " << images_count);
-		}
-
 		m_VansVKSwapChainImages.resize(images_count);
 		m_VansVKSwapChainImageViews.resize(images_count);
 		result = VansGraphics::vkGetSwapchainImagesKHR(logical_device, swapchain, &images_count, &m_VansVKSwapChainImages[0]);
@@ -189,6 +184,8 @@ namespace VansGraphics
 			VANS_LOG_ERROR("Could not enumerate swapchain images.");
 			return false;
 		}
+		m_VansVKSwapChainImages.resize(images_count);
+		m_VansVKSwapChainImageViews.resize(images_count);
 
 		// Create an image view for each swapchain image
 		for (size_t i = 0; i < images_count; i++)
@@ -215,6 +212,7 @@ namespace VansGraphics
 			}
 		}
 
+		m_VansVKImageCount = images_count;
 		return true;
 	}
 
@@ -292,6 +290,11 @@ namespace VansGraphics
 			VansGraphics::vkDestroySwapchainKHR(logical_device, m_VansVKSwapChain, nullptr);
 			m_VansVKSwapChain = VK_NULL_HANDLE;
 		}
+		if (m_VansVKOldSwapChain)
+		{
+			VansGraphics::vkDestroySwapchainKHR(logical_device, m_VansVKOldSwapChain, nullptr);
+			m_VansVKOldSwapChain = VK_NULL_HANDLE;
+		}
 		return true;
 	}
 
@@ -306,9 +309,13 @@ namespace VansGraphics
 		m_VansVKSwapChainImageViews.clear();
 		m_VansVKSwapChainImages.clear();
 
-		// Hand old swap chain off — CreateVulkanSwapChain will use it and destroy it
-		m_VansVKOldSwapChain = m_VansVKSwapChain;
-		m_VansVKSwapChain    = VK_NULL_HANDLE;
+		// A failed previous attempt may still own the old swapchain. Preserve it
+		// for the retry instead of replacing its handle with VK_NULL_HANDLE.
+		if (m_VansVKSwapChain != VK_NULL_HANDLE)
+		{
+			m_VansVKOldSwapChain = m_VansVKSwapChain;
+			m_VansVKSwapChain = VK_NULL_HANDLE;
+		}
 
 		if (!CreateVulkanSwapChain(physical_device, logical_device))
 		{
@@ -432,12 +439,14 @@ namespace VansGraphics
 			 m_VansVKOldSwapChain
 		};
 
-		result = VansGraphics::vkCreateSwapchainKHR(logical_device, &swapchain_create_info, nullptr, &m_VansVKSwapChain);
-		if ((VK_SUCCESS != result) || (VK_NULL_HANDLE == m_VansVKSwapChain)) 
+		VkSwapchainKHR createdSwapchain = VK_NULL_HANDLE;
+		result = VansGraphics::vkCreateSwapchainKHR(logical_device, &swapchain_create_info, nullptr, &createdSwapchain);
+		if ((VK_SUCCESS != result) || (VK_NULL_HANDLE == createdSwapchain))
 		{
 			VANS_LOG_ERROR("Could not create a swapchain.");
 			return false;
 		}
+		m_VansVKSwapChain = createdSwapchain;
 
 		if (VK_NULL_HANDLE != m_VansVKOldSwapChain)
 		{ 
@@ -450,6 +459,14 @@ namespace VansGraphics
 		{
 			return false;
 		}
+		const char* presentModeName = m_VansVKPresentMode == VK_PRESENT_MODE_MAILBOX_KHR
+			? "MAILBOX" : m_VansVKPresentMode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO" : "OTHER";
+		VANS_LOG("[VansVKSurface] Swapchain created. presentMode=" << presentModeName
+			<< "(" << static_cast<int>(m_VansVKPresentMode) << ")"
+			<< " requestedMinImages=" << swapchain_create_info.minImageCount
+			<< " actualImages=" << m_VansVKImageCount
+			<< " extent=" << m_VansVKSwapChainImageExtent.width
+			<< "x" << m_VansVKSwapChainImageExtent.height);
 		return true;
 	}
 }

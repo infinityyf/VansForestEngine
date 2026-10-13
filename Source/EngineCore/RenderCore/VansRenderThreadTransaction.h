@@ -13,6 +13,7 @@ namespace VansGraphics
 	public:
 		virtual ~IVansRenderThreadTransaction() = default;
 		virtual bool Execute(VansGraphicsDevice& backend) = 0;
+		virtual bool CanExecuteAfterFatal() const { return false; }
 	};
 
 	// Scene-owned 系统把低频 GPU/资源结构变更交给 RenderThread 的窄调度边界。

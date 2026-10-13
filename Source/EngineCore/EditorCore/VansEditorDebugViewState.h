@@ -6,6 +6,7 @@ namespace VansGraphics
 	{
 		bool wireframeMode = false;
 		bool vehicleDebugGizmos = false;
+		bool navigationPreviewGizmos = false;
 		bool hiZCullDebugVisualization = false;
 		bool skeletonDebugGizmos = false;
 		bool skeletonDebugSelectedOnly = true;

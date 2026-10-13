@@ -25,7 +25,6 @@ bool VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(VansScen
 	if (!scene.PrepareReflectionProbeRuntime(device))
 		return false;
 	scene.BindWaterSystemGlobalDescriptors();
-	scene.BindMaterialVideoDescriptorSet();
 	scene.UpdateGlobalTileLightDescriptors();
 
 	device.PrepareIESProfileData();

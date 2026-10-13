@@ -34,7 +34,9 @@ const VansActionServiceCapability& VansAudioActionCapability()
 					VansSerializedValue::Bool(true))
 			}),
 			VansActionCommandCapability("Audio.Loop", R::Create,
-				{ asset("sound"), normalized("volume"), pitch() }),
+                { asset("sound"), normalized("volume"), pitch(),
+                    VansActionCommandField("spatial",V::Bool,false,VansSerializedValue::Bool(false)),
+                    VansActionCommandField("position",V::Object,false,VansSerializedValue::Object({})) }),
 			VansActionCommandCapability("Audio.Update", R::Update,
 				{ VansActionCommandResourceField(), normalized("volume"), pitch() }),
 			VansActionCommandCapability("Audio.Stop", R::Release, {

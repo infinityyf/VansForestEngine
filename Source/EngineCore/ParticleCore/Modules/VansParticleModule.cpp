@@ -33,6 +33,24 @@ namespace VansGraphics
 
     float VansFloatCurve::Evaluate(float normalizedT, float r) const
     {
+        // 只改变显式配置的随机分布，默认 Uniform 保持原求值和随机流。
+        if ((m_Mode == FloatCurveMode::RandomBetween || m_Mode == FloatCurveMode::RandomBetweenCurves)
+            && m_RandomDistribution != VansParticleRandomDistribution::Uniform)
+        {
+            r = std::clamp(r, 0.f, 1.f);
+            if (m_RandomDistribution == VansParticleRandomDistribution::StandardBias)
+            {
+                const float b = std::clamp((m_RandomBias + 1.f) * .5f, 0.f, 1.f);
+                r = b <= 0 ? 0.f : b >= 1 ? 1.f : r / ((1.f-r)*(1.f/b-2.f)+1.f);
+            }
+            else
+            {
+                const float exponent = m_RandomBias < 0
+                    ? 20.f - 19.f * std::clamp(m_RandomBias+1.f, 0.f, 1.f)
+                    : 1.f - std::clamp(m_RandomBias, 0.f, 1.f);
+                r = r <= 0 ? 0.f : r >= 1 ? 1.f : exponent <= 0 ? 1.f : std::pow(r, exponent);
+            }
+        }
         switch (m_Mode)
         {
         case FloatCurveMode::Constant:

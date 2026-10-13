@@ -20,6 +20,8 @@ layout(set = 1, binding = 7) uniform TessellationParams
     float padding;
 } tessParams;
 
+#include "TerrainInteraction.glsl"
+
 const uint TerrainEdgeLeft = 1u;
 const uint TerrainEdgeRight = 2u;
 const uint TerrainEdgeTop = 4u;
@@ -64,10 +66,11 @@ float TerrainSampleBaseWorldHeight(vec2 worldXZ)
 float TerrainSampleDetailedWorldHeight(vec2 worldXZ)
 {
     float baseHeight = TerrainSampleBaseWorldHeight(worldXZ);
+    float interactionHeight = TerrainInteractionHeightOffset(worldXZ);
 #ifdef TERRAIN_MATERIAL_DISPLACEMENT
-    return baseHeight + TerrainSampleMaterialDisplacement(worldXZ, baseHeight);
+    return baseHeight + interactionHeight + TerrainSampleMaterialDisplacement(worldXZ, baseHeight);
 #else
-    return baseHeight;
+    return baseHeight + interactionHeight;
 #endif
 }
 

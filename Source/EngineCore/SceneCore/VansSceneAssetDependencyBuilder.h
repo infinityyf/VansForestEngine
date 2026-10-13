@@ -29,12 +29,18 @@ namespace Vans
 	class VansSceneAssetDependencyBuilder
 	{
 	public:
+		static bool ApplyTextureImportSettings(
+			VansSceneTextureResourceRequest& request,
+			const VansAssetMeta& meta,
+			std::string& error);
+
 		static VansSceneAssetDependencyBuildResult BuildResourcePlan(
 			VansAssetDatabase& database,
 			const VansSerializedValue& sceneDocument,
 			const std::filesystem::path& sceneSourcePath,
 			const std::unordered_map<std::string, std::string>& runtimeAssetBindings,
 			const VansAssetObjectRepository& objectRepository,
-			VansAssetDatabase* builtInAssetDatabase = nullptr);
+			VansAssetDatabase* builtInAssetDatabase = nullptr,
+			const std::vector<VansAssetGuid>& projectRenderPasses = {});
 	};
 }

@@ -26,12 +26,5 @@ namespace Vans
 
 		static nlohmann::json EncodePhysicsSettings(const VansProjectPhysicsSettingsData& settings);
 
-		static bool DecodeNavigationSettings(
-			const nlohmann::json& root,
-			VansNavigationSettings& settings,
-			std::string& error);
-
-		static nlohmann::json EncodeNavigationSettings(
-			const VansNavigationSettings& settings);
 	};
 }

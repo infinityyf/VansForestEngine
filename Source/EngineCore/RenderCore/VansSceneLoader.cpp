@@ -224,7 +224,8 @@ bool VansGraphics::VansScene::LoadProjectAssets(Vans::VansAssetDatabase& databas
 			sceneSourcePath,
 			Vans::VansProjectManager::Get().GetConfig().runtimeAssetBindings,
 			Vans::VansProjectManager::Get().GetAssetObjectRepository(),
-			Vans::VansProjectManager::Get().GetBuiltInAssetDatabase());
+			Vans::VansProjectManager::Get().GetBuiltInAssetDatabase(),
+			Vans::VansProjectManager::Get().GetProjectSettings().GetProjectRenderPasses());
 	LogSceneLoadPhase("projectAssets.dependencyPlan", phaseStart);
 	if (!assetBatch.success)
 		return false;
@@ -244,6 +245,12 @@ bool VansGraphics::VansScene::LoadProjectAssets(Vans::VansAssetDatabase& databas
 	phaseStart = SceneLoadClock::now();
 	if (!VansSceneResourceBatchExecutor::Execute(*this, assetBatch.resourcePlan))
 		return false;
+	std::string passError;
+	if (!m_ProjectRenderPasses.Configure(assetBatch.resourcePlan, passError))
+	{
+		VANS_LOG_ERROR("[ProjectRenderPass] " << passError);
+		return false;
+	}
 	LogSceneLoadPhase("projectAssets.resourceBatch", phaseStart);
 
 	phaseStart = SceneLoadClock::now();
@@ -325,6 +332,12 @@ bool VansGraphics::VansScene::LoadPackagedProjectAssets(
 				Vans::VansProjectManager::Get().EnumerateAssetRecords());
 		if (!VansSceneResourceBatchExecutor::Execute(*this, packagePlan.resourcePlan, loadContext))
 			return false;
+		std::string passError;
+		if (!m_ProjectRenderPasses.Configure(packagePlan.resourcePlan, passError))
+		{
+			VANS_LOG_ERROR("[ProjectRenderPass] " << passError);
+			return false;
+		}
 		LogSceneLoadPhase("packagedProjectAssets.resourceBatch", phaseStart);
 
 		phaseStart = SceneLoadClock::now();
@@ -372,7 +385,7 @@ bool VansGraphics::VansScene::EnsureProjectAssetDependencies(Vans::VansAssetData
     auto& project = Vans::VansProjectManager::Get();
     auto batch = Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(database, sceneDocument,
         sceneSourcePath, project.GetConfig().runtimeAssetBindings, project.GetAssetObjectRepository(),
-        project.GetBuiltInAssetDatabase());
+        project.GetBuiltInAssetDatabase(), project.GetProjectSettings().GetProjectRenderPasses());
     if (!batch.success) return false;
     auto& plan = batch.resourcePlan;
     const auto removeLoaded = [](auto& entries, const auto& loaded)

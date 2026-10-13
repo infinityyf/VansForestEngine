@@ -8,6 +8,8 @@ layout(set = 1, binding = 2) uniform sampler2D splatMap1;
 layout(set = 1, binding = 3) uniform sampler2D terrainAlbedos[8];
 layout(set = 1, binding = 4) uniform sampler2D terrainNormals[8];
 layout(set = 1, binding = 5) uniform sampler2D terrainRoughness[8];
+layout(set = 1, binding = 10) uniform sampler2D terrainInteractionAlbedo;
+layout(set = 1, binding = 11) uniform sampler2D terrainInteractionNormal;
 
 layout(location = 0) out vec4 outNormal;
 layout(location = 1) out vec4 outGbuffer0;
@@ -107,7 +109,33 @@ void TerrainWriteDeferred(
     if (dot(blendedTangentNormal, blendedTangentNormal) <= 1e-8)
         blendedTangentNormal = vec3(0.0, 0.0, 1.0);
 
-    vec3 geometricNormal = TerrainHeightfieldNormal(terrainUV, heightDetailGradient);
+    vec3 geometricNormal = TerrainHeightfieldNormal(terrainUV,
+        heightDetailGradient + TerrainInteractionHeightGradient(worldPosition.xz));
+    // 交互输出改变表面基底，原有 Terrain 材质切线法线仍在此基底上保留。
+    // 当高度和法线由同一表面产生时，覆盖目标基底而非重复叠加同一高度梯度。
+    if (terrainInteraction.channels.x!=0u || terrainInteraction.channels.y!=0u)
+    {
+        vec2 interactionUV; float coverage=TerrainInteractionCoverage(worldPosition.xz,interactionUV);
+        if (coverage>0)
+        {
+            if (terrainInteraction.channels.x!=0u)
+            {
+                vec4 albedo=textureLod(terrainInteractionAlbedo,interactionUV,0);
+                float alpha=clamp(albedo.a,0,1);
+                if (alpha>1e-6)
+                    blendedAlbedo=mix(blendedAlbedo,albedo.rgb/alpha,alpha*coverage*terrainInteraction.response.x);
+            }
+            if (terrainInteraction.channels.y!=0u)
+            {
+                vec4 normal=textureLod(terrainInteractionNormal,interactionUV,0);
+                float alpha=clamp(normal.a,0,1);
+                vec3 decoded=alpha>1e-6?normal.xyz/alpha*2-1:vec3(0);
+                if (dot(decoded,decoded)>1e-8)
+                    geometricNormal=normalize(mix(geometricNormal,normalize(decoded),
+                        alpha*coverage*terrainInteraction.response.y));
+            }
+        }
+    }
 
     // River coverage and the rain film are sources for the Type 2 wet-surface
     // response. Accumulated puddle water is evaluated independently below.

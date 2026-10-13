@@ -9,6 +9,8 @@
 #include "WeatherCore/VansSurfaceWeather.h"
 #include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "BRDFData/VansLight.h"
+#include "VansRenderRuntimeConfig.h"
+#include <array>
 #include <cstdint>
 #include <vector>
 #include <queue>
@@ -69,6 +71,7 @@ namespace VansGraphics
 			VansMesh* m_SourceMesh = nullptr;
 			uint32_t m_SubmeshIndex = UINT32_MAX;
 			std::string m_EntityGuid;
+			std::string m_RenderLayer = "Default";
 			std::string m_ParentEntityGuid;
 
 			VansMesh* GetDrawMesh() const { return m_DrawMesh ? m_DrawMesh : m_Mesh; }
@@ -139,6 +142,9 @@ namespace VansGraphics
 		//描述符相关
 		VkDescriptorSetLayout modelBufferLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> modelBufferDescriptorSets;
+		std::array<bool, VansCommandRecordingConfig::MaximumFramesInFlight> m_AnimationDescriptorDirtySlots{};
+		bool EnsureAnimationDescriptorSets();
+		void UpdateAnimationDescriptorSetForSlot(std::uint32_t slot);
 
 		//sampler imgae 描述符
 		VkDescriptorSetLayout textureResourceLayout = VK_NULL_HANDLE;
@@ -180,7 +186,14 @@ namespace VansGraphics
 
 		virtual void MarkAnimationDescriptorDirty() {}
 
-		void MarkDescriptorSetsDirty() { m_DescriptorsetsDirty = true; }
+		virtual void MarkDescriptorSetsDirty() { m_DescriptorsetsDirty = true; }
+		virtual void BindFrameDescriptorSets(
+			VkDescriptorSet globalSet, VkDescriptorSet objectSet, std::uint32_t slot)
+		{
+			(void)slot;
+			if (!m_UsedDescSets.empty()) m_UsedDescSets[0] = globalSet;
+			if (m_UsedDescSets.size() > 2) m_UsedDescSets[2] = objectSet;
+		}
 
 		void RecreateDescriptorSets(
 			VansCamera* camera,
@@ -235,6 +248,16 @@ namespace VansGraphics
 			std::uint64_t stableOrder,
 			float cameraDepth,
 			VansDrawPacket& packet);
+
+		bool CopyProjectDrawBindings(std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets) const
+		{
+			// 就绪性由真实布局/集合决定；Vegetation 的专用初始化标记不适用于普通节点。
+			if (m_UsedDescSetLayouts.size() < 4 || m_UsedDescSets.size() != m_UsedDescSetLayouts.size()) return false;
+			for (std::size_t i = 0; i < m_UsedDescSets.size(); ++i)
+				if (!m_UsedDescSetLayouts[i] || !m_UsedDescSets[i]) return false;
+			layouts = m_UsedDescSetLayouts; sets = m_UsedDescSets;
+			return true;
+		}
 
 		bool PreparePipelineForDraw(VkDevice& device, GlobalStateData global_state);
 		bool PreparePipelineForShader(
@@ -307,6 +330,26 @@ namespace VansGraphics
 		void RefreshAnimationDescriptorSet() override;
 
 		void MarkAnimationDescriptorDirty() override;
+		void BindFrameDescriptorSets(
+			VkDescriptorSet globalSet, VkDescriptorSet objectSet, std::uint32_t slot) override
+		{
+			VansRenderNode::BindFrameDescriptorSets(globalSet, objectSet, slot);
+			if (slot < modelBufferDescriptorSets.size() && m_UsedDescSets.size() > 3)
+				m_UsedDescSets[3] = modelBufferDescriptorSets[slot];
+			if (slot < modelBufferDescriptorSets.size() && m_ShadowDescSets.size() > 3)
+				m_ShadowDescSets[3] = modelBufferDescriptorSets[slot];
+			if (!m_ShadowDescSets.empty()) m_ShadowDescSets[0] = globalSet;
+			if (m_ShadowDescSets.size() > 2) m_ShadowDescSets[2] = objectSet;
+			if (m_Material && m_Material->m_MaterialType == VansMaterialType::VAN_HAIR)
+			{
+				const auto& hairSets = static_cast<VansHairMaterial*>(m_Material)->m_HairOwnedDescSets;
+				if (slot < hairSets.size())
+				{
+					if (m_UsedDescSets.size() > 4) m_UsedDescSets[4] = hairSets[slot];
+					if (m_ShadowDescSets.size() > 4) m_ShadowDescSets[4] = hairSets[slot];
+				}
+			}
+		}
 
 		// ── Per-pass descriptor set arrays ─────────────────────────────────
 		// Shadow pass: { Global, EmptyPass, Object } (3 sets — no animation, no material textures)
@@ -329,24 +372,31 @@ namespace VansGraphics
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
 		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
+		void MarkAnimationDescriptorDirty() override;
+		void BindFrameDescriptorSets(
+			VkDescriptorSet globalSet, VkDescriptorSet objectSet, std::uint32_t slot) override;
 
 	};
 
 	class VansPostProcessRenderNode : public VansRenderNode
 	{
+		std::array<bool, VansCommandRecordingConfig::MaximumFramesInFlight> m_FrameInputSetDirty{};
 	public:
 
 		VansPostProcessRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
+		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalState) override;
 
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
 		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
+		void MarkDescriptorSetsDirty() override;
 	};
 
 	class VansDeferredRenderNode : public VansRenderNode
 	{
+		std::array<bool, VansCommandRecordingConfig::MaximumFramesInFlight> m_FrameInputSetDirty{};
 	public:
 
 		VansDeferredRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
@@ -357,6 +407,7 @@ namespace VansGraphics
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
 		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
+		void MarkDescriptorSetsDirty() override;
 	};
 
 
@@ -438,10 +489,8 @@ namespace VansGraphics
 		std::optional<Vans::VansSceneImpactDecalConfig> m_ImpactPoolConfig;
 
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
-
-		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
-
-		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
+		void BindFrameDescriptorSets(
+			VkDescriptorSet globalSet, VkDescriptorSet objectSet, std::uint32_t slot) override;
 	};
 
 }

@@ -1,6 +1,8 @@
 #include "VansPackagedResourcePlan.h"
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 
 #include <fstream>
+#include <unordered_set>
 #include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
@@ -275,6 +277,7 @@ namespace
 		json["additiveBlendAttachmentMask"] = request.additiveBlendAttachmentMask;
 		json["premultipliedAlphaBlend"] = request.premultipliedAlphaBlend;
 		json["colorAttachmentCount"] = request.colorAttachmentCount;
+		json["colorAttachmentBlends"] = request.colorAttachmentBlends;
 		json["polygonMode"] = request.polygonMode;
 		json["frontFace"] = request.frontFace;
 		json["primitiveTopology"] = request.primitiveTopology;
@@ -303,6 +306,7 @@ namespace
 		request.additiveBlendAttachmentMask = json.value("additiveBlendAttachmentMask", request.additiveBlendAttachmentMask);
 		request.premultipliedAlphaBlend = json.value("premultipliedAlphaBlend", request.premultipliedAlphaBlend);
 		request.colorAttachmentCount = json.value("colorAttachmentCount", request.colorAttachmentCount);
+		request.colorAttachmentBlends = json.value("colorAttachmentBlends", std::vector<std::string>{});
 		request.polygonMode = json.value("polygonMode", request.polygonMode);
 		request.frontFace = json.value("frontFace", request.frontFace);
 		request.primitiveTopology = json.value("primitiveTopology", request.primitiveTopology);
@@ -389,6 +393,10 @@ bool VansPackagedResourcePlanIO::Save(
 			resourcePlan["videos"].push_back(EncodeVideo(video));
 
 		root["resourcePlan"] = std::move(resourcePlan);
+		root["resourcePlan"]["projectRenderPasses"] = Json::array();
+		for (const auto& pass : plan.resourcePlan.projectRenderPasses)
+			root["resourcePlan"]["projectRenderPasses"].push_back({{"guid", pass.guid.ToString()},
+				{"definition", EncodeSerializedValueJson<Json>(WriteRenderPassAsset(pass.definition))}});
 		root["runtimeAssetBindings"] = plan.runtimeAssetBindings;
 		root["assetIndex"] = Json::array();
 		for (const auto& record : plan.assetIndex)
@@ -443,6 +451,32 @@ bool VansPackagedResourcePlanIO::Load(
 
 		VansPackagedResourcePlan loaded;
 		const Json& resourcePlan = root.at("resourcePlan");
+		std::unordered_set<std::string> passGuids, passIds, channels;
+		const auto passes = resourcePlan.value("projectRenderPasses", Json::array());
+		if (!passes.is_array() || passes.size() > 64)
+		{
+			error = "Packaged projectRenderPasses must contain at most 64 entries";
+			return false;
+		}
+		for (const auto& pass : passes)
+		{
+			VansSceneResourceBuildPlan::ProjectRenderPass decoded;
+			const auto text = pass.at("guid").get<std::string>();
+			if (!VansAssetGuid::TryParse(text, decoded.guid) || !passGuids.insert(text).second ||
+				!ReadRenderPassAsset(DecodeSerializedValueJson(pass.at("definition")), decoded.definition, error) ||
+				!passIds.insert(decoded.definition.passId).second)
+			{
+				if (error.empty()) error = "Invalid or duplicate packaged project RenderPass";
+				return false;
+			}
+			for (const auto& target : decoded.definition.targets)
+				if (!target.exportChannel.empty() && !channels.insert(target.exportChannel).second)
+				{
+					error = "Duplicate packaged RenderPass export channel";
+					return false;
+				}
+			loaded.resourcePlan.projectRenderPasses.push_back(std::move(decoded));
+		}
 		loaded.resourcePlan.includeDefaultTextureSet =
 			resourcePlan.value("includeDefaultTextureSet", loaded.resourcePlan.includeDefaultTextureSet);
 		loaded.resourcePlan.loadRegisteredShaders =

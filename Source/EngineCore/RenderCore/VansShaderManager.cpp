@@ -1,6 +1,7 @@
 #include "VansShaderManager.h"
 #include "../AssetCore/Importers/Shader/VansShaderArtifactCache.h"
 #include "../Util/VansLog.h"
+#include "../RuntimeCore/VansThreadContract.h"
 
 #include <algorithm>
 #include "GICore/VansGIWorld.h"
@@ -235,6 +236,7 @@ VansPipelineProgramDesc VansShaderManager::BuildPipelineDesc(
     desc.graphicsState.depthCompareOp = entry.depthCompareOp;
     desc.graphicsState.cullMode = entry.cullMode;
     desc.graphicsState.colorAttachmentCount = entry.colorAttachmentCount;
+    desc.graphicsState.colorAttachmentBlends = entry.colorAttachmentBlends;
     desc.graphicsState.polygonMode = entry.polygonMode;
     desc.graphicsState.frontFace = entry.frontFace;
     desc.graphicsState.primitiveTopology = entry.primitiveTopology;
@@ -284,6 +286,12 @@ bool VansShaderManager::ConfigureGraphicsShader(
     }
 
     VansPipelineProgramDesc desc = BuildPipelineDesc(entry, fullPath);
+    std::string blendError;
+    if (!ValidateGraphicsAttachmentBlends(desc.graphicsState, blendError))
+    {
+        VANS_LOG_ERROR("[VansShaderManager] " << entry.name << ": " << blendError);
+        return false;
+    }
     shader.SetName(entry.name);
     shader.SetPipelineProgramDesc(desc);
     if (entry.pushConstantSize > 0)
@@ -392,5 +400,11 @@ void VansShaderManager::Clear()
 		<< " failures=" << stats.compileFailures);
     m_Shaders.clear();
     m_MaterialPasses.clear();
+}
+
+void VansShaderManager::RemoveUnpublishedShaderAtIdle(const std::string& shaderName)
+{
+    VANS_ASSERT_RENDER_THREAD();
+    m_Shaders.erase(shaderName);
 }
 }

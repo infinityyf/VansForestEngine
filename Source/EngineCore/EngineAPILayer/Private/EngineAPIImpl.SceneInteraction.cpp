@@ -7,6 +7,8 @@ namespace Vans::EditorAPI
 {
 EditorScenePickResult EngineAPIImpl::PickEditorScene(const EditorScenePickRequest& request)
 {
+    if (m_PlayState != EnginePlayState::Edit)
+        return {false, {}, "Scene picking is available only in Edit mode."};
     auto* scene = static_cast<VansScene*>(m_Scene);
     auto* world = scene ? scene->GetRuntimeWorld() : nullptr;
     if (!world || !scene->IsSceneReady()) return {false, {}, "Scene is not ready for picking."};

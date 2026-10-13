@@ -10,17 +10,13 @@ namespace Vans
 struct VansNavigationSource
 {
 	std::string scene;
-	std::uint64_t geometryHash = 0;
-	std::uint64_t bakeSettingsHash = 0;
+	std::uint64_t inputHash = 0;
 
 	bool IsValid() const { return !scene.empty(); }
-	bool MatchesGeometry(std::uint64_t hash) const
-	{
-		return IsValid() && geometryHash != 0 && geometryHash == hash;
-	}
 };
 
 std::uint64_t HashNavigationBakeSettings(const VansNavigationBakeSettings& settings);
+bool ValidateNavigationSourceIdentity(const std::string& scene, std::string& error);
 bool ComputeNavigationGeometryHash(const VansNavigationGeometry& geometry,
 	std::uint64_t& hash, std::string& error);
 }

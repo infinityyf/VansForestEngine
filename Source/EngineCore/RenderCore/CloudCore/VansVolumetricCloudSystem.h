@@ -5,6 +5,7 @@
 #include "../VulkanCore/VansVKBuffer.h"
 #include "../VulkanCore/VansVKImage.h"
 
+#include <array>
 #include <cstdint>
 #include <glm/glm.hpp>
 
@@ -26,20 +27,36 @@ namespace VansGraphics
 			std::uint32_t renderWidth, std::uint32_t renderHeight);
 		void RecordShadow(VansVKCommandBuffer& commandBuffer);
 		void RecordRayMarch(VansVKCommandBuffer& commandBuffer);
-		void BindGlobalDescriptors(VkDescriptorSet globalSet);
+		void DiscardRecordedFrame();
+		void BindGlobalDescriptors(VkDescriptorSet globalSet, std::uint32_t slot);
+		bool SelectFrameSceneDepth(std::uint32_t frameSlot,
+			std::uint32_t gbufferTargetSlot);
 		void Shutdown();
 
 		VkDescriptorImageInfo GetShadowDescriptor();
+		VkImage GetShadowImage() { return m_ShadowInitialized ? m_Shadow.GetImage() : VK_NULL_HANDLE; }
 		VkDescriptorImageInfo GetResultDescriptor();
 		VkDescriptorImageInfo GetDepthDescriptor();
 		VkDescriptorImageInfo GetOpticalDepthDescriptor();
+		struct ViewResourceImages
+		{
+			VkImage radiance = VK_NULL_HANDLE;
+			VkImage depth = VK_NULL_HANDLE;
+			VkImage opticalDepth = VK_NULL_HANDLE;
+		};
+		ViewResourceImages GetViewResourceImages()
+		{
+			if (!m_Initialized)
+				return {};
+			return { m_Result.GetImage(), m_Depth.GetImage(), m_OpticalDepth.GetImage() };
+		}
 
 	private:
 		bool CreatePersistentResources();
 		bool CreateViewResources();
 		bool LoadNoiseResources();
 		bool CreateDescriptors();
-		void UploadParameters();
+		void UploadParameters(std::uint32_t slot);
 		void TransitionForWrite(VansVKCommandBuffer&, VansVKImage&, bool, VkPipelineStageFlags readers);
 		void BarrierForSampling(VansVKCommandBuffer&, VansVKImage&, VkPipelineStageFlags readers);
 		void DestroyDescriptors();
@@ -53,8 +70,8 @@ namespace VansGraphics
 		std::uint32_t m_RenderHeight = 0;
 		std::uint32_t m_CloudWidth = 0;
 		std::uint32_t m_CloudHeight = 0;
-		VansVKBuffer m_ParamsBuffer;
-		bool m_ParamsBufferCreated = false;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_ParamsBuffers;
+		std::array<bool, VansCommandRecordingConfig::MaximumFramesInFlight> m_ParamsBufferCreated{};
 		VansVKImage m_Result;
 		VansVKImage m_Depth;
 		VansVKImage m_OpticalDepth;
@@ -62,8 +79,10 @@ namespace VansGraphics
 		VansTexture* m_MainNoise = nullptr;
 		VansTexture* m_DetailNoise = nullptr;
 		VkDescriptorSetLayout m_PassLayout = VK_NULL_HANDLE;
-		VkDescriptorSet m_PassSet = VK_NULL_HANDLE;
-		VkDescriptorSet m_ShadowPassSet = VK_NULL_HANDLE;
+		std::array<VkDescriptorSet, VansCommandRecordingConfig::MaximumFramesInFlight> m_PassSets{};
+		std::array<VkDescriptorSet, VansCommandRecordingConfig::MaximumFramesInFlight> m_ShadowPassSets{};
+		std::array<std::uint32_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_SceneDepthTargetSlots{};
+		std::array<std::uint64_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_SceneDepthTargetGenerations{};
 		VansComputeShader* m_RayMarchShader = nullptr;
 		VansComputeShader* m_ShadowShader = nullptr;
 		bool m_ResultInitialized = false;

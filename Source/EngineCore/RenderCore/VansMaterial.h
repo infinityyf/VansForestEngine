@@ -1,6 +1,7 @@
 #pragma once
 #include "AmbientOcclusionCore/VansGTAO.h"
 #include "../MaterialCore/VansHairMaterialParameters.h"
+#include "../MaterialCore/VansClothMaterialParameters.h"
 #include "GICore/VansGIReceiverVisibility.h"
 #include "SkyLightingCore/VansSkyLighting.h"
 
@@ -23,6 +24,7 @@
 #include "VansAsset.h"
 
 #include "VansPostProcessProfile.h"
+#include "VansRenderRuntimeConfig.h"
 
 #include <vector>
 #include <array>
@@ -390,6 +392,7 @@ namespace VansGraphics
 		std::vector<int> m_FreeRuntimePBRIndices;
 		std::vector<int> m_FreeRuntimeCustomIndices;
 		bool m_GlobalBindlessDescriptorsDirty = false;
+		uint64_t m_ClothLightingRevision = 0;
 
 		struct SkinProfileLUTCacheEntry
 		{
@@ -564,7 +567,8 @@ namespace VansGraphics
 		VansRenderMaterialFrameData CaptureRenderMaterialFrameData(
 			const std::vector<VansMaterial*>& activeMaterials);
 		bool UploadRenderMaterialFrameData(
-			const VansRenderMaterialFrameData& frameData);
+			const VansRenderMaterialFrameData& frameData,
+			std::uint32_t slot);
 		void ResetSkinProfileLUTCache();
 		bool ResolveSkinProfileLUTForMaterial(
 			VansSkinMaterial& skin,
@@ -673,13 +677,16 @@ namespace VansGraphics
 
 
 
-		VansVKBuffer m_GlobalPBRDataBuffer;
-		VansVKBuffer m_GlobalClothDataBuffer;
-        VansVKBuffer m_GlobalHairDataBuffer;
-		VansVKBuffer m_GlobalTreeLeafDataBuffer;
-		VansVKBuffer m_GlobalSkinDataBuffer;
-
-		VansVKBuffer m_GlobalCustomMaterialDataBuffer;
+		struct FrameMaterialBuffers
+		{
+			VansVKBuffer pbr;
+			VansVKBuffer cloth;
+			VansVKBuffer hair;
+			VansVKBuffer treeLeaf;
+			VansVKBuffer skin;
+			VansVKBuffer custom;
+		};
+		std::array<FrameMaterialBuffers, VansCommandRecordingConfig::MaximumFramesInFlight> m_FrameMaterialBuffers;
 
 		std::vector<VansPBRMaterial*> m_GlobalPBRMaterial;
 
@@ -690,14 +697,6 @@ namespace VansGraphics
 		std::vector<VansSkinGPUParam> m_GlobalSkinParamData;
 
 		std::vector<VansCustomMaterialPayload> m_GlobalCustomMaterialParamData;
-
-		VkDescriptorSetLayout m_GlobalPBRDataSetLayout = VK_NULL_HANDLE;
-
-		std::vector<VkDescriptorSet> m_GlobalPBRDataDescriptorSets;
-
-
-
-
 
 		std::vector<VansVKImage*> m_GlobalPBRTextures;
 		// The texture table is scene-stable, but runtime material instances and
@@ -715,8 +714,6 @@ namespace VansGraphics
 
 
 
-
-		VkDescriptorSet m_VideoBindlessDescriptorSet = VK_NULL_HANDLE;
 
         VansSkyLighting m_SkyLighting;
 
@@ -736,6 +733,7 @@ namespace VansGraphics
 
 
 		VansTexture* m_ClothBRDFLUT = nullptr;
+		VansTexture* m_ClothLightingLUT = nullptr;
         VansTexture* m_GrassEnergyLUT = nullptr;
 
 
@@ -792,8 +790,8 @@ namespace VansGraphics
 		VansComputeShader* m_AmbientSkyCacheShader = nullptr;
 		VkDescriptorSetLayout m_AmbientSkyCacheSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_AmbientSkyCacheDescriptorSets;
-		VansVKBuffer m_AmbientSkyCacheParamsCBBuffer;
-		VansVKBuffer m_AmbientSkyCacheInfoCBBuffer;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_AmbientSkyCacheParamsCBBuffer;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_AmbientSkyCacheInfoCBBuffer;
 		glm::vec3 m_AmbientSkyCacheOrigin{0.0f};
 		glm::ivec3 m_AmbientSkyCacheRingOffset{0};
 		bool m_AmbientSkyCacheInitialized = false;
@@ -801,11 +799,11 @@ namespace VansGraphics
 
 		VkDescriptorSetLayout m_SSGITemporalSetLayout = VK_NULL_HANDLE;
 
-		std::vector<VkDescriptorSet> m_SSGITemporalDescriptorSets; // [0]=frameA, [1]=frameB
+		std::vector<VkDescriptorSet> m_SSGITemporalDescriptorSets; // frame slot * 2 + history write target
 		VkDescriptorSetLayout m_SSGIAtrousSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_SSGIAtrousDescriptorSets;
 
-		VansVKBuffer m_SSGITemporalCBBuffer;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_SSGITemporalCBBuffer;
 
 
 
@@ -875,9 +873,12 @@ namespace VansGraphics
 
 		// ---- TileLight Build Pass ----
 
-		VansVKBuffer m_TileLightHeaderBuffer;
-
-		VansVKBuffer m_TileLightIndexBuffer;
+		struct TileLightFrameBuffers
+		{
+			VansVKBuffer header;
+			VansVKBuffer indices;
+		};
+		std::array<TileLightFrameBuffers, VansCommandRecordingConfig::MaximumFramesInFlight> m_TileLightFrames;
 
 		VkDescriptorSetLayout          m_TileLightBuildSetLayout      = VK_NULL_HANDLE;
 
@@ -947,12 +948,12 @@ namespace VansGraphics
 
 
 
-		VansVKBuffer m_PostProcessParamsCBBuffer;
-		VansVKBuffer m_ExposureAdaptParamsCBBuffer;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_PostProcessParamsCBBuffer;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_ExposureAdaptParamsCBBuffer;
 
 		VansVKBuffer m_BloomParamsCBBuffer;
 		VansVKBuffer m_BloomShapeParamsCBBuffer;
-		VansVKBuffer m_DepthOfFieldParamsCBBuffer;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_DepthOfFieldParamsCBBuffer;
 
 
 
@@ -1269,70 +1270,34 @@ namespace VansGraphics
 
 	// ============================================================
 
-	enum class VansClothModel : uint32_t
-	{
-		Fuzz = 0,
-		Silk = 1,
-		Thin = 2,
-	};
+    struct alignas(16) VansClothGPUParam
+    {
+        glm::vec4 sheenColorWeight{1.0f, 1.0f, 1.0f, 0.2f};
+        glm::vec4 transmittanceRoughness{0.0f, 0.0f, 0.0f, 0.6f};
+        glm::vec4 surface{0.25f, 0.0f, 0.0f, 0.5f}; // 表面反射、各向异性、旋转弧度、裁剪阈值
+        glm::uvec4 flags{0u, 1u, 0u, 0u}; // Mask、双面、方向图存在、保留零值
+    };
+    static_assert(sizeof(VansClothGPUParam) == 64, "Cloth std430 payload ABI");
 
-	static constexpr uint32_t VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT = 1u << 0;
-
-	struct alignas(16) VansClothGPUParam
-	{
-		glm::vec4 sheenColorWeight = glm::vec4(1.0f, 1.0f, 1.0f, 0.5f);
-		glm::vec4 transmissionColorStrength = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
-		glm::vec4 controls = glm::vec4(
-			static_cast<float>(VansClothModel::Fuzz), 0.0f, 1.0f,
-			static_cast<float>(VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT));
-	};
-
-	static_assert(sizeof(VansClothGPUParam) == 48, "VansClothGPUParam must match the GLSL std430 payload");
-
-	class VansClothMaterial : public VansMaterial
-
-	{
-
-	public:
-
-		~VansClothMaterial() override;
-
-
-
-		VansTexture* m_BaseColorTexture  = nullptr;
-
-		VansTexture* m_NormalTexture     = nullptr;
-
-		VansTexture* m_RoughnessTexture  = nullptr;
-
-		VansTexture* m_AoTexture         = nullptr;
-
-
-
-		float        m_SheenRoughness    = 0.5f;
-		VansClothModel m_ClothModel      = VansClothModel::Fuzz;
-		glm::vec3    m_SheenColor        = glm::vec3(1.0f);
-		float        m_SheenStrength     = 0.5f;
-		float        m_Anisotropy        = 0.0f;
-		glm::vec3    m_TransmissionColor = glm::vec3(1.0f);
-		float        m_Translucency      = 0.35f;
-		float        m_Thickness         = 1.0f;
-		uint32_t     m_ClothFlags        = VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT;
-
-		VansBasePBRParam m_BasePBRParam{ glm::vec3(1.0f), 0.5f, 0.35f, 1.0f, 0.5f };
-
-
-
-		VkDescriptorSetLayout          m_ClothOwnedLayout   = VK_NULL_HANDLE;
-
-		std::vector<VkDescriptorSet>   m_ClothOwnedDescSets;
-
-
-
-		void BuildClothTextureDescriptors();
-		VansClothGPUParam BuildGPUParam() const;
-
-	};
+    class VansClothMaterial : public VansMaterial
+    {
+    public:
+        ~VansClothMaterial() override;
+        Vans::VansClothMaterialParameters m_Params;
+        VansTexture* m_BaseColorTexture = nullptr;
+        VansTexture* m_NormalTexture = nullptr;
+        VansTexture* m_RoughnessTexture = nullptr;
+        VansTexture* m_AoTexture = nullptr;
+        VansTexture* m_SheenMaskTexture = nullptr;
+        VansTexture* m_FiberDirectionTexture = nullptr;
+        VansTexture* m_OpacityTexture = nullptr;
+        VkDescriptorSetLayout m_ClothOwnedLayout = VK_NULL_HANDLE;
+        std::vector<VkDescriptorSet> m_ClothOwnedDescSets;
+        void BuildClothTextureDescriptors();
+        bool RefreshClothTextureDescriptors();
+        VansClothGPUParam BuildGPUParam() const;
+        VansBasePBRParam BuildBasePBRParam() const;
+    };
 
 	// ============================================================
 

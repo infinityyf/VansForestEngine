@@ -100,6 +100,8 @@ namespace VansEngine
 		glm::vec3 center{ 0.0f };
 		float radius = 0.0f;
 		VansPhysicsQueryFilter filter;
+        // Opt-in geometry readback; defaults preserve existing overlap results.
+        bool returnClosestPoint = false;
 	};
 
 	// One impulse per simulated actor, including articulation-free ragdoll bodies.
@@ -131,6 +133,8 @@ namespace VansEngine
 		std::string hitRegion;
 		VansPhysicsGeometryType geometry = VansPhysicsGeometryType::Unknown;
 		bool hasShape = false;
+        bool hasBounds = false;
+        glm::vec3 boundsMin{0},boundsMax{0};
 		bool supportMovable = false;
 		bool supportSimulated = false;
 		glm::vec3 supportContactVelocity{0};

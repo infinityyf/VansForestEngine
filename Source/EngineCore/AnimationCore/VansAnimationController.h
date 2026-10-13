@@ -319,7 +319,8 @@ namespace VansGraphics
 		                             const Skeleton& skeleton,
 		                             float deltaTime,
 		                             VansExternalPoseEvaluationMode mode,
-		                             bool prepareWorldQueries = false);
+		                             bool prepareWorldQueries = false,
+		                             const VansAnimationFrameVector<VansAnimationCurveSample>* curves = nullptr);
 
 		// ─── 序列化 ──────────────────────────────────────────────────
 		std::string GetName() const { return m_Name; }
@@ -443,6 +444,8 @@ namespace VansGraphics
 		VansAnimationFrameVector<VansAnimationEventSample> m_SampledEvents;
 		bool m_SampledEventsPublished = true;
 		VansAnimationFrameVector<VansAnimationCurveSample> m_SampledCurves;
+		// 外部源可能在热重载时被替换，目标侧必须拥有曲线名称的存储。
+		std::vector<std::string> m_ExternalCurveNames;
 		VansAnimationSyncState m_SyncState;
 
 		// ─── Bone Overrides（外部指针，不持有生命周期）───

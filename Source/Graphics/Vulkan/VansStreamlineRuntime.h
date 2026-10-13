@@ -60,7 +60,8 @@ namespace VansGraphics
 		std::uint32_t renderHeight = 0;
 		std::uint32_t outputWidth = 0;
 		std::uint32_t outputHeight = 0;
-		std::uint32_t frameIndex = 0;
+		// Identifies each recorded frame attempt, including one that is never submitted.
+		std::uint32_t frameTokenIndex = 0;
 		glm::vec2 jitterPixels{ 0.0f };
 		// ForestEngine stores previous-to-current motion in normalized UV units.
 		// DLSS consumes current-to-previous normalized motion.

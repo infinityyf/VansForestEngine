@@ -211,6 +211,30 @@ namespace VansGraphics
 			}
 		}
 
+		bool ResolveWeight(const std::string& parameterName, const std::string& curveName,
+		                   float& weight, std::string* diagnostic = nullptr)
+		{
+			weight = 1.0f;
+			if (!parameterName.empty() && (!ReadFloat(parameters, parameterName, weight) || !std::isfinite(weight)))
+			{
+				if (diagnostic) *diagnostic = "Target weight parameter is unavailable or non-finite";
+				return false;
+			}
+			if (!curveName.empty())
+			{
+				float curve = 0.0f;
+				if (!parameters.readCurve || !parameters.readCurve(parameters.curveContext, curveName, curve))
+					curve = 0.0f;
+				if (!std::isfinite(curve))
+				{
+					if (diagnostic) *diagnostic = "Target weight curve is non-finite";
+					return false;
+				}
+				weight *= curve;
+			}
+			return true;
+		}
+
 		bool ResolveGoal(const VansGraphGoalDefinition& definition,
 		                 VansProceduralGoal& outGoal, std::string* diagnostic = nullptr)
 		{
@@ -221,21 +245,12 @@ namespace VansGraphics
 			outGoal.positionWeight = definition.fixedPositionWeight;
 			outGoal.rotationWeight = definition.fixedRotationWeight;
 			float weight = 1.0f;
-			if (!definition.weightParameter.empty() && (!ReadFloat(parameters, definition.weightParameter, weight) || !std::isfinite(weight)))
-				return fail("Target weight parameter is unavailable or non-finite");
-			if (!definition.weightCurve.empty())
-			{
-				float curve = 0.0f;
-				if (!parameters.readCurve || !parameters.readCurve(parameters.curveContext, definition.weightCurve, curve))
-					curve = 0.0f;
-				if (!std::isfinite(curve)) return fail("Target weight curve is non-finite");
-				weight *= curve;
-			}
+			if (!ResolveWeight(definition.weightParameter, definition.weightCurve, weight, diagnostic)) return false;
 			if (weight <= 0.0f || (outGoal.positionWeight <= 0.0f && outGoal.rotationWeight <= 0.0f))
 			{outGoal.positionWeight=0;outGoal.rotationWeight=0;outGoal.valid=true;return true;}
+			float offsetWeight = 1.0f;
 			if (definition.source == VansGraphGoalSource::PoseBone)
 			{
-				float offsetWeight = 1.0f;
 				if (!definition.offsetWeightCurve.empty())
 				{
 					if (!parameters.readCurve || !parameters.readCurve(
@@ -248,15 +263,6 @@ namespace VansGraphics
 				if (!workspace.IsValidBone(bone)) return fail("Target pose bone is missing: " + definition.boneName);
 				outGoal.positionModel = workspace.GetComponentPosition(bone);
 				outGoal.rotationModel = workspace.GetComponentRotation(bone);
-				if (!definition.poleBoneName.empty())
-				{
-					const int poleBone = rig->skeleton->FindBoneIndex(definition.poleBoneName);
-					if (!workspace.IsValidBone(poleBone)) return fail("Target pole bone is missing: " + definition.poleBoneName);
-					outGoal.poleTargetModel = workspace.GetComponentPosition(poleBone)
-						+ workspace.GetComponentRotation(poleBone) * (definition.poleOffsetLocal * offsetWeight);
-					outGoal.hasPoleTarget = Finite(outGoal.poleTargetModel);
-					if (!outGoal.hasPoleTarget) return fail("Target pose pole is non-finite");
-				}
 				if (!definition.positionParameter.empty())
 				{
 					glm::vec3 offset;
@@ -316,6 +322,17 @@ namespace VansGraphics
 				outGoal.positionWeight *= target.positionWeight;
 				outGoal.rotationWeight *= target.rotationWeight;
 			}
+			// The pole is independent of the effector's position source. Resolve it
+			// from this evaluation's input pose before the consumer modifies the limb.
+			if (!definition.poleBoneName.empty())
+			{
+				const int poleBone = rig->skeleton->FindBoneIndex(definition.poleBoneName);
+				if (!workspace.IsValidBone(poleBone)) return fail("Target pole bone is missing: " + definition.poleBoneName);
+				outGoal.poleTargetModel = workspace.GetComponentPosition(poleBone)
+					+ workspace.GetComponentRotation(poleBone) * (definition.poleOffsetLocal * offsetWeight);
+				outGoal.hasPoleTarget = Finite(outGoal.poleTargetModel);
+				if (!outGoal.hasPoleTarget) return fail("Target pose pole is non-finite");
+			}
 			outGoal.positionWeight = std::clamp(outGoal.positionWeight * weight, 0.0f, 1.0f);
 			outGoal.rotationWeight = std::clamp(outGoal.rotationWeight * weight, 0.0f, 1.0f);
 			outGoal.valid = Finite(outGoal.positionModel) && Finite(outGoal.rotationModel);
@@ -350,8 +367,8 @@ namespace VansGraphics
 				return true;
 			}
 			float weight = 1.0f;
-			if (!node.directionWeightParameter.empty() &&
-				!ReadFloat(parameters, node.directionWeightParameter, weight)) return false;
+			// 方向瞄准和位置 Goal 共用实际姿态曲线，Layer 淡出时同步释放约束。
+			if (!ResolveWeight(node.directionWeightParameter, node.goal.weightCurve, weight)) return false;
 			if (!std::isfinite(weight) || weight < 0.0f || weight > 1.0f) return false;
 			target.weight = weight;
 			if (weight <= kEpsilon) { target.valid = true; return true; }
@@ -656,12 +673,12 @@ namespace VansGraphics
 					node.goalBoneIndex = rig.skeleton->FindBoneIndex(node.goal.boneName);
 					if (node.goalBoneIndex < 0)
 						error = "Goal node references missing pose bone '" + node.goal.boneName + "'";
-					if (!node.goal.poleBoneName.empty())
-					{
-						node.goalPoleBoneIndex = rig.skeleton->FindBoneIndex(node.goal.poleBoneName);
-						if (node.goalPoleBoneIndex < 0)
-							error = "Goal node references missing pole bone '" + node.goal.poleBoneName + "'";
-					}
+				}
+				if (error.empty() && !node.goal.poleBoneName.empty())
+				{
+					node.goalPoleBoneIndex = rig.skeleton->FindBoneIndex(node.goal.poleBoneName);
+					if (node.goalPoleBoneIndex < 0)
+						error = "Goal node references missing pole bone '" + node.goal.poleBoneName + "'";
 				}
 				break;
 			}

@@ -3,6 +3,7 @@
 #include "../VegetationCore/VansVegetationCollection.h"
 #include "../../PcgCore/VansPcgUpdatePlanner.h"
 #include "../../PcgCore/VansPcgTerrainSurface.h"
+#include "../../PcgCore/VansPcgCollisionPlan.h"
 #include "../../TerrainCore/VansTerrainAsset.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include <algorithm>
@@ -14,6 +15,8 @@ bool VansSceneEnvironmentNodeBuilder::BuildVegetationNode(
     const Vans::VansPcgRecipeAsset& recipe,
     std::string& error)
 {
+    auto* resourceDevice=scene.GetRuntimeResourceDevice();
+    if (!resourceDevice) { error="Vegetation requires the scene's runtime resource device.";return false; }
     auto& repository=Vans::VansProjectManager::Get().GetAssetObjectRepository();
     Vans::VansPcgUpdatePlan plan;
     if (!Vans::VansPcgUpdatePlanner::PlanRecipe(recipe,repository,
@@ -25,10 +28,12 @@ bool VansSceneEnvironmentNodeBuilder::BuildVegetationNode(
         return false;
     }
     auto collection=std::make_unique<VansVegetationCollection>();
+    Vans::VansPcgCollisionPlan collisions;
+    if(!Vans::BuildPcgCollisionPlan(plan,collisions,error)) return false;
     for (const auto& update : plan.updates)
     {
         std::string detail;
-        if (!collection->Apply(scene,device,update,nullptr,detail))
+        if (!collection->Apply(scene,*resourceDevice,update,detail))
         {
             error = "Recipe '" + recipe.name + "', region '" + update.region +
                 "', layer '" + update.layer + "' apply failed: " + detail;
@@ -40,6 +45,7 @@ bool VansSceneEnvironmentNodeBuilder::BuildVegetationNode(
     node->SetName(recipe.name);
     scene.RegistRenderNode(node.get(),RenderNodeType::VEGETATION_NODE);
     scene.SetVegetationCollection(std::move(collection));
+    scene.SetCommittedPcgCollisionPlan(std::move(collisions));
     node.release();
     return true;
 }

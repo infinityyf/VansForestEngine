@@ -1,9 +1,15 @@
+#include "../EngineCore/NavigationCore/Storage/VansNavigationSettingsStorage.h"
+#include "../EngineCore/EngineAPILayer/Private/EngineAPIImpl.h"
 #include "../EngineCore/GameplayComposition/VansSceneGameplayComposition.h"
+#include "../EngineCore/GameplayTargeting/VansRadialVisibility.h"
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
 #include "../EngineCore/AssetCore/VansAssetObjectRepository.h"
 #include "NavigationAIContractTests.h"
 #include "PcgCoreContractTests.h"
 #include "PcgAssetContractTests.h"
+#include "ProjectRenderPassContractTests.h"
+#include "TerrainInteractionContractTests.h"
+#include "RenderTexturePreviewGpuContractTests.h"
 #include "../Graphics/Vulkan/VansVKFunctions.h"
 #include "../EngineCore/AssetCore/VansAssetResolver.h"
 #include "../EngineCore/AssetCore/VansBuiltInAssetCatalog.h"
@@ -95,6 +101,8 @@
 #include "../EngineCore/RenderCore/VansTemporalProjection.h"
 #include "../EngineCore/RenderCore/ShadowCore/VansPunctualShadowManager.h"
 #include "../EngineCore/RenderCore/ShadowCore/VansPunctualShadowFrameState.h"
+#include "../EngineCore/RenderCore/GeometryCore/VansRenderBoundsIndex.h"
+#include <glm/gtc/matrix_transform.hpp>
 #include "../EngineCore/RenderCore/BRDFData/VansLight.h"
 #include "../EngineCore/RuntimeCore/VansPackageManifest.h"
 #include "../EngineCore/RuntimeCore/VansCharacterMotion.h"
@@ -145,6 +153,8 @@
 #include "../EngineCore/AuthoringCore/VansAssetDocumentEditService.h"
 #include "../EngineCore/EditorCore/VansSceneEditService.h"
 #include "../EngineCore/EditorCore/VansEditorRuntimePreviewProjector.h"
+#include "../EngineCore/EditorCore/VansEditorMaterialSchemaService.h"
+#include "../EngineCore/EngineAPILayer/Public/IAssetEditorAPI.h"
 #include "../EngineCore/EditorCore/VansEditorPropertyDescriptorRegistry.h"
 #include "../EngineCore/EditorCore/Animation/VansAnimationRigSaveService.h"
 #include "../EngineCore/EditorCore/VansEditorAssetSaveService.h"
@@ -190,6 +200,7 @@
 #include "GAFContractTests.h"
 #include "ProceduralAnimationContractTests.h"
 #include "../EngineCore/ProjectSystem/VansProjectManager.h"
+#include "../EngineCore/ProjectSystem/VansProjectSettings.h"
 #include "../EngineCore/ProjectSystem/VansEnginePaths.h"
 #include "../EngineCore/ProjectSystem/VansProjectSettingsData.h"
 #include "../EngineCore/ProjectSystem/Serialization/VansProjectConfigJsonCodec.h"
@@ -213,6 +224,7 @@
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 #include <chrono>
+#include <future>
 #include <condition_variable>
 #include <cstring>
 #include <cstddef>
@@ -230,6 +242,7 @@
 #include <optional>
 #include <new>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -301,6 +314,8 @@ public:
 		renderThread = std::this_thread::get_id();
 		renderOrder = NextOrder();
 		++renderCount;
+		surfaceResizeRequired = failAcquireSurface;
+		deviceLost = failAcquireDevice;
 		std::unique_lock<std::mutex> lock(renderGateMutex);
 		if (blockRendering)
 		{
@@ -313,7 +328,12 @@ public:
 		presentThread = std::this_thread::get_id();
 		presentOrder = NextOrder();
 		++presentCount;
+		surfaceResizeRequired = failPresentSurface;
+		deviceLost = failPresentDevice;
 	}
+	bool CanRecordCurrentFrame() const override { return !surfaceResizeRequired && !deviceLost; }
+	bool CurrentFrameRequiresSurfaceResize() const override { return surfaceResizeRequired; }
+	bool HasDeviceLost() const override { return deviceLost; }
 	void AfterRendering() override
 	{
 		afterThread = std::this_thread::get_id();
@@ -323,14 +343,32 @@ public:
 	{
 		waitThread = std::this_thread::get_id();
 		++waitCount;
+		if (!idleSucceeded)
+			return false;
+		for (auto& destroy : deferredFrameRetirements)
+			destroy();
+		deferredFrameRetirements.clear();
 		return true;
 	}
-	void OnWindowResize(std::uint32_t width, std::uint32_t height) override
+	void RetireAfterCurrentFrame(std::function<void()> destroy) override
+	{
+		deferredFrameRetirements.emplace_back(std::move(destroy));
+	}
+	bool OnWindowResize(std::uint32_t width, std::uint32_t height) override
 	{
 		resizeThread = std::this_thread::get_id();
 		++resizeCount;
 		lastWidth = width;
 		lastHeight = height;
+		if (throwOnResize)
+			throw std::runtime_error("Injected resize exception");
+		if (resizeSucceeded)
+		{
+			failAcquireSurface = false;
+			failPresentSurface = false;
+			surfaceResizeRequired = false;
+		}
+		return resizeSucceeded;
 	}
 	void InitializeGpuProfiler() override { ++profilerInitializeCount; }
 	void* GetNativeGraphicsDevice() override { return nullptr; }
@@ -344,6 +382,15 @@ public:
 	std::uint32_t afterCount = 0;
 	std::uint32_t waitCount = 0;
 	std::uint32_t resizeCount = 0;
+	bool resizeSucceeded = true;
+	bool idleSucceeded = true;
+	bool throwOnResize = false;
+	bool failAcquireSurface = false;
+	bool failPresentSurface = false;
+	bool failAcquireDevice = false;
+	bool failPresentDevice = false;
+	bool surfaceResizeRequired = false;
+	bool deviceLost = false;
 	std::uint32_t profilerInitializeCount = 0;
 	std::uint32_t lastWidth = 0;
 	std::uint32_t lastHeight = 0;
@@ -366,6 +413,7 @@ public:
 	std::thread::id resizeThread;
 	std::thread::id waitThread;
 	std::thread::id afterThread;
+	std::vector<std::function<void()>> deferredFrameRetirements;
 	std::mutex renderGateMutex;
 	std::condition_variable renderGateCondition;
 	bool blockRendering = false;
@@ -420,8 +468,10 @@ class TestRenderThreadTransaction final
 public:
 	TestRenderThreadTransaction(
 		std::thread::id& executedThread,
-		std::uint32_t& executeCount)
-		: m_ExecutedThread(executedThread), m_ExecuteCount(executeCount)
+		std::uint32_t& executeCount,
+		bool canExecuteAfterFatal = false)
+		: m_ExecutedThread(executedThread), m_ExecuteCount(executeCount),
+		  m_CanExecuteAfterFatal(canExecuteAfterFatal)
 	{
 	}
 
@@ -431,10 +481,12 @@ public:
 		++m_ExecuteCount;
 		return true;
 	}
+	bool CanExecuteAfterFatal() const override { return m_CanExecuteAfterFatal; }
 
 private:
 	std::thread::id& m_ExecutedThread;
 	std::uint32_t& m_ExecuteCount;
+	bool m_CanExecuteAfterFatal = false;
 };
 
 bool TestRenderSystemLifecycleContract()
@@ -504,6 +556,23 @@ bool TestRenderSystemLifecycleContract()
 	if (!renderSystem.RequestSurfaceResize(1600, 900) ||
 		device.resizeCount != 1 || device.lastWidth != 1600 || device.lastHeight != 900 ||
 		device.resizeThread != device.beforeThread)
+	{
+		return false;
+	}
+	const VansGraphics::VansSurfaceEpoch acceptedSurfaceEpoch = renderSystem.GetSurfaceEpoch();
+	device.resizeSucceeded = false;
+	const bool rejectedResize = !renderSystem.RequestSurfaceResize(1920, 1080) &&
+		device.resizeCount == 2 && renderSystem.GetSurfaceEpoch() == acceptedSurfaceEpoch;
+	device.resizeSucceeded = true;
+	device.throwOnResize = true;
+	const bool thrownResize = !renderSystem.RequestSurfaceResize(1920, 1080) &&
+		device.resizeCount == 3 && renderSystem.GetSurfaceEpoch() == acceptedSurfaceEpoch;
+	device.throwOnResize = false;
+	if (!rejectedResize || !thrownResize ||
+		!renderSystem.RequestSurfaceResize(1920, 1080) ||
+		device.resizeCount != 4 || device.lastWidth != 1920 || device.lastHeight != 1080 ||
+		renderSystem.GetSurfaceEpoch() !=
+			VansGraphics::VansSurfaceEpoch(acceptedSurfaceEpoch.Value() + 1))
 	{
 		return false;
 	}
@@ -618,6 +687,10 @@ bool TestProfilerStableCaptureContract()
     {
         frame->frameDurationUs = cpu;
         frame->gpuDurationUs = gpu;
+        frame->gpuTimelineComparable = true;
+        frame->gpuTimelineOriginTicks = 9007199254740993ull + frame->frameIndex * 1000000ull;
+        frame->gpuTimestampValidBits = 64;
+        frame->gpuTimestampPeriodUs = 0.001;
         capture.Observe(*frame, now);
         ++frame->frameIndex;
         now += 1.0;
@@ -668,6 +741,13 @@ bool TestProfilerStableCaptureContract()
         && report.at("cpuFrameUs").at("median") == 10000.0
         && report.at("gpuScopesUs").at("GPU/Intermittent").at("mean") == 1000.0,
         "report and absent-scope accounting")) return false;
+    const auto& firstSample = report.at("samples").at(0);
+    if (!check(firstSample.at("gpuTimelineComparable").get<bool>()
+        && firstSample.at("gpuTimelineOriginTicks").get<uint64_t>() ==
+            9007199254740993ull + firstSample.at("frameIndex").get<uint64_t>() * 1000000ull
+        && firstSample.at("gpuTimestampValidBits") == 64
+        && firstSample.at("gpuTimestampPeriodUs") == 0.001,
+        "cross-frame GPU timestamp metadata retains integer precision")) return false;
 
     // 直接父子扣减、同名多次调用、同名不同线程和缺席帧归零。
     settings.minimumWindowSeconds = 0.0;
@@ -749,6 +829,61 @@ bool TestProfilerStableCaptureContract()
     const auto stats = Capture::Summarize({1, 2, 3, 4, 5});
     if (!check(stats.mean == 3.0 && stats.median == 3.0 && std::abs(stats.p95 - 4.8) < 1e-9
         && std::abs(stats.p99 - 4.96) < 1e-9, "percentiles")) return false;
+
+    Capture crossFrameCapture;
+    Capture::Settings crossSettings;
+    crossSettings.windowFrames = 2;
+    crossSettings.stableWindows = 2;
+    crossSettings.measurementFrames = 2;
+    crossSettings.minimumWindowSeconds = 0.0;
+    crossFrameCapture.Start(crossSettings, 500);
+    frame->gpuExpected = frame->gpuComplete = true;
+    frame->frameDurationUs = 5000.0;
+    frame->gpuDurationUs = 1500.0;
+    frame->eventCount = 1;
+    frame->events[0] = Vans::ProfileEvent{};
+    frame->events[0].flags = Vans::ProfileEventFlagGpu;
+    frame->events[0].endUs = 1500.0;
+    frame->gpuTimelineComparable = true;
+    frame->gpuTimestampValidBits = 36;
+    frame->gpuTimestampPeriodUs = 0.001;
+    frame->trackCount = 2;
+    frame->tracks[0].trackId = 1;
+    frame->tracks[0].type = Vans::ProfileTrackType::GpuQueue;
+    frame->tracks[0].threadId = 1;
+    frame->tracks[1].trackId = 2;
+    frame->tracks[1].type = Vans::ProfileTrackType::GpuQueue;
+    frame->tracks[1].threadId = 2;
+    frame->events[0].trackId = 2;
+    frame->eventCount = 2;
+    frame->events[1] = Vans::ProfileEvent{};
+    frame->events[1].flags = Vans::ProfileEventFlagGpu;
+    frame->events[1].trackId = 1;
+    frame->events[1].startUs = 500.0;
+    frame->events[1].endUs = 1000.0;
+    const uint64_t timestampMask = (1ull << 36) - 1ull;
+    for (uint64_t index = 0; index < 6; ++index)
+    {
+        frame->frameIndex = 500 + index;
+        frame->gpuTimelineOriginTicks =
+            (timestampMask - 9000000ull + index * 2000000ull) & timestampMask;
+        crossFrameCapture.Observe(*frame, static_cast<double>(index));
+    }
+    if (!check(crossFrameCapture.DumpJson(reportDir.string().c_str()),
+        "cross-frame report written")) return false;
+    { std::ifstream input(reportDir / "profile_capture.json"); input >> report; }
+    std::filesystem::remove_all(reportDir);
+    const auto& crossTiming = report.at("gpuCrossFrameTiming");
+    if (!check(crossTiming.at("comparable").get<bool>()
+        && crossTiming.at("pairCount") == 1
+        && crossTiming.at("startIntervalUs").at("median") == 2000.0
+        && crossTiming.at("scopeEnvelopeGapUs").at("median") == 500.0
+        && crossTiming.at("positiveGapPairs") == 1
+        && report.at("samples").at(0).at("gpuQueueSpansUs").at("graphics").at("firstUs") == 500.0
+        && report.at("samples").at(0).at("gpuQueueSpansUs").at("graphics").at("lastUs") == 1000.0
+        && report.at("samples").at(0).at("gpuQueueSpansUs").at("compute").at("firstUs") == 0.0
+        && report.at("samples").at(0).at("gpuQueueSpansUs").at("compute").at("lastUs") == 1500.0,
+        "cross-frame timestamp wrap and scope envelope accounting")) return false;
     std::cout << "Profiler stability contract PASS: warmup spikes, batch rejection, missing/duplicate frames, wall duration, GPU scopes and percentiles\n";
 #endif
     return true;
@@ -922,6 +1057,59 @@ bool TestRenderSystemPrepareFailureContract()
 	return true;
 }
 
+bool TestRenderSystemDeviceLostContract()
+{
+	using namespace VansGraphics;
+	for (const bool failAtPresent : { false, true })
+	{
+		TestRenderSystemDevice device;
+		TestRenderFrameSource frameSource;
+		VansRenderSystem renderSystem(device, frameSource);
+		if (!renderSystem.InitializeFrameExecution())
+			return false;
+		VansCamera camera(&device);
+		device.failAcquireDevice = !failAtPresent;
+		device.failPresentDevice = failAtPresent;
+		if (!renderSystem.BeginFrame(camera))
+			return false;
+		std::thread::id retirementThread;
+		std::uint32_t retirementCount = 0;
+		if (!renderSystem.QueueFrameRetirement([&]
+			{
+				retirementThread = std::this_thread::get_id();
+				++retirementCount;
+			}))
+			return false;
+		device.idleSucceeded = false;
+		const VansRenderFrameId failedFrame = renderSystem.GetCurrentFrameId();
+		const VansRenderFrameSubmitResult submit = renderSystem.SubmitFrame();
+		const auto outcome = renderSystem.GetFrameOutcome(failedFrame);
+		if (submit.status != VansRenderFrameSubmitStatus::BackendFrameFailed ||
+			submit.surfaceResizeRequired ||
+			renderSystem.GetState() != VansRenderSystemState::Fatal ||
+			!outcome || outcome->status != VansRenderFrameStatus::FatalDeviceLost ||
+			outcome->ReleasesLeadCredit() ||
+			device.presentCount != static_cast<std::uint32_t>(failAtPresent) ||
+			retirementCount != 1 || retirementThread != device.beforeThread ||
+			renderSystem.BeginFrame(camera))
+			return false;
+		std::thread::id cleanupThread;
+		std::uint32_t cleanupCount = 0;
+		device.idleSucceeded = false;
+		if (renderSystem.ExecuteRenderThreadTransaction(
+				std::make_unique<TestRenderThreadTransaction>(cleanupThread, cleanupCount)) ||
+			cleanupCount != 0 ||
+			!renderSystem.ExecuteRenderThreadTransaction(
+				std::make_unique<TestRenderThreadTransaction>(cleanupThread, cleanupCount, true)) ||
+			cleanupCount != 1 || cleanupThread != device.beforeThread)
+			return false;
+		renderSystem.ShutdownFrameExecution();
+		if (renderSystem.GetState() != VansRenderSystemState::Stopped)
+			return false;
+	}
+	return true;
+}
+
 bool TestRenderSystemOneFrameLeadContract()
 {
 	using namespace VansGraphics;
@@ -969,6 +1157,139 @@ bool TestRenderSystemOneFrameLeadContract()
 	renderSystem.ShutdownFrameExecution();
 	return renderSystem.GetState() == VansRenderSystemState::Stopped &&
 		renderSystem.GetFrameOutcome(frame1.frameId).has_value();
+}
+
+bool TestRenderSystemSurfaceRecoveryContract()
+{
+	using namespace VansGraphics;
+	for (const bool failAtPresent : { false, true })
+	{
+		TestRenderSystemDevice device;
+		TestRenderFrameSource frameSource;
+		frameSource.useUpdatesAfterFirst = true;
+		VansRenderSystem renderSystem(device, frameSource);
+		if (!renderSystem.InitializeFrameExecution())
+			return false;
+		VansCamera camera(&device);
+		device.failAcquireSurface = !failAtPresent;
+		device.failPresentSurface = failAtPresent;
+		if (!renderSystem.BeginFrame(camera))
+			return false;
+		const auto failed = renderSystem.SubmitFrame();
+		const auto failedOutcome = renderSystem.GetFrameOutcome(failed.frameId);
+		if (!failed || !failed.surfaceResizeRequired || !failedOutcome.has_value() ||
+			failedOutcome->status != VansRenderFrameStatus::SkippedSurfaceUnavailable ||
+			device.presentCount != static_cast<std::uint32_t>(failAtPresent))
+		{
+			std::cerr << "Surface recovery initial outcome failed at present=" << failAtPresent
+				<< " submit=" << static_cast<int>(failed.status)
+				<< " resize=" << failed.surfaceResizeRequired
+				<< " outcome=" << (failedOutcome.has_value() ? static_cast<int>(failedOutcome->status) : -1)
+				<< " presents=" << device.presentCount << '\n';
+			return false;
+		}
+		if (!renderSystem.RequestSurfaceResize(1600, 900) ||
+			!renderSystem.BeginFrame(camera))
+			return false;
+		const auto recovered = renderSystem.SubmitFrame();
+		const auto recoveredOutcome = renderSystem.GetFrameOutcome(recovered.frameId);
+		if (!recovered || recovered.surfaceResizeRequired || !recoveredOutcome.has_value() ||
+			recoveredOutcome->status != VansRenderFrameStatus::PresentQueued ||
+			device.presentCount != static_cast<std::uint32_t>(failAtPresent) + 1)
+		{
+			std::cerr << "Surface recovery post-resize outcome failed at present=" << failAtPresent
+				<< " submit=" << static_cast<int>(recovered.status)
+				<< " resize=" << recovered.surfaceResizeRequired
+				<< " outcome=" << (recoveredOutcome.has_value() ? static_cast<int>(recoveredOutcome->status) : -1)
+				<< " presents=" << device.presentCount << '\n';
+			return false;
+		}
+		renderSystem.ShutdownFrameExecution();
+	}
+
+	TestRenderSystemDevice device;
+	device.failAcquireSurface = true;
+	TestRenderFrameSource frameSource;
+	frameSource.useUpdatesAfterFirst = true;
+	VansRenderSystem renderSystem(device, frameSource, true);
+	if (!renderSystem.InitializeFrameExecution())
+		return false;
+	VansCamera camera(&device);
+	if (!renderSystem.BeginFrame(camera))
+		return false;
+	const auto first = renderSystem.SubmitFrame();
+	if (!first || first.surfaceResizeRequired || !renderSystem.BeginFrame(camera))
+		return false;
+	const auto second = renderSystem.SubmitFrame();
+	const auto firstOutcome = renderSystem.GetFrameOutcome(first.frameId);
+	if (!second || !second.surfaceResizeRequired || !firstOutcome.has_value() ||
+		firstOutcome->status != VansRenderFrameStatus::SkippedSurfaceUnavailable ||
+		!renderSystem.RequestSurfaceResize(1600, 900) ||
+		!renderSystem.BeginFrame(camera))
+	{
+		std::cerr << "Async surface recovery did not carry prior outcome or resize\n";
+		return false;
+	}
+	const auto third = renderSystem.SubmitFrame();
+	const auto secondOutcome = renderSystem.GetFrameOutcome(second.frameId);
+	if (!third || third.surfaceResizeRequired || !secondOutcome.has_value() ||
+		secondOutcome->status != VansRenderFrameStatus::SkippedSurfaceUnavailable ||
+		secondOutcome->surfaceEpoch == renderSystem.GetSurfaceEpoch() ||
+		!renderSystem.Quiesce())
+	{
+		std::cerr << "Async surface recovery did not discard stale epoch\n";
+		return false;
+	}
+	const auto thirdOutcome = renderSystem.GetFrameOutcome(third.frameId);
+	renderSystem.ShutdownFrameExecution();
+	return thirdOutcome.has_value() &&
+		thirdOutcome->status == VansRenderFrameStatus::PresentQueued &&
+		device.presentCount == 1;
+}
+
+bool TestRenderSystemFrameRetirementContract()
+{
+	using namespace VansGraphics;
+	TestRenderSystemDevice device;
+	TestRenderFrameSource source;
+	VansRenderSystem renderSystem(device, source);
+	if (!renderSystem.InitializeFrameExecution())
+		return false;
+	VansCamera camera(&device);
+	std::vector<int> retired;
+	std::thread::id retirementThread;
+	if (!renderSystem.QueueFrameRetirement([&]
+		{
+			retirementThread = std::this_thread::get_id();
+			retired.push_back(1);
+		}) || !renderSystem.BeginFrame(camera) || !renderSystem.SubmitFrame() ||
+		!retired.empty() || device.deferredFrameRetirements.size() != 1)
+		return false;
+
+	// Ordered maintenance retires the already submitted frame and then a
+	// Main-side callback staged after it, before replacing backend resources.
+	std::thread::id transactionThread;
+	std::uint32_t transactionCount = 0;
+	if (!renderSystem.QueueFrameRetirement([&] { retired.push_back(2); }) ||
+		!renderSystem.ExecuteRenderThreadTransaction(
+			std::make_unique<TestRenderThreadTransaction>(transactionThread, transactionCount)) ||
+		retired != std::vector<int>{ 1, 2 } ||
+		retirementThread != device.beforeThread || transactionThread != device.beforeThread ||
+		transactionCount != 1)
+		return false;
+
+	device.forcedPrepareStatus = VansRenderSubmissionPrepareStatus::RecoverableFailure;
+	if (!renderSystem.QueueFrameRetirement([&] { retired.push_back(3); }) ||
+		!renderSystem.BeginFrame(camera) ||
+		renderSystem.SubmitFrame().status != VansRenderFrameSubmitStatus::BackendFrameFailed ||
+		retired != std::vector<int>{ 1, 2, 3 })
+		return false;
+
+	if (!renderSystem.QueueFrameRetirement([&] { retired.push_back(4); }))
+		return false;
+	renderSystem.ShutdownFrameExecution();
+	return renderSystem.GetState() == VansRenderSystemState::Stopped &&
+		retired == std::vector<int>{ 1, 2, 3, 4 };
 }
 
 bool TestRenderOutcomeLedgerContract()
@@ -1239,9 +1560,56 @@ bool TestMainCameraVisibilityBackendOwnershipContract()
 		firstSnapshot.culledNodes.empty();
 }
 
+bool TestRenderBoundsIndexContract()
+{
+	using namespace VansGraphics;
+	std::vector<VansRenderBoundsIndex::Entry> entries;
+	entries.reserve(192);
+	for (std::uint32_t i = 0; i < 192; ++i)
+	{
+		const glm::vec3 position(
+			static_cast<float>(static_cast<int>((i * 37) % 41) - 20) * 2.7f,
+			static_cast<float>(static_cast<int>((i * 17) % 13) - 6) * 1.4f,
+			static_cast<float>(static_cast<int>((i * 29) % 43) - 21) * 2.3f);
+		entries.push_back({ i, MakeRenderBoundsFromLocalAABB(
+			glm::vec3(-0.8f, -1.2f, -0.6f), glm::vec3(0.8f, 1.2f, 0.6f),
+			glm::translate(glm::mat4(1.0f), position)), i % 31 != 0,
+			1u << (i % 4) });
+	}
+	VansRenderBoundsIndex index;
+	index.Build(entries);
+	const std::array<glm::mat4, 4> views = {
+		glm::perspective(glm::radians(62.0f), 1.4f, 0.1f, 85.0f) *
+			glm::lookAt(glm::vec3(0, 5, 30), glm::vec3(0, 0, 0), glm::vec3(0, 1, 0)),
+		glm::perspective(glm::radians(43.0f), 1.0f, 0.1f, 55.0f) *
+			glm::lookAt(glm::vec3(35, 12, 10), glm::vec3(-5, 0, 0), glm::vec3(0, 1, 0)),
+		glm::ortho(-25.0f, 25.0f, -18.0f, 18.0f, 0.1f, 95.0f) *
+			glm::lookAt(glm::vec3(-20, 28, 22), glm::vec3(0, 0, 0), glm::vec3(0, 1, 0)),
+		glm::ortho(-70.0f, 70.0f, -35.0f, 35.0f, 0.1f, 130.0f) *
+			glm::lookAt(glm::vec3(0, 50, -20), glm::vec3(0, 0, 0), glm::vec3(0, 1, 0))
+	};
+	for (const glm::mat4& view : views)
+	{
+		for (std::uint32_t mask : { 1u, 3u, 8u, 15u })
+		{
+			std::vector<std::uint32_t> expected;
+			for (const auto& entry : entries)
+				if ((entry.categoryMask & mask) != 0u &&
+					(!entry.hasBounds || RenderBoundsIntersectsClipFrustum(entry.bounds, view)))
+					expected.push_back(entry.sourceIndex);
+			std::vector<std::uint32_t> actual;
+			index.QueryClipFrustum(view, mask, actual);
+			if (actual != expected)
+				return false;
+		}
+	}
+	return true;
+}
+
 bool TestPunctualShadowBackendOwnershipContract()
 {
 	using namespace VansGraphics;
+	if (!TestRenderBoundsIndexContract()) return false;
 	VansPunctualShadowFrameState backendState;
 
 	auto makeFrame = []()
@@ -1282,7 +1650,7 @@ bool TestPunctualShadowBackendOwnershipContract()
 		!first.features.hasPunctualShadowJobs ||
 		first.light.spotLights.front().m_ShadowMetaIndex == VANS_INVALID_SHADOW_INDEX ||
 		first.punctualShadowJobs.front().casterHandles.size() != 1 ||
-		first.punctualShadowJobs.front().casterHandles.count(VansRenderProxyHandle{ 3u, 2u }) != 1)
+		first.punctualShadowJobs.front().casterHandles.front() != VansRenderProxyHandle{ 3u, 2u })
 	{
 		return false;
 	}
@@ -1339,8 +1707,31 @@ bool TestPunctualShadowBackendOwnershipContract()
 		return false;
 	const VansPunctualShadowDebugSnapshot resetSnapshot =
 		backendState.CaptureDebugSnapshot();
-	return resetSnapshot.lights.empty() &&
-		resetSnapshot.statistics.residentLights == 0;
+	if (!resetSnapshot.lights.empty() ||
+		resetSnapshot.statistics.residentLights != 0)
+		return false;
+
+	VansPunctualShadowFrameState orderedState;
+	VansRenderSceneFrameSnapshot orderedFrame = makeFrame();
+	VansRenderPunctualShadowCasterInput earlierCaster = orderedFrame.punctualShadow.casters.front();
+	earlierCaster.proxy = { 4u, 1u };
+	orderedFrame.punctualShadow.casters.insert(
+		orderedFrame.punctualShadow.casters.begin(), earlierCaster);
+	VansRenderPunctualShadowCasterInput laterCaster = earlierCaster;
+	laterCaster.proxy = { 5u, 1u };
+	orderedFrame.punctualShadow.casters.push_back(laterCaster);
+	if (!orderedState.PrepareFrame(orderedFrame, 1) ||
+		orderedFrame.punctualShadowJobs.empty())
+		return false;
+	const std::vector<VansRenderProxyHandle> expectedOrder = {
+		{ 4u, 1u }, { 3u, 2u }, { 5u, 1u }
+	};
+	for (const VansPunctualShadowRenderJob& job : orderedFrame.punctualShadowJobs)
+	{
+		if (job.casterHandles != expectedOrder)
+			return false;
+	}
+	return true;
 }
 
 bool TestRenderWorldContract()
@@ -2700,6 +3091,8 @@ class VansRuntimeFrameTracePort final :
 	void UpdateNonCameraScripts(const Vans::VansRuntimeFrameContext&) override { Add("scripts"); }
 	void AdvanceCameraRuntime(const Vans::VansRuntimeFrameContext&) override { Add("camera-advance"); }
 	void UpdateActionsEarly(const Vans::VansRuntimeFrameContext&) override { Add("actions-early"); }
+	void PrepareNavigation(const Vans::VansRuntimeFrameContext&) override { Add("navigation-prepare"); }
+	void UpdateNavigation(const Vans::VansRuntimeFrameContext&) override { Add("navigation"); }
 	void UpdateAI(const Vans::VansRuntimeFrameContext&) override { Add("ai"); }
 	void PrepareCharacterLocomotion(const Vans::VansRuntimeFrameContext&) override { Add("locomotion"); }
 	void FlushCharacterControllerTransforms(const Vans::VansRuntimeFrameContext&) override { Add("cct"); }
@@ -2728,7 +3121,7 @@ bool TestGameplayFrameOrder()
 	Vans::VansRuntimeFrameScheduler::RunGameplay(
 		framePort, &framePort, framePolicy, frameContext);
 
-	const std::vector<std::string> expected{ "camera-begin", "physics", "scripts", "camera-advance", "actions-early", "ai", "locomotion", "cct",
+	const std::vector<std::string> expected{ "camera-begin", "physics", "scripts", "camera-advance", "actions-early", "navigation-prepare", "ai", "navigation", "locomotion", "cct",
 		"timeline-post", "post-extra", "actions-late", "camera", "camera-base", "timeline-camera",
 		"camera-extra", "camera-resolve" };
     if (!Expect(trace == expected, "Gameplay frame callback order changed"))
@@ -2744,7 +3137,7 @@ bool TestGameplayFrameOrder()
 	Vans::VansRuntimeFrameScheduler::RunGameplay(
 		framePort, &framePort, framePolicy, frameContext);
 	const std::vector<std::string> editExpected{
-		"camera-begin", "camera-advance", "post-extra", "actions-late",
+		"camera-begin", "camera-advance", "navigation-prepare", "post-extra", "actions-late",
 		"camera-base", "camera-extra", "camera-resolve" };
 	return Expect(trace == editExpected,
 		"Edit camera control frame did not advance CameraRuntime before preview resolution");
@@ -2761,7 +3154,8 @@ bool TestCameraControlArbiterContract()
 {
 	using namespace VansGraphics;
 	VansCameraControlArbiter arbiter;
-	VansCamera frameCamera(nullptr);
+	TestRenderSystemDevice frameDevice;
+	VansCamera frameCamera(&frameDevice);
 	if (!Expect(arbiter.IsBaseCameraWriteWindowOpen(),
 		"Camera base write window was not open between frames")) return false;
 	arbiter.BeginFrame(frameCamera);
@@ -4278,7 +4672,7 @@ bool TestRuntimeWorldClearInvalidatesHandlesContract()
 bool TestRuntimeComponentKeyCanonicalizationContract()
 {
 	const auto& descriptors = Vans::VansComponentTypeCatalog::All();
-	if (!Expect(descriptors.size() == 27,
+	if (!Expect(descriptors.size() == 32,
 		"Component type catalog did not retain all registered component identities"))
 		return false;
 	for (std::size_t i = 0; i < descriptors.size(); ++i)
@@ -4294,11 +4688,11 @@ bool TestRuntimeComponentKeyCanonicalizationContract()
 		}
 	}
 
-	static constexpr std::array<std::string_view, 20> expectedInspectorOrder{
+	static constexpr std::array<std::string_view, 26> expectedInspectorOrder{
 		"ModelRenderer", "LODGroup", "Physics", "Camera", "Animation",
 		"CharacterController", "DirectionalLight", "PointLight", "SpotLight", "RectLight",
 		"Audio", "AudioVolume", "AudioReverbZone", "LocalVolumetricFog", "Video", "Particle",
-		"Cloth", "Vehicle", "ActionHost", "Script"
+		"Cloth", "Vehicle", "ActionHost", "Script", "NavigationAgent", "NavigationSurface", "NavigationSource", "NavigationModifier", "NavigationObstacle", "NavigationLink"
 	};
 	std::vector<std::string_view> inspectorTypes;
 	std::size_t singletonCount = 0;
@@ -4325,18 +4719,18 @@ bool TestRuntimeComponentKeyCanonicalizationContract()
 		expectedInspectorOrder.begin(), expectedInspectorOrder.end()),
 		"Component type catalog changed the Inspector Add Component order"))
 		return false;
-	if (!Expect(singletonCount == 4,
-		"Component type catalog did not retain the four Inspector singleton constraints"))
+	if (!Expect(singletonCount == 10,
+		"Component catalog lost existing singleton constraints or allowed duplicate NavigationAgent authoring"))
 		return false;
 	if (!Expect(defaultFactoryCount == expectedInspectorOrder.size(),
-		"Component type catalog does not own exactly the 20 Inspector default-data factories"))
+		"Component type catalog does not own every Inspector default-data factory"))
 		return false;
 
 	std::size_t componentAssetReferenceRuleCount = 0;
 	for (const Vans::VansComponentTypeDescriptor& descriptor : descriptors)
 		componentAssetReferenceRuleCount += descriptor.assetReferenceRuleCount;
-	if (!Expect(componentAssetReferenceRuleCount == 24,
-		"Component type catalog does not own exactly the 24 component asset-reference rules"))
+	if (!Expect(componentAssetReferenceRuleCount == 27,
+		"Component type catalog does not own exactly the 27 component asset-reference rules"))
 		return false;
 	const auto pointIes = Vans::VansEditorPropertyDescriptorRegistry::Resolve(
 		"PointLight", "data", "ies_profile_guid");
@@ -4344,6 +4738,12 @@ bool TestRuntimeComponentKeyCanonicalizationContract()
 		"ModelRenderer", "materialOverrides", "0");
 	const auto actionReference = Vans::VansEditorPropertyDescriptorRegistry::Resolve(
 		"ActionHost", "entries", "action");
+    const auto surfaceMesh=Vans::VansEditorPropertyDescriptorRegistry::Resolve("NavigationSurface","data","navigationMesh");
+    const auto customSource=Vans::VansEditorPropertyDescriptorRegistry::Resolve("NavigationSource","data","cpuMesh");
+    const auto removedAgentMesh=Vans::VansEditorPropertyDescriptorRegistry::Resolve("NavigationAgent","data","navigationMesh");
+    if(!Expect(surfaceMesh.IsDeclared() && surfaceMesh.objectReferenceSlot.expectedAssetType==Vans::EditorAPI::AssetType::NavigationMesh &&
+        customSource.IsDeclared() && customSource.objectReferenceSlot.expectedAssetType==Vans::EditorAPI::AssetType::Model &&
+        !removedAgentMesh.IsObjectReference(),"Navigation resource slots are not owned by Surface/custom Source")) return false;
 	const auto globalShader = Vans::VansEditorPropertyDescriptorRegistry::Resolve(
 		"Material", "data", "shader");
 	const auto historicalDeadCustomTextures = Vans::VansEditorPropertyDescriptorRegistry::Resolve(
@@ -8337,6 +8737,37 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
     const auto raiseRef = std::find_if(asset.clipRefs.begin(), asset.clipRefs.end(), [](const auto& ref) { return ref.name == "Pistol_Raise"; });
     if (!Expect(raiseRef != asset.clipRefs.end(), "Missing raise clip")) return false;
     const Skeleton& source = clips.at(raiseRef->assetGuid)->skeleton;
+    if (std::string(projectName) == "DemoHallProject")
+    {
+        const auto aimRef = std::find_if(asset.clipRefs.begin(), asset.clipRefs.end(),
+            [](const auto& ref) { return ref.name == "Pistol_Aim"; });
+        if (!Expect(aimRef != asset.clipRefs.end(), "Missing stable pistol Aim pose")) return false;
+        VansAnimationSampleRequest request;
+        request.loop = false;
+        VansPosePayload aimPose;
+        if (!Expect(VansAnimationSampler::Sample(clips.at(aimRef->assetGuid)->clip, source,
+            request, aimPose), "Stable Aim sample failed")) return false;
+        for (const auto& name : { "Pistol_Raise", "Pistol_Lower" })
+        {
+            const auto ref = std::find_if(asset.clipRefs.begin(), asset.clipRefs.end(),
+                [&](const auto& candidate) { return candidate.name == name; });
+            if (!Expect(ref != asset.clipRefs.end(), "Missing pistol transition")) return false;
+            const auto& clip = clips.at(ref->assetGuid)->clip;
+            for (int frame = 0; frame <= 20; ++frame)
+            {
+                request.currentTime = clip.duration * frame / 20.0f;
+                VansPosePayload pose;
+                if (!Expect(VansAnimationSampler::Sample(clip, source, request, pose),
+                    "Pistol transition sample failed")) return false;
+                for (std::size_t bone = 0; bone < source.bones.size(); ++bone)
+                    if (!Expect(glm::length(pose.localPose[bone].translation - aimPose.localPose[bone].translation) < .0001f
+                        && VansQuaternionAngleDegrees(pose.localPose[bone].rotation
+                            * glm::inverse(aimPose.localPose[bone].rotation)) < .01f,
+                        "Pistol transition exposes an arms-down intermediate pose")) return false;
+            }
+        }
+        std::cout << "PISTOL_STABLE_TRANSITION_PASS samples=42 armsDownIntermediate=0\n";
+    }
     auto rig = std::make_shared<VansAnimationRigAsset>();
     auto mask = std::make_shared<VansBoneMaskAsset>();
     if (!Expect(VansAnimationRigStorage::Load(assets / "AnimationRigs/UEFN.vanimrig", *rig, error)
@@ -8532,7 +8963,8 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
         }
         const int phase = frame < 120 ? 0 : frame < 300 ? 1 : frame < 360 ? 2 : frame < 450 ? 3
             : frame < 510 ? 2 : frame < 690 ? 4 : frame < 780 ? 0 : frame < 960 ? 1 : frame < 990 ? 2 : frame < 1110 ? 3 : 0;
-        layered->SetInt("PistolPhase", phase); layered->SetFloat("PistolUpperBodyWeight", phase == 0 ? 0.0f : 1.0f);
+        layered->SetInt("PistolPhase", phase); layered->SetFloat("PistolUpperBodyWeight",
+            phase == 0 || (std::string(projectName) == "DemoHallProject" && phase == 4) ? 0.0f : 1.0f);
         if (phase != previousPhase && (phase == 1 || phase == 3 || phase == 4)) layered->SetTrigger("PistolActionStart");
         previousPhase = phase;
         for (auto* controller : {baseline.get(), layered.get()})
@@ -8560,6 +8992,24 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
         const auto debug = layered->GetLayerRuntimeDebugInfo();
         if (!Expect(debug.size() == 2, "Pistol layer missing")) return false;
         const auto& upper = debug[1];
+        float presentationWeight = 1.0f;
+        if (std::string(projectName) == "DemoHallProject")
+        {
+            presentationWeight = 0.0f;
+            for (const auto& curve : layered->GetSampledCurves())
+                if (curve.name == "PistolPresentation") presentationWeight = curve.value;
+            if (!ExpectNear(presentationWeight, upper.weight, 1.e-5f,
+                "Pistol pose and target IK do not share the same presentation weight")) return false;
+            for (const auto& curve : baseline->GetSampledCurves())
+            {
+                const auto& layeredCurves = layered->GetSampledCurves();
+                const auto found = std::find_if(layeredCurves.begin(), layeredCurves.end(),
+                    [&](const auto& candidate) { return candidate.id == curve.id; });
+                if (!Expect(found != layeredCurves.end(), "Pistol overlay dropped a locomotion curve")
+                    || !ExpectNear(found->value, curve.value, 1.e-5f,
+                        "Pistol overlay changed a locomotion curve")) return false;
+            }
+        }
         if (upper.state == previousUpperState && (upper.state == "PistolRaise" || upper.state == "PistolShot"))
             if (!Expect(upper.playbackTime + .001f >= previousUpperTime, "Crouch switch restarted the upper-body clip")) return false;
         previousUpperState = upper.state; previousUpperTime = upper.playbackTime;
@@ -8596,7 +9046,8 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
             controller->SetVector3("PistolAimDirection", worldDirection);
             controller->SetFloat("PistolAimWeight", controller == &aimController && aimActive ? 1.0f : 0.0f);
             if (!Expect(controller->SubmitExternalModelPose(layerTarget, target, dt,
-                VansExternalPoseEvaluationMode::TargetPostProcess), "Pistol target Aim evaluation failed")) return false;
+                VansExternalPoseEvaluationMode::TargetPostProcess, false, &layered->GetSampledCurves()),
+                "Pistol target Aim evaluation failed")) return false;
         }
         const auto& aimed = aimController.GetCachedGlobalTransforms();
         const auto& disabled = aimOffController.GetCachedGlobalTransforms();
@@ -8613,7 +9064,7 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
         const auto headCorrection = rotationOf(aimed[aimHead]) * glm::inverse(rotationOf(layerTarget[aimHead]));
         aimMaxChestAngle = std::max(aimMaxChestAngle, VansQuaternionAngleDegrees(chestCorrection));
         aimHeadHandError = std::max(aimHeadHandError, VansQuaternionAngleDegrees(headCorrection * glm::inverse(handCorrection)));
-        if (aimActive && frame % 120 > 75 && !(frame >= 1080 && frame < 1100))
+        if (aimActive && presentationWeight > .999f && frame % 120 > 75 && !(frame >= 1080 && frame < 1100))
         {
             const auto expected = glm::angleAxis(glm::radians(-std::clamp(requestedPitch, -45.0f, 45.0f)), glm::vec3(1,0,0));
             aimSteadyPitchError = std::max(aimSteadyPitchError, VansQuaternionAngleDegrees(expected * glm::inverse(handCorrection)));
@@ -8813,7 +9264,8 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
     for (const auto& phase : { std::make_pair(1, "Pistol_Raise.Finished"), std::make_pair(4, "Pistol_Lower.Finished") })
     {
         layered->SetInt("PistolPhase", phase.first);
-        layered->SetFloat("PistolUpperBodyWeight", 1.0f);
+        layered->SetFloat("PistolUpperBodyWeight",
+            std::string(projectName) == "DemoHallProject" && phase.first == 4 ? 0.0f : 1.0f);
         layered->SetTrigger("PistolActionStart");
         int finishes = 0;
         float finishedAt = 0.0f;
@@ -8824,8 +9276,10 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
                 if (event.name == phase.second) { ++finishes; finishedAt = (frame + 1) * dt; }
         }
         std::cout << "Pistol timing " << phase.second << " seconds=" << finishedAt << '\n';
-        if (!Expect(finishes == 1 && std::abs(finishedAt - 1.0f) <= 2.0f * dt,
-            "Pistol raise/lower must finish once in one second")) return false;
+        const float expectedTime = std::string(projectName) == "DemoHallProject"
+            ? (phase.first == 1 ? 0.30f : 0.35f) : 1.0f;
+        if (!Expect(finishes == 1 && std::abs(finishedAt - expectedTime) <= 2.0f * dt,
+            "Pistol raise/lower did not finish once at its authored transition endpoint")) return false;
     }
     for (int shot = 0; shot < 3; ++shot)
     {
@@ -10441,6 +10895,47 @@ bool TestAnimationGraphAdvancesOnlyActiveNodesContract()
         "Active animation graph node did not advance"))
         return false;
 	return true;
+}
+
+bool TestAnimationStateMachineSingleAdvanceContract()
+{
+    using namespace VansGraphics;
+    auto machine = std::make_unique<AnimGraphStateMachineNode>();
+    machine->m_DefaultStateName = "Throw";
+    AnimatorState state; state.name = state.clipName = "Throw"; state.loop = false;
+    machine->m_States.push_back(state);
+    auto graph = std::make_unique<VansAnimGraph>();
+    const int machineId = graph->AddNode(std::move(machine));
+    const int outputId = graph->AddNode(std::make_unique<AnimGraphOutputNode>());
+    graph->AddLink(machineId, 0, outputId, 0);
+    auto clip = BuildContractClip("Throw", 0.0f, 1.0f);
+    clip.events.push_back({ 9101, 0.0f, "Release", true });
+    clip.events.push_back({ 9102, 1.0f / 15.0f, "Cue", true });
+    clip.events.push_back({ 9103, 1.0f, "Finished", true });
+    VansAnimationController controller;
+    controller.AddClip("Throw", clip);
+    std::string error;
+    if (!Expect(InstallTestBaseLayer(controller, std::move(graph), error), error.c_str())) return false;
+    Skeleton skeleton; skeleton.bones.resize(1); skeleton.bones[0].localTransform = glm::mat4(1.0f);
+    skeleton.BuildTopologicalOrder();
+    controller.Play("Throw");
+    controller.Update(0.0f, skeleton);
+    std::unordered_map<std::string, int> received;
+    for (int frame = 1; frame <= 25; ++frame)
+    {
+        controller.Update(.04f, skeleton);
+        if (!ExpectNear(controller.GetCurrentPlayTime(), frame * .04f, 1e-5f,
+                "State-machine clip advanced more than once per frame")) return false;
+        for (const auto& event : controller.GetSampledEvents()) ++received[std::string(event.name)];
+    }
+    if (!Expect(received["Release"] == 1 && received["Cue"] == 1 && received["Finished"] == 1,
+            "State-machine zero-time/early/completion events were lost or duplicated")) return false;
+    controller.Play("Throw"); controller.Update(0.0f, skeleton); controller.Update(.04f, skeleton);
+    if (!ExpectNear(controller.GetCurrentPlayTime(), .04f, 1e-5f, "State-machine restart used a stale interval")
+        || !Expect(controller.GetSampledEvents().size() == 1 && controller.GetSampledEvents()[0].name == "Release",
+            "State-machine restart lost its zero-time release event")) return false;
+    std::cout << "[AnimationClock] stateMachineSingleAdvance=1 zeroTimeEvent=1 earlyCue=1 finishedOnce=1 restart=1\n";
+    return true;
 }
 
 bool TestAnimationGraphDefinitionInstanceIsolationContract()
@@ -12624,7 +13119,7 @@ bool TestPhysicsCapsuleQueryContract(bool includeRuntimeBinding=false)
         Vans::VansProjectOpenRequest openRequest;
         openRequest.m_ProjectRootPath="D:/WorkSpace/ForestEngine/AnimationV2Project";
         openRequest.m_Options.m_UpdateRecentProjects=false;
-        openRequest.m_Options.m_ScanAssets=false;
+        openRequest.m_Options.m_AssetLoadMode=Vans::VansProjectAssetLoadMode::None;
         if(!Expect(projectManager.OpenProject(openRequest).m_Opened,
             "Could not load in-memory project dependencies for the Scene binding fixture"))return false;
         VansCollisionLayerManager::Get().ApplyConfig(config);
@@ -12961,7 +13456,8 @@ bool TestPhysicsCapsuleQueryContract(bool includeRuntimeBinding=false)
         auto& shape=object.physicsComponents.characterController.emplace();
         shape.radius=.35f;shape.height=1.1f;shape.layer="Actor";
         VkDevice device=VK_NULL_HANDLE;
-        const auto built=VansGraphics::VansSceneAssembly::BuildObjects(scene,device,plan,"");
+        auto built=VansGraphics::VansSceneAssembly::BuildObjects(scene,device,plan,"");
+    if(built.m_Built) built=VansGraphics::VansSceneAssembly::InitializeDomains(scene);
         if(!Expect(built.m_Built,built.m_Error.c_str()))return false;
         scripts.AttachSceneWithoutRebuild(&scene);
         auto* owner=scene.FindObjectByName("AccelerationBinding");
@@ -12976,6 +13472,43 @@ bool TestPhysicsCapsuleQueryContract(bool includeRuntimeBinding=false)
             const bool passed=luaL_dostring(lua,source)==LUA_OK;
             return Expect(passed,passed?"":lua_tostring(lua,-1));
         };
+        // 模拟线程独占物理状态时，真实 Lua 入口必须等待，不能直接读写 CCT。
+        const auto checkControllerSerialization=[&](const char* source)
+        {
+            std::promise<void> acquired, returned;
+            auto acquiredFuture=acquired.get_future();
+            auto returnedFuture=returned.get_future();
+            bool returnedWhileLocked=false;
+            std::thread holder([&]
+            {
+                std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+                acquired.set_value();
+                returnedWhileLocked=returnedFuture.wait_for(std::chrono::milliseconds(100))==std::future_status::ready;
+            });
+            acquiredFuture.wait();
+            const bool passed=runLua(source);
+            returned.set_value();
+            holder.join();
+            return passed && Expect(!returnedWhileLocked,
+                "Lua CCT position access bypassed the active simulation lock");
+        };
+        lua_pushnumber(lua,bound.GetProperties().m_PositionOffset.y);
+        lua_setglobal(lua,"binding_position_offset_y");
+        if(!runLua("binding_cct=assert(vans.find_object('AccelerationBinding'):get_cct_comp()); binding_position_before=binding_cct:get_position()") ||
+            !checkControllerSerialization("binding_cct:set_position({x=-4,y=2,z=0})") ||
+            !checkControllerSerialization(R"lua(
+                local p=assert(binding_cct:get_position())
+                assert(p.x==-4 and p.y==2 and p.z==0)
+                local origin=assert(vans.find_object('AccelerationBinding'):get_transform():get_position())
+                assert(math.abs(origin.y-(p.y-binding_position_offset_y))<.00001)
+            )lua"))return false;
+        // 恢复原地面位置，继续既有移动、胶囊与落地行为的回归检查。
+        if(!runLua(R"lua(
+            binding_cct:set_position(binding_position_before)
+            assert(binding_cct:initialize_contact_state(true))
+            assert(binding_cct:is_grounded())
+        )lua"))return false;
+        std::cout<<"Lua CCT position: simulation serialization and Transform synchronization passed"<<std::endl;
         const auto savedTransform=Vans::VansTransformStore::Read(owner->m_TransformID);
         auto transformed=savedTransform;
         transformed.m_Rotation={90,0,0};
@@ -13261,6 +13794,59 @@ bool TestAnimationBakedGridContract()
         || !ExpectNear(std::abs(glm::dot(result[0].rotation,expected)),1,1e-6f,"Local additive used spherical or postmultiply rotation"))return false;
     std::cout<<"Baked grid corners/quadrants/clamping, codec, validation and local additive rotation passed"<<std::endl;
     return true;
+}
+
+bool TestAnimationCollinearBlendSpaceContract()
+{
+	using namespace VansGraphics;
+	Skeleton skeleton;skeleton.bones.resize(1);skeleton.bones[0].parentIndex=-1;
+	skeleton.bones[0].localTransform=glm::mat4(1);skeleton.topologicalOrder={0};
+	struct Probe {float x,y;std::array<float,3> weights;};
+	auto verify=[&](const std::array<glm::vec2,3>& points,const std::vector<Probe>& probes)
+	{
+		std::unordered_map<std::string,VansAnimationClip> clips;
+		std::unordered_map<std::string,AnimatorParameter> parameters;
+		parameters["X"].type=parameters["Y"].type=AnimatorParamType::Float;
+		VansAnimGraph graph;auto line=std::make_unique<AnimGraphBlendSpace2DNode>();
+		line->m_XParamName="X";line->m_YParamName="Y";
+		for(const auto& point:points)line->m_Samples.push_back({point.x,point.y});
+		const int lineId=graph.AddNode(std::move(line));
+		for(int i=0;i<3;++i)
+		{
+			const auto name=std::to_string(i);clips[name]=BuildContractClip(name,0,0);
+			clips[name].curves={{VansAnimationStableId("SampleValue"),"SampleValue",
+				{{0,float(i)},{1,float(i)}}}};
+			auto clip=std::make_unique<AnimGraphClipNode>();clip->m_ClipName=name;clip->m_RootMotion=false;
+			graph.AddLink(graph.AddNode(std::move(clip)),0,lineId,i);
+		}
+		const int output=graph.AddNode(std::make_unique<AnimGraphOutputNode>());
+		graph.AddLink(lineId,0,output,0);
+		AnimGraphContext ctx;ctx.skeleton=&skeleton;ctx.clips=&clips;
+		ctx.parameters=&parameters;ctx.deltaTime=.01f;
+		for(const auto& probe:probes)
+		{
+			parameters["X"].floatVal=probe.x;parameters["Y"].floatVal=probe.y;
+			VansAnimGraphInstance instance(graph);
+			if(!Expect(instance.IsCompiled(),instance.GetCompileError().c_str()))return false;
+			const auto pose=instance.EvaluateFrame(ctx);
+			if(!Expect(pose.valid,"Collinear BlendSpace returned invalid pose"))return false;
+			float value=0;
+			for(const auto& curve:pose.curves)
+				if(curve.name=="SampleValue")value=curve.value;
+			const float expected=probe.weights[1]+2*probe.weights[2];
+			if(!ExpectNear(value,expected,1e-5f,
+				"Collinear BlendSpace blended a non-adjacent sample"))return false;
+		}
+		return true;
+	};
+	if(!verify({glm::vec2(-90,.5f),glm::vec2(0,.5f),glm::vec2(90,.5f)},
+		{{-120,.5f,{1,0,0}},{-45,.5f,{.5f,.5f,0}},{0,.5f,{0,1,0}},
+		 {45,.5f,{0,.5f,.5f}},{45,2.f,{0,.5f,.5f}},{120,.5f,{0,0,1}}}))return false;
+	if(!verify({glm::vec2(-1,-1),glm::vec2(0,0),glm::vec2(1,1)},
+		{{-.5f,-.5f,{.5f,.5f,0}},{.5f,.5f,{0,.5f,.5f}},
+		 {.5f,-.5f,{0,1,0}}}))return false;
+	std::cout<<"Collinear BlendSpace adjacent interpolation and endpoint clamping passed"<<std::endl;
+	return true;
 }
 
 bool TestAnimationModifyCurveContract()
@@ -14165,6 +14751,422 @@ bool TestLayerCurveSourceEquations(const fs::path& project,
     return true;
 }
 
+bool TestSwatFaceBindingContract()
+{
+    using namespace VansGraphics;
+    fs::path workspace = fs::current_path();
+    for (int depth = 0; depth < 8 && !fs::exists(workspace / "AnimationV2Project"); ++depth)
+        workspace = workspace.parent_path();
+    const auto model = workspace / "AnimationV2Project/Assets/Characters/SWAT/Models/swat.fbx";
+    Vans::VansAssetMeta meta;
+    std::string error;
+    if (!Expect(Vans::VansAssetMetaStorage::Load(Vans::VansAssetMeta::MetaPathFor(model), meta, error),
+        error.c_str())) return false;
+    const auto settings = Vans::ReadSkeletalMeshImportSettings(meta);
+    Assimp::Importer importer;
+    const auto* scene = importer.ReadFile(model.string(), aiProcess_Triangulate | aiProcess_FlipUVs);
+    if (!Expect(scene != nullptr, "SWAT face geometry import failed")) return false;
+    Skeleton skeleton;
+    VansSkinnedMeshLoader::ExtractSkeleton(scene, skeleton, 1.f, settings);
+    const int head = skeleton.FindBoneIndex("head");
+    if (!Expect(head >= 0, "SWAT face attachment head bone is missing")) return false;
+    uint32_t vertexCount = 0;
+    std::vector<uint32_t> starts;
+    for (unsigned m = 0; m < scene->mNumMeshes; ++m)
+    {
+        starts.push_back(vertexCount);
+        vertexCount += scene->mMeshes[m]->mNumVertices;
+    }
+    std::vector<VertexBoneData> influences;
+    VansSkinnedMeshLoader::ExtractVertexBoneData(scene, skeleton, vertexCount, influences, settings);
+    const auto globalMatrix = [](const aiNode* node)
+    {
+        aiMatrix4x4 matrix;
+        for (const auto* current = node; current; current = current->mParent)
+            matrix = current->mTransformation * matrix;
+        return glm::mat4(matrix.a1, matrix.b1, matrix.c1, matrix.d1,
+            matrix.a2, matrix.b2, matrix.c2, matrix.d2,
+            matrix.a3, matrix.b3, matrix.c3, matrix.d3,
+            matrix.a4, matrix.b4, matrix.c4, matrix.d4);
+    };
+    const auto* headNode = scene->mRootNode->FindNode("head");
+    if (!Expect(headNode != nullptr, "SWAT head hierarchy node is missing")) return false;
+    const auto headBind = globalMatrix(headNode);
+    float maxError = 0.f;
+    uint32_t faceVertices = 0;
+    for (const auto* name : {"Ettore_FaceMesh_LOD1.004", "Ettore_FaceMesh_LOD1.005",
+        "Ettore_FaceMesh_LOD1.007", "Ettore_FaceMesh_LOD1.008", "Ettore_FaceMesh_LOD3.001"})
+    {
+        const auto* node = scene->mRootNode->FindNode(name);
+        if (!Expect(node && node->mNumMeshes == 1, "SWAT face submesh is missing")) return false;
+        const unsigned meshIndex = node->mMeshes[0];
+        const auto* mesh = scene->mMeshes[meshIndex];
+        const auto meshBind = globalMatrix(node);
+        faceVertices += mesh->mNumVertices;
+        for (unsigned v = 0; v < mesh->mNumVertices; ++v)
+        {
+            const auto& weights = influences[starts[meshIndex] + v];
+            if (!Expect(weights.boneIDs[0] == head && weights.weights[0] == 1.f,
+                "SWAT face vertex is not fully bound to the animated head")) return false;
+            for (int slot = 1; slot < MAX_BONE_INFLUENCE; ++slot)
+                if (!Expect(weights.weights[slot] == 0.f,
+                    "SWAT face vertex received an unrelated bone influence")) return false;
+        }
+        for (float pitch : {-50.f, 0.f, 50.f}) for (float yaw : {-100.f, 0.f, 100.f})
+        {
+            const auto animatedHead = glm::translate(glm::mat4(1.f), glm::vec3(12,-7,3))
+                * headBind * glm::rotate(glm::mat4(1.f), glm::radians(yaw), glm::vec3(0,1,0))
+                * glm::rotate(glm::mat4(1.f), glm::radians(pitch), glm::vec3(1,0,0));
+            const auto skin = animatedHead * skeleton.bones[head].offsetMatrix;
+            const auto expectedMotion = animatedHead * glm::inverse(headBind);
+            for (unsigned v = 0; v < mesh->mNumVertices; ++v)
+            {
+                const auto p = mesh->mVertices[v];
+                const auto modelPosition = meshBind * glm::vec4(p.x,p.y,p.z,1);
+                maxError = std::max(maxError, glm::distance(glm::vec3(skin * modelPosition),
+                    glm::vec3(expectedMotion * modelPosition)));
+            }
+        }
+    }
+    if (!Expect(faceVertices == 13602 && maxError < .005f,
+        "SWAT face skinning lost geometry or changed the authored head-relative position")) return false;
+    std::cout << "SWAT_FACE_BINDING parts=5 vertices=" << faceVertices
+        << " head_poses=9 max_error_cm=" << maxError << '\n';
+    return true;
+}
+
+bool TestALSSwatRetargetPoseContract(bool diagnoseGround=false)
+{
+    using namespace VansGraphics;
+    fs::path workspace = fs::current_path();
+    for (int depth = 0; depth < 8 && !fs::exists(workspace / "AnimationV2Project"); ++depth)
+        workspace = workspace.parent_path();
+    const auto project = workspace / "AnimationV2Project";
+    AnimatorAssetData sourceAsset, targetAsset;
+    VansAnimationRigAsset sourceRig, targetRig;
+    VansRetargetProfileAsset profile;
+    std::string error;
+    const bool assetsLoaded = VansAnimatorIO::Load((project / "Assets/Characters/ALS/Animation/ALSMannequin.vanimator").string(), sourceAsset)
+        && VansAnimatorIO::Load((project / "Assets/Characters/SWAT/Animation/SWAT_ALS_Target.vanimator").string(), targetAsset)
+        && VansAnimationRigStorage::Load(project / "Assets/AnimationRigs/ALS_Mannequin.vanimrig", sourceRig, error)
+        && VansAnimationRigStorage::Load(project / "Assets/AnimationRigs/SWAT.vanimrig", targetRig, error)
+        && VansRetargetProfileStorage::Load(project / "Assets/Retarget/RTG_ALS_Mannequin_To_SWAT.vretarget", profile, error);
+    if (!Expect(assetsLoaded, error.c_str())) return false;
+    Skeleton sourcePhysical, targetPhysical;
+    const auto loadSkeleton = [&error](const fs::path& path, Skeleton& skeleton)
+    {
+        Vans::VansAssetMeta meta;
+        if (!Vans::VansAssetMetaStorage::Load(Vans::VansAssetMeta::MetaPathFor(path), meta, error)) return false;
+        return VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
+            path.string(), Vans::ReadSkeletalMeshImportSettings(meta), skeleton, error);
+    };
+    const bool skeletonsLoaded = loadSkeleton(
+        project / "Assets/Characters/ALS/Animations/CharacterAssets/MannequinSkeleton/ALS_Mannequin_T_Pose.fbx", sourcePhysical)
+        && loadSkeleton(project / "Assets/Characters/SWAT/Models/swat.fbx", targetPhysical);
+    if (!Expect(skeletonsLoaded, error.c_str())) return false;
+    const auto clips = [&project](const AnimatorClipRef& ref,
+        std::shared_ptr<const VansAnimationClipAsset>& result, std::string& error)
+    {
+        auto loaded = std::make_shared<VansAnimationClipAsset>();
+        if (!VansAnimationClipIO::Load((project / ref.pathHint).string(), loaded->clip, loaded->skeleton))
+        { error = "SWAT test source clip load failed: " + ref.name; return false; }
+        result = std::move(loaded); return true;
+    };
+    const auto masks = [&project](const VansAnimationLayerDefinition& layer,
+        std::shared_ptr<const VansBoneMaskAsset>& result, std::string& error)
+    {
+        if (layer.maskPathHint.empty()) { result.reset(); return true; }
+        auto loaded = std::make_shared<VansBoneMaskAsset>();
+        if (!VansBoneMaskStorage::Load(project / layer.maskPathHint, *loaded, error)) return false;
+        result = std::move(loaded); return true;
+    };
+    VansAnimatorRuntimeCompileOptions sourceOptions;
+    sourceOptions.enableTargetPostProcess = false;
+    sourceOptions.enableFinalComposition = false;
+    sourceOptions.extractGraphRootMotion = false;
+    sourceOptions.normalizeRootPose = false;
+    sourceOptions.rigResolver = [&sourceRig](const std::string&, std::string&)
+    { return std::make_shared<VansAnimationRigAsset>(sourceRig); };
+    auto source = VansAnimatorRuntimeCompiler::Compile(sourceAsset, sourcePhysical, clips, masks, sourceOptions, error);
+    VansAnimatorRuntimeCompileOptions targetOptions;
+    targetOptions.mode = VansAnimatorRuntimeCompileMode::ExternalPoseTarget;
+    targetOptions.normalizeRootPose = false;
+    targetOptions.rigResolver = [&targetRig](const std::string&, std::string&)
+    { return std::make_shared<VansAnimationRigAsset>(targetRig); };
+    auto target = VansAnimatorRuntimeCompiler::Compile(targetAsset, targetPhysical, {}, {}, targetOptions, error);
+    if (!Expect(source && target, error.c_str())) return false;
+    const auto& sourceSkeleton = *source->GetRuntimeSkeleton();
+    const auto& targetSkeleton = *target->GetRuntimeSkeleton();
+    Assimp::Importer shoeImporter;
+    const auto* shoeScene = shoeImporter.ReadFile((project / "Assets/Characters/SWAT/Models/swat.fbx").string(),
+        aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals);
+    if (!Expect(shoeScene != nullptr, "SWAT shoe geometry import failed")) return false;
+    const auto* shoeNode = shoeScene->mRootNode->FindNode("Shoes");
+    if (!Expect(shoeNode && shoeNode->mNumMeshes > 0, "SWAT shoe render submesh is missing")) return false;
+    const auto* shoeMesh = shoeScene->mMeshes[shoeNode->mMeshes[0]];
+    const auto shoeHeight = [&](const std::vector<glm::mat4>& pose, int side = 0)
+    {
+        std::vector<glm::vec4> vertices(shoeMesh->mNumVertices, glm::vec4(0));
+        std::vector<float> sides(shoeMesh->mNumVertices, 0.f);
+        for (unsigned i=0;i<shoeMesh->mNumBones;++i)
+        {
+            const auto* bone=shoeMesh->mBones[i];
+            const int index=targetSkeleton.FindBoneIndex(bone->mName.C_Str());
+            if (index<0) continue;
+            const auto skin=pose[index]*targetSkeleton.bones[index].offsetMatrix;
+            for (unsigned w=0;w<bone->mNumWeights;++w)
+            {
+                const auto weight=bone->mWeights[w];
+                const auto v=shoeMesh->mVertices[weight.mVertexId];
+                vertices[weight.mVertexId]+=skin*glm::vec4(v.x,v.y,v.z,1)*weight.mWeight;
+                const std::string name = bone->mName.C_Str();
+                if (name.size()>2 && name.substr(name.size()-2)=="_l") sides[weight.mVertexId]+=weight.mWeight;
+                if (name.size()>2 && name.substr(name.size()-2)=="_r") sides[weight.mVertexId]-=weight.mWeight;
+            }
+        }
+        float bottom=std::numeric_limits<float>::max();
+        for (std::size_t i=0; i<vertices.size(); ++i)
+            if(vertices[i].w>.5f && (side==0 || sides[i]*side>.5f))
+                bottom=std::min(bottom,vertices[i].z/vertices[i].w);
+        return bottom;
+    };
+    VansRetargetRuntimeDesc desc;
+    desc.translationScaleMode = profile.translationScaleMode;
+    desc.translationScale = profile.explicitTranslationScale;
+    desc.rootAlignment = profile.rootAlignment;
+    desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment;
+    desc.limbChains = profile.limbChains;
+    desc.controlBones = profile.controlBones;
+    VansRetargetProcessor processor;
+    if (!Expect(processor.Build(sourceSkeleton, targetSkeleton, *target->GetAnimationRig(), desc),
+        "ALS to SWAT pose processor build failed")) return false;
+    const auto dumpPose = [](const Skeleton& skeleton, const std::vector<glm::mat4>& pose)
+    {
+        nlohmann::json rows = nlohmann::json::object();
+        for (std::size_t i = 0; i < pose.size(); ++i)
+        {
+            const glm::vec3 p(pose[i][3]);
+            rows[skeleton.bones[i].name] = {p.x, p.y, p.z};
+        }
+        return rows;
+    };
+    const glm::mat4 owner = glm::rotate(glm::mat4(1.f), glm::radians(-90.f), glm::vec3(1,0,0))
+        * glm::scale(glm::mat4(1.f), glm::vec3(.01f));
+    target->SetOwnerWorldTransform(owner);
+    if(diagnoseGround)
+    {
+        source->Play(); target->Play();
+        for(auto* controller:{source.get(),target.get()})
+        {
+            controller->SetInt("MovementState",1);controller->SetInt("Stance",0);
+            controller->SetInt("RotationMode",1);controller->SetInt("OverlayState",1);
+            controller->SetInt("Gait",1);controller->SetInt("MovementDirection",0);
+            controller->SetBool("CanChangeStance",true);controller->SetBool("ShouldMove",true);
+            controller->SetBool("HasMovement",true);controller->SetBool("HasMovementInput",true);
+            controller->SetFloat("BasePose_N",1);controller->SetFloat("BasePose_CLF",0);
+            controller->SetFloat("UpperBodyWeight",1);controller->SetFloat("AimOffsetWeight",1);
+            controller->SetFloat("SecondaryMotionWeight",1);controller->SetFloat("AimOffsetForwardTime",.5f);
+            controller->SetFloat("AimOffsetLeftTime",.5f);controller->SetFloat("AimOffsetRightTime",.5f);
+            controller->SetFloat("AimSweepTime",.5f);controller->SetFloat("StandingPlayRate",1);
+            controller->SetFloat("StrideBlend",1);controller->SetFloat("WalkRunBlend",1);
+            controller->SetFloat("VelocityBlendF",1);controller->SetFloat("VelocityBlendB",0);
+            controller->SetFloat("VelocityBlendL",0);controller->SetFloat("VelocityBlendR",0);
+            controller->SetFloat("DiagonalScaleAmount",1);controller->SetFloat("Speed",3.75f);
+        }
+        nlohmann::json probe=nlohmann::json::array();
+        for(int frame=0;frame<90;++frame)
+        {
+            source->Update(1.f/60,sourceSkeleton);
+            if(frame%10!=0)continue;
+            for(auto alignment:{VansRetargetRootAlignment::FeetToOwner,VansRetargetRootAlignment::None})
+            for(bool translate:{false,true})for(bool curves:{false,true})
+            {
+                auto testDesc=desc;testDesc.rootAlignment=alignment;
+                testDesc.controlBones=translate?profile.controlBones:std::vector<VansRetargetControlBoneDesc>{};
+                VansRetargetProcessor mapping;
+                std::vector<glm::mat4> mapped;
+                if(!Expect(mapping.Build(sourceSkeleton,targetSkeleton,*target->GetAnimationRig(),testDesc)
+                    &&mapping.Process(source->GetCachedGlobalTransforms(),sourceSkeleton,targetSkeleton,mapped),
+                    "SWAT ground diagnostic mapping failed"))return false;
+                if(!Expect(target->SubmitExternalModelPose(mapped,targetSkeleton,1.f/60,
+                    VansExternalPoseEvaluationMode::TargetPostProcess,false,curves?&source->GetSampledCurves():nullptr),
+                    "SWAT ground diagnostic postprocess failed"))return false;
+                nlohmann::json row={{"frame",frame},{"feetAlignment",alignment==VansRetargetRootAlignment::FeetToOwner},
+                    {"translate",translate},{"curves",curves},{"source",dumpPose(sourceSkeleton,source->GetCachedGlobalTransforms())},
+                    {"mapped",dumpPose(targetSkeleton,mapped)},{"final",dumpPose(targetSkeleton,target->GetCachedGlobalTransforms())},
+                    {"mappedShoeCm",shoeHeight(mapped)},{"finalShoeCm",shoeHeight(target->GetCachedGlobalTransforms())}};
+                probe.push_back(std::move(row));
+            }
+        }
+        std::ofstream(project/"Tools/ALS/reference/swat_ground_probe.json")<<probe.dump(2)<<'\n';
+        std::cout<<"SWAT_GROUND_PROBE samples="<<probe.size()<<'\n';return true;
+    }
+    nlohmann::json report = nlohmann::json::array();
+    for (int overlay : {0, 1, 3, 7}) for (bool aiming : {false, true})
+    {
+        source->Play(); target->Play();
+        for (auto* controller : {source.get(), target.get()})
+        {
+            controller->SetInt("MovementState", 1);
+            controller->SetInt("RotationMode", aiming ? 2 : 1);
+            controller->SetInt("OverlayState", overlay);
+            controller->SetFloat("UpperBodyWeight", 1.f);
+            controller->SetFloat("AimOffsetWeight", 1.f);
+            controller->SetFloat("AimOffsetForwardTime", .5f);
+            controller->SetFloat("AimOffsetLeftTime", .5f);
+            controller->SetFloat("AimOffsetRightTime", .5f);
+            controller->SetFloat("AimSweepTime", .5f);
+            controller->SetFloat("Enable_HandIK_L", overlay == 0 ? 0.f : 1.f);
+            controller->SetFloat("Enable_HandIK_R", overlay == 0 ? 0.f : 1.f);
+        }
+        for (int frame=0; frame<60; ++frame) source->Update(1.f/60.f,sourceSkeleton);
+        std::vector<glm::mat4> retargeted;
+        if (!Expect(processor.Process(source->GetCachedGlobalTransforms(), sourceSkeleton, targetSkeleton, retargeted),
+            "ALS to SWAT pose process failed")) return false;
+        if (!Expect(target->SubmitExternalModelPose(retargeted, targetSkeleton, 1.f/60.f,
+            VansExternalPoseEvaluationMode::TargetPostProcess), "SWAT target postprocess failed")) return false;
+        const auto withoutCurves = dumpPose(targetSkeleton, target->GetCachedGlobalTransforms());
+        if (!Expect(target->SubmitExternalModelPose(retargeted, targetSkeleton, 1.f/60.f,
+            VansExternalPoseEvaluationMode::TargetPostProcess, false, &source->GetSampledCurves()),
+            "SWAT target postprocess with source curves failed")) return false;
+        if (!Expect(target->GetSampledCurves().size()==source->GetSampledCurves().size(),
+            "Retarget target lost source animation curves")) return false;
+        for (std::size_t i=0;i<source->GetSampledCurves().size();++i)
+        {
+            const auto& expected=source->GetSampledCurves()[i];
+            const auto& actual=target->GetSampledCurves()[i];
+            if (!Expect(actual.name==expected.name && actual.id==expected.id && actual.value==expected.value
+                && actual.present==expected.present,"Retarget target curve data changed")) return false;
+        }
+        std::cout << "ALS_SWAT_CHECK overlay="<<overlay<<" aiming="<<aiming
+            <<" bottom_cm="<<shoeHeight(target->GetCachedGlobalTransforms())
+            <<" source_root_cm="<<source->GetCachedGlobalTransform(sourceSkeleton.FindBoneIndex("root"))[3].z
+            <<" source_foot_cm="<<source->GetCachedGlobalTransform(sourceSkeleton.FindBoneIndex("foot_l"))[3].z
+            <<" target_foot_cm="<<target->GetCachedGlobalTransform(targetSkeleton.FindBoneIndex("foot_l"))[3].z<<'\n';
+        // 瞄准片段会下压鞋尖；允许少量鞋型差异，但不允许整只鞋悬空。
+        for (int side : {-1, 1})
+        {
+            const float soleHeight=shoeHeight(target->GetCachedGlobalTransforms(),side);
+            std::cout << "ALS_SWAT_SOLE overlay=" << overlay << " aiming=" << aiming
+                << " side=" << side << " bottom_cm=" << soleHeight << '\n';
+            // 普通站立要求两只鞋各自接地；瞄准源姿态本身会抬脚，
+            // 比较后处理前后变化，不能把动画自带的抬脚误判为地面偏移。
+            if (!Expect(aiming ? std::abs(soleHeight-shoeHeight(retargeted,side))<2.f
+                : (soleHeight> -4.f && soleHeight<2.f),
+                "SWAT idle shoe sole is not on the owner ground plane")) return false;
+        }
+        for (const auto* name : {"hand_l", "hand_r"})
+        {
+            const int bone=targetSkeleton.FindBoneIndex(name);
+            if (!Expect(glm::distance(glm::vec3(retargeted[bone][3]),
+                glm::vec3(target->GetCachedGlobalTransform(bone)[3]))<5.f,
+                "SWAT hand IK pulled a retargeted hand away from its held-weapon pose")) return false;
+        }
+        nlohmann::json row = {{"overlay",overlay}, {"aiming",aiming}, {"source",dumpPose(sourceSkeleton, source->GetCachedGlobalTransforms())},
+            {"retargeted",dumpPose(targetSkeleton,retargeted)},
+            {"withoutCurves",withoutCurves},
+            {"final",dumpPose(targetSkeleton,target->GetCachedGlobalTransforms())},
+            {"sourceCurveCount",source->GetSampledCurves().size()},
+            {"targetCurveCount",target->GetSampledCurves().size()},
+            {"retargetShoeBottomCm",shoeHeight(retargeted)},
+            {"finalShoeBottomCm",shoeHeight(target->GetCachedGlobalTransforms())}};
+        std::cout << "ALS_SWAT_SHOE overlay="<<overlay<<" retarget_bottom_cm="<<shoeHeight(retargeted)
+            <<" final_bottom_cm="<<shoeHeight(target->GetCachedGlobalTransforms())<<'\n';
+        for (const auto* name : {"foot_l", "foot_r", "hand_l", "hand_r", "root", "pelvis"})
+        {
+            const auto p = glm::vec3(target->GetCachedGlobalTransform(targetSkeleton.FindBoneIndex(name))[3]);
+            std::cout << "ALS_SWAT overlay=" << overlay << " bone=" << name
+                << " final_cm=" << p.x << ',' << p.y << ',' << p.z << '\n';
+        }
+        // 模拟胶囊接触余量后的脚底地面补偿，与项目脚本使用相同的世界/组件空间。
+        target->SetOwnerWorldTransform(glm::translate(glm::mat4(1.f),glm::vec3(0,.08f,0))*owner);
+        target->SetVector3("FootOffset_L_Location",glm::vec3(0,0,-8.f));
+        target->SetVector3("FootOffset_R_Location",glm::vec3(0,0,-8.f));
+        target->SetVector3("PelvisOffset",glm::vec3(0,-.08f,0));
+        target->SetFloat("PelvisAlpha",1.f);
+        if (!Expect(target->SubmitExternalModelPose(retargeted,targetSkeleton,1.f/60.f,
+            VansExternalPoseEvaluationMode::TargetPostProcess,false,&source->GetSampledCurves()),
+            "SWAT ground contact compensation failed")) return false;
+        const float elevatedWorldBottom=shoeHeight(target->GetCachedGlobalTransforms())*.01f+.08f;
+        if (!Expect(elevatedWorldBottom> -.04f && elevatedWorldBottom<.02f,
+            "SWAT shoe sole floats after capsule contact-offset compensation")) return false;
+        row["capsuleContactShoeBottomMeters"]=elevatedWorldBottom;
+        target->SetOwnerWorldTransform(owner);
+        target->SetVector3("FootOffset_L_Location",glm::vec3(0));
+        target->SetVector3("FootOffset_R_Location",glm::vec3(0));
+        target->SetVector3("PelvisOffset",glm::vec3(0));
+        target->SetFloat("PelvisAlpha",0.f);
+        report.push_back(std::move(row));
+    }
+    const auto walkRef=std::find_if(sourceAsset.clipRefs.begin(),sourceAsset.clipRefs.end(),
+        [](const auto& ref){return ref.name=="ALS_N_Walk_F";});
+    std::shared_ptr<const VansAnimationClipAsset> walking;
+    const bool walkingLoaded=walkRef!=sourceAsset.clipRefs.end() && clips(*walkRef,walking,error);
+    if (!Expect(walkingLoaded,"SWAT regression walk clip missing")) return false;
+    glm::vec3 firstSource(0),firstTarget(0),firstPhysical(0);
+    float maximumMotion=0.f;
+    for (int frame=0;frame<60;++frame)
+    {
+        VansAnimationSampleRequest request;
+        request.previousTime=frame/60.f;request.currentTime=(frame+1)/60.f;request.loop=true;
+        VansPosePayload walkingPose;
+        std::vector<glm::mat4> sourceModel;
+        if (!Expect(VansAnimationSampler::Sample(walking->clip,sourceSkeleton,request,walkingPose)
+            && VansPoseMath::BuildModelTransforms(std::vector<VansBoneTransform>(
+                walkingPose.localPose.begin(),walkingPose.localPose.end()),sourceSkeleton,sourceModel),
+            "SWAT walk source sample failed")) return false;
+        std::vector<glm::mat4> mapped;
+        if (!Expect(processor.Process(sourceModel,sourceSkeleton,targetSkeleton,mapped),
+            "SWAT moving foot retarget failed")) return false;
+        const auto sourceFoot=glm::vec3(sourceModel[sourceSkeleton.FindBoneIndex("ik_foot_l")][3]);
+        const auto targetFoot=glm::vec3(mapped[targetSkeleton.FindBoneIndex("ik_foot_l")][3]);
+        const auto physicalFoot=glm::vec3(sourceModel[sourceSkeleton.FindBoneIndex("foot_l")][3]);
+        if(frame==0){firstSource=sourceFoot;firstTarget=targetFoot;firstPhysical=physicalFoot;}
+        maximumMotion=std::max(maximumMotion,glm::length(physicalFoot-firstPhysical));
+        for (const auto& control : profile.controlBones)
+            if (!Expect(glm::distance(glm::vec3(mapped[targetSkeleton.FindBoneIndex(control.bone)][3]),
+                glm::vec3(mapped[targetSkeleton.FindBoneIndex(control.referenceBone)][3]))<.001f,
+                "Retarget control goal did not follow the solved target reference bone")) return false;
+        if(frame==30)
+        {
+            // 源 IK helper 可保持固定；目标控制帧必须从已求解的目标脚重建。
+            auto controlled=sourceModel;
+            const glm::vec3 controlDelta(5,-3,7);
+            controlled[sourceSkeleton.FindBoneIndex("ik_foot_l")][3]+=glm::vec4(controlDelta,0);
+            std::vector<glm::mat4> shifted;
+            if (!Expect(processor.Process(controlled,sourceSkeleton,targetSkeleton,shifted),
+                "SWAT controlled foot helper retarget failed")) return false;
+            const auto actualDelta=glm::vec3(shifted[targetSkeleton.FindBoneIndex("ik_foot_l")][3])-targetFoot;
+            if (!Expect(glm::length(actualDelta)<.001f,
+                "SWAT derived foot control inherited a stale source helper offset")) return false;
+        }
+        // 在真实步态上启用完整目标后处理，验证 IK 不改变肢段长度或拉回绑定位置。
+        target->SetFloat("FootLock_L_Alpha",0.f);
+        target->SetFloat("FootLock_R_Alpha",0.f);
+        if (!Expect(target->SubmitExternalModelPose(mapped,targetSkeleton,1.f/60.f,
+            VansExternalPoseEvaluationMode::TargetPostProcess,false,&walkingPose.curves),
+            "SWAT walk target postprocess failed")) return false;
+        const auto& finalPose=target->GetCachedGlobalTransforms();
+        for (const auto* side : {"l", "r"})
+        {
+            const int thigh=targetSkeleton.FindBoneIndex(std::string("thigh_")+side);
+            const int calf=targetSkeleton.FindBoneIndex(std::string("calf_")+side);
+            const int foot=targetSkeleton.FindBoneIndex(std::string("foot_")+side);
+            for (auto segment : {std::pair<int,int>{thigh,calf}, {calf,foot}})
+                if (!Expect(std::abs(glm::distance(glm::vec3(mapped[segment.first][3]),glm::vec3(mapped[segment.second][3]))
+                    -glm::distance(glm::vec3(finalPose[segment.first][3]),glm::vec3(finalPose[segment.second][3])))<.05f,
+                    "SWAT foot IK stretched a leg segment")) return false;
+            if (!Expect(glm::distance(glm::vec3(mapped[foot][3]),glm::vec3(finalPose[foot][3]))<3.f,
+                "SWAT moving foot IK pulled the stepping foot toward a stale control goal")) return false;
+        }
+    }
+    std::cout<<"ALS_SWAT moving_foot_motion_cm="<<maximumMotion<<'\n';
+    if (!Expect(maximumMotion>10.f,"SWAT moving foot regression did not exercise a stepping animation")) return false;
+    std::ofstream(project / "Tools/ALS/reference/swat_pose_diagnostic.json") << report.dump(2) << '\n';
+    std::cout<<"ALS_SWAT_POSE 8 held/aiming cases, shoe-ground and 60 moving foot samples passed\n";
+    return true;
+}
+
 bool TestALSNativeDirectionGraphContract()
 {
     using namespace VansGraphics;
@@ -14191,18 +15193,82 @@ bool TestALSNativeDirectionGraphContract()
     }
     if (!Expect(skeleton.bones.size() == 68 && clips.size() == 143, "ALS native pose and Montage curve clip coverage changed")) return false;
     {
+        std::ifstream notifyInput(project / "Tools/ALS/reference/animation_curves.json");
+        nlohmann::json notifySource; notifyInput >> notifySource;
+        int sourceCount=0, footstepCount=0, footstepClipCount=0;
+        for (const auto& sequence:notifySource.at("sequences"))
+        {
+            const auto path=sequence.at("path").get<std::string>();
+            const auto name=path.substr(path.find_last_of('.')+1);
+            const auto& events=clips.at(name).events;
+            const auto& notifies=sequence.at("notifies");
+            const bool locomotionCycle=path.find("/Locomotion/")!=std::string::npos
+                && name.find("Pose")==std::string::npos;
+            const auto selectedCount=std::count_if(notifies.begin(),notifies.end(),
+                [locomotionCycle](const auto& notify){return notify.at("name")=="GroundedEntryState_C"
+                    || (locomotionCycle && notify.at("name")=="Footstep_C");});
+            if (!Expect(events.size()==static_cast<std::size_t>(selectedCount),
+                "ALS selected source notify count differs from decoded VCLIP")) return false;
+            std::vector<bool> consumed(events.size(),false);
+            int clipFootsteps=0;
+            for (const auto& sourceNotify:notifies)
+            {
+                const std::string notifyName=sourceNotify.at("name").get<std::string>();
+                const bool footstep=locomotionCycle && notifyName=="Footstep_C";
+                if (notifyName!="GroundedEntryState_C" && !footstep) continue;
+                const float notifyTime=sourceNotify.at("triggerTime").get<float>();
+                std::string side;
+                if (footstep)
+                {
+                    const auto& markers=clips.at(name).syncMarkers;
+                    const auto nearest=std::min_element(markers.begin(),markers.end(),
+                        [notifyTime](const auto& a,const auto& b){return std::abs(a.time-notifyTime)<std::abs(b.time-notifyTime);});
+                    if (!Expect(nearest!=markers.end() && std::abs(nearest->time-notifyTime)<.005f
+                        && (nearest->name=="Left" || nearest->name=="Right"),
+                        "ALS footstep notify has no matching contact marker")) return false;
+                    side=nearest->name;
+                    if (!Expect(std::abs(sourceNotify.at("triggerWeightThreshold").get<float>()-.3f)<1.e-6f,
+                        "ALS source footstep weight threshold changed")) return false;
+                }
+                bool found=false;
+                for (std::size_t index=0;index<events.size();++index)
+                {
+                    const auto& event=events[index];
+                    if (consumed[index] || event.name!=notifyName ||
+                        std::abs(event.time-notifyTime)>1.e-6f) continue;
+                    if (!Expect(event.id==VansAnimationStableId(footstep?notifyName+":"+side:notifyName),
+                        "ALS source clip notify ID changed")) return false;
+                    if (footstep)
+                    {
+                        if (!Expect(std::holds_alternative<std::string>(event.payload)
+                            && std::get<std::string>(event.payload)==side,
+                            "ALS footstep notify lost its source contact side")) return false;
+                    }
+                    else if (!Expect(std::holds_alternative<std::int64_t>(event.payload)
+                        && std::get<std::int64_t>(event.payload)==1,
+                        "ALS Roll entry notify lost its state value")) return false;
+                    consumed[index]=true;found=true;break;
+                }
+                if (!Expect(found,"ALS source notify missing from decoded VCLIP")) return false;
+                if (footstep) { ++footstepCount; ++clipFootsteps; }
+                else ++sourceCount;
+            }
+            if (clipFootsteps) ++footstepClipCount;
+        }
+        if (!Expect(sourceCount==1,"ALS animation-state notify coverage changed")) return false;
+        if (!Expect(footstepCount==40 && footstepClipCount==20,
+            "ALS locomotion contact notify coverage changed")) return false;
         std::ifstream input(project / "Tools/ALS/reference/grounded_entry_notify.json");
         nlohmann::json source; input >> source;
         const auto& authored = source.at("notifies");
         const auto& events = clips.at("ALS_N_LandRoll_F").events;
-        if (!Expect(authored.size() == 1 && events.size() == 1
+        const auto grounded=std::find_if(events.begin(),events.end(),
+            [](const auto& event){return event.name=="GroundedEntryState_C";});
+        if (!Expect(authored.size() == 1 && grounded!=events.end()
             && authored.at(0).at("state") == "<GroundedEntryState.ROLL: 1>"
-            && events[0].name == "GroundedEntryState_C"
-            && events[0].id == VansAnimationStableId(events[0].name)
-            && std::abs(events[0].time - authored.at(0).at("time").get<float>()) < 1e-6f
-            && std::holds_alternative<std::int64_t>(events[0].payload)
-            && std::get<std::int64_t>(events[0].payload) == 1,
+            && std::abs(grounded->time - authored.at(0).at("time").get<float>()) < 1e-6f,
             "ALS Roll grounded-entry source notify was not embedded in the actual clip")) return false;
+        std::cout<<"ALS_CLIP_NOTIFY_DECODE source_events="<<sourceCount<<" clips=125 passed"<<std::endl;
     }
     if (!TestLayerCurveSourceEquations(project, &clips)) return false;
 	{
@@ -14361,6 +15427,66 @@ bool TestALSNativeDirectionGraphContract()
     auto runtimeController = VansAnimatorRuntimeCompiler::Compile(
         asset, skeleton, clipResolver, maskResolver, runtimeOptions, rigError);
     if (!Expect(runtimeController != nullptr, rigError.c_str())) return false;
+    for (float overlay : {0.f, 1.f})
+    {
+        std::array<glm::vec3,2> sourceBend{};
+        for (bool post : {false, true})
+        {
+            auto options = runtimeOptions; options.enableTargetPostProcess = post;
+            auto idle = VansAnimatorRuntimeCompiler::Compile(
+                asset, skeleton, clipResolver, maskResolver, options, rigError);
+            if (!Expect(idle != nullptr, rigError.c_str())) return false;
+            idle->Play(); idle->SetInt("MovementState", 1); idle->SetInt("RotationMode", 1);
+            idle->SetInt("OverlayState", 0); idle->SetFloat("UpperBodyWeight", overlay);
+            idle->SetFloat("AimOffsetWeight", 1.f); idle->SetFloat("AimOffsetPitch", 0.f);
+            idle->SetFloat("AimOffsetForwardTime", .5f);
+            idle->Update(0.f, *idle->GetRuntimeSkeleton());
+            for (int frame=0;frame<30;++frame) idle->Update(1.f/60.f,*idle->GetRuntimeSkeleton());
+            const auto& sk = *idle->GetRuntimeSkeleton();
+            auto p=[&](const std::string& name)
+            {return glm::vec3(idle->GetCachedGlobalTransform(sk.FindBoneIndex(name))[3]);};
+            for (int side=0;side<2;++side)
+            {
+                const std::string suffix=side==0?"l":"r";
+                const auto hip=p("thigh_"+suffix),knee=p("calf_"+suffix),ankle=p("foot_"+suffix);
+                const glm::vec3 bend=knee-(hip+ankle)*.5f;
+                if (!post) sourceBend[side]=bend;
+                else if (!Expect(sourceBend[side].y < -1.f && bend.y < -1.f
+                    && glm::dot(sourceBend[side],bend)>0.f
+                    && glm::length(sourceBend[side]-bend)<2.f,
+                    "ALS Idle Foot IK reversed a knee behind its source pose")) return false;
+            }
+        }
+    }
+    std::cout<<"ALS Idle: both knees retain their forward bend after Foot IK\n";
+    const auto idleHeadForward=[&](int stance,float overlay,float pitch)
+    {
+        runtimeController->Play();
+        runtimeController->SetInt("MovementState",1);
+        runtimeController->SetInt("Stance",stance);
+        runtimeController->SetInt("OverlayState",0);
+        runtimeController->SetFloat("UpperBodyWeight",overlay);
+        runtimeController->SetFloat("AimOffsetWeight",1.f);
+        runtimeController->SetFloat("AimOffsetPitch",pitch);
+        runtimeController->SetFloat("AimOffsetForwardTime",.5f);
+        runtimeController->SetFloat("AimOffsetLeftTime",.5f);
+        runtimeController->SetFloat("AimOffsetRightTime",.5f);
+        for (int frame=0;frame<60;++frame)
+            runtimeController->Update(1.f/60.f,*runtimeController->GetRuntimeSkeleton());
+        const auto& sk=*runtimeController->GetRuntimeSkeleton();
+        const auto head=runtimeController->GetCachedGlobalTransform(sk.FindBoneIndex("head"));
+        return glm::normalize(glm::mat3(head)*glm::vec3(0,-1,0));
+    };
+    for (int stance : {0,1}) for (float overlay : {0.f,1.f})
+    {
+        const auto neutral=idleHeadForward(stance,overlay,0.f);
+        const auto down=idleHeadForward(stance,overlay,-35.f);
+        const auto up=idleHeadForward(stance,overlay,25.f);
+        if (!Expect(neutral.z>-.3f && down.z<neutral.z-.05f
+            && up.z>neutral.z+.05f,
+            "ALS standing/crouched Idle head stayed down or ignored camera pitch")) return false;
+    }
+    std::cout<<"ALS Idle Head: standing/crouched gaze follows camera and returns to neutral\n";
     {
         const int head = runtimeController->GetRuntimeSkeleton()->FindBoneIndex("head");
         if (!Expect(head >= 0, "ALS manual spine head bone missing")) return false;
@@ -14373,7 +15499,7 @@ bool TestALSNativeDirectionGraphContract()
             runtimeController->SetFloat("AimOffsetWeight", 0.0f);
             runtimeController->SetFloat("SpineRotationWeight", weight);
             runtimeController->SetQuaternion("SpineRotationQuaternion",
-                glm::angleAxis(glm::radians(10.0f), glm::vec3(0, 1, 0)));
+                glm::angleAxis(glm::radians(10.0f), glm::vec3(0, 0, 1)));
             runtimeController->Update(0.0f, *runtimeController->GetRuntimeSkeleton());
             return runtimeController->GetCachedGlobalTransform(head);
         };
@@ -14385,6 +15511,11 @@ bool TestALSNativeDirectionGraphContract()
                 delta += std::abs(neutral[column][row] - rotated[column][row]);
         if (!Expect(delta > 0.01f,
             "ALS manual pelvis/spine rotation did not reach the final pose")) return false;
+        const auto neutralForward=glm::normalize(glm::mat3(neutral)*glm::vec3(0,-1,0));
+        const auto rotatedForward=glm::normalize(glm::mat3(rotated)*glm::vec3(0,-1,0));
+        if (!Expect(std::abs(rotatedForward.x-neutralForward.x)>.1f
+            && std::abs(rotatedForward.z-neutralForward.z)<.05f,
+            "ALS manual spine yaw incorrectly pitched the head")) return false;
         std::cout << "ALS Manual Spine: four component-space rotations reach final head pose\n";
     }
     {
@@ -14454,6 +15585,13 @@ bool TestALSNativeDirectionGraphContract()
             const auto neutral = sampleAim(0.0f, 0.0f, 0.5f);
             const auto down = sampleAim(1.0f, -90.0f, 0.5f);
             const auto up = sampleAim(1.0f, 90.0f, 0.5f);
+            const auto mildDown = sampleAim(1.0f, -8.0f, 0.5f);
+            const auto mildUp = sampleAim(1.0f, 8.0f, 0.5f);
+            const auto forward=[&](const glm::mat4& pose)
+            {return glm::normalize(glm::mat3(pose)*glm::vec3(0,-1,0));};
+            if (!Expect(forward(mildDown).z < forward(neutral).z-.03f
+                && forward(mildUp).z > forward(neutral).z+.03f,
+                "ALS Idle head pitch did not follow the signed camera angle")) return false;
             const auto turned = sampleAim(1.0f, 0.0f, 1.0f);
             if (!Expect(distance(neutral, down) > 0.01f
                 && distance(down, up) > 0.01f
@@ -14639,9 +15777,10 @@ bool TestALSNativeDirectionGraphContract()
 			<<" masked="<<maskedChange<<" restored="<<recoveryError<<std::endl;
 		// 在相同的 Overlay 激活历史下比较有无动作的 79 骨骼姿态。
 		// 状态内播放器在切入时重新计时，不能拿一直保持目标状态作为参照。
-		auto runHistory=[&](int destination,const VansSlotPlayRequest* action,bool* completed)
+		auto runHistory=[&](int origin,int middle,int destination,
+			const VansSlotPlayRequest* action,bool* completed)
 		{
-			full->Play();full->SetInt("OverlayState",0);
+			full->Play();full->SetInt("OverlayState",origin);
 			full->SetFloat("UpperBodyWeight",1.f);
 			VansSlotPlaybackHandle handle;
 			if (action)
@@ -14651,7 +15790,7 @@ bool TestALSNativeDirectionGraphContract()
 			}
 			full->Update(0,*full->GetRuntimeSkeleton());
 			full->Update(.5f,*full->GetRuntimeSkeleton());
-			full->SetInt("OverlayState",1);full->Update(.1f,*full->GetRuntimeSkeleton());
+			full->SetInt("OverlayState",middle);full->Update(.1f,*full->GetRuntimeSkeleton());
 			full->SetInt("OverlayState",destination);full->Update(.1f,*full->GetRuntimeSkeleton());
 			for (int frame=0;frame<90;++frame) full->Update(1.f/60.f,*full->GetRuntimeSkeleton());
 			if (completed) *completed=full->GetSlotStatus(handle).state==VansSlotPlaybackState::Completed;
@@ -14676,7 +15815,7 @@ bool TestALSNativeDirectionGraphContract()
 		float largestRecoveryError=0.f;
 		for (int destination:{2,6})
 		{
-			const auto reference=runHistory(destination,nullptr,nullptr);
+			const auto reference=runHistory(0,1,destination,nullptr,nullptr);
 			if (!Expect(reference.size()==79,"ALS long-history reference pose did not contain 79 bones")) return false;
 			for (const auto& authored:historyActions)
 			{
@@ -14686,7 +15825,7 @@ bool TestALSNativeDirectionGraphContract()
 				request.blendIn=authored.blendIn;request.blendOut=.3f;
 				request.blendInOption=authored.inOption;request.blendOutOption=authored.outOption;
 				bool completed=false;
-				const auto afterAction=runHistory(destination,&request,&completed);
+				const auto afterAction=runHistory(0,1,destination,&request,&completed);
 				if (!Expect(afterAction.size()==79&&completed,
 					"ALS long-history action did not finish with a 79-bone pose")) return false;
 				for (std::size_t bone=0;bone<79;++bone)
@@ -14695,6 +15834,43 @@ bool TestALSNativeDirectionGraphContract()
 							glm::length(afterAction[bone][column]-reference[bone][column]));
 				if (!ExpectNear(largestRecoveryError,0.f,2.e-4f,
 					"ALS action contaminated the final Overlay pose after state changes")) return false;
+				++historyCases;
+			}
+		}
+		// 覆盖全部 13 个起始 Overlay；Montage 在起始状态选择，后续
+		// Overlay 切换不应把旧动作曲线留在最终的 79 骨骼姿态中。
+		const std::array<std::pair<const char*,const char*>,13> variants={{
+			{"Default","Default"},{"2H","RH"},{"LH","LH"},{"RH","RH"},
+			{"LH","LH"},{"2H","RH"},{"2H","2H"},{"RH","RH"},
+			{"LH","LH"},{"Default","Default"},{"Default","Default"},
+			{"LH","LH"},{"2H","2H"}}};
+		for(int origin=0;origin<13;++origin)
+		{
+			const int middle=(origin+1)%13;
+			const int destination=(origin+5)%13;
+			const auto reference=runHistory(origin,middle,destination,nullptr,nullptr);
+			if(!Expect(reference.size()==79,"ALS all-Overlay reference history lost bones"))return false;
+			for(int actionIndex=0;actionIndex<3;++actionIndex)
+			{
+				VansSlotPlayRequest request;
+				request.clipName=historyActions[actionIndex].clip;
+				const std::string montage=actionIndex==0?"ALS_N_LandRoll_F_Montage_":
+					(actionIndex==1?"ALS_CLF_GetUp_Back_Montage_":"ALS_CLF_GetUp_Front_Montage_");
+				request.curveOverrideClipName=montage+
+					(actionIndex==0?variants[origin].first:variants[origin].second)+"_Curves";
+				request.blendIn=historyActions[actionIndex].blendIn;request.blendOut=.3f;
+				request.blendInOption=historyActions[actionIndex].inOption;
+				request.blendOutOption=historyActions[actionIndex].outOption;
+				bool completed=false;
+				const auto afterAction=runHistory(origin,middle,destination,&request,&completed);
+				if(!Expect(afterAction.size()==79&&completed,
+					"ALS all-Overlay history action did not complete"))return false;
+				for(std::size_t bone=0;bone<79;++bone)
+					for(int column=0;column<4;++column)
+						largestRecoveryError=std::max(largestRecoveryError,
+							glm::length(afterAction[bone][column]-reference[bone][column]));
+				if(!ExpectNear(largestRecoveryError,0.f,2.e-4f,
+					"ALS all-Overlay action contaminated the final pose"))return false;
 				++historyCases;
 			}
 		}
@@ -14968,12 +16144,12 @@ bool TestALSNativeDirectionGraphContract()
             footParams.rotationOffset*footParams.rotation))>1.0f-1e-5f,
         "ALS foot offset did not reach the captured IK goal")) return false;
     const int leftCalf=runtimeSkeleton->FindBoneIndex("calf_l");
-    if (!Expect(leftCalf>=0 && leftGoal->goal.hasPoleTarget
+    const int leftKneeTarget=runtimeSkeleton->FindBoneIndex("VB ik_knee_target_l");
+    if (!Expect(leftCalf>=0 && leftKneeTarget>=0 && leftGoal->goal.hasPoleTarget
         && glm::length(leftGoal->goal.poleTargetModel-
-            (glm::vec3(bindModel[leftCalf][3])+glm::vec3(0,-.05f,0)
-                +glm::quat_cast(bindModel[leftCalf])*
-                glm::vec3(20,30,0)))<1e-3f,
-        "ALS virtual knee target did not follow the calf pose and authored offset")) return false;
+            (glm::vec3(bindModel[leftKneeTarget][3])
+                +footParams.position-leftBase.translation))<1e-3f,
+        "ALS virtual knee target did not follow FootLock")) return false;
     footParams.curve=0.5f;
     if (!Expect(footRuntime.Prepare(1.0f/60,bindPose,{2,3,4,5,6,9,7},footAccessor,
         footInput,footQueries,footOutput,footNeedsResolve,rigError)
@@ -16961,7 +18137,7 @@ bool TestAnimationStateNotificationContract()
     auto& projectManager=Vans::VansProjectManager::Get();
     struct ProjectCleanup { Vans::VansProjectManager& manager;~ProjectCleanup(){manager.CloseProject();} } projectCleanup{projectManager};
     Vans::VansProjectOpenRequest openRequest;openRequest.m_ProjectRootPath="D:/WorkSpace/ForestEngine/AnimationV2Project";
-    openRequest.m_Options.m_UpdateRecentProjects=false;openRequest.m_Options.m_ScanAssets=false;
+    openRequest.m_Options.m_UpdateRecentProjects=false;openRequest.m_Options.m_AssetLoadMode=Vans::VansProjectAssetLoadMode::None;
     if(!Expect(projectManager.OpenProject(openRequest).m_Opened,"Could not load notification fixture project dependencies"))return false;
     TestRenderSystemDevice cameraDevice;
     VansCamera sceneCamera(&cameraDevice);
@@ -16972,8 +18148,27 @@ bool TestAnimationStateNotificationContract()
         ~FixtureDetach(){scripts.AttachSceneWithoutRebuild(nullptr);scene.UnloadScene(nullptr);} } detach{scene,scripts};
     Vans::VansSceneObjectBuildPlan plan;Vans::VansSceneObjectBuildConfig object;
     object.entityGuid="notify-owner";object.name="Notify Owner";object.transform=Vans::VansSceneTransformConfig{};
-    plan.objects.push_back(object);VkDevice device=VK_NULL_HANDLE;
-    const auto built=VansSceneAssembly::BuildObjects(scene,device,plan,"");
+    plan.objects.push_back(object);
+    // 验证通用局部旋转经过父子图传播：倾斜父节点下，转轴位置和子节点半径必须保持。
+    Vans::VansSceneObjectBuildConfig parent, hinge, handleObject;
+    parent.entityGuid="ca1a72d0-aa02-4fe5-a033-8674135b0001";parent.name="Rotation Parent";
+    parent.componentGuids["transform"]="ca1a72d0-aa02-4fe5-a033-8674135b0101";
+    parent.transform=Vans::VansSceneTransformConfig{};
+    parent.transform->position={3,4,5};parent.transform->rotation={20,35,10};
+    hinge.entityGuid="ca1a72d0-aa02-4fe5-a033-8674135b0002";hinge.name="Rotation Hinge";
+    hinge.componentGuids["transform"]="ca1a72d0-aa02-4fe5-a033-8674135b0102";
+    hinge.transform=Vans::VansSceneTransformConfig{};hinge.transform->position={1,.5f,0};
+    hinge.parent=Vans::VansSceneParentReference{};
+    Vans::VansEntityGuid::TryParse(parent.entityGuid,hinge.parent->entityGuid);
+    handleObject.entityGuid="ca1a72d0-aa02-4fe5-a033-8674135b0003";handleObject.name="Rotation Handle";
+    handleObject.componentGuids["transform"]="ca1a72d0-aa02-4fe5-a033-8674135b0103";
+    handleObject.transform=Vans::VansSceneTransformConfig{};handleObject.transform->position={0,0,1};
+    handleObject.parent=Vans::VansSceneParentReference{};
+    Vans::VansEntityGuid::TryParse(hinge.entityGuid,handleObject.parent->entityGuid);
+    plan.objects.push_back(parent);plan.objects.push_back(hinge);plan.objects.push_back(handleObject);
+    VkDevice device=VK_NULL_HANDLE;
+    auto built=VansSceneAssembly::BuildObjects(scene,device,plan,"");
+    if(built.m_Built) built=VansSceneAssembly::InitializeDomains(scene);
     if(!Expect(built.m_Built,built.m_Error.c_str()))return false;
     const auto path=temp.path/"animation_event.lua";
     {std::ofstream file(path);file<<R"lua(return {on_animation_event=function(self,event)
@@ -16989,6 +18184,21 @@ bool TestAnimationStateNotificationContract()
             return
         end
         notify_calls=(notify_calls or 0)+1
+        local hinge=vans.find_object_by_guid('ca1a72d0-aa02-4fe5-a033-8674135b0002')
+        local parent=vans.find_object_by_guid('ca1a72d0-aa02-4fe5-a033-8674135b0001'):get_transform()
+        local handle=vans.find_object_by_guid('ca1a72d0-aa02-4fe5-a033-8674135b0003'):get_transform()
+        assert(hinge:set_local_rotation(0,0,0,1))
+        local before=hinge:get_transform():get_position()
+        assert(hinge:set_local_rotation(0,2*math.sqrt(.5),0,2*math.sqrt(.5)))
+        local q=hinge:get_local_rotation()
+        assert(math.abs(q.y-math.sqrt(.5))<1e-6 and math.abs(q.w-math.sqrt(.5))<1e-6)
+        local after=hinge:get_transform():get_position()
+        assert(math.abs(after.x-before.x)+math.abs(after.y-before.y)+math.abs(after.z-before.z)<1e-5)
+        local expected=parent:transform_point({x=2,y=.5,z=0})
+        local actual=handle:get_position()
+        assert(math.abs(actual.x-expected.x)+math.abs(actual.y-expected.y)+math.abs(actual.z-expected.z)<1e-5)
+        assert(not pcall(function() hinge:set_local_rotation(0,0,0,0) end))
+        assert(hinge:set_local_rotation(0,0,0,1))
         assert(event.name=='A.enter' and event.clip_id=='0' and event.weight==1)
         assert(type(event.id)=='string' and type(event.source_node_id)=='string')
         local anim=self:get_object():get_anim_comp()
@@ -18050,6 +19260,85 @@ bool TestAnimationLayerStackRuntimeContract()
     rule.endWeight = 0.75f;
     upperMask.branchRules.push_back(rule);
 
+	// 验证真实 Controller 的有限时长包络、反向连续性和曲线保留，不另写一套混合公式。
+	for (int fps : { 30, 60, 120 })
+	{
+		VansAnimationController envelope;
+		auto moving = buildClip("Moving", 0, 0, 0);
+		moving.curves = {{VansAnimationStableId("FootPlant"), "FootPlant", {{0, .7f}}}};
+		auto aiming = buildClip("Aiming", 0, 10, 20);
+		aiming.curves = {{VansAnimationStableId("Presentation"), "Presentation", {{0, 1}}}};
+		envelope.AddClip("Moving", moving); envelope.AddClip("Aiming", aiming);
+		envelope.AddParameter("PresentationTarget", AnimatorParamType::Float);
+		VansAnimationLayerSetup envelopeBase, envelopeUpper;
+		envelopeBase.definition.id = "base";
+		envelopeBase.definition.name = "Base";
+		envelopeBase.definition.kind = VansAnimationLayerKind::Base;
+		envelopeUpper.definition.id = "upper";
+		envelopeUpper.definition.name = "Upper";
+		envelopeUpper.definition.useWeightParameter = true;
+		envelopeUpper.definition.weightParameter = "PresentationTarget";
+		envelopeUpper.definition.activationBlendInSeconds = .30f;
+		envelopeUpper.definition.activationBlendOutSeconds = .35f;
+		envelopeUpper.definition.curves = VansLayerCurveMode::Accumulate;
+		envelopeUpper.mask = upperMask;
+		std::vector<VansAnimationLayerSetup> envelopeLayers;
+		envelopeLayers.push_back(std::move(envelopeBase));
+		envelopeLayers.push_back(std::move(envelopeUpper));
+		std::vector<std::unique_ptr<VansAnimGraph>> envelopeGraphs;
+		envelopeGraphs.push_back(buildGraph("Moving")); envelopeGraphs.push_back(buildGraph("Aiming"));
+		std::string envelopeError;
+		const bool envelopeInstalled = InstallTestGraphSet(envelope, std::move(envelopeLayers),
+			{"moving", "aiming"}, std::move(envelopeGraphs), envelopeError);
+		if (!Expect(envelopeInstalled, envelopeError.c_str())) return false;
+		envelope.Play(); envelope.Update(0, skeleton);
+		auto advance = [&](float seconds)
+		{
+			while (seconds > 1e-6f)
+			{
+				const float step = std::min(seconds, 1.0f / fps);
+				envelope.Update(step, skeleton); seconds -= step;
+			}
+		};
+		auto weight = [&]() { return envelope.GetLayerRuntimeDebugInfo().at(1).weight; };
+		envelope.SetFloat("PresentationTarget", 1);
+		advance(.15f);
+		if (!ExpectNear(weight(), .5f, 1e-5f, "Layer activation midpoint depends on FPS")) return false;
+		envelope.SetFloat("PresentationTarget", 0); envelope.Update(0, skeleton);
+		if (!ExpectNear(weight(), .5f, 1e-5f, "Cancelling a raise jumped to a different pose weight")) return false;
+		advance(.175f);
+		if (!ExpectNear(weight(), .25f, 1e-5f, "Interrupted lower did not continue from the current weight")) return false;
+		envelope.SetFloat("PresentationTarget", 1); envelope.Update(0, skeleton);
+		if (!ExpectNear(weight(), .25f, 1e-5f, "Re-aim reset the partially lowered pose")) return false;
+		advance(.15f);
+		if (!ExpectNear(weight(), .625f, 1e-5f, "Reverse raise midpoint changed")) return false;
+		advance(.15f);
+		if (!ExpectNear(weight(), 1, 1e-5f, "Layer did not reach its finite raise endpoint")) return false;
+		const auto& curves = envelope.GetSampledCurves();
+		bool hasFootPlant = false, hasPresentation = false;
+		for (const auto& curve : curves)
+		{
+			if (curve.name == "FootPlant")
+			{
+				hasFootPlant = true;
+				if (!ExpectNear(curve.value, .7f, 1e-6f,
+					"Presentation changed the base locomotion curve")) return false;
+			}
+			if (curve.name == "Presentation")
+			{
+				hasPresentation = true;
+				if (!ExpectNear(curve.value, .75f, 1e-6f,
+					"Presentation curve does not match the effective masked layer weight")) return false;
+			}
+		}
+		if (!Expect(hasFootPlant && hasPresentation, "Layer curve outputs were dropped")) return false;
+		envelope.SetFloat("PresentationTarget", 0); advance(.35f);
+		if (!ExpectNear(weight(), 0, 1e-5f, "Layer did not reach its finite lower endpoint")
+			|| !ExpectNear(envelope.GetCachedGlobalTransform(2)[3].x, 0, 1e-5f,
+				"Zero presentation did not restore the live Base pose")) return false;
+	}
+	std::cout << "LAYER_ACTIVATION_PASS fps=30,60,120 cancel=1 reverse=1 finiteEndpoints=1\n";
+
 	VansAnimationLayerSetup base;
     base.definition.id = "layer-base";
     base.definition.name = "Base";
@@ -18914,6 +20203,128 @@ bool TestAnimationGraphSetSwitchRuntimeContract()
 		VansAnimationEvaluationPurpose::Gameplay, 0.1f });
 	return Expect(glm::length(committedOwnerPosition - positionBeforeReturn) < 0.0001f,
 		"Graph Set return reinterpreted Root Motion as an absolute owner Transform");
+}
+
+bool TestDustV3FlashContract()
+{
+    using namespace VansGraphics;
+    // Source coordinates are converted to Forest Y-up before sampling. Verify
+    // the two trace legs, clipped endpoint and all discrete visibility scores.
+    const std::vector<Vans::VansRadialVisibilityProbe> probes={{0,1.27f,.167f},{-1.905f,.254f,.167f},{1.905f,.254f,.167f}};
+    const glm::vec3 origin(0),eye(5,0,0);
+    const std::array<glm::vec3,3> points={glm::vec3(0,1.27f,0),glm::vec3(0,.254f,1.905f),glm::vec3(0,.254f,-1.905f)};
+    for (int passing=0;passing<=3;++passing) {
+        int calls=0;bool legsValid=true;
+        const auto visibility=Vans::VansEvaluateRadialVisibility(origin,eye,probes,[&](const glm::vec3& start,const glm::vec3& end) {
+            const int call=calls++;
+            if(call==0)return Vans::VansRadialVisibilityTrace{glm::vec3(2,0,0),false};
+            const int index=(call-1)/2;
+            if(call%2==1) {
+                legsValid=legsValid && glm::length(start-origin)<1.e-6f && glm::length(end-points[index])<1.e-6f;
+                return Vans::VansRadialVisibilityTrace{end*.5f,false};
+            }
+            legsValid=legsValid && glm::length(start-eye)<1.e-6f && glm::length(end-points[index]*.5f)<1.e-6f;
+            return Vans::VansRadialVisibilityTrace{end,index<passing};
+        });
+        if(!Expect(calls==7 && legsValid,"Radial peripheral traces must use eye to clipped flash probe") ||
+            !ExpectNear(visibility,.167f*passing,1.e-6f,"Radial discrete visibility score"))return false;
+    }
+    int directCalls=0;
+    if(!ExpectNear(Vans::VansEvaluateRadialVisibility(origin,eye,probes,[&](const glm::vec3&,const glm::vec3& end) {
+        ++directCalls;return Vans::VansRadialVisibilityTrace{end,true};
+    }),1,0,"Clear center must retain full visibility") || !Expect(directCalls==1,"Clear center must skip peripheral query cost"))return false;
+    for(const float vertical:{-5.f,5.f}) {
+        int calls=0;bool valid=true;
+        Vans::VansEvaluateRadialVisibility(origin,glm::vec3(0,vertical,0),probes,[&](const glm::vec3&,const glm::vec3& end) {
+            if(calls++==1)valid=glm::length(end-glm::vec3(vertical>0 ? -1.27f:1.27f,0,0))<1.e-6f;
+            return Vans::VansRadialVisibilityTrace{end,false};
+        });
+        if(!Expect(valid && calls==7,"Vertical radial basis must remain finite and preserve Source angle convention"))return false;
+    }
+    auto workspace = std::filesystem::current_path();
+    for (int i=0; i<6 && !std::filesystem::exists(workspace/"DustV3Project"); ++i)
+        workspace=workspace.parent_path();
+    const auto project=workspace/"DustV3Project";
+    lua_State* lua=luaL_newstate();
+    if (!lua) return false;
+    luaL_openlibs(lua);
+    lua_getglobal(lua,"package");
+    const auto search=(project/"Scripts/?.lua").generic_string();
+    lua_pushstring(lua,search.c_str());lua_setfield(lua,-2,"path");lua_pop(lua,1);
+    const auto script=project/"Migration/CS2Import/verify_flash_receiver.lua";
+    const bool ok=luaL_loadfile(lua,script.string().c_str())==LUA_OK && lua_pcall(lua,0,0,0)==LUA_OK;
+    const std::string error=ok ? "" : lua_tostring(lua,-1);
+    lua_close(lua);
+    if (!Expect(ok,error.c_str())) return false;
+
+    // Use the source primary skeleton and the production graph, rather than a
+    // second hand-authored upper-body mask or a full-body playback approximation.
+    Skeleton skeleton;
+    std::vector<float> expected;
+    std::ifstream source(project/"Migration/CS2Import/Utility_Source/12_Throwable_Gameplay_Analysis/FLASHED_BONE_MASK_RESOLVED.tsv");
+    std::string line;std::getline(source,line);
+    while (std::getline(source,line))
+    {
+        std::vector<std::string> columns;std::size_t start=0;
+        for (std::size_t end=0;end!=std::string::npos;start=end+1)
+        { end=line.find('\t',start);columns.push_back(line.substr(start,end==std::string::npos?end:end-start)); }
+        if (columns.size()<5) return false;
+        const auto index=skeleton.bones.size();skeleton.bones.emplace_back();auto& bone=skeleton.bones.back();
+        bone.name=columns[1];bone.id=static_cast<int>(index);bone.parentIndex=std::stoi(columns[2]);
+        bone.canonicalPath=bone.parentIndex<0 ? bone.name : skeleton.bones[bone.parentIndex].canonicalPath+"/"+bone.name;
+        bone.localTransform=glm::mat4(1);bone.offsetMatrix=glm::mat4(1);
+        skeleton.boneNameToIndex[bone.name]=static_cast<int>(index);
+        if(bone.parentIndex>=0)skeleton.bones[bone.parentIndex].children.push_back(static_cast<int>(index));
+        expected.push_back(std::stof(columns[4]));
+    }
+    if(!Expect(skeleton.bones.size()==75,"Flashed source primary skeleton must contain 75 bones"))return false;
+    skeleton.BuildTopologicalOrder();skeleton.RebuildIdentityMapsAndSignature();
+    const auto clip=[&](const std::string& name,float offset)
+    {
+        VansAnimationClip value;value.clipName=name;value.duration=1;value.boneKeyframes.resize(75);
+        for(std::size_t i=0;i<75;++i)value.boneKeyframes[i].push_back({0,glm::vec3(float(i)+offset,0,0),glm::quat(1,0,0,0),glm::vec3(1)});
+        return value;
+    };
+    std::unordered_map<std::string,VansAnimationClip> clips;
+    for(const char* name:{"Idle","Walk","Run","Reload"})clips.emplace(name,clip(name,1));
+    clips.emplace("Flashed",clip("Flashed",101));clips.emplace("FlashedCrouch",clip("FlashedCrouch",201));
+    VansAnimationSlotRuntime runtime;VansAnimationSlotDefinition definition;
+    definition.id="FlashReaction";definition.name="Flash Reaction";definition.layerId="layer-base";
+    definition.group=definition.id;
+    auto crouchDefinition=definition;crouchDefinition.id="FlashReactionCrouch";crouchDefinition.group=crouchDefinition.id;
+    std::string slotError;if(!runtime.Configure({definition,crouchDefinition},slotError))return false;
+    std::unordered_map<std::string,VansSlotPoseInputs> payloads;payloads.try_emplace(definition.id);payloads.try_emplace(crouchDefinition.id);
+    VansSlotPlayRequest request;request.clipName="Flashed";
+    const auto handle=runtime.Play(definition.id,request,clips);
+    request.clipName="FlashedCrouch";const auto crouchHandle=runtime.Play(crouchDefinition.id,request,clips);
+    if(!Expect(runtime.Drive(handle,0,.95f),"Flashed fixed-time drive failed"))return false;
+    if(!Expect(runtime.Drive(crouchHandle,0,.95f),"Flashed crouch fixed-time drive failed"))return false;
+    runtime.Update(2,clips,skeleton,payloads);
+    if(!ExpectNear(runtime.GetStatus(handle).playbackTime,0,0,"Flashed pose advanced beyond t=0"))return false;
+    for(const char* character:{"T_Phoenix_A","CT_FBI_A"})
+    {
+        nlohmann::json asset;
+        std::ifstream input(project/(std::string("Assets/CS2/Characters/")+character+"/Animation/"+character+".vanimator"));input>>asset;
+        const auto& document=asset.at("graphs").at(0).at("graph");
+        auto graph=VansAnimGraph::DeserializeFromJsonObject(document);
+        if(!graph)return false;
+        std::unordered_map<std::string,AnimatorParameter> parameters;
+        parameters["PreviewState"].type=AnimatorParamType::Int;parameters["PreviewState"].intVal=0;
+        AnimGraphContext context;context.skeleton=&skeleton;context.clips=&clips;context.parameters=&parameters;
+        context.slotPayloads=&payloads;context.deltaTime=.1f;
+        parameters["CS2FlashCrouch"].type=AnimatorParamType::Float;
+        VansAnimGraphInstance instance(*graph);
+        for(const float amount:{0.f,.25f,.1875f,1.f,0.f}) {
+            parameters["CS2FlashCrouch"].floatVal=amount;
+            const auto pose=instance.EvaluateFrame(context);
+            if(!Expect(pose.valid && pose.localPose.size()==75,"Production flashed mask graph failed evaluation"))return false;
+            for(std::size_t i=0;i<75;++i)
+                if(!ExpectNear(pose.localPose[i].translation.x,float(i)+1+(95+95*amount)*expected[i],.002f,
+                    "Production crouch blend differs from source pose mask"))return false;
+        }
+    }
+    std::cout<<"[DustV3Flash] sourceBones=75 leftHand=1 rightHand=0.2 legs=0 layerMaximum=0.95 fixedTime=0 productionGraphs=2\n";
+    return true;
 }
 
 bool TestAnimationSlotRuntimeContract()
@@ -22364,7 +23775,18 @@ bool TestGIProbeUpdateScheduleContract()
 bool TestFrameSubmitRetirementContract()
 {
 	using namespace VansGraphics;
-	struct Calls { int submit = 0, wait = 0, reset = 0, idle = 0, created = 0, destroyed = 0, failSubmit = 0; };
+	struct Calls
+	{
+		int submit = 0, wait = 0, reset = 0, idle = 0, created = 0, destroyed = 0, failSubmit = 0;
+		int timelineSubmits = 0, timelineCreated = 0;
+		int crossFrameWaits = 0;
+		VkResult failSubmitResult = VK_ERROR_OUT_OF_HOST_MEMORY;
+		VkResult waitResult = VK_SUCCESS;
+		VkSemaphore crossFrameWaitSemaphore = VK_NULL_HANDLE;
+		uint64_t crossFrameWaitValue = 0;
+		VkPipelineStageFlags crossFrameWaitStages = 0;
+		bool timelinePayloadValid = true;
+	};
 	static Calls calls;
 	calls = {};
 	struct RestoreFunctions
@@ -22381,17 +23803,58 @@ bool TestFrameSubmitRetirementContract()
 			VansGraphics::vkDeviceWaitIdle = idle; VansGraphics::vkCreateSemaphore = create; VansGraphics::vkDestroySemaphore = destroy;
 		}
 	} restore;
-	VansGraphics::vkQueueSubmit = [](VkQueue, uint32_t, const VkSubmitInfo*, VkFence) -> VkResult
+	VansGraphics::vkQueueSubmit = [](VkQueue, uint32_t submitCount, const VkSubmitInfo* submits, VkFence) -> VkResult
 	{
-		return ++calls.submit == calls.failSubmit ? VK_ERROR_OUT_OF_HOST_MEMORY : VK_SUCCESS;
+		for (uint32_t i = 0; i < submitCount; ++i)
+		{
+			if (submits[i].pNext == nullptr)
+				continue;
+			++calls.timelineSubmits;
+			const auto* values = static_cast<const VkTimelineSemaphoreSubmitInfo*>(submits[i].pNext);
+			const bool matchedCounts =
+				values->sType == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO &&
+				values->waitSemaphoreValueCount == submits[i].waitSemaphoreCount &&
+				values->signalSemaphoreValueCount == submits[i].signalSemaphoreCount;
+			const bool mixedValues = values->waitSemaphoreValueCount == 2 &&
+				values->signalSemaphoreValueCount == 2 &&
+				values->pWaitSemaphoreValues[0] == 0 && values->pWaitSemaphoreValues[1] == 17 &&
+				values->pSignalSemaphoreValues[0] == 0 && values->pSignalSemaphoreValues[1] == 18;
+			const bool queueTimelineValues = values->waitSemaphoreValueCount == 0 &&
+				values->signalSemaphoreValueCount == 1 && values->pSignalSemaphoreValues[0] > 0;
+			const bool crossFrameValues = values->waitSemaphoreValueCount == 1 &&
+				values->signalSemaphoreValueCount == 1 &&
+				values->pWaitSemaphoreValues[0] > 0 &&
+				values->pSignalSemaphoreValues[0] > 0;
+			if (crossFrameValues)
+			{
+				++calls.crossFrameWaits;
+				calls.crossFrameWaitSemaphore = submits[i].pWaitSemaphores[0];
+				calls.crossFrameWaitValue = values->pWaitSemaphoreValues[0];
+				calls.crossFrameWaitStages = submits[i].pWaitDstStageMask[0];
+			}
+			calls.timelinePayloadValid = calls.timelinePayloadValid && matchedCounts &&
+				(mixedValues || queueTimelineValues || crossFrameValues);
+		}
+		return ++calls.submit == calls.failSubmit ? calls.failSubmitResult : VK_SUCCESS;
 	};
 	VansGraphics::vkWaitForFences = [](VkDevice, uint32_t, const VkFence*, VkBool32, uint64_t) -> VkResult
-	{ ++calls.wait; return VK_SUCCESS; };
+	{ ++calls.wait; return calls.waitResult; };
 	VansGraphics::vkResetFences = [](VkDevice, uint32_t, const VkFence*) -> VkResult
 	{ ++calls.reset; return VK_SUCCESS; };
 	VansGraphics::vkDeviceWaitIdle = [](VkDevice) -> VkResult { ++calls.idle; return VK_SUCCESS; };
-	VansGraphics::vkCreateSemaphore = [](VkDevice, const VkSemaphoreCreateInfo*, const VkAllocationCallbacks*, VkSemaphore* result) -> VkResult
-	{ *result = reinterpret_cast<VkSemaphore>(uintptr_t(100 + ++calls.created)); return VK_SUCCESS; };
+	VansGraphics::vkCreateSemaphore = [](VkDevice, const VkSemaphoreCreateInfo* info, const VkAllocationCallbacks*, VkSemaphore* result) -> VkResult
+	{
+		if (info->pNext != nullptr)
+		{
+			const auto* type = static_cast<const VkSemaphoreTypeCreateInfo*>(info->pNext);
+			if (type->sType != VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO ||
+				type->semaphoreType != VK_SEMAPHORE_TYPE_TIMELINE || type->initialValue != 0)
+				return VK_ERROR_INITIALIZATION_FAILED;
+			++calls.timelineCreated;
+		}
+		*result = reinterpret_cast<VkSemaphore>(uintptr_t(100 + ++calls.created));
+		return VK_SUCCESS;
+	};
 	VansGraphics::vkDestroySemaphore = [](VkDevice, VkSemaphore, const VkAllocationCallbacks*) { ++calls.destroyed; };
 	VansFrameSubmitOrchestrator graph;
 	graph.Bind(reinterpret_cast<VkDevice>(uintptr_t(1)), reinterpret_cast<VkQueue>(uintptr_t(2)), reinterpret_cast<VkQueue>(uintptr_t(3)));
@@ -22426,7 +23889,278 @@ bool TestFrameSubmitRetirementContract()
 	calls.failSubmit = 0;
 	valid = valid && graph.Execute() && calls.created == 2;
 	graph.Shutdown(); // 关闭也必须等待最后一张提交图。
-	return valid && calls.wait == 3 && calls.destroyed == 2;
+	const bool singleGraphContract = valid && calls.wait == 3 && calls.destroyed == 2 &&
+		calls.timelineSubmits == 0;
+
+	// Two frame slots may keep independent submit graphs pending on the same device.
+	calls = {};
+	VansFrameSubmitOrchestrator firstSlot;
+	VansFrameSubmitOrchestrator secondSlot;
+	firstSlot.Bind(reinterpret_cast<VkDevice>(uintptr_t(1)),
+		reinterpret_cast<VkQueue>(uintptr_t(2)), reinterpret_cast<VkQueue>(uintptr_t(3)));
+	secondSlot.Bind(reinterpret_cast<VkDevice>(uintptr_t(1)),
+		reinterpret_cast<VkQueue>(uintptr_t(2)), reinterpret_cast<VkQueue>(uintptr_t(3)));
+	const auto addFrame = [](VansFrameSubmitOrchestrator& slotGraph, uintptr_t handle)
+	{
+		VansFrameSubmitNode frame;
+		frame.name = "GraphicsFrame";
+		frame.commandBuffers = { reinterpret_cast<VkCommandBuffer>(handle) };
+		frame.fence = reinterpret_cast<VkFence>(handle + 2);
+		slotGraph.AddNode(std::move(frame));
+	};
+	addFrame(firstSlot, 10);
+	addFrame(secondSlot, 20);
+	const bool bothPending = firstSlot.Execute() && secondSlot.Execute() &&
+		firstSlot.HasPendingWork() && secondSlot.HasPendingWork() &&
+		calls.submit == 2 && calls.wait == 0;
+	const bool independentRetirement = firstSlot.WaitForCompletion() &&
+		!firstSlot.HasPendingWork() && secondSlot.HasPendingWork() &&
+		secondSlot.WaitForCompletion() && !secondSlot.HasPendingWork() &&
+		calls.wait == 2;
+	firstSlot.Shutdown();
+	secondSlot.Shutdown();
+
+	// The binary acquire/present semaphores occupy entries in the timeline
+	// value arrays; Vulkan ignores their zero values but requires matching counts.
+	calls = {};
+	VansFrameSubmitOrchestrator timelineGraph;
+	timelineGraph.Bind(reinterpret_cast<VkDevice>(uintptr_t(1)),
+		reinterpret_cast<VkQueue>(uintptr_t(2)), reinterpret_cast<VkQueue>(uintptr_t(3)));
+	VansFrameSubmitNode timelineFrame;
+	timelineFrame.name = "TimelineFrame";
+	timelineFrame.commandBuffers = { reinterpret_cast<VkCommandBuffer>(uintptr_t(30)) };
+	timelineFrame.externalWaits = {
+		{ reinterpret_cast<VkSemaphore>(uintptr_t(31)), VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0 },
+		{ reinterpret_cast<VkSemaphore>(uintptr_t(32)), VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 17, true }
+	};
+	timelineFrame.externalSignals = {
+		{ reinterpret_cast<VkSemaphore>(uintptr_t(33)), 0 },
+		{ reinterpret_cast<VkSemaphore>(uintptr_t(34)), 18, true }
+	};
+	timelineFrame.fence = reinterpret_cast<VkFence>(uintptr_t(35));
+	timelineGraph.AddNode(std::move(timelineFrame));
+	const bool mixedSemaphoreContract = timelineGraph.Execute() &&
+		calls.timelineSubmits == 1 && calls.timelinePayloadValid &&
+		timelineGraph.WaitForCompletion();
+	timelineGraph.Shutdown();
+
+	// Two slot graphs share the actual queue's timeline counter. Only a
+	// successfully submitted node publishes its completion value.
+	calls = {};
+	VansQueueTimelines queueTimelines;
+	const VkDevice fakeDevice = reinterpret_cast<VkDevice>(uintptr_t(1));
+	const VkQueue fakeQueue = reinterpret_cast<VkQueue>(uintptr_t(2));
+	const bool timelineReady = queueTimelines.Initialize(fakeDevice, fakeQueue, fakeQueue) &&
+		calls.timelineCreated == 1 && calls.created == 1 &&
+		queueTimelines.NextSignal(fakeQueue).value == 1;
+	VansFrameSubmitOrchestrator timelineSlot0;
+	VansFrameSubmitOrchestrator timelineSlot1;
+	timelineSlot0.Bind(fakeDevice, fakeQueue, fakeQueue);
+	timelineSlot1.Bind(fakeDevice, fakeQueue, fakeQueue);
+	timelineSlot0.SetQueueTimelines(&queueTimelines);
+	timelineSlot1.SetQueueTimelines(&queueTimelines);
+	addFrame(timelineSlot0, 40);
+	addFrame(timelineSlot1, 50);
+	const bool timelineSlotsSubmitted = timelineReady && timelineSlot0.Execute() &&
+		timelineSlot1.Execute() && timelineSlot0.HasPendingWork() &&
+		timelineSlot1.HasPendingWork() && calls.timelineSubmits == 2 &&
+		calls.timelinePayloadValid;
+	const auto firstPoint = timelineSlot0.GetSubmittedTimelinePoint("GraphicsFrame");
+	const auto secondPoint = timelineSlot1.GetSubmittedTimelinePoint("GraphicsFrame");
+	const bool timelineOrder = firstPoint && secondPoint &&
+		firstPoint->semaphore == secondPoint->semaphore &&
+		firstPoint->value == 1 && secondPoint->value == 2 &&
+		queueTimelines.NextSignal(fakeQueue).value == 3;
+	const bool timelineSlotsRetired = timelineSlot0.WaitForCompletion() &&
+		timelineSlot1.WaitForCompletion();
+	timelineSlot0.Reset();
+	VansFrameSubmitNode partialFirst;
+	partialFirst.name = "PartialFirst";
+	partialFirst.commandBuffers = { reinterpret_cast<VkCommandBuffer>(uintptr_t(60)) };
+	timelineSlot0.AddNode(std::move(partialFirst));
+	VansFrameSubmitNode partialLast;
+	partialLast.name = "PartialLast";
+	partialLast.commandBuffers = { reinterpret_cast<VkCommandBuffer>(uintptr_t(61)) };
+	partialLast.fence = reinterpret_cast<VkFence>(uintptr_t(62));
+	timelineSlot0.AddNode(std::move(partialLast));
+	calls.failSubmit = calls.submit + 2;
+	const bool partialTimelineRollback = !timelineSlot0.Execute() &&
+		!timelineSlot0.HasPendingWork() && calls.idle == 1 &&
+		timelineSlot0.GetSubmittedTimelinePoint("PartialFirst").has_value() &&
+		timelineSlot0.GetSubmittedTimelinePoint("PartialFirst")->value == 3 &&
+		!timelineSlot0.GetSubmittedTimelinePoint("PartialLast") &&
+		queueTimelines.NextSignal(fakeQueue).value == 4;
+	timelineSlot0.Reset();
+	addFrame(timelineSlot0, 70);
+	const bool recoveredTimelineSubmit = timelineSlot0.Execute() &&
+		timelineSlot0.GetSubmittedTimelinePoint("GraphicsFrame").has_value() &&
+		timelineSlot0.GetSubmittedTimelinePoint("GraphicsFrame")->value == 4 &&
+		timelineSlot0.WaitForCompletion();
+	timelineSlot0.Shutdown();
+	timelineSlot1.Shutdown();
+	queueTimelines.Shutdown();
+	const bool aliasedTimelineDestroyedOnce = calls.destroyed == 1;
+	calls = {};
+	VansQueueTimelines distinctQueueTimelines;
+	const VkQueue otherQueue = reinterpret_cast<VkQueue>(uintptr_t(3));
+	const bool distinctQueuesHaveDistinctTimelines =
+		distinctQueueTimelines.Initialize(fakeDevice, fakeQueue, otherQueue) &&
+		calls.timelineCreated == 2 &&
+		distinctQueueTimelines.NextSignal(fakeQueue).semaphore !=
+			distinctQueueTimelines.NextSignal(otherQueue).semaphore;
+	distinctQueueTimelines.Shutdown();
+	// A later compute write to the same physical image must wait for the
+	// previous frame's graphics read while both frame graphs remain pending.
+	calls = {};
+	VansQueueTimelines resourceTimelines;
+	VansCrossFrameResourceLedger resourceLedger;
+	VansFrameSubmitOrchestrator readerGraph;
+	VansFrameSubmitOrchestrator writerGraph;
+	readerGraph.Bind(fakeDevice, fakeQueue, otherQueue);
+	writerGraph.Bind(fakeDevice, fakeQueue, otherQueue);
+	const bool resourceTimelinesReady = resourceTimelines.Initialize(fakeDevice, fakeQueue, otherQueue);
+	readerGraph.SetQueueTimelines(&resourceTimelines);
+	writerGraph.SetQueueTimelines(&resourceTimelines);
+	readerGraph.SetCrossFrameResourceLedger(&resourceLedger);
+	writerGraph.SetCrossFrameResourceLedger(&resourceLedger);
+	const auto imageIdentity = VansPhysicalResourceIdentity::ForImage(
+		reinterpret_cast<VkImage>(uintptr_t(80)));
+	VansFrameSubmitNode reader;
+	reader.name = "PreviousGraphicsRead";
+	reader.queue = VansQueueRole::Graphics;
+	reader.commandBuffers = { reinterpret_cast<VkCommandBuffer>(uintptr_t(81)) };
+	reader.resources = { { "CloudShadow", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, true, false, true, false,
+		imageIdentity } };
+	reader.fence = reinterpret_cast<VkFence>(uintptr_t(82));
+	readerGraph.AddNode(std::move(reader));
+	VansFrameSubmitNode writer;
+	writer.name = "NextComputeWrite";
+	writer.queue = VansQueueRole::Compute;
+	writer.commandBuffers = { reinterpret_cast<VkCommandBuffer>(uintptr_t(83)) };
+	writer.resources = { { "CloudShadow", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL, true, true, true, false,
+		imageIdentity } };
+	writer.fence = reinterpret_cast<VkFence>(uintptr_t(84));
+	writerGraph.AddNode(std::move(writer));
+	const bool physicalResourceWait = resourceTimelinesReady && readerGraph.Execute() &&
+		writerGraph.Execute() && readerGraph.HasPendingWork() &&
+		writerGraph.HasPendingWork() && calls.wait == 0 &&
+		calls.crossFrameWaits == 1 &&
+		readerGraph.GetSubmittedTimelinePoint("PreviousGraphicsRead") &&
+		calls.crossFrameWaitSemaphore ==
+			readerGraph.GetSubmittedTimelinePoint("PreviousGraphicsRead")->semaphore &&
+		calls.crossFrameWaitValue ==
+			readerGraph.GetSubmittedTimelinePoint("PreviousGraphicsRead")->value &&
+		calls.crossFrameWaitStages == VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT &&
+		calls.timelinePayloadValid && resourceLedger.ResourceCount() == 1;
+	const bool physicalGraphsRetired = readerGraph.WaitForCompletion() &&
+		writerGraph.WaitForCompletion();
+	readerGraph.Reset();
+	writerGraph.Reset();
+	const auto secondImageIdentity = VansPhysicalResourceIdentity::ForImage(
+		reinterpret_cast<VkImage>(uintptr_t(85)));
+	VansFrameSubmitNode computeReader;
+	computeReader.name = "PreviousComputeRead";
+	computeReader.queue = VansQueueRole::Compute;
+	computeReader.commandBuffers = { reinterpret_cast<VkCommandBuffer>(uintptr_t(86)) };
+	computeReader.resources = { { "CascadeShadowMap", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+		true, false, true, false, secondImageIdentity } };
+	computeReader.fence = reinterpret_cast<VkFence>(uintptr_t(87));
+	readerGraph.AddNode(std::move(computeReader));
+	VansFrameSubmitNode graphicsWriter;
+	graphicsWriter.name = "NextGraphicsWrite";
+	graphicsWriter.queue = VansQueueRole::Graphics;
+	graphicsWriter.commandBuffers = { reinterpret_cast<VkCommandBuffer>(uintptr_t(88)) };
+	graphicsWriter.resources = { { "CascadeShadowMap", VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+		VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+		true, true, true, false, secondImageIdentity } };
+	graphicsWriter.fence = reinterpret_cast<VkFence>(uintptr_t(89));
+	writerGraph.AddNode(std::move(graphicsWriter));
+	const bool reverseResourceWait = physicalGraphsRetired && readerGraph.Execute() &&
+		writerGraph.Execute() && readerGraph.HasPendingWork() &&
+		writerGraph.HasPendingWork() && calls.wait == 2 &&
+		calls.crossFrameWaits == 2 &&
+		readerGraph.GetSubmittedTimelinePoint("PreviousComputeRead") &&
+		calls.crossFrameWaitSemaphore ==
+			readerGraph.GetSubmittedTimelinePoint("PreviousComputeRead")->semaphore &&
+		calls.crossFrameWaitValue ==
+			readerGraph.GetSubmittedTimelinePoint("PreviousComputeRead")->value &&
+		calls.crossFrameWaitStages == VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT &&
+		calls.timelinePayloadValid && resourceLedger.ResourceCount() == 2;
+	const bool reverseGraphsRetired = readerGraph.WaitForCompletion() &&
+		writerGraph.WaitForCompletion();
+	// 同队列相邻帧仍需内存依赖：提交顺序本身不发布 shader 写入。
+	const VkSemaphore sameQueueTimeline = reinterpret_cast<VkSemaphore>(uintptr_t(90));
+	VansCrossFrameResourceLedger sameQueueWriter;
+	sameQueueWriter.PublishAccess(imageIdentity, true, fakeQueue, sameQueueTimeline, 5u);
+	std::vector<VansCrossFrameResourceWait> sameQueueReadWaits;
+	sameQueueWriter.CollectWaits(imageIdentity, false, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		sameQueueReadWaits);
+	const bool sameQueueReadAfterWrite = sameQueueReadWaits.size() == 1u &&
+		sameQueueReadWaits[0].semaphore == sameQueueTimeline &&
+		sameQueueReadWaits[0].value == 5u &&
+		sameQueueReadWaits[0].stages == VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+	VansCrossFrameResourceLedger sameQueueReader;
+	sameQueueReader.PublishAccess(imageIdentity, false, fakeQueue, sameQueueTimeline, 6u);
+	std::vector<VansCrossFrameResourceWait> sameQueueReadReadWaits;
+	sameQueueReader.CollectWaits(imageIdentity, false, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		sameQueueReadReadWaits);
+	const bool sameQueueReadAfterRead = sameQueueReadReadWaits.empty();
+	std::vector<VansCrossFrameResourceWait> sameQueueWriteWaits;
+	sameQueueReader.CollectWaits(imageIdentity, true, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		sameQueueWriteWaits);
+	const bool sameQueueWriteAfterRead = sameQueueWriteWaits.size() == 1u &&
+		sameQueueWriteWaits[0].semaphore == sameQueueTimeline &&
+		sameQueueWriteWaits[0].value == 6u &&
+		sameQueueWriteWaits[0].stages == VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+	readerGraph.Shutdown();
+	writerGraph.Shutdown();
+	resourceTimelines.Shutdown();
+	const bool resourceGraphsCleanedUp = calls.destroyed == 2;
+	// A device-lost result from the second submit must survive the partial
+	// submit drain and prevent this graph from submitting again.
+	calls = {};
+	VansFrameSubmitOrchestrator lostGraph;
+	lostGraph.Bind(fakeDevice, fakeQueue, otherQueue);
+	VansFrameSubmitNode submittedBeforeLoss;
+	submittedBeforeLoss.name = "SubmittedBeforeDeviceLoss";
+	submittedBeforeLoss.commandBuffers = { reinterpret_cast<VkCommandBuffer>(uintptr_t(100)) };
+	submittedBeforeLoss.fence = reinterpret_cast<VkFence>(uintptr_t(101));
+	lostGraph.AddNode(std::move(submittedBeforeLoss));
+	VansFrameSubmitNode failedOnDeviceLoss;
+	failedOnDeviceLoss.name = "DeviceLostSubmit";
+	failedOnDeviceLoss.commandBuffers = { reinterpret_cast<VkCommandBuffer>(uintptr_t(102)) };
+	failedOnDeviceLoss.fence = reinterpret_cast<VkFence>(uintptr_t(103));
+	lostGraph.AddNode(std::move(failedOnDeviceLoss));
+	calls.failSubmit = 2;
+	calls.failSubmitResult = VK_ERROR_DEVICE_LOST;
+	const bool partialDeviceLossDetected = !lostGraph.Execute() &&
+		lostGraph.WasDeviceLost() && !lostGraph.HasPendingWork() && calls.idle == 1;
+	const int submitsAtLoss = calls.submit;
+	lostGraph.Reset();
+	addFrame(lostGraph, 104);
+	const bool lostGraphRejectsReuse = !lostGraph.Execute() && calls.submit == submitsAtLoss;
+	lostGraph.Shutdown();
+	calls = {};
+	VansFrameSubmitOrchestrator lostFenceGraph;
+	lostFenceGraph.Bind(fakeDevice, fakeQueue, otherQueue);
+	addFrame(lostFenceGraph, 106);
+	const bool submittedBeforeFenceLoss = lostFenceGraph.Execute();
+	calls.waitResult = VK_ERROR_DEVICE_LOST;
+	const bool fenceDeviceLossDetected = submittedBeforeFenceLoss &&
+		!lostFenceGraph.WaitForCompletion() && lostFenceGraph.WasDeviceLost();
+	lostFenceGraph.Shutdown();
+	return singleGraphContract && bothPending && independentRetirement &&
+		mixedSemaphoreContract && timelineSlotsSubmitted && timelineOrder &&
+		timelineSlotsRetired && partialTimelineRollback && recoveredTimelineSubmit &&
+		aliasedTimelineDestroyedOnce && distinctQueuesHaveDistinctTimelines &&
+		physicalResourceWait && physicalGraphsRetired && reverseResourceWait &&
+		sameQueueReadAfterWrite && sameQueueReadAfterRead && sameQueueWriteAfterRead &&
+		reverseGraphsRetired && resourceGraphsCleanedUp &&
+		partialDeviceLossDetected && lostGraphRejectsReuse && fenceDeviceLossDetected;
 }
 
 bool TestAsyncComputeSubmitGraphContract()
@@ -22461,6 +24195,8 @@ bool TestAsyncComputeSubmitGraphContract()
 		|| !encodedSettings.contains("cameraLensLimits")
 		|| encodedSettings["cameraLensLimits"].value("minimumNearClip", 0.0f) != 0.1f
 		|| !encodedSettings["commandRecording"].value("asyncComputeEnabled", false)
+		|| encodedSettings["commandRecording"].value("framesInFlight", 0u) != 1u
+		|| encodedSettings["commandRecording"].contains("frameContextRingEnabled")
 		|| encodedSettings["commandRecording"].contains("asyncComputeMode")
 		|| encodedSettings["commandRecording"].contains("asyncGIEnabled"))
 	{
@@ -22475,8 +24211,35 @@ bool TestAsyncComputeSubmitGraphContract()
 		return false;
 	}
 	if (!decodedSettings.commandRecordingSettings.asyncComputeEnabled
+		|| decodedSettings.commandRecordingSettings.framesInFlight != 1u
 		|| decodedSettings.renderOutputSettings.width != 3840u
 		|| decodedSettings.renderOutputSettings.height != 2160u)
+		return false;
+	nlohmann::json twoFrameSettings = encodedSettings;
+	twoFrameSettings["commandRecording"]["framesInFlight"] = 2u;
+	if (!Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
+		twoFrameSettings, decodedSettings, warnings, codecError)
+		|| decodedSettings.commandRecordingSettings.framesInFlight != 2u)
+		return false;
+	for (const std::uint32_t invalidCount : { 0u, 3u })
+	{
+		nlohmann::json invalidFrameCount = encodedSettings;
+		invalidFrameCount["commandRecording"]["framesInFlight"] = invalidCount;
+		if (Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
+			invalidFrameCount, decodedSettings, warnings, codecError)
+			|| codecError != "commandRecording.framesInFlight must be 1 or 2")
+			return false;
+	}
+	nlohmann::json obsoleteRingSettings = encodedSettings;
+	obsoleteRingSettings["commandRecording"]["frameContextRingEnabled"] = true;
+	if (Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
+		obsoleteRingSettings, decodedSettings, warnings, codecError))
+		return false;
+	Vans::VansProjectSettings projectSettings;
+	if (!projectSettings.SetCommandRecordingSettings(true, 2u, false)
+		|| projectSettings.SetCommandRecordingSettings(false, 3u, true)
+		|| projectSettings.GetCommandRecordingSettings().framesInFlight != 2u
+		|| !projectSettings.GetCommandRecordingSettings().parallelEnabled)
 		return false;
 
 	nlohmann::json legacyWindowExtentSettings = encodedSettings;
@@ -22707,10 +24470,19 @@ bool TestUnifiedUpscalerHistoryContract()
 		{ 1920, 1080 },
 		VansUpscalerBackend::FSR,
 		VansUpscaleQualityMode::Quality);
-	history.OnTemporalDispatchSucceeded();
+	history.OnTemporalDispatchSubmission(false);
+	if (!Expect(history.IsResetPending() &&
+		contains(history.GetPendingReasons(), VansUpscalerResetReason::FirstFrame) &&
+		contains(history.GetPendingReasons(), VansUpscalerResetReason::DispatchFault),
+		"Unsubmitted temporal dispatch consumed history reset"))
+	{
+		return false;
+	}
+	history.OnTemporalDispatchSubmission(true);
 	if (!Expect(!history.IsResetPending() &&
-		contains(history.GetLastConsumedResetReasons(), VansUpscalerResetReason::FirstFrame),
-		"Successful temporal dispatch must consume pending reset"))
+		contains(history.GetLastConsumedResetReasons(), VansUpscalerResetReason::FirstFrame) &&
+		contains(history.GetLastConsumedResetReasons(), VansUpscalerResetReason::DispatchFault),
+		"Submitted temporal dispatch must consume pending reset"))
 	{
 		return false;
 	}
@@ -23747,6 +25519,8 @@ bool TestAtmosphereMathAndDataContract()
 		"Source/EngineCore/RenderCore/VulkanCore/VansVKRenderer.cpp");
 	const std::string inspectorSource = readText(
 		"Source/EngineCore/EditorCore/Windows/VansInspectorWindow.cpp");
+	const std::string componentTypeCatalogSource = readText(
+		"Source/EngineCore/SceneCore/VansComponentTypeCatalog.cpp");
 	const std::string runtimeProjectionSource = readText(
 		"Source/EngineCore/SceneCore/VansSceneRuntimeProjection.cpp");
 	const std::string cloudRayMarchShader = readText(
@@ -23967,7 +25741,8 @@ bool TestAtmosphereMathAndDataContract()
 		nearMediaSystemSource.find("MaxLocalFogVolumes") != std::string::npos &&
 		nearMediaSystemSource.find("RefreshLocalFogRegistry") != std::string::npos &&
 		nearMediaSystemSource.find("GetSceneObjectCollectionGeneration") != std::string::npos &&
-		nearMediaSystemSource.find("m_LocalFogTileHeadersBuffer") != std::string::npos &&
+		nearMediaSystemHeader.find("std::array<FrameBuffers, VansCommandRecordingConfig::MaximumFramesInFlight> m_FrameBuffers") != std::string::npos &&
+		nearMediaSystemSource.find("frame.localFogTileHeaders.SetBufferData") != std::string::npos &&
 		nearMediaSystemSource.find("FindComputeShader(\"NearMediaLighting\")") != std::string::npos &&
 		nearMediaSystemSource.find("FindComputeShader(\"LocalMediaTemporalResolve\")") != std::string::npos &&
 		shaderRegistrationSource.find(
@@ -23995,7 +25770,9 @@ bool TestAtmosphereMathAndDataContract()
 		inspectorSource.find("if (type == \"LocalVolumetricFog\")") != std::string::npos &&
 		inspectorSource.find(
 			"Fallback direction continuously advects Detail Noise") != std::string::npos &&
-		inspectorSource.find("\"AudioReverbZone\", \"LocalVolumetricFog\"") != std::string::npos,
+		inspectorSource.find("VansComponentTypeCatalog::All()") != std::string::npos &&
+		componentTypeCatalogSource.find("{ \"AudioReverbZone\"") != std::string::npos &&
+		componentTypeCatalogSource.find("{ \"LocalVolumetricFog\"") != std::string::npos,
 		"Entity Local Volumetric Fog injection, lighting, or authoring contract regressed"))
 	{
 		return false;
@@ -24465,7 +26242,7 @@ bool TestProjectSettingsExplicitSaveContract()
 		Vans::VansProjectSettingsStorage::SavePhysicsSettings(
 			(projectRoot / config.physicsSettings).string(),
 			settings.BuildPhysicsSettingsData(), error) &&
-		Vans::VansProjectSettingsStorage::SaveNavigationSettings(
+		Vans::VansNavigationSettingsStorage::Save(
 			(projectRoot / config.navigationSettings).string(),
 			settings.GetNavigationSettings(), error),
 		"Could not create the project settings fixtures"))
@@ -24507,7 +26284,7 @@ bool TestProjectSettingsExplicitSaveContract()
 	Vans::VansProjectOpenRequest openRequest;
 	openRequest.m_ProjectRootPath = projectRoot.string();
 	openRequest.m_Options.m_UpdateRecentProjects = false;
-	openRequest.m_Options.m_ScanAssets = false;
+	openRequest.m_Options.m_AssetLoadMode = Vans::VansProjectAssetLoadMode::None;
 	if (!Expect(openRequest.m_Options.m_AssetPolicy.meta == Vans::VansAssetMetaPolicy::RequireExisting,
 		"Default project-open asset policy is not read-only") ||
 		!Expect(manager.OpenProject(openRequest).m_Opened,
@@ -24573,6 +26350,78 @@ bool TestProjectSettingsExplicitSaveContract()
 		physicsAfterSave != physicsBefore,
 		"Explicit physics save touched unrelated project documents or skipped its dirty file"))
 		return false;
+
+	const fs::path navigationPath=projectRoot / config.navigationSettings;
+	std::string navigationBefore;
+	if(!Expect(Vans::VansFileStorage::ReadAllBytes(navigationPath,navigationBefore,error),error.c_str())) return false;
+	Vans::EditorAPI::EngineAPIImpl navigationEditor;
+	const auto navigationSnapshot=navigationEditor.GetNavigationSettings();
+	if(!Expect(navigationSnapshot.available && navigationSnapshot.editable && !navigationSnapshot.arrays.empty(),
+		"Navigation settings editor has no current project schema")) return false;
+	auto navigationDraft=navigationSnapshot.document;
+	auto* navigationQuery=Vans::FindObjectField(navigationDraft,"query");
+	Vans::SetSerializedObjectField(*navigationQuery,"maximumSearchNodes",Vans::VansSerializedValue::Int(65536));
+	const auto navigationState=manager.GetProjectDocumentStateId();
+	if(!Expect(!navigationEditor.ValidateNavigationSettingsDocument(navigationDraft).valid &&
+		!navigationEditor.ApplyNavigationSettings(navigationDraft,navigationSnapshot.document).valid &&
+		manager.GetProjectDocumentStateId()==navigationState && !manager.HasDirtyProjectDocuments(),
+		"Invalid navigation draft changed the current configuration")) return false;
+	Vans::SetSerializedObjectField(*navigationQuery,"maximumSearchNodes",Vans::VansSerializedValue::Int(4096));
+	auto* navigationProfiles=Vans::FindObjectField(navigationDraft,"profiles");
+	auto additionalProfile=navigationProfiles->arrayItems.front();
+	Vans::SetSerializedObjectField(additionalProfile,"id",Vans::VansSerializedValue::String("Large"));
+	navigationProfiles->arrayItems.push_back(std::move(additionalProfile));
+	auto* navigationMaps=Vans::FindObjectField(navigationDraft,"maps");
+	auto additionalMap=navigationMaps->arrayItems.front();
+	Vans::SetSerializedObjectField(additionalMap,"id",Vans::VansSerializedValue::String("Other"));
+	Vans::SetSerializedObjectField(additionalMap,"profiles",Vans::VansSerializedValue::Array({Vans::VansSerializedValue::String("Large")}));
+	navigationMaps->arrayItems.push_back(std::move(additionalMap));
+	Vans::VansIOAudit::Reset();
+	if(!Expect(navigationEditor.ValidateNavigationSettingsDocument(navigationDraft).valid &&
+		navigationEditor.ApplyNavigationSettings(navigationDraft,navigationSnapshot.document).valid &&
+		manager.HasDirtyProjectDocuments() && manager.GetProjectSettings().GetNavigationSettings().query.maximumSearchNodes==4096,
+		"Navigation Apply did not publish its valid in-memory settings")) return false;
+	const auto navigationSchema=navigationEditor.GetNavigationAuthoringSchema();
+	const auto profileChoices=[&](const char* map,const char* profile)
+	{
+		const auto field=std::find_if(navigationSchema.fields.begin(),navigationSchema.fields.end(),[&](const auto& current)
+		{ return current.componentType=="NavigationAgent" && current.field=="profileId" && current.mapId==map; });
+		return field!=navigationSchema.fields.end() && field->choices.size()==1 && field->choices.front().value.stringValue==profile;
+	};
+	auto mapScopedAgent=Vans::VansComponentTypeCatalog::CreateDefaultData("NavigationAgent");
+	Vans::SetSerializedObjectField(mapScopedAgent,"mapId",Vans::VansSerializedValue::String("Other"));
+	if(!Expect(profileChoices("World","Humanoid") && profileChoices("Other","Large") &&
+		!navigationEditor.ValidateNavigationComponent("NavigationAgent",mapScopedAgent).valid,
+		"Navigation Inspector offered a profile outside the selected Map")) return false;
+	Vans::SetSerializedObjectField(mapScopedAgent,"profileId",Vans::VansSerializedValue::String("Large"));
+	if(!Expect(navigationEditor.ValidateNavigationComponent("NavigationAgent",mapScopedAgent).valid,
+		"Navigation Inspector rejected its selected Map's profile")) return false;
+	const auto navigationApplyIO=Vans::VansIOAudit::Snapshot();
+	std::string navigationAfterApply;
+	if(!Expect(std::none_of(navigationApplyIO.begin(),navigationApplyIO.end(),[](const auto& event)
+		{ return event.operation==Vans::VansIOOperation::StageWrite; }) &&
+		Vans::VansFileStorage::ReadAllBytes(navigationPath,navigationAfterApply,error) && navigationAfterApply==navigationBefore,
+		"Navigation Apply wrote authoring data before explicit Save")) return false;
+	const auto acceptedNavigationState=manager.GetProjectDocumentStateId();
+	if(!Expect(!navigationEditor.ApplyNavigationSettings(navigationSnapshot.document,navigationSnapshot.document).valid &&
+		manager.GetProjectDocumentStateId()==acceptedNavigationState &&
+		navigationEditor.ApplyNavigationSettings(navigationDraft,navigationDraft).valid &&
+		manager.GetProjectDocumentStateId()==acceptedNavigationState,
+		"A stale navigation draft replaced current settings or an unchanged Apply dirtied them again")) return false;
+	navigationEditor.SetPlayState(Vans::EditorAPI::EnginePlayState::Play);
+	if(!Expect(!navigationEditor.ApplyNavigationSettings(navigationSnapshot.document,navigationDraft).valid &&
+		manager.GetProjectDocumentStateId()==acceptedNavigationState,
+		"Play accepted a navigation authoring settings transaction")) return false;
+	navigationEditor.SetPlayState(Vans::EditorAPI::EnginePlayState::Edit);
+	Vans::VansIOAudit::Reset();
+	if(!Expect(manager.SaveProjectDocuments(error) && !manager.HasDirtyProjectDocuments(),error.c_str())) return false;
+	const auto navigationSaveIO=Vans::VansIOAudit::Snapshot();
+	Vans::VansNavigationSettings navigationReloaded;
+	if(!Expect(std::count_if(navigationSaveIO.begin(),navigationSaveIO.end(),[](const auto& event)
+		{ return event.domain==Vans::VansIODomain::Authoring && event.operation==Vans::VansIOOperation::StageWrite && event.success; })==1 &&
+		Vans::VansNavigationSettingsStorage::Load(navigationPath.string(),navigationReloaded,error) &&
+		navigationReloaded.query.maximumSearchNodes==4096,
+		"Explicit navigation Save did not persist exactly its own current document")) return false;
 
 	const Vans::VansGAFProjectConfiguration* loadedGAF =
 		manager.GetGAFProjectConfiguration();
@@ -24787,11 +26636,41 @@ bool TestProjectMaterialDependencyClosure()
 		Vans::VansSceneSchema::SerializeSceneJson(scene));
 	const auto result = Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
 		database, root, temporary.path / "Scenes" / "Empty.json", {}, repository);
-	return Expect(result.success && result.requiredMaterials.count(materialGuid) == 1 &&
+	if (!Expect(result.success && result.requiredMaterials.count(materialGuid) == 1 &&
 		result.requiredTextures.count(textureGuid) == 1 &&
 		result.resourcePlan.textures.size() == 1 &&
 		result.resourcePlan.textures.front().assetGuid == textureGuid,
-		"Project-global material texture did not enter the packaged GPU resource closure");
+		"Project-global material texture did not enter the packaged GPU resource closure")) return false;
+
+	// Exercise the real dependency boundary with freshly published memory metadata.
+	struct ClothImportCase { const char* slot; const char* colorSpace; int channels; bool valid; };
+	for (const auto& test : std::array<ClothImportCase, 8>{{
+		{"normal", "sRGB", 4, false}, {"normal", "linear", 2, false},
+		{"normal", "linear", 4, true}, {"fiberDirection", "linear", 1, false},
+		{"fiberDirection", "linear", 2, true}, {"basecolor", "linear", 4, false},
+		{"basecolor", "sRGB", 4, true}, {"opacity", "linear", 1, true}}})
+	{
+		auto cloth = material;
+		cloth["materialType"] = "cloth";
+		cloth["parameters"] = nlohmann::json::object();
+		cloth["textures"] = {{test.slot, {{"guid", textureGuid}}}};
+		std::ofstream(assets / "GlobalMaterial.mat") << cloth.dump();
+		const nlohmann::json meta = {
+			{"guid", textureGuid}, {"importer", "TextureImporter"}, {"version", 1},
+			{"settings", {{"colorSpace", test.colorSpace}, {"importChannel", test.channels}, {"useCompress", false}}},
+			{"subAssets", nlohmann::json::object()}};
+		std::ofstream(assets / "GlobalTexture.png.meta") << meta.dump();
+		Vans::VansAssetObjectRepository clothRepository;
+		const auto published = Vans::VansAssetObjectBootstrapper::Publish(database.All(), clothRepository);
+		if (!Expect(static_cast<bool>(published), "Cloth import fixture publication failed")) return false;
+		const auto planned = Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
+			database, root, temporary.path / "Scenes" / "Empty.json", {}, clothRepository);
+		if (!Expect(planned.success == test.valid && (test.valid ||
+			std::any_of(planned.errors.begin(), planned.errors.end(), [](const std::string& error) {
+				return error.find("Cloth texture slot") != std::string::npos;
+			})), "Cloth texture import validation did not propagate through dependency planning")) return false;
+	}
+	return true;
 }
 
 bool TestClothVertexPayloadMatchesRenderMeshAbi()
@@ -25030,8 +26909,306 @@ bool TestHairMaterialContract()
     return true;
 }
 
+bool TestClothMaterialContract()
+{
+    using namespace Vans;
+    VansClothMaterialParameters original;
+    original.roughness = 0.8f;
+    original.sheenRoughness = 0.2f;
+    original.anisotropy = 0.75f;
+    original.diffuseTransmittance = {0.1f, 0.2f, 0.3f};
+    original.alphaMode = VansClothAlphaMode::Mask;
+    original.doubleSided = false;
+    const auto encoded = WriteClothMaterialParameters(original);
+    VansClothMaterialParameters decoded;
+    std::string error;
+    if (!Expect(ReadClothMaterialParameters(encoded, decoded, error) &&
+        decoded.roughness == original.roughness && decoded.sheenRoughness == original.sheenRoughness &&
+        decoded.diffuseTransmittance == original.diffuseTransmittance &&
+        decoded.alphaMode == VansClothAlphaMode::Mask && !decoded.doubleSided,
+        "Cloth parameters must preserve independent roughness and thin-layer settings")) return false;
+    for (const auto* retired : {"clothModel", "sheenStrength", "translucency", "thickness",
+        "transmissionColor", "metallic", "baseColor", "color", "version"})
+    {
+        auto invalid = encoded;
+        SetSerializedObjectField(invalid, retired, VansSerializedValue::Float(0.5));
+        if (!Expect(!ReadClothMaterialParameters(invalid, decoded, error) && decoded.roughness == original.roughness,
+            "Retired Cloth parameters must fail atomically")) return false;
+    }
+    for (double number : {-0.1, 1.1, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+        if (!Expect(!ApplyClothMaterialParameter(decoded, "sheenWeight", VansSerializedValue::Float(number), error),
+            "Invalid Cloth scalar accepted")) return false;
+    if (!Expect(!ApplyClothMaterialParameter(decoded, "doubleSided", VansSerializedValue::Int(1), error) &&
+        !ApplyClothMaterialParameter(decoded, "alphaMode", VansSerializedValue::String("blend"), error),
+        "Cloth must reject unsupported alpha modes and untyped flags")) return false;
+    auto duplicate = encoded;
+    duplicate.objectFields.push_back(duplicate.objectFields.front());
+    if (!Expect(!ReadClothMaterialParameters(duplicate, decoded, error), "Duplicate Cloth parameter accepted")) return false;
+    const auto badColor = VansSerializedValue::Array({VansSerializedValue::Float(0.4),
+        VansSerializedValue::Float(2.0), VansSerializedValue::Float(0.1)});
+    if (!Expect(!ApplyClothMaterialParameter(decoded, "diffuseTransmittance", badColor, error) &&
+        decoded.diffuseTransmittance == original.diffuseTransmittance,
+        "Cloth RGB validation must not partially update a color")) return false;
+    VansClothMaterialParameters defaults;
+    for (const auto& preset : GetClothMaterialPresets())
+    {
+        VansClothMaterialParameters roundTrip;
+        if (!Expect(ReadClothMaterialParameters(WriteClothMaterialParameters(preset.parameters), roundTrip, error),
+            "Every Cloth authoring preset must satisfy the runtime schema")) return false;
+    }
+    float minimum = 0, maximum = 0;
+    if (!Expect(GetClothMaterialScalarRange("sheenRoughness", minimum, maximum) && minimum == .045f && maximum == 1 &&
+        !ApplyClothMaterialParameter(decoded, "sheenRoughness", VansSerializedValue::Float(minimum - .001f), error) &&
+        !GetClothMaterialScalarRange("clothModel", minimum, maximum),
+        "Cloth authoring controls and decoder must share current field ranges")) return false;
+    if (!Expect(ReadClothMaterialParameters(VansSerializedValue::Object({}), defaults, error) &&
+        defaults.diffuseTransmittance == std::array<float, 3>{0, 0, 0} && defaults.roughness != defaults.sheenRoughness,
+        "Cloth defaults must be opaque with independent surface and sheen roughness")) return false;
+    auto texture = VansSerializedValue::Object({{"guid", VansSerializedValue::String("30000000-0000-4000-8000-000000000001")}});
+    auto material = VansSerializedValue::Object({
+        {"materialType", VansSerializedValue::String("cloth")}, {"parameters", encoded},
+        {"textures", VansSerializedValue::Object({{"opacity", texture}, {"fiberDirection", texture}})}});
+    VansMaterialAuthoringAsset asset;
+    if (!Expect(ReadMaterialAuthoringAsset(material, asset, error), "Valid Cloth authoring asset rejected")) return false;
+    SetSerializedObjectField(*FindObjectField(material, "textures"), "metal", texture);
+    if (!Expect(!ReadMaterialAuthoringAsset(material, asset, error), "Cloth accepted an unused metal slot")) return false;
+    SetSerializedObjectField(material, "textures", VansSerializedValue::Object({}));
+    if (!Expect(!ReadMaterialAuthoringAsset(material, asset, error), "Masked Cloth accepted missing opacity")) return false;
+    SetSerializedObjectField(material, "textures", VansSerializedValue::Object({{"opacity", texture}, {"opacity", texture}}));
+    if (!Expect(!ReadMaterialAuthoringAsset(material, asset, error), "Cloth accepted duplicate texture slots")) return false;
+    return true;
+}
+
+bool TestClothAuthoringPreviewContract()
+{
+    using namespace Vans;
+    TemporaryDirectory temporary;
+    const fs::path path = temporary.path / "ClothPreview.mat";
+    const auto parameters = WriteClothMaterialParameters({});
+    auto root = VansSerializedValue::Object({
+        {"guid", VansSerializedValue::String("30000000-0000-4000-8000-000000000002")},
+        {"materialType", VansSerializedValue::String("cloth")},
+        {"parameters", parameters}, {"textures", VansSerializedValue::Object({})}});
+    std::string error;
+    auto& registry = VansAssetDocumentRegistry::Get();
+    registry.Clear();
+    struct RegistryGuard
+    {
+        ~RegistryGuard()
+        {
+            VansAssetDocumentEditService::ClearAllHistories();
+            VansAssetDocumentRegistry::Get().Clear();
+        }
+    } guard;
+    const auto meta = VansSerializedValue::Object({
+        {"guid", *FindObjectField(root, "guid")},
+        {"importer", VansSerializedValue::String(VansAssetDatabase::ImporterFor(VansAssetType::Material))},
+        {"settings", VansSerializedValue::Object({})}});
+    const auto documents = registry.CreateInMemory(path, root, meta, false, error);
+    if (!Expect(documents && documents->IsDirty(), error.c_str())) return false;
+    auto& document = documents->sourceDocument;
+    const std::string textureGuid = "30000000-0000-4000-8000-000000000001";
+    const auto reference = VansSerializedValue::Object({
+        {"guid", VansSerializedValue::String(textureGuid)}});
+    class TextureCatalog final : public EditorAPI::IAssetEditorAPI
+    {
+    public:
+        EditorAPI::AssetGuidResolution resolution;
+        std::string guid;
+        std::vector<EditorAPI::AssetEntry> QueryAssets(EditorAPI::AssetTypeFilter) const override { return {}; }
+        EditorAPI::AssetDragPayload CreateAssetDragPayload(const std::string&) override { return {}; }
+        EditorAPI::AssetGuidResolution ResolveAssetGuid(const std::string& value) const override
+        { return value == guid ? resolution : EditorAPI::AssetGuidResolution{}; }
+    } catalog;
+    catalog.guid = textureGuid;
+    const auto checkRejectedEdit = [&](const VansSerializedValue& candidate, const char* expectedReason)
+    {
+        auto unchanged = root;
+        error.clear();
+        const bool accepted = PrepareClothMaterialAuthoringEdit(catalog, candidate, unchanged, error);
+        return Expect(!accepted && error.find(expectedReason) != std::string::npos &&
+            EncodeSerializedValueJson<nlohmann::json>(unchanged) == EncodeSerializedValueJson<nlohmann::json>(root),
+            "Invalid Cloth Inspector edit lost its diagnostic or partially changed the source root");
+    };
+    for (const char* slot : VansClothTextureSlots)
+    {
+        auto display = root;
+        SetSerializedObjectField(display, "textures", VansSerializedValue::Object({{slot, reference}}));
+        catalog.resolution.found = true;
+        catalog.resolution.asset.type = EditorAPI::AssetType::Texture;
+        catalog.resolution.textureImport.available = true;
+        catalog.resolution.textureImport.linear = std::string(slot) != "basecolor";
+        const int channels = std::string(slot) == "basecolor" || std::string(slot) == "normal" ? 4 :
+            std::string(slot) == "fiberDirection" ? 2 : 1;
+        catalog.resolution.textureImport.channelCount = channels;
+        VansSerializedValue prepared;
+        if (!Expect(PrepareClothMaterialAuthoringEdit(catalog, display, prepared, error),
+            "Valid Cloth Inspector texture assignment rejected")) return false;
+        catalog.resolution.textureImport.linear = !catalog.resolution.textureImport.linear;
+        if (!checkRejectedEdit(display, slot)) return false;
+        catalog.resolution.textureImport.linear = !catalog.resolution.textureImport.linear;
+        catalog.resolution.textureImport.channelCount = channels == 4 ? 2 : channels == 2 ? 1 : 0;
+        if (!checkRejectedEdit(display, slot)) return false;
+        catalog.resolution.textureImport.channelCount = channels;
+        catalog.resolution.textureImport.available = false;
+        if (!checkRejectedEdit(display, "metadata")) return false;
+        catalog.resolution.textureImport.available = true;
+        catalog.resolution.asset.type = EditorAPI::AssetType::Material;
+        if (!checkRejectedEdit(display, "Texture asset")) return false;
+        catalog.resolution.asset.type = EditorAPI::AssetType::Texture;
+        catalog.resolution.found = false;
+        if (!checkRejectedEdit(display, "Texture asset")) return false;
+    }
+    auto emptyDisplay = root;
+    auto displaySlots = VansSerializedValue::Object({});
+    for (const char* slot : VansClothTextureSlots)
+        SetSerializedObjectField(displaySlots, slot, VansSerializedValue::Object({{"guid", VansSerializedValue::String("")}}));
+    SetSerializedObjectField(emptyDisplay, "textures", displaySlots);
+    VansSerializedValue preparedEmpty;
+    if (!Expect(PrepareClothMaterialAuthoringEdit(catalog, emptyDisplay, preparedEmpty, error) &&
+        FindObjectField(preparedEmpty, "textures")->objectFields.empty(),
+        "Display-only Cloth empty slots must persist as source absence")) return false;
+    auto invalidMask = emptyDisplay;
+    SetSerializedObjectField(*FindObjectField(invalidMask, "parameters"), "alphaMode", VansSerializedValue::String("mask"));
+    if (!checkRejectedEdit(invalidMask, "opacity")) return false;
+    auto invalidSlot = emptyDisplay;
+    SetSerializedObjectField(*FindObjectField(invalidSlot, "textures"), "metal",
+        VansSerializedValue::Object({{"guid", VansSerializedValue::String("")}}));
+    if (!checkRejectedEdit(invalidSlot, "metal")) return false;
+    const auto checkFullPreview = [&]()
+    {
+        const auto current = document.SerializedRootSnapshot();
+        const auto change = BuildRuntimeMaterialPreviewChange(path, current);
+        if (!Expect(change.parameters.size() == parameters.objectFields.size() &&
+            change.textures.size() == VansClothTextureSlots.size(),
+            "Cloth history preview must restore all parameters and explicitly clear every absent slot")) return false;
+        const auto* textures = FindObjectField(current, "textures");
+        for (const char* slot : VansClothTextureSlots)
+        {
+            const auto* item = textures ? FindObjectField(*textures, slot) : nullptr;
+            const std::string expected = item ? ReadSerializedStringField(*item, "guid") : std::string{};
+            const auto count = std::count_if(change.textures.begin(), change.textures.end(),
+                [&](const auto& edit) { return edit.slot == slot && edit.textureGuid == expected; });
+            if (!Expect(count == 1, "Cloth history preview lost or duplicated a texture assignment/clear")) return false;
+        }
+        return true;
+    };
+    for (const char* slot : VansClothTextureSlots)
+    {
+        auto textures = VansSerializedValue::Object({{slot, reference}});
+        if (!Expect(static_cast<bool>(VansAssetDocumentEditService::Set(document,
+            MakeInspectorDocumentPropertyPath("/asset/textures"), textures)), "Cloth texture assignment failed")) return false;
+        const std::string pointer = std::string("/asset/textures/") + slot + "/guid";
+        const auto assignment = BuildRuntimeMaterialPreviewChange(path, document.SerializedRootSnapshot(), pointer);
+        if (!Expect(assignment.parameters.empty() && assignment.textures.size() == 1 &&
+            assignment.textures[0].slot == slot && assignment.textures[0].textureGuid == textureGuid,
+            "A Cloth slot edit must preview only that texture")) return false;
+        if (!Expect(static_cast<bool>(VansAssetDocumentEditService::Undo(document)), "Cloth texture undo failed") ||
+            !checkFullPreview()) return false;
+        if (!Expect(static_cast<bool>(VansAssetDocumentEditService::Redo(document)), "Cloth texture redo failed") ||
+            !checkFullPreview()) return false;
+        if (!Expect(static_cast<bool>(VansAssetDocumentEditService::Set(document,
+            MakeInspectorDocumentPropertyPath("/asset/textures"), VansSerializedValue::Object({}))),
+            "Cloth texture clear failed")) return false;
+        const auto clear = BuildRuntimeMaterialPreviewChange(path, document.SerializedRootSnapshot(), pointer);
+        if (!Expect(clear.parameters.empty() && clear.textures.size() == 1 &&
+            clear.textures[0].slot == slot && clear.textures[0].textureGuid.empty(),
+            "An absent Cloth slot must project an explicit runtime clear")) return false;
+        if (!Expect(static_cast<bool>(VansAssetDocumentEditService::Undo(document)), "Cloth clear undo failed") ||
+            !checkFullPreview() ||
+            !Expect(static_cast<bool>(VansAssetDocumentEditService::Redo(document)), "Cloth clear redo failed") ||
+            !checkFullPreview()) return false;
+        if (!Expect(!fs::exists(path) && !fs::exists(documents->metaPath),
+            "Cloth edit/undo/redo/preview wrote an authoring file")) return false;
+    }
+    for (const auto& preset : GetClothMaterialPresets())
+    {
+        auto presetRoot = document.SerializedRootSnapshot();
+        SetSerializedObjectField(presetRoot, "parameters", WriteClothMaterialParameters(preset.parameters));
+        const auto preview = BuildRuntimeMaterialPreviewChange(path, presetRoot, "/asset/parameters");
+        if (!Expect(preview.parameters.size() == parameters.objectFields.size() && preview.textures.empty(),
+            "Cloth parameter/preset edits must not trigger texture replacement transactions")) return false;
+    }
+    auto sparseRoot = root;
+    SetSerializedObjectField(sparseRoot, "parameters", VansSerializedValue::Object({}));
+    const auto sparse = BuildRuntimeMaterialPreviewChange(path, sparseRoot, "/asset/parameters/unknownClothParameter");
+    if (!Expect(sparse.Empty(), "Unknown Cloth preview parameter must not become a full material edit")) return false;
+    const auto defaultParameter = BuildRuntimeMaterialPreviewChange(path, sparseRoot, "/asset/parameters/sheenWeight");
+    if (!Expect(defaultParameter.parameters.size() == 1 && defaultParameter.textures.empty() &&
+        defaultParameter.parameters[0].parameterPath == "sheenWeight" &&
+        std::get<float>(defaultParameter.parameters[0].value) == VansClothMaterialParameters{}.sheenWeight,
+        "Cloth removed parameters must restore the single canonical default")) return false;
+    auto allTextures = VansSerializedValue::Object({});
+    for (const char* slot : VansClothTextureSlots) SetSerializedObjectField(allTextures, slot, reference);
+    if (!Expect(static_cast<bool>(VansAssetDocumentEditService::Set(document,
+        MakeInspectorDocumentPropertyPath("/asset/textures"), allTextures)), "Cloth seven-slot assignment failed")) return false;
+    const auto saveAndReload = [&]()
+    {
+        VansMaterialAuthoringAsset authoring;
+        if (!Expect(ReadMaterialAuthoringAsset(document.SerializedRootSnapshot(), authoring, error), error.c_str())) return false;
+        VansAssetDocumentSaveStage stage;
+        if (!Expect(document.StageSave(stage, error), error.c_str())) return false;
+        VansAssetDocumentSaveStage metaStage;
+        const bool saveMeta = documents->metaDocument.IsDirty();
+        if (saveMeta && !Expect(documents->metaDocument.StageSave(metaStage, error), error.c_str())) return false;
+        VansStagedFileTransaction transaction;
+        transaction.Add({stage.targetPath, stage.temporaryPath, stage.requireAbsent});
+        if (saveMeta) transaction.Add({metaStage.targetPath, metaStage.temporaryPath, metaStage.requireAbsent});
+        if (!Expect(transaction.Publish(error) && document.AdoptStagedSave(stage, error), error.c_str())) return false;
+        if (saveMeta && !Expect(documents->metaDocument.AdoptStagedSave(metaStage, error), error.c_str())) return false;
+        VansAssetDocument loaded;
+        if (!Expect(loaded.Load(path, error) &&
+            EncodeSerializedValueJson<nlohmann::json>(loaded.SerializedRootSnapshot()) ==
+            EncodeSerializedValueJson<nlohmann::json>(document.SerializedRootSnapshot()) && !documents->IsDirty(),
+            "Explicit Cloth save/reload did not preserve the canonical source document")) return false;
+        VansMaterialAuthoringAsset reparsed;
+        return Expect(VansMaterialAuthoringAssetStorage::Load(path, reparsed, error) &&
+            EncodeSerializedValueJson<nlohmann::json>(reparsed.textures) ==
+            EncodeSerializedValueJson<nlohmann::json>(authoring.textures),
+            "Saved Cloth texture presence was not preserved by the parser");
+    };
+    if (!saveAndReload() || !checkFullPreview()) return false;
+    if (!Expect(static_cast<bool>(VansAssetDocumentEditService::Set(document,
+        MakeInspectorDocumentPropertyPath("/asset/textures"), VansSerializedValue::Object({}))),
+        "Cloth seven-slot clear failed") || !saveAndReload() || !checkFullPreview()) return false;
+    auto pbrRoot = root;
+    SetSerializedObjectField(pbrRoot, "materialType", VansSerializedValue::String("pbr"));
+    SetSerializedObjectField(pbrRoot, "parameters", CreatePbrMaterialAuthoringParameters(1,1,1,0,1,1));
+    SetSerializedObjectField(pbrRoot, "textures", VansSerializedValue::Object({{"basecolor", reference}}));
+    const auto pbr = BuildRuntimeMaterialPreviewChange(path, pbrRoot);
+    if (!Expect(pbr.textures.size() == 1 && pbr.textures[0].slot == "basecolor" &&
+        pbr.parameters.size() == 4, "Cloth preview repair changed the existing PBR projection")) return false;
+    auto typeEdit = emptyDisplay;
+    SetSerializedObjectField(typeEdit, "materialType", VansSerializedValue::String("pbr"));
+    SetSerializedObjectField(typeEdit, "parameters", *FindObjectField(pbrRoot, "parameters"));
+    VansSerializedValue preparedTypeEdit;
+    if (!Expect(PrepareClothMaterialAuthoringEdit(catalog, typeEdit, preparedTypeEdit, error) &&
+        ReadSerializedStringField(preparedTypeEdit, "materialType") == "pbr" &&
+        FindObjectField(preparedTypeEdit, "textures")->objectFields.empty(),
+        "Cloth validation removed the existing material-type editing operation")) return false;
+    std::cout << "[ClothAuthoringPreview] seven-slot assignment/clear, undo/redo, parameter-only preview and explicit save/reload passed\n";
+    return true;
+}
+
+bool TestClothMaterialSourceContract(const fs::path& path)
+{
+    Vans::VansMaterialAuthoringAsset asset;
+    std::string error;
+    if (!Expect(Vans::VansMaterialAuthoringAssetStorage::Load(path, asset, error), error.c_str()) ||
+        !Expect(asset.materialType == "cloth", "Source asset must use the canonical Cloth type")) return false;
+    Vans::VansMaterialAuthoringAsset roundTrip;
+    const auto encoded = Vans::WriteMaterialAuthoringAssetRoot(asset);
+    if (!Expect(Vans::ReadMaterialAuthoringAsset(encoded, roundTrip, error), error.c_str()) ||
+        !Expect(Vans::EncodeSerializedValueJson<nlohmann::json>(encoded) ==
+            Vans::EncodeSerializedValueJson<nlohmann::json>(Vans::WriteMaterialAuthoringAssetRoot(roundTrip)),
+            "Cloth source did not preserve canonical parameters and references on round trip")) return false;
+    std::cout << "CLOTH_SOURCE_PASS " << path.generic_string() << '\n';
+    return true;
+}
+
 bool TestAuthoringCodecContract()
 {
+    if (!TestClothMaterialContract() || !TestClothAuthoringPreviewContract()) return false;
     if (!TestHairMaterialContract()) return false;
 	std::string error;
 	Vans::VansProjectConfig projectConfig;
@@ -25269,6 +27446,7 @@ bool TestAuthoringCodecContract()
 		{ "translationScale", { { "mode", "compatibleSkeleton" } } },
 		{ "rootAlignment", "feetToOwner" },
 		{ "targetModelSpaceAlignment", "sourceBindPose" },
+		{ "controlBones", nlohmann::json::array({ {{"bone","control"},{"referenceBone","effector"}} }) },
 		{ "limbMappings", nlohmann::json::array({ {
 			{ "id", "LeftArm" },
 			{ "sourceBones", { "upperarm_l", "lowerarm_l", "hand_l" } },
@@ -25287,7 +27465,9 @@ bool TestAuthoringCodecContract()
 		VansGraphics::VansRetargetProfileJsonCodec::Decode(
 			retargetEncoded, retargetRoundTrip, error) &&
 		retargetRoundTrip.name == retarget.name &&
-		retargetRoundTrip.limbChains.size() == 1,
+		retargetRoundTrip.limbChains.size() == 1 && retargetRoundTrip.controlBones.size() == 1 &&
+		retargetRoundTrip.controlBones[0].bone == "control" &&
+		retargetRoundTrip.controlBones[0].referenceBone == "effector",
 		"Retarget profile pure Codec did not round-trip the current schema"))
 		return false;
 	nlohmann::json invalidRetarget = retargetRoot;
@@ -25334,6 +27514,7 @@ bool TestAuthoringCodecContract()
 			},
 			{
 				{ "id", "Chase" }, { "task", "MoveToTarget" },
+                { "taskConfig", {{"arrivalRadius",1.6f}} },
 				{ "transitions", nlohmann::json::array() }
 			}
 		}) }
@@ -26061,7 +28242,8 @@ bool TestProjectAssetMemoryBootstrapContract(
 			const fs::path scenePath = iterator->path();
 			Vans::VansIOAudit::Reset();
 			Vans::SceneDocumentLoadResult sceneLoad =
-				Vans::VansSceneDocumentLoader::Load(scenePath);
+				Vans::VansSceneDocumentLoader::Load(scenePath,
+					Vans::VansPrefabResolver::FromRepository(repository));
 			if (!Expect(static_cast<bool>(sceneLoad),
 				(std::string(projectName) + " scene could not be loaded: " +
 					scenePath.filename().string()).c_str()))
@@ -26779,7 +28961,11 @@ bool TestRuntimeConfigurationMemoryBoundaryContract()
 		"VansGAFProjectConfiguration.cpp", "VansGAFProjectConfiguration.h",
 		"VansGameplayAssetStorage.cpp", "VansGameplayAssetStorage.h",
 		"VansIESProfile.cpp",
-		"VansNavigationMesh.cpp", "VansNavigationMesh.h",
+		"VansNavigationBuilder.cpp", "VansNavigationBuilder.h",
+        "VansNavigationMap.cpp", "VansNavigationMap.h", "VansNavigationMeshAsset.h",
+        "VansNavigationMeshCodec.cpp", "VansNavigationMeshCodec.h",
+        "VansNavigationMeshStorage.cpp", "VansNavigationMeshStorage.h",
+        "VansNavigationTileData.cpp", "VansNavigationTileData.h",
 		"VansNoesisProviders.cpp",
 		"VansPackagedResourcePlan.cpp", "VansPackagedResourcePlan.h",
 		"VansSceneDocumentLoader.cpp", "VansSceneDocumentLoader.h",
@@ -28398,11 +30584,14 @@ bool TestGIProbeLayoutContract();
 bool TestGIProbeLayoutGpuContract();
 bool TestGIProbeSamplingGpuContract();
 bool TestGIReceiverVisibilityGpuContract();
+bool TestClothLightingGpuContract(const char* referenceDirectory,const char* reportPath);
+bool TestClothMaterialLiveEditGpuContract(const char* projectPath,const char* reportPath);
 bool TestGIProbeFeedbackGpuContract();
 bool TestGIProbePublicationGpuContract();
 bool TestGIProbeIntegrationGpuContract();
 bool TestSkyLightingGpuContract();
 bool TestSSGIGpuContract();
+bool TestGrassWorksetGpuContract();
 bool TestGTAOGpuContract();
 bool TestGrassLightingGpuContract();
 bool TestParticleCoreContract();
@@ -28458,9 +30647,11 @@ bool TestLightCookieContract()
 
 bool RunModelLodContractTests();
 bool RunTreeLodGpuContractTests();
+bool RunGrassPoolGpuContractTests();
 bool TestEditorSceneInteractionContract();
 
 bool RunCursorContractTests();
+bool TestGAFDemoHallVehicleContract();
 bool RunCursorWindowContractTests();
 bool RunCursorProjectContractTests();
 
@@ -28515,6 +30706,9 @@ bool TestVehicleRoadSupport()
         tuning.suspensionDamping = {8500.0f, 8500.0f, 7600.0f, 7600.0f};
         tuning.sprungMass = {480.0f, 480.0f, 420.0f, 420.0f};
         tuning.collisionLayerName = "Default";
+        tuning.useCustomRoadQueryMask = true;
+        tuning.useRoadQueryLayerFilter = true;
+        tuning.roadQueryMask = 1u << 1u; // Environment does not collide with itself.
         const float normalJounce = tuning.EstimateStaticJounce(0, 9.81f);
         const float halfGravityJounce = tuning.EstimateStaticJounce(0, 4.905f);
         if (std::abs(normalJounce - 2.0f * halfGravityJounce) > 0.0001f)
@@ -28551,16 +30745,28 @@ bool TestVehicleRoadSupport()
         physics.StopSimulation();
         physics.SetPreSimulateCallback(nullptr);
         const float bodyY = vehicle.GetTransform().p.y;
-        supported = bodyY > 41.75f;
+        supported = bodyY > 41.75f && std::isfinite(vehicle.GetForwardSpeed()) && std::abs(vehicle.GetForwardSpeed()) < 0.1f;
         std::cout << "VEHICLE_GROUND bodyY=" << bodyY;
         for (unsigned wheel = 0; wheel < 4; ++wheel)
         {
             const float wheelY = vehicle.GetWheelWorldPose(wheel).p.y;
             const bool roadHit = vehicle.HasWheelRoadHit(wheel);
+            VansVehicleWheelContact contact;
+            const bool contactValid = vehicle.GetWheelContact(wheel, contact);
             std::cout << " wheel" << wheel << "Y=" << wheelY << " hit=" << roadHit;
-            supported = supported && roadHit && wheelY - tuning.wheelRadius >= 41.85f;
+            supported = supported && roadHit && wheelY - tuning.wheelRadius >= 41.85f && contactValid &&
+                std::abs(contact.position.y - 41.94f) < 0.002f && contact.normal.y > 0.99f &&
+                contact.forward.magnitude() > 0.99f && contact.load > 0 && contact.normalizedLoad > 0 &&
+                std::abs(contact.width - tuning.wheelHalfWidth * 2.0f) < 0.0001f;
         }
         std::cout << '\n';
+        const auto forward=vehicle.GetTransform().q.rotate(physx::PxVec3(0,0,1));
+        auto* body=static_cast<physx::PxRigidDynamic*>(vehicle.GetActor());
+        body->setLinearVelocity(forward*2.0f);
+        supported=supported && std::abs(vehicle.GetForwardSpeed()-2.0f)<.001f;
+        body->setLinearVelocity(forward*-3.0f);
+        supported=supported && std::abs(vehicle.GetForwardSpeed()+3.0f)<.001f;
+        body->setLinearVelocity(physx::PxVec3(0));
     }
     terrain.Shutdown();
     physics.Shutdown();
@@ -28570,6 +30776,17 @@ bool TestVehicleRoadSupport()
 
 int main(int argc, char** argv)
 {
+    if (argc==2 && std::string(argv[1])=="--terrain-interaction")
+    { VANS_INIT_MAIN_THREAD();return RunTerrainInteractionContractTests()?0:1; }
+	if (argc == 2 && std::string(argv[1]) == "--render-texture-preview-gpu")
+		return RunRenderTexturePreviewGpuContractTests() ? 0 : 1;
+	if ((argc == 2 || argc == 3) && std::string(argv[1]) == "--project-render-pass-gpu")
+		return RunProjectRenderPassGpuContractTests(argc == 3 ? argv[2] : "") ? 0 : 1;
+	if (argc == 2 && std::string(argv[1]) == "--project-render-pass-assets")
+	{
+		VANS_INIT_MAIN_THREAD();
+		return RunProjectRenderPassAssetContractTests() ? 0 : 1;
+	}
 	std::string engineRoot;
 	std::string engineRootError;
 	if (!Vans::VansEnginePaths::DiscoverEngineRoot(engineRoot, engineRootError) ||
@@ -28620,8 +30837,16 @@ int main(int argc, char** argv)
         return MeasureReflectionProbePlacement(argv[2], argv[3], argv[4]) ? 0 : 186;
     if (argc == 2 && std::string(argv[1]) == "--gi-receiver-visibility-gpu")
         return TestGIReceiverVisibilityGpuContract() ? 0 : 194;
+    if (argc == 4 && std::string(argv[1]) == "--cloth-lighting-gpu")
+        return TestClothLightingGpuContract(argv[2],argv[3]) ? 0 : 222;
+    if (argc == 4 && std::string(argv[1]) == "--cloth-material-live-edit-gpu")
+        return TestClothMaterialLiveEditGpuContract(argv[2],argv[3]) ? 0 : 224;
     if (argc == 2 && std::string(argv[1]) == "--grass-lighting-gpu")
         return TestGrassLightingGpuContract() ? 0 : 199;
+    if (argc == 2 && std::string(argv[1]) == "--grass-workset-gpu")
+        return TestGrassWorksetGpuContract() ? 0 : 199;
+    if (argc == 2 && std::string(argv[1]) == "--grass-pool-gpu")
+        return RunGrassPoolGpuContractTests() ? 0 : 199;
     if (argc == 2 && std::string(argv[1]) == "--gtao-gpu")
         return TestGTAOGpuContract() ? 0 : 221;
 	if (argc == 2 && std::string(argv[1]) == "--ssgi-gpu")
@@ -28708,6 +30933,10 @@ int main(int argc, char** argv)
 		return TestGeneratedMaterialMemoryBoundaryContract() ? 0 : 164;
 	if (argc == 2 && std::string(argv[1]) == "--asset-object-repository")
 		return TestAssetObjectRepositoryContract() ? 0 : 159;
+	if (argc == 3 && std::string(argv[1]) == "--cloth-material-source")
+		return TestClothMaterialSourceContract(argv[2]) ? 0 : 1;
+	if (argc == 2 && std::string(argv[1]) == "--cloth-authoring-preview")
+		return TestClothAuthoringPreviewContract() ? 0 : 223;
 	if (argc == 2 && std::string(argv[1]) == "--authoring-codecs")
 		return TestAuthoringCodecContract() ? 0 : 157;
 	if (argc == 2 && std::string(argv[1]) == "--project-settings-explicit-save")
@@ -28745,7 +30974,10 @@ int main(int argc, char** argv)
 			TestRenderSystemStartupFailureContract() &&
 			TestRenderSystemDestructorFallbackContract() &&
 			TestRenderSystemPrepareFailureContract() &&
+			TestRenderSystemDeviceLostContract() &&
 			TestRenderSystemOneFrameLeadContract() &&
+			TestRenderSystemSurfaceRecoveryContract() &&
+			TestRenderSystemFrameRetirementContract() &&
 			TestRenderFramePacketContract() &&
 			TestMainCameraVisibilityBackendOwnershipContract() &&
 			TestPunctualShadowBackendOwnershipContract() &&
@@ -28782,6 +31014,22 @@ int main(int argc, char** argv)
 		return TestAssetPolicies() ? 0 : 2;
 	if (argc == 2 && std::string(argv[1]) == "--asset-type-serialization")
 		return TestAssetTypeSerializationContract() ? 0 : 136;
+	if (argc == 2 && std::string(argv[1]) == "--navigation-demohall")
+    {
+        auto workspace=std::filesystem::current_path();
+        for(int depth=0;depth<6 && !std::filesystem::is_regular_file(workspace/"DemoHallProject/ForestProject.json");++depth)
+            workspace=workspace.parent_path();
+        for(const auto& name:{"DemoHallProject","DemoHall2Project"})
+            if(!RunDemoHallNavigationContractTests(workspace/name))return 148;
+        return 0;
+    }
+	if (argc == 2 && std::string(argv[1]) == "--navigation-dustv3")
+    {
+        auto workspace=std::filesystem::current_path();
+        for(int depth=0;depth<6 && !std::filesystem::is_regular_file(workspace/"DustV3Project/ForestProject.json");++depth)
+            workspace=workspace.parent_path();
+        return RunDustV3NavigationContractTests(workspace/"DustV3Project") ? 0 : 148;
+    }
 	if (argc == 2 && std::string(argv[1]) == "--navigation-ai")
 		return RunNavigationAIContractTests() ? 0 : 148;
 	if (argc == 2 && std::string(argv[1]) == "--animation-project-assets")
@@ -28792,6 +31040,8 @@ int main(int argc, char** argv)
 		return TestCameraControlArbiterContract() ? 0 : 218;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-pistol-poses")
 		return TestSurvivalPistolPoseContract("DemoHallProject", "Assets") ? 0 : 139;
+	if (argc == 2 && std::string(argv[1]) == "--demohall-character-facing")
+		return TestDemoHallCharacterFacingContract() ? 0 : 216;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-pistol-overlay")
 		return TestSurvivalPistolOverlayContract("DemoHallProject", "Assets", "DemoHall.json") ? 0 : 139;
 	if (argc == 2 && std::string(argv[1]) == "--dustv3-pistol-poses")
@@ -28860,6 +31110,8 @@ int main(int argc, char** argv)
 		return TestEventDispatchMutationContract() ? 0 : 156;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-window-break")
 		return TestGAFDemoHallWindowBreakContract() ? 0 : 108;
+	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-vehicle")
+		return TestGAFDemoHallVehicleContract() ? 0 : 220;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-player-attack")
 		return TestGAFDemoHallPlayerAttackContract() ? 0 : 140;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-player-throw")
@@ -28888,6 +31140,8 @@ int main(int argc, char** argv)
 		return TestDemoHallPlayerVaultContract() ? 0 : 144;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-whisper-ai")
 		return TestDemoHallWhisperAIContract() ? 0 : 145;
+	if (argc == 2 && std::string(argv[1]) == "--animationv2-whisper-preview")
+		return TestAnimationV2WhisperPreviewContract() ? 0 : 145;
 	if (argc == 2 && std::string(argv[1]) == "--character-motion")
 		return TestCharacterTrajectoryGeneratorContract() ? 0 : 141;
 	if (argc == 2 && std::string(argv[1]) == "--character-acceleration")
@@ -28934,6 +31188,8 @@ int main(int argc, char** argv)
 		return TestAnimationMarkerSyncLayerContract() ? 0 : 133;
 	if (argc == 2 && std::string(argv[1]) == "--animation-slots")
 		return TestAnimationSlotRuntimeContract() && TestAnimationHotReloadStateTransferContract() ? 0 : 193;
+	if (argc == 2 && std::string(argv[1]) == "--dustv3-flash")
+		return TestDustV3FlashContract() ? 0 : 193;
 	if (argc == 2 && std::string(argv[1]) == "--animation-layer-root-frame")
 		return TestAnimationLayerRootReferenceFrameContract() ? 0 : 139;
 	if (argc == 2 && std::string(argv[1]) == "--animation-layer-pose-share")
@@ -28943,8 +31199,8 @@ int main(int argc, char** argv)
 	if (argc == 2 && std::string(argv[1]) == "--animation-authoring-boundary")
 		return TestAnimationAuthoringBoundaryContract() ? 0 : 191;
 	if (argc == 2 && std::string(argv[1]) == "--animation-sampling")
-		return TestAnimationPoseSnapshotContract()
-			&& TestAnimationBakedGridContract() && TestAnimationModifyCurveContract() && TestAnimationConduitAndMeshAdditiveContract() && TestAnimationInertializationContract() && TestAnimationTransitionStackContract() && TestAnimationAlphaAndNonloopGroupContract() && TestAnimationInitializationContract() && TestAnimationSyncGroupContract() && TestAnimationBlendSpaceClockContract() && TestAnimationBlendSpaceFilterContract() && TestAnimationMultiWayBlendContract() && TestAnimationStateNotificationContract() && TestAnimationTransitionProfileContract() && TestAnimationSpeedScaleContract()
+		return TestAnimationStateMachineSingleAdvanceContract() && TestAnimationPoseSnapshotContract()
+			&& TestAnimationBakedGridContract() && TestAnimationCollinearBlendSpaceContract() && TestAnimationModifyCurveContract() && TestAnimationConduitAndMeshAdditiveContract() && TestAnimationInertializationContract() && TestAnimationTransitionStackContract() && TestAnimationAlphaAndNonloopGroupContract() && TestAnimationInitializationContract() && TestAnimationSyncGroupContract() && TestAnimationBlendSpaceClockContract() && TestAnimationBlendSpaceFilterContract() && TestAnimationMultiWayBlendContract() && TestAnimationStateNotificationContract() && TestAnimationTransitionProfileContract() && TestAnimationSpeedScaleContract()
 			&& TestAnimationPayloadIntervalSamplingContract()
 			&& TestAnimationClipPayloadMetadataRoundTripContract() ? 0 : 48;
 	if (argc == 2 && std::string(argv[1]) == "--animation-pose-snapshot")
@@ -28952,6 +31208,13 @@ int main(int argc, char** argv)
 			&& TestAnimationEnumBlendContract() ? 0 : 48;
 	if (argc == 2 && std::string(argv[1]) == "--als-native-direction")
 		return TestALSNativeDirectionGraphContract() ? 0 : 192;
+	if (argc == 2 && std::string(argv[1]) == "--als-swat-retarget")
+		return TestRetargetUnmappedTargetBoneInheritanceContract()
+			&& TestRetargetConfiguredLimbChainContract() && TestALSSwatRetargetPoseContract() ? 0 : 192;
+	if (argc == 2 && std::string(argv[1]) == "--als-swat-ground")
+		return TestALSSwatRetargetPoseContract(true)?0:193;
+	if (argc == 2 && std::string(argv[1]) == "--swat-face-binding")
+		return TestSwatFaceBindingContract() ? 0 : 193;
 	if (argc == 2 && std::string(argv[1]) == "--animation-graph-sets-integration")
 		return TestAnimatorCanonicalFormatContract()
 			&& TestAnimationProjectAnimatorAssetsCanonicalContract()
@@ -29034,7 +31297,7 @@ int main(int argc, char** argv)
 		return 109;
 	if (!TestMotionMatchingAutoBuildLocomotionMetadataContract())
 		return 31;
-	if (!TestDemoHallMotionMatchingMovementLibraryContract())
+	if (!TestDemoHallMotionMatchingMovementLibraryContract() || !TestDemoHallCharacterFacingContract())
 		return 216;
 	if (!TestTurnInPlaceWarpingMathContract())
 		return 142;
@@ -29093,6 +31356,8 @@ int main(int argc, char** argv)
 	if (!TestDemoHallPlayerVaultContract())
 		return 144;
 	if (!TestDemoHallWhisperAIContract())
+		return 145;
+	if (!TestAnimationV2WhisperPreviewContract())
 		return 145;
 	if (!TestGAFPackagingContract())
 		return 103;
@@ -29216,13 +31481,15 @@ int main(int argc, char** argv)
 		return 57;
     if (!TestAnimationGraphAdvancesOnlyActiveNodesContract())
         return 44;
+	if (!TestAnimationStateMachineSingleAdvanceContract())
+		return 44;
 	if (!TestAnimationGraphDefinitionInstanceIsolationContract())
 		return 45;
 	if (!TestAnimationPayloadIntervalSamplingContract())
 		return 46;
 	if (!TestAnimationClipPayloadMetadataRoundTripContract())
 		return 47;
-	if (!TestAnimationBakedGridContract() || !TestAnimationModifyCurveContract() || !TestAnimationConduitAndMeshAdditiveContract() || !TestAnimationInertializationContract() || !TestAnimationTransitionStackContract() || !TestAnimationAlphaAndNonloopGroupContract() || !TestAnimationInitializationContract() || !TestAnimationSyncGroupContract() || !TestAnimationBlendSpaceClockContract() || !TestAnimationBlendSpaceFilterContract() || !TestAnimationMultiWayBlendContract() || !TestAnimationStateNotificationContract() || !TestAnimationTransitionProfileContract() || !TestAnimationSpeedScaleContract())
+	if (!TestAnimationBakedGridContract() || !TestAnimationCollinearBlendSpaceContract() || !TestAnimationModifyCurveContract() || !TestAnimationConduitAndMeshAdditiveContract() || !TestAnimationInertializationContract() || !TestAnimationTransitionStackContract() || !TestAnimationAlphaAndNonloopGroupContract() || !TestAnimationInitializationContract() || !TestAnimationSyncGroupContract() || !TestAnimationBlendSpaceClockContract() || !TestAnimationBlendSpaceFilterContract() || !TestAnimationMultiWayBlendContract() || !TestAnimationStateNotificationContract() || !TestAnimationTransitionProfileContract() || !TestAnimationSpeedScaleContract())
 		return 48;
 	if (!TestBoneMaskCompilationAndStorageContract())
 		return 49;
@@ -29252,7 +31519,10 @@ int main(int argc, char** argv)
 		!TestRenderSystemStartupFailureContract() ||
 		!TestRenderSystemDestructorFallbackContract() ||
 		!TestRenderSystemPrepareFailureContract() ||
+		!TestRenderSystemDeviceLostContract() ||
 		!TestRenderSystemOneFrameLeadContract() ||
+		!TestRenderSystemSurfaceRecoveryContract() ||
+		!TestRenderSystemFrameRetirementContract() ||
 		!TestRenderOutcomeLedgerContract() ||
 		!TestRenderFramePacketContract() ||
 		!TestMainCameraVisibilityBackendOwnershipContract() ||

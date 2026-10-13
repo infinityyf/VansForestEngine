@@ -1,4 +1,4 @@
-#include "VansEditorRuntimeHost.h"
+﻿#include "VansEditorRuntimeHost.h"
 
 #include "../EngineCore/AudioCore/VansAudioDeviceConfig.h"
 #include "../EngineCore/EditorCore/VansEditorWindow.h"
@@ -68,6 +68,15 @@ Vans::VansSceneAuthoringResult VansEditorRuntimeHost::SetSceneValue(
 		return { false, "Editor scene authoring service is unavailable." };
 	const Vans::SceneEditResult edited = m_AuthoringSceneEdits->Set(path, std::move(value));
 	return { edited.success, edited.message };
+}
+
+Vans::VansSceneAuthoringResult VansEditorRuntimeHost::CommitSceneValues(
+    std::vector<Vans::VansSceneAuthoringValue> values,std::uint64_t expectedState,
+    const Vans::VansSceneAuthoringCommit& commit)
+{
+    if(!m_AuthoringSceneEdits) return {false,"Editor scene authoring service is unavailable"};
+    const auto result=m_AuthoringSceneEdits->CommitValues(std::move(values),expectedState,commit);
+    return {result.success,result.message};
 }
 
 bool VansEditorRuntimeHost::Start()
@@ -262,7 +271,9 @@ bool VansEditorRuntimeHost::RunEditorLoop()
 	VANS_LOG("[ForestEngine] Physics simulation started");
 
 	VansEditorWindow::StartEditorLoop(*m_Camera, *m_RenderSystem);
-	if (!m_RenderSystem->Quiesce())
+	if (m_RenderSystem->GetState() == VansGraphics::VansRenderSystemState::Fatal)
+		VANS_LOG("[ForestEngine] Render execution ended in a terminal state; continuing shutdown.");
+	else if (!m_RenderSystem->Quiesce())
 		VANS_LOG_ERROR("[ForestEngine] Failed to quiesce render thread after main loop.");
 	VANS_LOG("[ForestEngine] Main loop finished");
 	return true;
@@ -275,6 +286,8 @@ void VansEditorRuntimeHost::ResetRenderExecutionAfterFailure()
 	if (m_RenderSystem)
 	{
 		m_RenderSystem->ShutdownFrameExecution();
+		if (m_EditorAPI)
+			m_EditorAPI->BindRenderSystem(nullptr);
 		m_RenderSystem.reset();
 	}
 }

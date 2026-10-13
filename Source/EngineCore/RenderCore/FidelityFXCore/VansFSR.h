@@ -32,7 +32,9 @@ namespace VansGraphics
 			std::uint32_t renderHeight,
 			std::uint32_t displayWidth,
 			std::uint32_t displayHeight,
-			VansVKImage& outputImage);
+			VansVKImage& outputImage,
+			std::uint32_t framesInFlight);
+		bool ConfigureFrameConcurrency(std::uint32_t framesInFlight);
 		bool DispatchUpscale(VkCommandBuffer commandBuffer, const VansFSRFrameInput& input);
 		bool GenerateReactiveMask(
 			VkCommandBuffer commandBuffer,
@@ -53,9 +55,13 @@ namespace VansGraphics
 		void SetDebugViewEnabled(bool enabled) { m_DebugViewEnabled = enabled; }
 		bool IsDebugViewEnabled() const { return m_DebugViewEnabled; }
 		const VansFSRDiagnostics& GetDiagnostics() const { return m_Diagnostics; }
+		bool HasContextDestructionFailure() const { return m_ContextDestructionFailed; }
 
 	private:
+		bool CreateUpscalingContext(ffx::Context& context, bool reactiveOnly);
+		void RefreshGpuMemoryUsage();
 		ffx::Context m_UpscalingContext = nullptr;
+		ffx::Context m_ReactiveMaskContext = nullptr;
 		std::uint32_t m_RenderWidth = 0;
 		std::uint32_t m_RenderHeight = 0;
 		std::uint32_t m_DisplayWidth = 0;
@@ -68,6 +74,7 @@ namespace VansGraphics
 		std::unique_ptr<VansVKImage> m_ReactiveMaskImage;
 		std::unique_ptr<VansVKImage> m_TransparencyAndCompositionImage;
 		VansFSRDiagnostics m_Diagnostics;
+		bool m_ContextDestructionFailed = false;
 		bool m_DebugViewEnabled = false;
 		float m_Sharpness = 0.2f;
 	};

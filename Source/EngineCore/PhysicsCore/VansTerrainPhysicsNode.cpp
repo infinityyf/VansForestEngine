@@ -8,9 +8,73 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include "../Util/VansFileFingerprint.h"
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <limits>
+#include <new>
 
 namespace VansEngine
 {
+    bool VansTerrainPhysicsNode::CaptureCollisionSurface(std::uint64_t maximumBytes,
+        VansPhysicsHeightfieldSnapshot& output, std::string& error) const
+    try
+    {
+        std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+        if(!m_Enabled || !m_Actor || !m_Shape || !m_HeightField)
+        { error="Terrain collision is unavailable"; return false; }
+        const PxGeometryHolder holder(m_Shape->getGeometry());
+        if(holder.getType()!=PxGeometryType::eHEIGHTFIELD || !holder.heightField().isValid())
+        { error="Actual Terrain collision is not a valid heightfield"; return false; }
+        const auto& native=holder.heightField();
+        const auto* field=native.heightField;
+        const auto pose=m_Actor->getGlobalPose()*m_Shape->getLocalPose();
+        std::uint64_t signature=Vans::VANS_FNV1A64_OFFSET_BASIS;
+        const auto add=[&](const auto& value){signature=Vans::ContinueMemoryFnv1a64(signature,&value,sizeof(value));};
+        add(field); add(field->getTimestamp()); add(native.heightScale); add(native.rowScale); add(native.columnScale);
+        add(pose.p.x); add(pose.p.y); add(pose.p.z); add(pose.q.x); add(pose.q.y); add(pose.q.z); add(pose.q.w);
+        const auto columns=field->getNbRows(),rows=field->getNbColumns();
+        const auto sampleBytes=static_cast<std::uint64_t>(columns)*rows*sizeof(std::int16_t);
+        if(columns<2 || rows<2 || columns>4097 || rows>4097 ||
+            sampleBytes>maximumBytes || !pose.isValid())
+        { error="Actual Terrain samples exceed navigation capacity or memory budget"; return false; }
+        if(output.heightfield && output.signature==signature && output.collisionLayer==m_Properties.layerName)
+        { error.clear(); return true; }
+        const auto previousBytes=output.heightfield?output.heightfield->samples.capacity()*sizeof(std::int16_t):0;
+        if(previousBytes>maximumBytes-sampleBytes)
+        { error="Actual Terrain replacement exceeds its frozen sample peak budget"; return false; }
+        auto grid=std::make_shared<Vans::VansHeightfieldData>();
+        grid->columns=columns; grid->rows=rows;
+        grid->origin=glm::vec3(pose.p.x,pose.p.y,pose.p.z);
+        grid->spacingX=native.rowScale; grid->spacingZ=native.columnScale; grid->heightScale=native.heightScale;
+        grid->samples.resize(static_cast<std::size_t>(columns)*rows);
+        std::int16_t minimum=32767,maximum=-32768;
+        for(PxU32 z=0;z<rows;++z) for(PxU32 x=0;x<columns;++x)
+        {
+            const auto& sample=field->getSample(x,z);
+            if(sample.tessFlag() || sample.materialIndex0==PxHeightFieldMaterial::eHOLE || sample.materialIndex1==PxHeightFieldMaterial::eHOLE)
+            { error="Actual Terrain tessellation/holes require an explicit CPU topology exporter"; return false; }
+            grid->samples[static_cast<std::size_t>(z)*columns+x]=sample.height;
+            minimum=(std::min)(minimum,sample.height); maximum=(std::max)(maximum,sample.height);
+        }
+        VansPhysicsHeightfieldSnapshot candidate;
+        candidate.signature=signature; candidate.collisionLayer=m_Properties.layerName;
+        if(pose.q.x!=0 || pose.q.y!=0 || pose.q.z!=0 || pose.q.w!=1)
+            candidate.worldTransform=glm::translate(glm::mat4(1),grid->origin)*
+                glm::mat4_cast(glm::quat(pose.q.w,pose.q.x,pose.q.y,pose.q.z))*glm::translate(glm::mat4(1),-grid->origin);
+        const auto localMinimum=grid->origin+glm::vec3(0,minimum*grid->heightScale,0);
+        const auto localMaximum=grid->origin+glm::vec3((columns-1)*grid->spacingX,maximum*grid->heightScale,(rows-1)*grid->spacingZ);
+        candidate.boundsMinimum=glm::vec3((std::numeric_limits<float>::max)()); candidate.boundsMaximum=-candidate.boundsMinimum;
+        for(int corner=0;corner<8;++corner)
+        {
+            const auto p=glm::vec3(candidate.worldTransform*glm::vec4(corner&1?localMaximum.x:localMinimum.x,
+                corner&2?localMaximum.y:localMinimum.y,corner&4?localMaximum.z:localMinimum.z,1));
+            candidate.boundsMinimum=glm::min(candidate.boundsMinimum,p); candidate.boundsMaximum=glm::max(candidate.boundsMaximum,p);
+        }
+        candidate.heightfield=std::move(grid); output=std::move(candidate); error.clear(); return true;
+    }
+    catch(const std::bad_alloc&) { error="Actual Terrain CPU snapshot allocation failed"; return false; }
+
     VansTerrainPhysicsNode::VansTerrainPhysicsNode()
     {
     }

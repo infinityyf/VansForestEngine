@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #if defined _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
 #elif defined __linux
@@ -96,7 +96,7 @@ namespace VansGraphics
 
 		// Creates a caller-owned 2D view for one array layer and one mip. Used by
 		// editor previews of cubemap-array faces.
-		VkImageView CreateLayerMipView(VkDevice device, uint32_t arrayLayer, uint32_t mipLevel, VkComponentMapping components = {});
+		VkImageView CreateLayerMipView(VkDevice device, uint32_t arrayLayer, uint32_t mipLevel, VkComponentMapping components = {}, VkImageAspectFlags aspect = 0);
 		VkImageView CreateMipArrayView(VkDevice device, uint32_t mipLevel) const;
 		VkImageView CreateCubeMipView(VkDevice device, uint32_t mipLevel) const;
 		static void DestroyImageView(VkDevice device, VkImageView& imageView);

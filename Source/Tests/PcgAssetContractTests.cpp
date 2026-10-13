@@ -101,6 +101,23 @@ bool TestPlantSchema()
 		decoded.Dependencies().empty() && decoded.grass.boneCount == 0 &&
 		!ValidatePlantTypeAsset(decoded, true).empty(), "Empty plant must be saveable but cannot generate")) return false;
 	const auto tree = TreeFixture();
+	{
+		auto collidable=tree;
+		collidable.variants[0].collision=VansPlantCollisionPrototype{Guid("collision-model"),"Environment"};
+		if(!Check(ValidatePlantTypeAsset(collidable,true).empty() &&
+			VansPlantTypeAssetCodec::Encode(collidable,root,error) && VansPlantTypeAssetCodec::Decode(root,decoded,error) &&
+			decoded.variants[0].collision && !decoded.variants[1].collision &&
+			decoded.variants[0].collision->mesh==Guid("collision-model") && decoded.variants[0].collision->layer=="Environment" &&
+			decoded.Dependencies().size()==tree.Dependencies().size()+1,
+			"Explicit collision prototype did not round trip or enter the dependency closure: "+error)) return false;
+		SetSerializedObjectField(*FindObjectField(FindObjectField(root,"variants")->arrayItems[0],"collision"),
+			"mesh",MakeSerializedProjectAssetObjectReference(Guid("collision-model").ToString(),"material"));
+		if(!Check(!VansPlantTypeAssetCodec::Decode(root,decoded,error) && decoded.variants[0].collision &&
+			decoded.variants[0].collision->mesh==Guid("collision-model"),"Wrong collision reference type partially published")) return false;
+		collidable.variants[0].collision->mesh={};
+		if(!Check(ValidatePlantTypeAsset(collidable,false).empty() && !ValidatePlantTypeAsset(collidable,true).empty(),
+			"An unassigned collision prototype must remain draft-only")) return false;
+	}
 	if (!Check(ValidatePlantTypeAsset(tree, true).empty() && tree.Dependencies().size() == 4 &&
 		VansPlantTypeAssetCodec::Encode(tree, root, error) &&
 		VansPlantTypeAssetCodec::Decode(root, decoded, error) &&

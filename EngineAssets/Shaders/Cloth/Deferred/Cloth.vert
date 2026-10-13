@@ -42,8 +42,10 @@ void main()
     motion_previous_clip = LastUnjitteredVPMatrix * PreviousModelMatrix * previousLocalPosition;
     mat3 normalMatrix = mat3(NormalMatrix);
     normal_ws    = normalize(normalMatrix * surface.normal);
-    tangent_ws   = normalize(normalMatrix * surface.tangent);
-    bitangent_ws = normalize(normalMatrix * surface.bitangent);
+    // Tangent vectors follow the model's linear transform; only normals use
+    // inverse-transpose. The fragment stage orthogonalizes the interpolated frame.
+    tangent_ws   = mat3(ModelMatrix) * surface.tangent;
+    bitangent_ws = mat3(ModelMatrix) * surface.bitangent;
 
     frag_uv        = uv;
     position_world = worldPosition.xyz;

@@ -86,6 +86,7 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
 {
     lightResult.directDiffuse  = vec3(0);
     lightResult.directSpecular = vec3(0);
+    TileLightHeader tile = GetFragTileLightHeader();
 
     {
         vec3 dR = vec3(0), sR = vec3(0), tR = vec3(0);
@@ -98,8 +99,9 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
         lightResult.directSpecular += sR * shadow * lightEnergy;
     }
 
-    for (uint i = 0; i < uPointLightCount; ++i)
+    for (uint k = 0u; k < tile.pointCount; ++k)
     {
+        uint i = tileLightIndices[tile.pointOffset + k];
         PointLightData pointLight = GetPointLight(int(i));
         pointLight.color.rgb *= SampleSurfaceLightCookie(1 + int(i), brdfData.positionWS);
         vec3 lightDirection = pointLight.position.xyz - brdfData.positionWS;
@@ -111,7 +113,7 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
         attenuation *= attenuation;
 
         float pShadow = SamplePointShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
-        if (IsPointShadowFallbackSelected(GetFragTileLightHeader(), i))
+        if (IsPointShadowFallbackSelected(tile, i))
         {
             pShadow = BlendPunctualShadowFallback(
                 pShadow,
@@ -127,8 +129,9 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
         lightResult.directSpecular += sR * pShadow * attenuation * lightEnergy;
     }
 
-    for (uint i = 0; i < uSpotLightCount; ++i)
+    for (uint k = 0u; k < tile.spotCount; ++k)
     {
+        uint i = tileLightIndices[tile.spotOffset + k];
         SpotLightData spotLight = GetSpotLight(int(i));
         spotLight.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdfData.positionWS);
         vec3 lightDirection = spotLight.position.xyz - brdfData.positionWS;
@@ -147,7 +150,7 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
         float coneAttenuation = clamp((coneAngle - outerConeAngle) / (innerConeAngle - outerConeAngle), 0.0, 1.0);
 
         float sShadow = SampleSpotShadowMapBRDF(brdfData.positionWS, brdfData.normal, lightDirection, punctualShadowMap, int(i));
-        if (IsSpotShadowFallbackSelected(GetFragTileLightHeader(), i))
+        if (IsSpotShadowFallbackSelected(tile, i))
         {
             sShadow = BlendPunctualShadowFallback(
                 sShadow,

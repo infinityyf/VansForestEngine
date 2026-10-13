@@ -6,13 +6,14 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <optional>
 
 namespace VansGraphics
 {
 enum class VansParticleControl
 {
     Play, Pause, Stop, StopEmitting, DetachAndDrain, Restart, Seek, Seed, SimulationRate, Burst, EmitterEnabled, EffectiveEnabled, DeferFirstUpdate, RefreshEmission,
-    SetOwnerWorldTransform, SetEmitterPositionLocal, EmitInitialFrame
+    SetOwnerWorldTransform, SetEmitterPositionLocal, EmitInitialFrame, SetEmissionPoints
 };
 struct VansParticleCommand
 {
@@ -24,6 +25,7 @@ struct VansParticleCommand
     glm::vec3 emitterPositionLocal{0.0f};
     bool hasOwnerWorld = false;
     bool hasEmitterPositionLocal = false;
+    std::optional<std::vector<VansParticleEmissionPoint>> emissionPoints;
 };
 // 场景拥有实例与后台线程；调用者持有句柄，控制请求在模拟前消费。
 class VansParticleManager
@@ -38,6 +40,7 @@ public:
     const VansParticleRuntime* Resolve(Vans::VansGenerationHandle handle) const;
     bool SetOwnerWorldTransform(Vans::VansGenerationHandle handle, const glm::mat4& ownerWorld);
     bool SetEmitterPositionLocal(Vans::VansGenerationHandle handle, const glm::vec3& position);
+    bool SetEmissionPoints(Vans::VansGenerationHandle handle, std::vector<VansParticleEmissionPoint> points);
     bool Queue(Vans::VansGenerationHandle handle, VansParticleControl control, float value = 0.0f, uint32_t index = 0);
     bool QueueBatch(const std::vector<VansParticleCommand>& commands);
     bool SetSimulationFrozen(bool frozen);

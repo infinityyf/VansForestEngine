@@ -379,6 +379,11 @@ namespace Vans::EditorAPI
 		VansSerializedValue component;
 	};
 
+	struct RuntimeNavigationComponentEdit
+	{
+		std::string entityGuid,componentGuid,componentType;
+		VansSerializedValue data;
+	};
 	struct RuntimeEntityPreviewChange
 	{
 		bool hasTransform = false;
@@ -390,6 +395,7 @@ namespace Vans::EditorAPI
 		std::vector<RuntimeComponentEnabledEdit> componentEnabled;
 		std::vector<RuntimeRendererMaterialOverrideEdit> materialOverrides;
 		std::vector<RuntimeLocalVolumetricFogEdit> localVolumetricFogEdits;
+		std::vector<RuntimeNavigationComponentEdit> navigationEdits;
 
 		bool Empty() const
 		{
@@ -400,7 +406,7 @@ namespace Vans::EditorAPI
 				lights.empty() &&
 				componentEnabled.empty() &&
 				materialOverrides.empty() &&
-				localVolumetricFogEdits.empty();
+				localVolumetricFogEdits.empty() && navigationEdits.empty();
 		}
 	};
 
@@ -573,7 +579,10 @@ namespace Vans::EditorAPI
 		PcgMask,
 		PcgSpline,
 		DamageProfile,
-        Prefab
+        Prefab,
+        RenderPass,
+        NavigationMesh,
+        AIBehavior
 	};
 
 	enum class AssetQueryCapability
@@ -634,7 +643,8 @@ namespace Vans::EditorAPI
 		ClothProfile,
 		AudioReverbPreset,
 		AudioBusSnapshot,
-		AudioDuckingRules
+		AudioDuckingRules,
+		ClothMaterial
 	};
 
 	struct ProjectAssetCreateRequest
@@ -1416,6 +1426,31 @@ namespace Vans::EditorAPI
 		float roughness = 0.0f;
 	};
 
+    struct ProjectRenderPassFrameDiagnostic
+    {
+        std::string passId;
+        std::vector<std::string> shaders;
+        bool enabled=false,submitted=false;
+        std::uint32_t commandSlot=UINT32_MAX,targetSlot=UINT32_MAX,batches=0,instances=0,imageBarriers=0;
+        std::uint32_t candidates=0,inactive=0,unmatchedShader=0,excludedLayer=0;
+        std::uint32_t missingProxy=0,unsupportedDynamic=0,capacityExceeded=0,cameraCulled=0;
+        std::uint64_t uploadedBytes=0,payloadBytes=0;
+    };
+    struct ProjectRenderPassSettingsSnapshot
+    {
+        bool available=false;
+        std::vector<std::string> assetGuids;
+        std::uint64_t configuredRevision=0,generation=0,allocatedBytes=0;
+        std::uint32_t passCount=0,draws=0;
+        std::vector<ProjectRenderPassFrameDiagnostic> passes;
+        std::string runtimeError;
+    };
+    struct ApplyProjectRenderPassSettingsResult
+    {
+        bool accepted=false;
+        std::string error;
+    };
+
 	struct RenderTexturePreview
 	{
 		RenderTextureId id = 0;
@@ -1423,6 +1458,29 @@ namespace Vans::EditorAPI
 		EditorTextureHandle texture = nullptr;
 		std::uint32_t width = 0;
 		std::uint32_t height = 0;
+		std::uint64_t registration = 0, generation = 0, frameSerial = 0;
+		std::string resourceKey, status;
+	};
+	enum class RenderTexturePreviewChannel : std::uint8_t {RGBA, R, G, B, A};
+	struct RenderTexturePreviewViewSpec
+	{
+		std::uint32_t layer = 0, mipLevel = 0;
+		RenderTexturePreviewChannel channel = RenderTexturePreviewChannel::RGBA;
+		float minimum = 0.0f, maximum = 1.0f, exposure = 0.0f, gamma = 1.0f;
+		bool previousFrame = false, opaque = true;
+	};
+	struct RenderTextureSourceInfo
+	{
+		std::string resourceKey,name,category,owner,format,status;
+		std::uint64_t generation = 0;
+		std::uint32_t width = 0,height = 0,layers = 0,mips = 0,samples = 0,frameSlots = 0;
+		bool previewable = false,previousAvailable = false;
+	};
+	struct RenderTexturePreviewRegistrationResult
+	{
+		bool accepted = false;
+		std::uint64_t registration = 0;
+		std::string error;
 	};
 
 	enum class PunctualShadowLightKind : std::uint8_t
@@ -1730,11 +1788,18 @@ namespace Vans::EditorAPI
 	struct CommandRecordingSettingsSnapshot
 	{
 		bool parallelEnabled = true;
-		bool frameContextRingEnabled = false;
-		std::uint32_t framesInFlight = 2;
+		std::uint32_t framesInFlight = 1;
+		std::uint32_t effectiveFramesInFlight = 1;
+		std::uint32_t observedSubmittedFramePeak = 0;
 		bool asyncComputeRequested = false;
 		bool asyncComputeEnabled = false;
 		bool hasDedicatedAsyncComputeQueue = false;
+	};
+
+	struct ApplyCommandRecordingSettingsResult
+	{
+		bool accepted = false;
+		std::string message;
 	};
 
 	struct GIRegionSettingsSnapshot

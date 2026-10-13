@@ -316,17 +316,43 @@ namespace VansGraphics
 		return info.pMappedData;
 	}
 
-	void VansVKMemoryAllocator::LogMemoryStats() const
+	VansGpuMemorySnapshot VansVKMemoryAllocator::QueryMemorySnapshot() const
 	{
+		VansGpuMemorySnapshot snapshot{};
 		if (m_Allocator == nullptr)
-		{
-			return;
-		}
+			return snapshot;
+
 		VmaTotalStatistics stats{};
 		vmaCalculateStatistics(m_Allocator, &stats);
-		VANS_LOG("[VMA] stats: blocks=" << stats.total.statistics.blockCount
-		         << " allocations=" << stats.total.statistics.allocationCount
-		         << " allocBytes=" << stats.total.statistics.allocationBytes
-		         << " blockBytes=" << stats.total.statistics.blockBytes);
+		const VkPhysicalDeviceMemoryProperties* memoryProperties = nullptr;
+		vmaGetMemoryProperties(m_Allocator, &memoryProperties);
+		if (memoryProperties == nullptr)
+			return snapshot;
+
+		snapshot.available = true;
+		snapshot.allocationCount = stats.total.statistics.allocationCount;
+		snapshot.blockCount = stats.total.statistics.blockCount;
+		snapshot.allocationBytes = stats.total.statistics.allocationBytes;
+		snapshot.blockBytes = stats.total.statistics.blockBytes;
+		for (std::uint32_t heapIndex = 0; heapIndex < memoryProperties->memoryHeapCount; ++heapIndex)
+		{
+			if ((memoryProperties->memoryHeaps[heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0)
+				continue;
+			const auto& heap = stats.memoryHeap[heapIndex].statistics;
+			snapshot.deviceLocalAllocationBytes += heap.allocationBytes;
+			snapshot.deviceLocalBlockBytes += heap.blockBytes;
+		}
+		return snapshot;
+	}
+
+	void VansVKMemoryAllocator::LogMemoryStats() const
+	{
+		const auto snapshot = QueryMemorySnapshot();
+		if (!snapshot.available)
+			return;
+		VANS_LOG("[VMA] stats: blocks=" << snapshot.blockCount
+		         << " allocations=" << snapshot.allocationCount
+		         << " allocBytes=" << snapshot.allocationBytes
+		         << " blockBytes=" << snapshot.blockBytes);
 	}
 }

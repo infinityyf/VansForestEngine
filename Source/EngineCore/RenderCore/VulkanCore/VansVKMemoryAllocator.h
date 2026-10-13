@@ -17,6 +17,7 @@ typedef struct VmaAllocation_T* VmaAllocation;
 namespace VansGraphics
 {
 	class VansVKDevice;
+	struct VansGpuMemorySnapshot;
 
 	// Resource usage intent. Translated to VMA flags inside the cpp.
 	enum class VansMemoryUsage
@@ -86,6 +87,7 @@ namespace VansGraphics
 		void* GetPersistentMappedPtr(VmaAllocation allocation) const;
 
 		// Diagnostics --------------------------------------------------
+		VansGpuMemorySnapshot QueryMemorySnapshot() const;
 		void LogMemoryStats() const;
 
 		VmaAllocator GetNative() const { return m_Allocator; }

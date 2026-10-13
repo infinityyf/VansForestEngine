@@ -17,7 +17,7 @@ namespace VansGraphics
         glm::vec4 m_Color;          // RGBA（16 字节）
         float     m_Rotation;       // 视图空间旋转角（弧度）（4 字节）
         float     m_FrameIndex;     // Sprite Sheet 帧索引（float，Shader 内取整）（4 字节）
-        glm::vec2 m_Padding;        // 对齐填充（8 字节）
+        glm::uvec2 m_Padding;       // SpriteCard: oct normal snorm16x2, weight/age half16x2; other programs ignore.
     };
 
     static_assert(sizeof(VansParticleInstanceData) == 48,

@@ -1,3 +1,4 @@
+#include "../../NavigationCore/Serialization/VansNavigationSettingsJsonCodec.h"
 #include "VansProjectDocumentStorage.h"
 
 #include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
@@ -199,8 +200,8 @@ bool VansProjectDocumentStorage::Save(const VansProjectDocumentSaveRequest& requ
 		return false;
 	if (HasProjectDocumentDomain(request.m_DirtyMask, VansProjectDocumentDomain::NavigationSettings) &&
 		!stageJson(navigationSettingsPath,
-			VansProjectSettingsJsonCodec::EncodeNavigationSettings(
-				request.m_Documents.m_Settings.GetNavigationSettings())))
+			EncodeSerializedValueJson<nlohmann::json>(VansNavigationSettingsJsonCodec::Encode(
+				request.m_Documents.m_Settings.GetNavigationSettings()))))
 		return false;
 	if (HasProjectDocumentDomain(request.m_DirtyMask, VansProjectDocumentDomain::CollisionLayers) &&
 		(!request.m_Documents.m_HasCollisionLayerDocument ||

@@ -220,12 +220,12 @@ namespace VansGraphics
 			return false;
 		}
 
-		if (!m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		if (!m_MaintenanceGraphicsCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
 			return false;
 		}
 
-		dest_buffer.SetBufferMemoryBarrier(m_VansVKCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		dest_buffer.SetBufferMemoryBarrier(m_MaintenanceGraphicsCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
 				dest_buffer.m_VansVKBuffer,
 				VK_ACCESS_TRANSFER_READ_BIT,
@@ -235,9 +235,9 @@ namespace VansGraphics
 			}
 		);
 
-		VansVKMemoryManager::CopyBufferData(m_VansVKCommandBuffer, m_StageBuffer, dest_buffer, { { VkDeviceSize(0),buffer_offset, buffer_size } });
+		VansVKMemoryManager::CopyBufferData(m_MaintenanceGraphicsCommandBuffer, m_StageBuffer, dest_buffer, { { VkDeviceSize(0),buffer_offset, buffer_size } });
 
-		dest_buffer.SetBufferMemoryBarrier(m_VansVKCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		dest_buffer.SetBufferMemoryBarrier(m_MaintenanceGraphicsCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
 				dest_buffer.m_VansVKBuffer,
 				VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -246,16 +246,16 @@ namespace VansGraphics
 				VK_QUEUE_FAMILY_IGNORED
 			}
 		);
-		if (!m_VansVKCommandBuffer.EndCommandBufferRecord())
+		if (!m_MaintenanceGraphicsCommandBuffer.EndCommandBufferRecord())
 		{
 			return false;
 		}
 
-		if (!VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence))
+		if (!VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_MaintenanceGraphicsCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_MaintenanceGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence))
 		{
 			return false;
 		}
-		return m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		return m_MaintenanceGraphicsCommandBuffer.ResetCommandBuffer(false);
 	}
 
 	bool VansVKDevice::SetDeviceImageData(VansVKImage& dest_image, VansVKCommandBuffer& cmd, void* data, int data_offset, int data_size, VkOffset3D image_offset, VkExtent3D image_size, int mip_level, int layer_level)

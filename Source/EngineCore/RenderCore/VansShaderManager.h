@@ -57,6 +57,9 @@ namespace VansGraphics
         VkPrimitiveTopology primitiveTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         uint32_t patchControlPoints = 1;
 		std::filesystem::path artifactRoot;
+        // 项目资产身份；内建程序注册可以为空，不能借同名记录替代项目 GUID。
+        std::string assetGuid;
+        std::vector<std::string> colorAttachmentBlends;
     };
 
     struct VansShaderRecord
@@ -107,6 +110,8 @@ namespace VansGraphics
         bool ConfigureGraphicsShader(VansGraphicsShader& shader, const VansShaderEntry& entry, const std::string& fullPath) const;
 
         void ReleaseLoadedShaderAssets();
+        // 调用方保证 GPU 空闲且没有已发布消费者；用于候选资源加载的失败回滚。
+        void RemoveUnpublishedShaderAtIdle(const std::string& shaderName);
         void Clear();
 
     private:

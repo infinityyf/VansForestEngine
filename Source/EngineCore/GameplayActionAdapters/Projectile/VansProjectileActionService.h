@@ -3,9 +3,11 @@
 #include "../../GameplayActionCore/VansGameplayServiceRuntime.h"
 #include "../../RuntimeCore/VansGenerationPool.h"
 #include "../../SceneCore/VansSceneParticleComponentConfig.h"
+#include "../../EventCore/VansEventConnection.h"
 #include <glm/glm.hpp>
 #include <functional>
 #include <optional>
+#include <unordered_set>
 
 namespace Vans
 {
@@ -51,12 +53,20 @@ private:
         VansEntityHandle owner, instigator;
         VansActionId detonationAction;
         std::optional<double> fuseSeconds;
+        std::string detonationMode = "Timer";
+        VansActionId timeoutAction;
+        std::uint32_t transformId = UINT32_MAX;
+        float settleSpeed = 0.15f, impactNormalMinY = 0.7071f;
+        double settleSeconds = 0.2, settledFor = 0;
+        bool surfaceImpact = false;
+        std::unordered_set<std::uint32_t> supports;
     };
     VansRuntimeWorld& m_World;
     IVansGameplayServiceRuntime& m_Runtime;
     const VansGameplayAssetLibrary& m_Assets;
     VansProjectileSceneBackend m_Backend;
     VansGenerationPool<Projectile> m_Projectiles;
+    VansEventConnection m_Contacts;
 };
 const VansActionServiceCapability& VansAttachmentActionCapability();
 std::shared_ptr<IVansActionService> VansCreateAttachmentActionService(VansProjectileSceneBackend backend);

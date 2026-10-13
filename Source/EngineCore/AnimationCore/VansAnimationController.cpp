@@ -1536,7 +1536,8 @@ bool VansAnimationController::SubmitExternalModelPose(
 	const Skeleton& skeleton,
 	float deltaTime,
 	VansExternalPoseEvaluationMode mode,
-	bool prepareWorldQueries)
+	bool prepareWorldQueries,
+	const VansAnimationFrameVector<VansAnimationCurveSample>* curves)
 {
 	m_FramePool.BeginFrame();
 	VansAnimationFrameMemory::Scope frameMemoryScope(m_FramePool.Resource());
@@ -1563,12 +1564,28 @@ bool VansAnimationController::SubmitExternalModelPose(
 	VansPosePayload pose;
 	if (!ConvertModelPoseToLocalPayload(modelSpaceTransforms, skeleton, pose))
 		return false;
+	// 外部骨骼姿态仍携带源动画曲线。目标图及 IK 门槛必须消费同一帧的曲线，
+	// 不能只传矩阵，也不能继续读取上次外部提交留下的权重。
+	if (curves)
+	{
+		m_ExternalCurveNames.resize(curves->size());
+		pose.curves.reserve(curves->size());
+		for (std::size_t index = 0; index < curves->size(); ++index)
+		{
+			const auto& input = (*curves)[index];
+			m_ExternalCurveNames[index].assign(input.name.data(), input.name.size());
+			auto curve = input;
+			curve.name = m_ExternalCurveNames[index];
+			pose.curves.push_back(curve);
+		}
+	}
 	VansPosePayload processed;
 	if (!EvaluateTargetPostProcess(deltaTime, skeleton, pose, processed))
 		return false;
 	VansPosePayload composed;
 	if (!EvaluateFinalComposition(deltaTime, skeleton, processed, composed))
 		return false;
+	m_SampledCurves.assign(composed.curves.begin(), composed.curves.end());
 	return FinalizeLocalPose(
 		deltaTime, skeleton, std::move(composed), false, false, prepareWorldQueries);
 }
@@ -2017,17 +2034,26 @@ bool VansAnimationController::PrepareLayerStack(
 		{
 			layer.state.activationRisePending = previousWeight <= 1.0e-6f
 				&& targetWeight > 1.0e-6f;
-			const bool rising = targetWeight > previousWeight;
-			const float duration = rising ? layer.definition.activationBlendInSeconds
-				: layer.definition.activationBlendOutSeconds;
-			if (duration <= 0.0f || std::abs(targetWeight - previousWeight) <= 1.0e-6f)
+			// 目标变化时从当前权重继续；累计时间决定终点，避免逐帧趋近造成帧率依赖。
+			if (std::abs(targetWeight - layer.state.targetWeight) > 1.0e-6f)
+			{
+				layer.state.activationStartWeight = previousWeight;
+				layer.state.activationElapsed = 0.0f;
+				layer.state.activationDuration = targetWeight > previousWeight
+					? layer.definition.activationBlendInSeconds
+					: layer.definition.activationBlendOutSeconds;
+			}
+			const float duration = layer.state.activationDuration;
+			layer.state.activationElapsed = std::min(duration,
+				layer.state.activationElapsed + std::max(0.0f, deltaTime));
+			if (duration <= 0.0f || layer.state.activationElapsed >= duration)
 				layer.state.currentWeight = targetWeight;
 			else
 			{
-				const float progress = std::clamp(deltaTime / duration, 0.0f, 1.0f);
+				const float progress = std::clamp(layer.state.activationElapsed / duration, 0.0f, 1.0f);
 				const float alpha = EvaluateLayerActivationCurve(
 					layer.definition.activationCurve, progress);
-				layer.state.currentWeight = glm::mix(previousWeight, targetWeight, alpha);
+				layer.state.currentWeight = glm::mix(layer.state.activationStartWeight, targetWeight, alpha);
 			}
 			layer.state.targetWeight = targetWeight;
 		}

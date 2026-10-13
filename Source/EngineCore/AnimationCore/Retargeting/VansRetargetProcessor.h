@@ -23,6 +23,7 @@ namespace VansGraphics
 		float translationScale = 1.0f;
 		bool debugDraw = false;
 		std::vector<VansRetargetLimbChainDesc> limbChains;
+		std::vector<VansRetargetControlBoneDesc> controlBones;
 	};
 
 	struct VansRetargetBuildStats
@@ -68,6 +69,13 @@ namespace VansGraphics
 			float positionWeight = 1.0f;
 		};
 
+		struct CompiledControlBone
+		{
+			int bone = -1;
+			int referenceBone = -1;
+		};
+
+		std::vector<CompiledControlBone> m_ControlBones;
 		std::vector<BoneMapEntry> m_BoneMap;
 		std::vector<CompiledLimbChain> m_LimbChains;
 		VansCompiledAnimationRig m_TargetRig;
@@ -103,5 +111,8 @@ namespace VansGraphics
 			const Skeleton& skeleton,
 			const std::vector<glm::mat4>& modelTransforms,
 			glm::mat3& outBasis);
+		bool FinalizeVirtualBones(const std::vector<glm::mat4>& sourceModelTransforms,
+			const Skeleton& sourceSkeleton, const Skeleton& targetSkeleton,
+			std::vector<glm::mat4>& targetModelTransforms) const;
 	};
 }

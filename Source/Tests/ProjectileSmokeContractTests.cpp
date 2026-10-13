@@ -67,6 +67,10 @@ bool TestProjectileSmokeContract()
     if (!check(particles.AliveInstanceCount() >= 5 && !particles.GetVolumetricRenderBuffer().empty(),
         "Smoke did not inject particles after crossing the delay")) return false;
     const auto firstCount = particles.AliveInstanceCount();
+    const auto samplePosition=glm::vec3(particles.GetVolumetricRenderBuffer().front().m_WorldPositionRadius);
+    if (!check(particles.SampleVolumetricExtinction(samplePosition)>0
+        && particles.SampleVolumetricExtinction(samplePosition+glm::vec3(100))==0,
+        "Published smoke medium sampling did not match occupied and empty volume")) return false;
     for (int i=0;i<120;++i) particles.Update(1.0f/120);
     if (!check(particles.AliveInstanceCount() > firstCount+20, "Smoke emission was a one-shot burst")) return false;
     for (int i=0;i<3600;++i) particles.Update(1.0f/60);

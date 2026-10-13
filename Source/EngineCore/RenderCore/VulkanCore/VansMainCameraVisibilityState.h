@@ -27,6 +27,7 @@ namespace VansGraphics
 			uint64_t frameSerial);
 		bool UploadActiveCandidates(VansVKDevice& device);
 		void MarkDispatched();
+		void ResolveRecordedFrameSubmission(bool submitted);
 
 		bool HasActiveCandidates() const;
 		uint32_t GetActiveCandidateCount() const;
@@ -51,6 +52,7 @@ namespace VansGraphics
 			uint32_t bufferCapacity = 0;
 			uint64_t dispatchedFrameSerial = 0;
 			bool pendingVisibilityReadback = false;
+			bool recordedFramePendingSubmission = false;
 		};
 
 		FrameSlot& ActiveSlot();

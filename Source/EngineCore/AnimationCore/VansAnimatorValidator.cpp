@@ -194,7 +194,6 @@ namespace VansGraphics
 		{
 			if ((requireGoalId && goal.goalId.empty())
 				|| !finiteVec3(goal.fixedPositionModel) || !finiteVec3(goal.poleOffsetLocal)
-				|| (!goal.poleBoneName.empty() && goal.source != VansGraphGoalSource::PoseBone)
 				|| !finiteQuat(goal.fixedRotationModel)
 				|| glm::dot(goal.fixedRotationModel, goal.fixedRotationModel) <= 1.0e-8f
 				|| !finiteWeight(goal.fixedPositionWeight) || !finiteWeight(goal.fixedRotationWeight)

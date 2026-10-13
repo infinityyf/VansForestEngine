@@ -5,11 +5,14 @@
 #include "../VansGraphicsDevice.h"
 #include "../VansCameraFrameData.h"
 #include "../VansRenderRuntimeConfig.h"
+#include "../VansDrawSubmission.h"
 #include "../ShadowCore/VansPunctualShadowFrameState.h"
 #include "vulkan/vulkan.h"
 #include "VansVKSurface.h"
 #include "VansVKBuffer.h"
 #include "VansVKDrawInstanceArena.h"
+#include "VansProjectRenderPassRuntime.h"
+#include "VansRuntimeRenderTextureCatalog.h"
 #include "VansMainCameraVisibilityState.h"
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
@@ -53,23 +56,36 @@ namespace VansGraphics
 	};
 
 	class VansRenderPassManager;
+	struct VansFrameResourceSelection
+	{
+		std::uint32_t frameSlot = 0;
+		std::uint32_t gbufferTargetSlot = 0;
+	};
 	
 
 	class VansVKDevice: public VansGraphicsDevice
 	{
 	private :
 		VansCameraDataGPU m_CameraData{};
+		VansCameraDataGPU m_CameraDataBeforePendingFrame{};
+		bool m_CameraFramePendingSubmission = false;
+		bool m_GIReceiverVisibilityFrameRecorded = false;
+		bool m_SSGIFrameRecorded = false;
+		bool m_AmbientSkyCacheFrameRecorded = false;
+		bool m_NearMediaFrameRecorded = false;
+		bool m_CloudFrameRecorded = false;
+		bool m_AtmosphereFrameRecorded = false;
 		glm::mat4 m_UnjitteredCameraProjection{ 1.0f };
 		VansTemporalJitter m_CameraTemporalJitter{};
-		VansVKBuffer m_CameraDataBuffer;
-		VansVKBuffer m_LightDataBuffer;
-        VansVKBuffer m_LightCookieDataBuffer;
         std::vector<VkDescriptorImageInfo> m_LightCookieDescriptors;
-        VkDescriptorSet m_LightCookieDescriptorSet = VK_NULL_HANDLE;
+        std::vector<VkDescriptorSet> m_LightCookieDescriptorSets;
         std::unordered_set<std::string> m_InvalidLightCookies;
         bool UploadLightCookies(const VansLightCookieFrame& frame);
 
 		VansVKDrawInstanceArena m_DrawInstanceArena;
+		VansProjectRenderPassRuntime m_ProjectRenderPassRuntime;
+		VansRuntimeRenderTextureCatalog m_RenderTextureCatalog;
+		std::atomic<bool> m_RenderTextureCatalogRequested{false};
 		std::uint32_t m_CameraRenderFrameIndex = 0;
 		std::uint32_t m_CurrentCameraFrameIndex = 0;
 		bool m_CameraFrameResourcesReady = false;
@@ -78,6 +94,8 @@ namespace VansGraphics
 		// across the main-thread -> render-backend boundary.
 		VansRenderViewSnapshot m_CurrentRenderView{};
 		VansRenderSceneFrameSnapshot m_CurrentRenderSceneSnapshot{};
+		VansCascadeShadowDrawPlan m_CurrentCascadeShadowDrawPlan;
+		VansPunctualShadowDrawPlan m_CurrentPunctualShadowDrawPlan;
 		VansRenderFrameTimingSnapshot m_CurrentRenderTiming{};
 		VansRenderWorld m_RenderWorld;
 		std::vector<std::uint64_t> m_CurrentTransformKeys;
@@ -155,14 +173,17 @@ namespace VansGraphics
 		bool m_FSREnabled = false;
 		bool m_DLSSEnabled = false;
 		bool m_PresentFinalDisplayToSwapchain = false;
+		std::uint64_t m_RecordedTemporalFrameNumber = 0;
 
 		bool BuildFSRFrameInput(VansFSRFrameInput& output);
 		bool BuildDLSSDispatch(VansStreamlineDLSSDispatch& output);
 		bool PrepareDLSSDispatchResources(VansVKCommandBuffer& commandBuffer);
 		void RecordFSRMasks(VansVKCommandBuffer& commandBuffer, VansFSRFrameInput& input);
+		void RestoreFSRDepthLayout(VansVKCommandBuffer& commandBuffer);
 		bool RecordFSRFallbackUpscale(VansVKCommandBuffer& commandBuffer);
 		void RecordDisplayPostProcess(VansVKCommandBuffer& commandBuffer);
 		void RecordFinalDisplayToSwapchain();
+		void ResolvePreparedFrameHistory(bool submitted, bool graphExecuted = false);
 
 		bool InitializeFSR();
 		bool InitializeDLSS();
@@ -177,7 +198,8 @@ namespace VansGraphics
 		VkExtent2D CalculateUpscalerRenderExtent() const;
 		void RecreateSceneResolutionResources(const VkExtent2D& renderExtent);
 		void ProcessPendingUpscalerConfig();
-		void ApplyFrameContextRingStateAtIdle(bool enabled, uint32_t framesInFlight);
+		void DeactivateFailedFSRContext();
+		bool ApplyFrameContextRingStateAtIdle(uint32_t framesInFlight);
 		void ApplyAsyncComputeStateAtIdle(bool enabled);
 
 	public:
@@ -186,7 +208,10 @@ namespace VansGraphics
 
 		void EndUIRenderPass() override;
 
-		bool CanRecordCurrentFrame() const override { return m_CurrentFrameContext.frameSubmitSucceeded; }
+		bool CanRecordCurrentFrame() const override { return CurrentFrameContext().frameSubmitSucceeded; }
+		bool CurrentFrameRequiresSurfaceResize() const override { return CurrentFrameContext().surfaceResizeRequired; }
+		bool HasDeviceLost() const override { return m_DeviceLost; }
+		VansGpuMemorySnapshot QueryGpuMemorySnapshot() const override;
 
 		/// 运行时 UI pass（Noesis → FSR 输出图像）
 		void BeginSceneUIRenderPass();
@@ -245,10 +270,21 @@ namespace VansGraphics
 			return m_UpscalerManager.GetFallbackMessage();
 		}
 		VansUpscalerRuntimeDiagnostics GetUpscalerDiagnostics() const;
+		bool HasFSRContextDestructionFailure() const
+		{
+			return m_FSRController.HasContextDestructionFailure();
+		}
 		VansUpscalerCapabilities GetUpscalerCapabilities(VansUpscalerBackend backend) const;
 		bool IsParallelCommandRecordingEnabled() const { return m_EnableParallelCommandRecording; }
-		bool IsFrameContextRingEnabled() const { return m_EnableFrameContextRing; }
 		uint32_t GetConfiguredFramesInFlight() const { return m_ConfiguredFramesInFlight; }
+		uint32_t GetObservedSubmittedFramePeak() const
+		{
+			return m_ObservedSubmittedFramePeak.load(std::memory_order_acquire);
+		}
+		uint32_t GetEffectiveFramesInFlight() const
+		{
+			return IsFrameContextRingActive() ? m_ConfiguredFramesInFlight : 1u;
+		}
 		bool IsAsyncComputeRequested() const { return m_AsyncComputeRequested; }
 		bool IsAsyncComputeEnabled() const { return m_AsyncComputeEnabled; }
 		const VansQueueCapabilities& GetQueueCapabilities() const { return m_QueueCapabilities; }
@@ -257,13 +293,12 @@ namespace VansGraphics
 		const VansCloudShadowQualityConfig& GetCloudShadowQualityConfig() const { return m_CloudShadowQualityConfig; }
 		bool ApplyCommandRecordingSettings(
 			bool parallelEnabled,
-			bool frameContextRingEnabled,
 			uint32_t framesInFlight,
 			bool asyncComputeEnabled);
 		VkExtent2D GetUpscalerOutputExtent() const { return CalculateUpscalerOutputExtent(); }
 
 		// 窗口大小改变时重建交换链和UI渲染pass
-		void OnWindowResize(uint32_t width, uint32_t height) override;
+		bool OnWindowResize(uint32_t width, uint32_t height) override;
 
 	public:
 
@@ -280,11 +315,27 @@ namespace VansGraphics
 		void AfterRendering() override;
 
 		bool WaitForIdle() override { return WaitForDevice(); }
-		VansVKBuffer& GetCameraDataBuffer() { return m_CameraDataBuffer; }
-		VansVKBuffer& GetLightDataBuffer() { return m_LightDataBuffer; }
-        VansVKBuffer& GetLightCookieDataBuffer() { return m_LightCookieDataBuffer; }
+		VansVKBuffer& GetCameraDataBuffer(std::uint32_t slot) { return m_FrameContextRingSlots.at(slot).cameraDataBuffer; }
+		VansVKBuffer& GetLightDataBuffer(std::uint32_t slot) { return m_FrameContextRingSlots.at(slot).lightDataBuffer; }
+		VansVKBuffer& GetLightCookieDataBuffer(std::uint32_t slot) { return m_FrameContextRingSlots.at(slot).lightCookieDataBuffer; }
 		VansVKDrawInstanceArena& GetDrawInstanceArena() { return m_DrawInstanceArena; }
 		const VansVKDrawInstanceArena& GetDrawInstanceArena() const { return m_DrawInstanceArena; }
+		VansProjectRenderPassRuntime& ProjectRenderPassRuntime() { return m_ProjectRenderPassRuntime; }
+		const VansProjectRenderPassRuntime& ProjectRenderPassRuntime() const { return m_ProjectRenderPassRuntime; }
+		bool ShouldDrawProjectPassProxy(VansRenderProxyHandle proxy) { return m_MainCameraVisibilityState.ShouldDraw(proxy); }
+		std::vector<VansRuntimeRenderTextureInfo> QueryRuntimeRenderTextures()
+		{ m_RenderTextureCatalogRequested.store(true,std::memory_order_release); return m_RenderTextureCatalog.CaptureSnapshot(); }
+		void RefreshRuntimeRenderTextureCatalog();
+		bool RegisterRuntimeRenderTextureSource(VansRuntimeRenderTextureCatalog::Source source, std::string& error)
+		{ return m_RenderTextureCatalog.RegisterSource(std::move(source),error); }
+		void UnregisterRuntimeRenderTextureSource(const std::string& key) { m_RenderTextureCatalog.UnregisterSource(key); }
+		// 仅清空诊断目录；调用者已保证 GPU 空闲及渲染线程停止消费源资源。
+		void ClearRuntimeRenderTextureCatalogAtIdle() { m_RenderTextureCatalog.Clear(); }
+		VansVKImage* ResolveRuntimeRenderTexture(const std::string& key, std::uint64_t generation, bool previousFrame = false)
+		{ return m_RenderTextureCatalog.Resolve(key,generation,GetFrameResourceSlot(),GetCurrentGBufferTargetSlot(),previousFrame); }
+		std::uint64_t GetFrameRecordingSerial() const { return CurrentFrameContext().frameNumber; }
+		VansResolvedRenderTexture ResolveSampledRenderTexture(const std::string& key)
+		{ return m_RenderTextureCatalog.ResolveSampled(key,GetFrameResourceSlot(),GetCurrentGBufferTargetSlot()); }
 		bool ShouldDrawMainCameraProxy(VansRenderProxyHandle proxy)
 		{
 			return m_MainCameraVisibilityState.ShouldDraw(proxy);
@@ -321,8 +372,14 @@ namespace VansGraphics
 
 		const VansRenderGraphDiagnosticsSnapshot& GetCurrentRenderGraphDiagnostics() const { return m_CurrentRenderGraphDiagnostics; }
 		const std::string& GetCurrentRenderGraphDebugSummary() const;
-		const VansFrameContext& GetCurrentFrameContext() const { return m_CurrentFrameContext; }
-        // 与本帧实际提交槽一致；异步计算和单帧回退都使用已等待完成的槽 0。
+		const VansFrameContext& GetCurrentFrameContext() const { return CurrentFrameContext(); }
+		std::uint32_t GetCurrentGBufferTargetSlot() const { return CurrentFrameContext().gbufferTargetSlot; }
+		VansFrameResourceSelection GetCurrentFrameResourceSelection() const
+		{ return { GetFrameResourceSlot(), GetCurrentGBufferTargetSlot() }; }
+		void RecordOverlaySampledImage(VkImage image, VkImageLayout layout,
+			VkPipelineStageFlags stages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VkAccessFlags access = VK_ACCESS_SHADER_READ_BIT, bool write = false);
+        // 与本帧实际提交槽一致；单帧配置使用槽 0。
         std::uint32_t GetFrameResourceSlot() const
         { return m_ActiveFrameContextSlot ? m_ActiveFrameContextSlot->slotIndex : 0u; }
 		void RequestPunctualShadowDebugPreview()
@@ -338,6 +395,7 @@ namespace VansGraphics
 			return m_PunctualShadowFrameState.GetTotalAtlasPages();
 		}
 		void EnqueueDeferredDelete(std::function<void()> destroy);
+		void RetireAfterCurrentFrame(std::function<void()> destroy) override;
 		bool DrainDeferredDeletesAfterDeviceIdle();
 
 		void InitializeGpuProfiler() override;
@@ -417,7 +475,7 @@ namespace VansGraphics
 
 		void DrawSceneGBuffer(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		bool RecordSceneGBufferParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex = 0);
-		bool RecordDecalPassParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex = 0);
+		bool RecordDecalPassParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex);
 
 		// 拆分后的渲染 pass：
 		//   DrawSceneRawOpaqueLighting — Deferred 只写入未经大气的 RawOpaqueSceneColor
@@ -447,12 +505,14 @@ namespace VansGraphics
 		VkDescriptorSetLayout GetHairPassLayout() const { return m_HairLightingPassLayout; }
 		VkDescriptorSet GetHairPassDescriptorSet() const
 		{
-			return m_HairLightingPassSets.empty() ? VK_NULL_HANDLE : m_HairLightingPassSets[0];
+			const std::uint32_t slot = GetFrameResourceSlot();
+			return slot < m_HairLightingPassSets.size() ? m_HairLightingPassSets[slot] : VK_NULL_HANDLE;
 		}
 		VkDescriptorSetLayout GetTransmissionGlassPassLayout() const { return m_TransmissionGlassPassLayout; }
-		VkDescriptorSet GetTransmissionGlassPassDescriptorSet() const
+		VkDescriptorSet GetTransmissionGlassPassDescriptorSet(std::uint32_t slot) const
 		{
-			return m_TransmissionGlassPassSets.empty() ? VK_NULL_HANDLE : m_TransmissionGlassPassSets[0];
+			return slot < m_TransmissionGlassPassSets.size()
+				? m_TransmissionGlassPassSets[slot] : VK_NULL_HANDLE;
 		}
 
 		VkDeviceAddress GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo);
@@ -525,17 +585,19 @@ namespace VansGraphics
 	private:
 
 		uint64_t m_FeatureDescriptorGeneration = 1;
-		uint64_t m_GIDataDescSetGeneration = 0;
+		std::array<uint64_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_GIDataDescSetGeneration{};
+		std::array<uint32_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_GIDataGBufferTargetSlot{};
 		uint64_t m_GTAODescSetGeneration = 0;
 		uint64_t m_HZBDescSetGeneration = 0;
 		uint64_t m_HIZSeedDescSetGeneration = 0;
 		uint64_t m_OcclusionHZBDescSetGeneration = 0;
 		uint64_t m_OcclusionHIZSeedDescSetGeneration = 0;
 		uint64_t m_MainCameraHiZCullDescSetGeneration = 0;
-		uint64_t m_SSRDescSetGeneration = 0;
+		std::array<uint64_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_SSRDescSetGeneration{};
 		uint64_t m_TileLightBuildDescSetGeneration = 0;
-		uint64_t m_PPExposureDescSetGeneration = 0;
-		uint64_t m_PPDepthOfFieldDescSetGeneration = 0;
+		std::array<uint64_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_PPExposureDescSetGeneration{};
+		std::array<uint64_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_PPDepthOfFieldDescSetGeneration{};
+		std::array<VkImageView, VansCommandRecordingConfig::MaximumFramesInFlight> m_DepthOfFieldGBufferViews{};
 		uint64_t m_PPBloomDescSetGeneration = 0;
 		uint64_t m_PPBloomShapeDescSetGeneration = 0;
 		uint64_t m_ScreenSpaceShadowDescSetGeneration = 0;
@@ -546,6 +608,8 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_HairLightingPassLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_HairLightingPassSets;
 		bool m_HairLightingDescriptorsReady = false;
+		std::array<VkImageView, VansCommandRecordingConfig::MaximumFramesInFlight> m_HairOpaqueDepthViews{};
+		std::array<std::uint64_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_HairOpaqueDepthGenerations{};
         std::atomic<bool> m_HairDebugRequested{false};
         std::atomic<bool> m_HairDebugReady{false};
         VansVKImage m_HairDebugImage;
@@ -554,12 +618,18 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_TransmissionGlassPassLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_TransmissionGlassPassSets;
 		bool m_TransmissionGlassDescriptorsReady = false;
+		std::array<VkImageView, VansCommandRecordingConfig::MaximumFramesInFlight> m_TransmissionOpaqueDepthViews{};
+		std::array<std::uint64_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_TransmissionOpaqueDepthGenerations{};
 
 		void SetupHairLightingDescriptors(VansRenderPassManager* renderPassManager);
+		void UpdateHairFrameTargetDescriptors(VansRenderPassManager* renderPassManager);
 		void DestroyHairLightingDescriptors();
 		void SetupHairCompositeDescriptors(VansRenderPassManager* renderPassManager);
 		void DestroyHairCompositeDescriptors();
 		void SetupTransmissionGlassDescriptors(VansRenderPassManager* renderPassManager);
+		void UpdateTransmissionGlassDescriptors(VansRenderPassManager* renderPassManager);
+		bool BindFrameOpaqueDepthReaders(VansRenderPassManager* renderPassManager,
+			std::uint32_t frameSlot, std::uint32_t gbufferTargetSlot);
 		void DestroyTransmissionGlassDescriptors();
 
 		bool IsFeatureDescriptorCurrent(uint64_t generation) const
@@ -598,7 +668,7 @@ namespace VansGraphics
 
 		void UpdateMainCameraHiZCullDescriptorSets(VansRenderPassManager* renderPassManager);
 
-		void UpdateSSRDescriptorSets(VansRenderPassManager* renderPassManager);
+		bool UpdateSSRDescriptorSets(VansRenderPassManager* renderPassManager);
 
 		void UpdateScreenSpaceShadowSets(VansRenderPassManager* renderPassManager);
 
@@ -606,7 +676,7 @@ namespace VansGraphics
 
 		// 后处理 Compute Pass descriptor set 写入（一次性）
 		void UpdateExposureDescriptorSets(VansRenderPassManager* renderPassManager);
-		void UpdateDepthOfFieldDescriptorSets(VansRenderPassManager* renderPassManager);
+		bool UpdateDepthOfFieldDescriptorSets(VansRenderPassManager* renderPassManager);
 		void UpdateBloomDescriptorSets(VansRenderPassManager* renderPassManager);
 		void UpdateBloomShapeDescriptorSets();
 
@@ -657,18 +727,52 @@ namespace VansGraphics
 		void PrepareAmbientSkyCacheRenderData();
 
 	private:
-		static constexpr uint32_t kMaxFrameContextsInFlight = 2;
+		static constexpr uint32_t kMaxFrameContextsInFlight = VansCommandRecordingConfig::MaximumFramesInFlight;
+
+		struct VansAsyncFrameCommands
+		{
+			VansVKCommandBuffer shadowMaps;
+			VansVKCommandBuffer gbuffer;
+			VansVKCommandBuffer gbufferMaterial;
+			VansVKCommandBuffer gtaoRaw;
+			VansVKCommandBuffer graphicsScreen;
+			VansVKCommandBuffer vegetation;
+			VansVKCommandBuffer earlyAux;
+			VansVKCommandBuffer asyncAtmosphere;
+			VansVKCommandBuffer asyncHZB;
+			VansVKCommandBuffer rayTracing;
+			VansVKCommandBuffer giData;
+			std::array<VansVKCommandBuffer*, 11> All()
+			{
+				return { &shadowMaps, &gbuffer, &gbufferMaterial, &gtaoRaw,
+					&graphicsScreen, &vegetation, &earlyAux, &asyncAtmosphere,
+					&asyncHZB, &rayTracing, &giData };
+			}
+		};
 
 		struct VansFrameContextRingSlot
 		{
 			uint32_t slotIndex = 0;
-			uint64_t frameNumber = 0;
-			uint32_t swapchainImageIndex = 0;
+			VansFrameContext frameContext;
+			VansVKBuffer cameraDataBuffer;
+			VansVKBuffer lightDataBuffer;
+			VansVKBuffer lightCookieDataBuffer;
 			VansVKCommandBuffer graphicsCommandBuffer;
+			VansVKCommandBuffer projectPreludeCommandBuffer;
+			VansFrameSubmitOrchestrator projectPreludeSubmit;
+			VansQueueTimelinePoint projectPreludeCompletion;
+			VansAsyncFrameCommands asyncCommands;
+			std::unique_ptr<VansVKSecondaryCommandContext> shadowSecondaryCommands;
+			std::unique_ptr<VansVKSecondaryCommandContext> gbufferSecondaryCommands;
+			std::unique_ptr<VansVKSecondaryCommandContext> decalSecondaryCommands;
+			bool shadowSecondaryNeedsReset = false;
+			bool gbufferSecondaryNeedsReset = false;
+			bool decalSecondaryNeedsReset = false;
 			VkSemaphore imageAcquiredSemaphore = VK_NULL_HANDLE;
 			bool gpuWorkPending = false;
-			bool commandBufferRecording = false;
-			bool frameSubmitSucceeded = true;
+			std::uint64_t profilerFrameIndex = UINT64_MAX;
+			bool submittedWithAsyncCompute = false;
+			VansFrameSubmitOrchestrator submitGraph;
 			VansDeferredDeleteQueue deferredDeletes;
 		};
 
@@ -676,13 +780,21 @@ namespace VansGraphics
 		bool EnsureFrameContextRingResources();
 		bool RecreateSwapchainPresentSemaphores();
 		bool RetireSubmittedFrame();
-		bool m_SubmittedFrameUsesAsyncCompute = false;
+		VansFrameSubmitOrchestrator& CurrentFrameSubmitGraph();
+		VansFrameContextRingSlot& CurrentFrameSlot();
+		const VansFrameContextRingSlot& CurrentFrameSlot() const;
+		VansFrameContext& CurrentFrameContext();
+		const VansFrameContext& CurrentFrameContext() const;
+		VansAsyncFrameCommands& CurrentAsyncFrameCommands();
+		bool CreateAsyncFrameCommands(VansAsyncFrameCommands& commands);
+		void DestroyAsyncFrameCommands(VansAsyncFrameCommands& commands);
+		bool ResetSubmittedAsyncFrameCommands(VansAsyncFrameCommands& commands);
 		void DestroyFrameContextRingResources();
 		bool BeginFrameContextRingFrame();
+		bool SubmitProjectRenderPrelude();
 		bool WaitForFrameContextRingSlot(VansFrameContextRingSlot& slot);
-		bool WaitForFrameContextRingSlotGpuIdle(const VansFrameContextRingSlot& slot);
-		void BindCurrentFrameContextToLegacyResources();
-		void BindCurrentFrameContextToSlot(VansFrameContextRingSlot& slot);
+		void RecordSubmittedFrameDepth();
+		void BindFrameSyncResources(VansFrameContextRingSlot& slot);
 		VansVKCommandBuffer& CurrentGraphicsCommandBuffer();
 		const VansVKCommandBuffer& CurrentGraphicsCommandBuffer() const;
 		VansDeferredDeleteQueue& CurrentDeferredDeleteQueue();
@@ -691,9 +803,9 @@ namespace VansGraphics
 		uint64_t m_RenderFrameNumber = 0;
 
 		uint32_t m_SwapChainImageIndex;
-
-		VkSemaphore m_SwapChainImageAcquiredSemaphore;
-
+		enum class SwapchainAcquireState { None, AwaitingGpuWait, GpuWaitSubmitted, RebuildRequired };
+		SwapchainAcquireState m_SwapchainAcquireState = SwapchainAcquireState::None;
+		uint32_t m_AcquiredFrameContextSlotIndex = 0;
 
 		bool m_AsyncComputeRequested = false;
 		VansAtmosphereQualityConfig m_AtmosphereQualityConfig;
@@ -701,25 +813,32 @@ namespace VansGraphics
 		VansCloudShadowQualityConfig m_CloudShadowQualityConfig;
 		bool m_AsyncComputeEnabled = false;
 		VansQueueCapabilities m_QueueCapabilities;
-		VansFrameSubmitOrchestrator m_FrameSubmitOrchestrator;
 		bool m_EnableParallelCommandRecording = true;
-		bool m_EnableFrameContextRing = false;
 		bool m_FrameContextRingResourcesReady = false;
+		bool m_DeviceLost = false;
 		uint32_t m_ConfiguredFramesInFlight = 1;
 		uint32_t m_CurrentFrameContextSlotIndex = 0;
 		VansFrameContextRingSlot* m_ActiveFrameContextSlot = nullptr;
 		std::array<VansFrameContextRingSlot, kMaxFrameContextsInFlight> m_FrameContextRingSlots;
+		struct OverlaySampledImage
+		{
+			VkImage image = VK_NULL_HANDLE;
+			VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+			VkPipelineStageFlags stages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			VkAccessFlags access = VK_ACCESS_SHADER_READ_BIT;
+			bool write = false;
+		};
+		std::vector<OverlaySampledImage> m_OverlaySampledImages;
+		VansQueueTimelines m_FrameQueueTimelines;
+		VansCrossFrameResourceLedger m_CrossFrameResourceLedger;
+		std::atomic<uint32_t> m_ObservedSubmittedFramePeak{ 0 };
 		std::vector<VkFence> m_SwapchainImageInFlightFences;
 		std::vector<VkSemaphore> m_SwapchainImageRenderFinishedSemaphores;
-		VkFence m_LastSubmittedGraphicsFence = VK_NULL_HANDLE;
-		bool m_LastSubmittedGraphicsFencePending = false;
-		bool m_ShadowSecondaryCommandBuffersNeedReset = false;
-		bool m_GBufferSecondaryCommandBuffersNeedReset = false;
-		bool m_DecalSecondaryCommandBuffersNeedReset = false;
 		uint32_t m_ParallelRecordThreadCount = 4;
 		uint32_t m_MinDrawsPerSecondary = 32;
 
 		VkPhysicalDeviceProperties m_DeviceProperties;
+		bool m_CalibratedTimestampsEnabled = false;
 		
 		//ray tracing相关的扩展
 		VkPhysicalDeviceRayTracingPipelineFeaturesKHR m_RaytracingFeature;
@@ -753,31 +872,13 @@ namespace VansGraphics
 		VkQueue m_VansVKGraphicsQueue;
 		VkQueue m_VansVKComputeQueue;
 
-		//command buffer
-		VansVKCommandBuffer m_VansVKCommandBuffer;
-
-		VansVKCommandBuffer m_VansVKShadowMapsCommandBuffer;
-
-		// GBuffer base and decals are separate submissions so depth-only async work
-		// can begin before material overlays finish.
-		VansVKCommandBuffer m_VansVKGBufferCommandBuffer;
-		VansVKCommandBuffer m_VansVKGBufferMaterialCommandBuffer;
-		VansVKCommandBuffer m_VansVKGTAORawCommandBuffer;
-		// 屏幕空间 compute 固定在专用 compute queue 上，并接在 GIData 之后执行。
-		VansVKCommandBuffer m_VansVKGraphicsScreenCommandBuffer;
-
-		VansVKCommandBuffer m_VansVKVegetationCommandBuffer;
-		VansVKCommandBuffer m_VansVKEarlyAuxCommandBuffer;
-		VansVKCommandBuffer m_VansVKAsyncAtmosphereCommandBuffer;
-		VansVKCommandBuffer m_VansVKAsyncHZBCommandBuffer;
-		VansVKCommandBuffer m_VansVKRayTracingCommandBuffer;
-		VansVKCommandBuffer m_VansVKGIDataCommandBuffer;
+		// Internal synchronous setup/upload work; frame rendering uses the active slot.
+		VansVKCommandBuffer m_MaintenanceGraphicsCommandBuffer;
 
 		// Points to the command buffer scene draw calls should record into.
-		// Defaults to m_VansVKCommandBuffer; switched temporarily to
-		// m_VansVKShadowMapsCommandBuffer during shadow CB recording in async path.
-		VansVKCommandBuffer* m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
-		VansFrameContext m_CurrentFrameContext;
+		// Maintenance work outside a frame uses its own command buffer. Rendering
+		// binds the active slot and may switch to a pass-specific async buffer.
+		VansVKCommandBuffer* m_pActiveCommandBuffer = &m_MaintenanceGraphicsCommandBuffer;
 		VansRenderFramePlan m_CurrentFramePlan;
 		VansCompiledRenderGraph m_CurrentCompiledRenderGraph;
 		VansRenderGraphBarrierPlan m_CurrentBarrierPlan;
@@ -793,9 +894,6 @@ namespace VansGraphics
 		uint32_t m_AmbientSkyCacheDebugMode = 0u;
 		
 		VansVKCommandBuffer m_ImmediateGraphicsCommandBuffer;
-		std::unique_ptr<VansVKSecondaryCommandContext> m_ShadowSecondaryCommandContext;
-		std::unique_ptr<VansVKSecondaryCommandContext> m_SecondaryCommandContext;
-		std::unique_ptr<VansVKSecondaryCommandContext> m_DecalSecondaryCommandContext;
 
 		INativeWindowProvider* m_NativeWindowProvider = nullptr;
 		bool m_VulkanInitialized = false;
@@ -868,11 +966,9 @@ namespace VansGraphics
 		bool VulkanDestroy();
 
 		void BuildCurrentRenderFramePlan(VansRenderPassManager* renderPassManager);
-		void BindCurrentFrameSyncResources();
-		void FlushCurrentFrameDeferredDeletes();
 		bool InitializeParallelCommandRecording();
 		void DestroyParallelCommandRecording();
-		bool ResetGBufferSecondaryCommandBuffersIfNeeded();
+		bool ResetGBufferSecondaryCommandBuffersIfNeeded(VansFrameContextRingSlot& slot);
 		void ResetAsyncFrameCommandBuffersAfterFailure();
 		void RefreshAsyncComputeState();
 		void NotifyPunctualShadowJobsSubmitted();

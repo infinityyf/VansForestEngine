@@ -28,9 +28,14 @@ namespace
 {
 constexpr std::uint64_t kPerceptionScheduleLane = 0x7065726365707469ull;
 constexpr std::uint64_t kDecisionScheduleLane = 0x6465636973696f6eull;
-constexpr std::uint64_t kPathScheduleLane = 0x706174685f717565ull;
 constexpr std::size_t kMaxDiagnosticAgents = 256u;
 constexpr std::size_t kMaxDiagnosticBlackboardEntries = 64u;
+
+bool UsesNavigationTasks(const VansAIBehaviorAsset& behavior)
+{
+	return std::any_of(behavior.states.begin(), behavior.states.end(), [](const VansAIStateDefinition& state)
+	{ return state.task != VansAITaskKind::Hold; });
+}
 
 float StableSchedulePhase(
 	std::uint64_t entityKey,
@@ -66,20 +71,6 @@ bool AdvanceScheduledUpdate(
 	return true;
 }
 
-void ScheduleNextPathQuery(
-	float interval,
-	std::uint64_t entityKey,
-	float& remaining,
-	bool& started)
-{
-	remaining = interval;
-	if (!started)
-	{
-		remaining += StableSchedulePhase(entityKey, kPathScheduleLane, interval);
-		started = true;
-	}
-}
-
 template <typename T>
 VansComponentStorage<T>* FindStorage(VansRuntimeWorld& world, std::uint16_t typeId)
 {
@@ -88,7 +79,7 @@ VansComponentStorage<T>* FindStorage(VansRuntimeWorld& world, std::uint16_t type
 
 template <typename T>
 const T* FindOwnedEnabledComponent(
-	VansComponentStorage<T>* storage,
+	const VansComponentStorage<T>* storage,
 	VansEntityHandle owner)
 {
 	return storage ? storage->FindFirstEffectiveOwnedBy(owner) : nullptr;
@@ -97,11 +88,6 @@ const T* FindOwnedEnabledComponent(
 glm::vec3 CharacterOrigin(const VansEngine::VansCharacterControllerNode& controller)
 {
 	return controller.GetPosition() - controller.GetProperties().m_PositionOffset;
-}
-
-float PlanarDistance(const glm::vec3& left, const glm::vec3& right)
-{
-	return glm::length(glm::vec2(left.x - right.x, left.z - right.z));
 }
 
 const VansGraphics::VansCompiledAnimationRig* ResolveAnimationRig(
@@ -145,23 +131,6 @@ glm::vec3 ResolveModelVisualForward(
 	worldForward.y = 0.0f;
 	return glm::length(worldForward) > 1.0e-4f
 		? glm::normalize(worldForward) : glm::vec3(0.0f, 0.0f, 1.0f);
-}
-
-void ApplyHold(
-	VansEngine::VansCharacterControllerNode& controller,
-	std::optional<float> desiredOwnerFacingYaw = std::nullopt)
-{
-	VansCharacterMotionIntent intent;
-	intent.moveInputLocal = glm::vec2(0.0f);
-	intent.movementReferenceYaw = CurrentOwnerFacingYaw(controller);
-	intent.desiredSpeed = 0.0f;
-	if (desiredOwnerFacingYaw)
-	{
-		intent.desiredFacingYaw = *desiredOwnerFacingYaw;
-		intent.hasFacing = true;
-	}
-	intent.valid = true;
-	controller.SetMotionIntent(intent);
 }
 
 struct SceneLineOfSightResult
@@ -242,12 +211,14 @@ void VansAIWorld::RecordError(AgentRuntime& runtime,
 bool VansAIWorld::Initialize(VansRuntimeWorld& world,
 	VansGameplayRuntime* gameplayRuntime,
 	const VansAssetObjectRepository& assetObjects,
-	std::string& error)
+	VansNavigationWorld& navigationWorld,
+	std::string& error,VansAIInitializationPolicy policy)
 {
 	Shutdown();
 	m_World = &world;
 	m_GameplayRuntime = gameplayRuntime;
 	m_AssetObjects = &assetObjects;
+	m_NavigationWorld = &navigationWorld;
 	m_Connections.Add(VansEventBus::Get().Subscribe<VansAIActivationRequested>(
 		[this](const VansAIActivationRequested& event)
 		{
@@ -286,7 +257,7 @@ bool VansAIWorld::Initialize(VansRuntimeWorld& world,
 			else
 				m_PendingGameplayRelease.insert_or_assign(key, event.sourceGuid);
 		}, VansEventLane::GameLogic, 0));
-	if (InitializeExistingAgents(error))
+	if (InitializeExistingAgents(error,policy))
 		return true;
 	Shutdown();
 	return false;
@@ -295,12 +266,20 @@ bool VansAIWorld::Initialize(VansRuntimeWorld& world,
 void VansAIWorld::Shutdown()
 {
 	m_Connections.DisconnectAll();
+	if (m_NavigationWorld)
+		for (auto& [key, runtime] : m_Agents)
+		{
+			std::string error;
+			if (runtime.moveRequest.IsValid()) m_NavigationWorld->Stop(runtime.moveRequest, runtime.requestOwner, error);
+            if(runtime.patrolQuery.IsValid()) m_NavigationWorld->ReleaseQuery(runtime.patrolQuery,runtime.requestOwner,error);
+		}
 	m_Agents.clear();
 	m_PendingActivation.clear();
 	m_PendingGameplayRelease.clear();
 	m_World = nullptr;
 	m_GameplayRuntime = nullptr;
 	m_AssetObjects = nullptr;
+	m_NavigationWorld = nullptr;
 }
 
 std::shared_ptr<const VansAIBehaviorAsset> VansAIWorld::ResolveBehavior(
@@ -318,31 +297,13 @@ std::shared_ptr<const VansAIBehaviorAsset> VansAIWorld::ResolveBehavior(
 	return asset;
 }
 
-std::shared_ptr<const VansNavigationMesh> VansAIWorld::ResolveNavigationMesh(
-	const std::string& guidText, std::string& error) const
-{
-	VansAssetGuid guid;
-	if (!m_AssetObjects || !VansAssetGuid::TryParse(guidText, guid))
-	{
-		error = "NavigationAgent navigation mesh must reference a valid asset GUID";
-		return nullptr;
-	}
-	auto asset = m_AssetObjects->ResolveLatest<VansNavigationMesh>(guid);
-	if (!asset)
-		error = "Navigation Mesh asset is not loaded in the object repository: " + guidText;
-	return asset;
-}
-
 bool VansAIWorld::InitializeAgent(AgentRuntime& runtime,
 	const VansRuntimeAIAgentComponent& ai,
-	const VansRuntimeNavigationAgentComponent& navigation,
 	std::string& error)
 {
-	if (!ValidateAIRuntimeTiming(ai, navigation, error)) return false;
+	if (!ValidateAIRuntimeTiming(ai, error)) return false;
 	runtime.behavior = ResolveBehavior(ai.behaviorGuid, error);
 	if (!runtime.behavior) return false;
-	runtime.navigationMesh = ResolveNavigationMesh(navigation.navigationMeshGuid, error);
-	if (!runtime.navigationMesh) return false;
 	if (!runtime.blackboard.Configure(runtime.behavior->blackboard, error)) return false;
 	if (!runtime.blackboard.Has(runtime.behavior->bindings.activationRequested,
 			VansAIValueType::Bool) ||
@@ -376,7 +337,7 @@ bool VansAIWorld::InitializeAgent(AgentRuntime& runtime,
 	return true;
 }
 
-bool VansAIWorld::InitializeExistingAgents(std::string& error)
+bool VansAIWorld::InitializeExistingAgents(std::string& error,VansAIInitializationPolicy policy)
 {
 	if (!m_World)
 	{
@@ -404,12 +365,6 @@ bool VansAIWorld::InitializeExistingAgents(std::string& error)
 		const auto* navigation = FindOwnedEnabledComponent(
 			navigationStorage, header.owner);
 		const auto* cct = FindOwnedEnabledComponent(cctStorage, header.owner);
-		if (!navigation || !cct || !cct->controllerNode)
-		{
-			error = "AIAgent requires enabled NavigationAgent and CharacterController components";
-			VANS_LOG_ERROR("[AI] Entity=" << header.owner.index << ' ' << error);
-			return false;
-		}
 		const std::uint64_t key = EntityKey(header.owner);
 		if (m_Agents.find(key) != m_Agents.end())
 		{
@@ -418,11 +373,16 @@ bool VansAIWorld::InitializeExistingAgents(std::string& error)
 			return false;
 		}
 		AgentRuntime runtime;
-		if (!InitializeAgent(runtime, agents[index], *navigation, error))
+		if (!InitializeAgent(runtime, agents[index], error))
 		{
 			VANS_LOG_ERROR("[AI] Entity=" << header.owner.index << ' ' << error);
 			return false;
 		}
+		if (UsesNavigationTasks(*runtime.behavior) && (!navigation || !cct || !cct->controllerNode ||
+            (policy==VansAIInitializationPolicy::RequireReadyNavigation && !m_NavigationWorld->HasAgent(header.owner))))
+		{ error = "AI moving tasks require a registered NavigationAgent and motor"; return false; }
+		if (header.stableGuid.empty()) { error = "AIAgent requires a stable component GUID for navigation ownership"; return false; }
+		runtime.requestOwner = header.stableGuid;
 		VANS_LOG("[AI] Initialized entity=" << header.owner.index
 			<< " behavior='" << runtime.behavior->name
 			<< "' state='" << runtime.currentState << "'");
@@ -476,16 +436,11 @@ void VansAIWorld::Update(double deltaSeconds)
 		const VansRuntimeAnimationComponent* animation =
 			FindOwnedEnabledComponent(animationStorage, header.owner);
 		AgentRuntime& runtime = m_Agents[key];
-		if (!navigation || !cct || !cct->controllerNode)
-		{
-			RecordError(runtime, header.owner,
-				"AIAgent requires enabled NavigationAgent and CharacterController components");
-			continue;
-		}
+		runtime.requestOwner = header.stableGuid;
 		if (!runtime.initialized)
 		{
 			std::string error;
-			if (!InitializeAgent(runtime, ai, *navigation, error))
+			if (!InitializeAgent(runtime, ai, error))
 			{
 				RecordError(runtime, header.owner, error);
 				continue;
@@ -507,6 +462,14 @@ void VansAIWorld::Update(double deltaSeconds)
 			VANS_LOG("[AI] Initialized entity=" << header.owner.index
 				<< " behavior='" << runtime.behavior->name
 				<< "' state='" << runtime.currentState << "'");
+		}
+		if (UsesNavigationTasks(*runtime.behavior) && (!navigation || !cct || !cct->controllerNode || !m_NavigationWorld->HasAgent(header.owner)))
+		{
+			RecordError(runtime, header.owner, "AI moving tasks require a registered NavigationAgent and motor");
+            std::string queryError;
+            if(runtime.patrolQuery.IsValid()) m_NavigationWorld->ReleaseQuery(runtime.patrolQuery,runtime.requestOwner,queryError);
+            runtime.patrolQuery={};
+			continue;
 		}
 		const double nonNegativeDelta = std::isfinite(deltaSeconds)
 			? (std::max)(0.0, deltaSeconds) : 0.0;
@@ -537,17 +500,17 @@ void VansAIWorld::Update(double deltaSeconds)
 			kDecisionScheduleLane,
 			runtime.decisionRemaining,
 			runtime.decisionStarted);
-		runtime.repathRemaining = (std::max)(
-			-navigation->repathInterval,
-			runtime.repathRemaining - dt);
 
 		VansGraphics::VansAnimationNode* animationNode =
 			animation ? animation->animationNode : nullptr;
-		VansEngine::VansCharacterControllerNode& controller = *cct->controllerNode;
-		runtime.movementBlocked = controller.IsGameplayMovementBlocked();
-		if (runtime.movementBlocked)
-			runtime.commandedSpeed = 0.0f;
-		const glm::vec3 agentPosition = CharacterOrigin(controller);
+		auto* controller = cct ? cct->controllerNode : nullptr;
+		runtime.movementBlocked = controller && controller->IsGameplayMovementBlocked();
+		const auto* transforms = FindStorage<VansRuntimeTransformComponent>(*m_World, VansRuntimeComponentType_Transform);
+		const auto* transform = FindOwnedEnabledComponent(transforms, header.owner);
+		if (!controller && (!transform || !VansTransformStore::IsAllocated(transform->transformStoreId)))
+		{ RecordError(runtime, header.owner, "AIAgent requires a valid observer Transform"); continue; }
+		const glm::vec3 agentPosition = controller ? CharacterOrigin(*controller) : VansTransformStore::Read(transform->transformStoreId).m_Position;
+		const float observerYaw = controller ? CurrentOwnerFacingYaw(*controller) : VansTransformStore::Read(transform->transformStoreId).m_Rotation.y;
 
 		VansEngine::VansCharacterControllerNode* targetController = nullptr;
 		if (perceptionDue)
@@ -585,11 +548,12 @@ void VansAIWorld::Update(double deltaSeconds)
 					<< (targetRecord ? targetRecord->name : std::string("<none>"))
 					<< "' taggedCandidates=" << taggedTargetCount
 					<< " enabledCandidates=" << enabledTargetCount);
-				runtime.path = {};
-				runtime.waypointIndex = 0;
-				runtime.hasLastTargetPosition = false;
-				runtime.repathRemaining = 0.0f;
-				runtime.repathStarted = false;
+				std::string error;
+				if (runtime.moveRequest.IsValid()) m_NavigationWorld->Stop(runtime.moveRequest, runtime.requestOwner, error);
+				runtime.moveRequest = {};
+				runtime.hasObservedTargetPosition = false;
+				runtime.targetVisible = false;
+				runtime.timeSinceTargetVisible = 0.0f;
 			}
 			runtime.target = target;
 			runtime.blackboard.SetEntity(runtime.behavior->bindings.target, target,
@@ -604,7 +568,7 @@ void VansAIWorld::Update(double deltaSeconds)
 					glm::vec3(0.0f, ai.sight.eyeHeight, 0.0f);
 				const glm::vec3 targetCenter = targetController->GetPosition();
 				const glm::vec3 visualForward = ResolveModelVisualForward(
-					animationNode, CurrentOwnerFacingYaw(controller));
+					animationNode, observerYaw);
 				const bool insideVisionCone = IsTargetInsideAIVisionCone(
 					observerEye,
 					visualForward,
@@ -649,6 +613,11 @@ void VansAIWorld::Update(double deltaSeconds)
 			{
 				runtime.timeSinceTargetVisible = 0.0f;
 				runtime.targetVisible = true;
+				if (perceptionDue)
+				{
+					runtime.observedTargetPosition = targetPosition;
+					runtime.hasObservedTargetPosition = true;
+				}
 			}
 			else if (targetController && runtime.targetVisible)
 			{
@@ -660,6 +629,25 @@ void VansAIWorld::Update(double deltaSeconds)
 			{
 				runtime.timeSinceTargetVisible = 0.0f;
 				runtime.targetVisible = false;
+			}
+			// Navigation runs every frame, while perception is sampled. Keep its goal
+			// on the observed sample between polls as well as during sight memory.
+			if (runtime.hasObservedTargetPosition)
+				targetPosition = runtime.observedTargetPosition;
+			if (!runtime.rawTargetVisible && runtime.hasObservedTargetPosition)
+			{
+				// 遮挡后的宽限期只追踪实际观察到的位置，不能读取墙后的实时目标位置。
+				const auto* pursuitState = runtime.behavior->FindState(runtime.currentState);
+				const auto move = m_NavigationWorld->CaptureAgent(header.owner);
+				if (pursuitState && pursuitState->task == VansAITaskKind::MoveToTarget && move &&
+					move->request.serial == runtime.moveRequest.serial &&
+					move->state == VansNavigationMoveState::Finished &&
+					glm::distance(move->goal, targetPosition) < 1.e-4f)
+				{
+					// 到达最后可见位置或有界导航失败后，结束这次搜索并让行为图决定后续状态。
+					runtime.targetVisible = false;
+					runtime.hasObservedTargetPosition = false;
+				}
 			}
 			runtime.blackboard.SetBool(
 				ai.sight.blackboardKey, runtime.targetVisible, "AI.Perception");
@@ -714,12 +702,11 @@ void VansAIWorld::Update(double deltaSeconds)
 				if (!selected) break;
 				const std::string previous = runtime.currentState;
 				runtime.currentState = selected->targetState;
-				runtime.path = {};
-				runtime.waypointIndex = 0;
-				runtime.repathRemaining = 0.0f;
-				runtime.repathStarted = false;
-				runtime.commandedSpeed = 0.0f;
-				runtime.hasLastTargetPosition = false;
+				std::string error;
+				if (runtime.moveRequest.IsValid()) m_NavigationWorld->Stop(runtime.moveRequest, runtime.requestOwner, error);
+				runtime.moveRequest = {};
+				if(runtime.patrolQuery.IsValid()) m_NavigationWorld->ReleaseQuery(runtime.patrolQuery,runtime.requestOwner,error);
+                runtime.patrolQuery={};
 				runtime.hasPatrolDestination = false;
 				runtime.patrolWaitRemaining = 0.0f;
 				VANS_LOG("[AI] Entity=" << header.owner.index << " state '"
@@ -737,160 +724,77 @@ void VansAIWorld::Update(double deltaSeconds)
 			}
 		}
 
+		auto abortMove = [&]()
+		{
+			std::string error;
+			if (runtime.moveRequest.IsValid()) m_NavigationWorld->Stop(runtime.moveRequest, runtime.requestOwner, error);
+			runtime.moveRequest = {};
+            if(runtime.patrolQuery.IsValid()) m_NavigationWorld->ReleaseQuery(runtime.patrolQuery,runtime.requestOwner,error);
+            runtime.patrolQuery={};
+		};
+		auto requestMove = [&](const glm::vec3& goal, float arrivalRadius, std::optional<float> facingYaw)
+		{
+			VansNavigationMoveOptions options;
+			options.arrivalRadius = arrivalRadius;
+			options.facingYaw = facingYaw;
+			std::string error;
+			runtime.moveRequest = m_NavigationWorld->RequestMove(header.owner, runtime.requestOwner, goal, options, error);
+			if (!runtime.moveRequest.IsValid()) RecordError(runtime, header.owner, error);
+		};
 		const VansAIStateDefinition* state = runtime.behavior->FindState(runtime.currentState);
 		if (!state || state->task == VansAITaskKind::Hold)
 		{
-			runtime.commandedSpeed = 0.0f;
-			ApplyHold(controller);
-			UpdateAnimationMovementParameter(animationNode, ai, controller);
-			continue;
+			abortMove();
 		}
-
-		auto ownerYawForDirection = [&](const glm::vec3& direction)
-		{
-			const float visualYaw = ResolveAIVisualFacingYawDegrees(direction);
-			return ResolveOwnerFacingYaw(animationNode, visualYaw);
-		};
-		auto holdFacing = [&](const glm::vec3& direction)
-		{
-			runtime.commandedSpeed = 0.0f;
-			ApplyHold(controller, ownerYawForDirection(direction));
-		};
-		auto drive = [&](const glm::vec3& routeDirection,
-			const glm::vec3& visualFacingDirection)
-		{
-			if (runtime.movementBlocked)
-			{
-				runtime.commandedSpeed = 0.0f;
-				ApplyHold(controller, ownerYawForDirection(visualFacingDirection));
-				return;
-			}
-			runtime.commandedSpeed = (std::min)(navigation->maxSpeed,
-				runtime.commandedSpeed + navigation->acceleration * dt);
-			const float movementYaw = glm::degrees(std::atan2(
-				routeDirection.x, routeDirection.z));
-			VansCharacterMotionIntent intent;
-			intent.moveInputLocal = glm::vec2(0.0f, 1.0f);
-			intent.movementReferenceYaw = movementYaw;
-			intent.desiredSpeed = runtime.commandedSpeed;
-			intent.desiredFacingYaw = ownerYawForDirection(visualFacingDirection);
-			intent.hasFacing = true;
-			intent.valid = true;
-			controller.SetMotionIntent(intent);
-		};
-		auto routeDirection = [&]() -> std::optional<glm::vec3>
-		{
-			if (runtime.path.status != VansNavigationPathStatus::Complete ||
-				runtime.path.points.empty()) return std::nullopt;
-			while (runtime.waypointIndex + 1u < runtime.path.points.size() &&
-				PlanarDistance(agentPosition,
-					runtime.path.points[runtime.waypointIndex]) <= 0.35f)
-			{
-				++runtime.waypointIndex;
-			}
-			const glm::vec3 waypoint = runtime.path.points[
-				(std::min)(runtime.waypointIndex, runtime.path.points.size() - 1u)];
-			glm::vec3 direction(
-				waypoint.x - agentPosition.x,
-				0.0f,
-				waypoint.z - agentPosition.z);
-			const float length = glm::length(direction);
-			if (!std::isfinite(length) || length <= 1.0e-4f)
-				return std::nullopt;
-			return direction / length;
-		};
-		auto findPath = [&](const glm::vec3& destination)
-		{
-			VANS_PROFILE_SCOPE("AI::Path", Vans::ProfileCategory::Script);
-			return runtime.navigationMesh->FindPath(agentPosition, destination);
-		};
-
-		if (state->task == VansAITaskKind::Patrol)
+		else if (state->task == VansAITaskKind::Patrol)
 		{
 			if (!state->patrol)
 			{
 				RecordError(runtime, header.owner, "Patrol state is missing taskConfig");
-				runtime.commandedSpeed = 0.0f;
-				ApplyHold(controller);
-				UpdateAnimationMovementParameter(animationNode, ai, controller);
-				continue;
-			}
-			const VansAIPatrolTaskConfig& patrol = *state->patrol;
-			if (!runtime.hasPatrolAnchor)
-			{
-				runtime.patrolAnchor = agentPosition;
-				runtime.hasPatrolAnchor = true;
-			}
-			if (runtime.patrolWaitRemaining > 0.0f)
-			{
-				runtime.patrolWaitRemaining = (std::max)(
-					0.0f, runtime.patrolWaitRemaining - dt);
-				runtime.commandedSpeed = 0.0f;
-				ApplyHold(controller);
+				abortMove();
 			}
 			else
 			{
-				if (runtime.hasPatrolDestination &&
-					PlanarDistance(agentPosition, runtime.patrolDestination) <= 0.45f)
+				const auto& patrol = *state->patrol;
+				if (!runtime.hasPatrolAnchor) { runtime.patrolAnchor = agentPosition; runtime.hasPatrolAnchor = true; }
+				if (runtime.patrolWaitRemaining > 0.0f)
+					runtime.patrolWaitRemaining = (std::max)(0.0f, runtime.patrolWaitRemaining - dt);
+				else if (runtime.hasPatrolDestination)
 				{
-					runtime.hasPatrolDestination = false;
-					runtime.path = {};
-					runtime.commandedSpeed = 0.0f;
-					runtime.patrolWaitRemaining = patrol.waitSeconds;
-					ApplyHold(controller);
+					const auto navigationState = m_NavigationWorld->CaptureAgent(header.owner);
+					if (!navigationState || navigationState->state == VansNavigationMoveState::Finished)
+					{
+						runtime.hasPatrolDestination = false;
+						runtime.moveRequest = {};
+						runtime.patrolWaitRemaining = patrol.waitSeconds;
+					}
 				}
 				else
 				{
-					if (!runtime.hasPatrolDestination && patrol.radius > 0.0f &&
-						runtime.repathRemaining <= 0.0f)
-					{
-						runtime.lastPathRequestReason = VansAIPathRequestReason::Patrol;
-						constexpr float goldenAngle = 2.39996323f;
-						for (int attempt = 0; attempt < 12; ++attempt)
-						{
-							const std::uint32_t sample = runtime.patrolSampleIndex++;
-							const float radiusScale = 0.55f + 0.45f *
-								static_cast<float>(sample % 5u) / 4.0f;
-							const float angle = goldenAngle * static_cast<float>(sample);
-							const glm::vec3 candidate = runtime.patrolAnchor + glm::vec3(
-								std::sin(angle) * patrol.radius * radiusScale,
-								0.0f,
-								std::cos(angle) * patrol.radius * radiusScale);
-							VansNavigationPath candidatePath = findPath(candidate);
-							if (candidatePath.status != VansNavigationPathStatus::Complete ||
-								candidatePath.points.size() < 2u) continue;
-							runtime.path = std::move(candidatePath);
-							runtime.waypointIndex = 1u;
-							runtime.patrolDestination = runtime.path.points.back();
-							runtime.hasPatrolDestination = true;
-							runtime.diagnostic = runtime.path.diagnostic;
-							break;
-						}
-						ScheduleNextPathQuery(
-							navigation->repathInterval,
-							key,
-							runtime.repathRemaining,
-							runtime.repathStarted);
-					}
-
-					if (runtime.hasPatrolDestination)
-					{
-						const std::optional<glm::vec3> direction = routeDirection();
-						if (direction) drive(*direction, *direction);
-						else
-						{
-							runtime.hasPatrolDestination = false;
-							runtime.commandedSpeed = 0.0f;
-							ApplyHold(controller);
-						}
-					}
-					else
-					{
-						runtime.commandedSpeed = 0.0f;
-						runtime.patrolWaitRemaining = (std::max)(
-							0.25f, patrol.waitSeconds);
-						ApplyHold(controller);
-					}
+					std::string error;
+                    if(!runtime.patrolQuery.IsValid())
+                        runtime.patrolQuery=m_NavigationWorld->SampleReachablePoint(header.owner,runtime.requestOwner,
+                            runtime.patrolAnchor,patrol.radius,runtime.patrolSampleIndex,error);
+                    const auto result=runtime.patrolQuery.IsValid()?
+                        m_NavigationWorld->CaptureQuery(runtime.patrolQuery,runtime.requestOwner,error):std::nullopt;
+                    const bool pending=result && (result->lifecycle==VansNavigationQueryLifecycle::Queued || result->lifecycle==VansNavigationQueryLifecycle::Running ||
+                        result->lifecycle==VansNavigationQueryLifecycle::WaitingForData);
+                    if(!pending)
+                    {
+                        if(result) runtime.patrolSampleIndex+=result->attempts;
+                        if(runtime.patrolQuery.IsValid()) m_NavigationWorld->ReleaseQuery(runtime.patrolQuery,runtime.requestOwner,error);
+                        runtime.patrolQuery={};
+                        if(result && result->point)
+                        {
+                            runtime.patrolDestination=*result->point; runtime.hasPatrolDestination=true;
+                            requestMove(*result->point,.45f,std::nullopt);
+                        }
+                        else
+                        {
+                            runtime.diagnostic=result?result->path.diagnostic:error;
+                            runtime.patrolWaitRemaining=(std::max)(.25f,patrol.waitSeconds);
+                        }
+                    }
 				}
 			}
 		}
@@ -898,80 +802,28 @@ void VansAIWorld::Update(double deltaSeconds)
 		{
 			if (!targetController)
 			{
-				runtime.diagnostic = "No enabled target matched Gameplay Tag '" +
-					ai.targetTag + "'";
-				runtime.commandedSpeed = 0.0f;
-				ApplyHold(controller);
+				runtime.diagnostic = "No enabled target matched Gameplay Tag '" + ai.targetTag + "'";
+				abortMove();
 			}
 			else
 			{
-				const glm::vec3 visualFacing = ResolveAIChaseFacingDirection(
-					agentPosition, targetPosition, glm::vec3(0.0f, 0.0f, 1.0f));
-				const float targetMoveDistance = runtime.hasLastTargetPosition
-					? PlanarDistance(targetPosition, runtime.lastTargetPosition)
-					: 0.0f;
-				const bool movedEnough = runtime.hasLastTargetPosition &&
-					targetMoveDistance >= navigation->targetMoveThreshold;
-				const bool forceRepath = runtime.hasLastTargetPosition &&
-					targetMoveDistance >= navigation->forceRepathDistance;
-				const bool pathDue = runtime.repathRemaining <= 0.0f;
-				const bool shouldRequestPath = !runtime.hasLastTargetPosition ||
-					forceRepath ||
-					(pathDue && (runtime.path.status !=
-						VansNavigationPathStatus::Complete || movedEnough));
-				if (shouldRequestPath)
-				{
-					if (!runtime.hasLastTargetPosition)
-						runtime.lastPathRequestReason = VansAIPathRequestReason::InitialTarget;
-					else if (forceRepath)
-						runtime.lastPathRequestReason = VansAIPathRequestReason::ForceTargetMoved;
-					else if (runtime.path.status != VansNavigationPathStatus::Complete)
-						runtime.lastPathRequestReason = VansAIPathRequestReason::PathRecovery;
-					else
-						runtime.lastPathRequestReason = VansAIPathRequestReason::TargetMoved;
-					const VansNavigationPathStatus previousStatus = runtime.path.status;
-					runtime.path = findPath(targetPosition);
-					runtime.waypointIndex = runtime.path.points.size() > 1u ? 1u : 0u;
-					runtime.lastTargetPosition = targetPosition;
-					runtime.hasLastTargetPosition = true;
-					ScheduleNextPathQuery(
-						navigation->repathInterval,
-						key,
-						runtime.repathRemaining,
-						runtime.repathStarted);
-					runtime.diagnostic = runtime.path.diagnostic;
-					if (runtime.path.status != previousStatus ||
-						runtime.path.status != VansNavigationPathStatus::Complete)
-					{
-						VANS_LOG("[AI] Entity=" << header.owner.index << " path='"
-							<< runtime.path.diagnostic << "' corners="
-							<< runtime.path.points.size());
-					}
-				}
-
-				if (PlanarDistance(agentPosition, targetPosition) <=
-					navigation->stoppingDistance)
-				{
-					holdFacing(visualFacing);
-				}
-				else if (const std::optional<glm::vec3> direction = routeDirection())
-				{
-					// 移动沿导航路径，正面每帧直接跟踪目标，二者不能共用同一个 yaw。
-					drive(*direction, ResolveAIChaseFacingDirection(
-						agentPosition, targetPosition, *direction));
-				}
-				else
-				{
-					holdFacing(visualFacing);
-				}
+				const auto facing = ResolveAIChaseFacingDirection(agentPosition, targetPosition, glm::vec3(0.0f, 0.0f, 1.0f));
+				const float ownerYaw = ResolveOwnerFacingYaw(animationNode, ResolveAIVisualFacingYawDegrees(facing));
+				requestMove(targetPosition, state->moveToTarget.arrivalRadius, ownerYaw);
 			}
 		}
-		UpdateAnimationMovementParameter(animationNode, ai, controller);
+		if (controller) UpdateAnimationMovementParameter(animationNode, ai, *controller);
 	}
 
 	for (auto it = m_Agents.begin(); it != m_Agents.end();)
 	{
-		if (liveAgents.find(it->first) == liveAgents.end()) it = m_Agents.erase(it);
+		if (liveAgents.find(it->first) == liveAgents.end())
+		{
+			std::string error;
+			if (it->second.moveRequest.IsValid()) m_NavigationWorld->Stop(it->second.moveRequest, it->second.requestOwner, error);
+            if(it->second.patrolQuery.IsValid()) m_NavigationWorld->ReleaseQuery(it->second.patrolQuery,it->second.requestOwner,error);
+			it = m_Agents.erase(it);
+		}
 		else ++it;
 	}
 }
@@ -1021,13 +873,19 @@ VansAIDiagnostics VansAIWorld::CaptureDiagnostics() const
 		agent.rawTargetVisible = runtime.rawTargetVisible;
 		agent.targetVisible = runtime.targetVisible;
 		agent.movementBlocked = runtime.movementBlocked;
-		agent.commandedSpeed = runtime.commandedSpeed;
-		agent.pathStatus = runtime.path.status;
-		agent.pathFailure = runtime.path.failure;
-		agent.pathDiagnostic = runtime.path.diagnostic;
-		agent.lastPathRequestReason = runtime.lastPathRequestReason;
-		agent.waypointCount = runtime.path.points.size();
-		agent.waypointIndex = runtime.waypointIndex;
+		if (m_NavigationWorld)
+		{
+			const auto navigation = m_NavigationWorld->CaptureAgent(agent.entity);
+			if (navigation && navigation->owner == runtime.requestOwner)
+			{
+				agent.commandedSpeed = navigation->desiredSpeed;
+				agent.pathStatus = navigation->path.status;
+				agent.pathFailure = navigation->path.failure;
+				agent.pathDiagnostic = navigation->path.diagnostic;
+				agent.waypointCount = navigation->path.points.size();
+				agent.lastPathRequestReason = navigation->reason;
+			}
+		}
 		agent.hasPatrolDestination = runtime.hasPatrolDestination;
 		agent.patrolDestination = runtime.patrolDestination;
 		agent.lineOfSight.tested = runtime.lineOfSightTested;

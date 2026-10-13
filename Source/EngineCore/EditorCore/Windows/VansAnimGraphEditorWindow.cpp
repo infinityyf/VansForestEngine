@@ -1861,8 +1861,6 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		else if (goal.source == AnimationGoalSource::PoseBone)
 		{
 			changed |= EditStringProperty("Bone", goal.boneName);
-			changed |= EditStringProperty("Pole Bone", goal.poleBoneName);
-			changed |= ImGui::DragFloat3("Pole Offset (Local)", &goal.poleOffsetLocal.x, 0.1f);
 			changed |= editParameterBinding("Position Offset", goal.positionParameter,
 				AnimatorParamType::Vector3);
 			changed |= editParameterBinding("Rotation Offset", goal.rotationParameter,
@@ -1874,6 +1872,8 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 			changed |= ImGui::DragFloat4("Rotation (xyzw)", &goal.fixedRotationModel.x, 0.01f);
 
 		}
+		changed |= EditStringProperty("Pole Bone", goal.poleBoneName);
+		changed |= ImGui::DragFloat3("Pole Offset (Local)", &goal.poleOffsetLocal.x, 0.1f);
 		changed |= ImGui::SliderFloat("Position Weight", &goal.fixedPositionWeight, 0.0f, 1.0f);
 		changed |= ImGui::SliderFloat("Rotation Weight", &goal.fixedRotationWeight, 0.0f, 1.0f);
 		changed |= editParameterBinding("Weight Parameter", goal.weightParameter, AnimatorParamType::Float);

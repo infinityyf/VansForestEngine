@@ -26,6 +26,28 @@ private:
 };
 }
 
+bool ValidateNavigationSourceIdentity(const std::string& scene, std::string& error)
+{
+	if (scene.empty() || scene.size() > 4096u || scene.front() == '/' ||
+		scene.find_first_of("\\:") != std::string::npos ||
+		std::any_of(scene.begin(), scene.end(), [](unsigned char value) { return value < 32u; }))
+	{ error = "Navigation provenance must be a bounded project-relative Scene identity"; return false; }
+	std::size_t start = 0;
+	while (start < scene.size())
+	{
+		const auto end = scene.find('/', start);
+		const auto part = scene.substr(start, end == std::string::npos ? end : end - start);
+		if (part.empty() || part == "." || part == "..")
+		{ error = "Navigation provenance contains an invalid path segment"; return false; }
+		if (end == std::string::npos) break;
+		start = end + 1u;
+		if (start == scene.size())
+		{ error = "Navigation provenance must identify a Scene"; return false; }
+	}
+	error.clear();
+	return true;
+}
+
 std::uint64_t HashNavigationBakeSettings(const VansNavigationBakeSettings& bake)
 {
 	StableHash hash;
@@ -45,6 +67,15 @@ std::uint64_t HashNavigationBakeSettings(const VansNavigationBakeSettings& bake)
 	hash.Append(detailSamplingEnabled);
 	hash.Append(bake.detailSampleDistance);
 	hash.Append(bake.detailSampleMaxError);
+	hash.Append(bake.tileSizeCells);
+	hash.Append(bake.tileOrigin.x);
+	hash.Append(bake.tileOrigin.y);
+	hash.Append(bake.tileOrigin.z);
+	hash.Append(bake.maximumTiles);
+	hash.Append(bake.maximumPolygonsPerTile);
+	hash.Append(bake.maximumBuildBytes);
+    const std::uint8_t buildTileCacheLayers=bake.buildTileCacheLayers?1u:0u;
+    hash.Append(buildTileCacheLayers);
 	return hash.Value();
 }
 

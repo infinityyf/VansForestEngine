@@ -12,6 +12,7 @@
 #include "../AssetCore/VansBuiltInAssetCatalog.h"
 #include "../AssetCore/VansDerivedArtifactLayout.h"
 #include "../AssetCore/VansMaterialAuthoringAsset.h"
+#include "../MaterialCore/VansClothMaterialParameters.h"
 #include "../AssetCore/VansShaderAuthoringAsset.h"
 #include "../AudioCore/VansAudioBus.h"
 #include "../AudioCore/VansAudioReverbPresetAsset.h"
@@ -21,7 +22,7 @@
 #include "../AnimationCore/Retargeting/VansRetargetProfile.h"
 #include "../AnimationCore/VansBoneMask.h"
 #include "../GameplayActionSchema/VansGameplayAssetSchema.h"
-#include "../NavigationCore/VansNavigationMesh.h"
+#include "../NavigationCore/VansNavigationMeshAsset.h"
 #include "../PhysicsCore/VansRagdollTypes.h"
 #include "../ParticleCore/VansParticleAsset.h"
 #include "../RuntimeUI/Serialization/VansUIAssetDocument.h"
@@ -53,28 +54,6 @@ namespace
 	constexpr int SceneTexture2D = 0;
 	constexpr int SceneTextureCube = 2;
 
-	bool ApplyTextureImportSettings(
-		VansSceneTextureResourceRequest& request,
-		const VansAssetMeta& meta,
-		std::string& error)
-	{
-		const std::string colorSpace = meta.ReadStringSetting("colorSpace");
-		request.srgb = colorSpace.empty()
-			? meta.ReadBoolSetting("sRGB", true)
-			: colorSpace != "linear";
-		request.useCompress = meta.ReadBoolSetting("useCompress", true);
-		request.needMip = meta.ReadBoolSetting("needMip", true);
-		if (!ReadTextureMaxResidentDimension(meta, request.maxResidentDimension, error))
-			return false;
-		const std::string precision = meta.ReadStringSetting("precision");
-		if (!precision.empty())
-			request.precision = precision;
-		request.importChannel = meta.ReadIntSetting("importChannel", request.importChannel);
-		const std::string addressMode = meta.ReadStringSetting("addressMode");
-		if (!addressMode.empty())
-			request.addressMode = addressMode;
-		return true;
-	}
 
 	bool SupportsRectLightEmissive(const VansSceneTextureResourceRequest& request)
 	{
@@ -178,6 +157,12 @@ namespace
 			ReadSerializedIntField(root, "additiveBlendAttachmentMask", 0));
 		request.premultipliedAlphaBlend = ReadSerializedBoolField(root, "premultipliedAlphaBlend", false);
 		request.colorAttachmentCount = static_cast<int>(ReadSerializedIntField(root, "colorAttachmentCount", -1));
+        if (const auto* blends = FindObjectField(root, "colorAttachmentBlends"))
+        {
+            if (blends->kind != VansSerializedValue::Kind::Array) request.colorAttachmentBlends.push_back("invalid");
+            else for (const auto& blend : blends->arrayItems)
+                request.colorAttachmentBlends.push_back(blend.kind == VansSerializedValue::Kind::String ? blend.stringValue : "invalid");
+        }
 		request.polygonMode = ReadSerializedStringField(root, "polygonMode", "fill");
 		request.frontFace = ReadSerializedStringField(root, "frontFace", "counterClockwise");
 		request.primitiveTopology = ReadSerializedStringField(root, "primitiveTopology", "triangleList");
@@ -483,6 +468,7 @@ namespace
 	void CollectMaterialDependencies(
 		const VansMaterialAuthoringAsset& material,
 		const std::unordered_map<std::string, VansAssetRecord>& recordsByGuid,
+		const VansAssetObjectRepository& objectRepository,
 		VansSceneAssetDependencyBuildResult& result)
 	{
 		const std::string preferredRoot = material.preferredImportModel;
@@ -510,6 +496,19 @@ namespace
 					CollectMaterialReference(texture, VansAssetType::Texture,
 						"Material '" + material.guid + "'.textures['" + slot + "']",
 						recordsByGuid, result);
+					if (material.materialType == "cloth")
+					{
+						const auto record = recordsByGuid.find(guidText);
+						if (record != recordsByGuid.end() && record->second.type == VansAssetType::Texture &&
+							record->second.state != VansAssetState::Missing)
+						{
+							const auto meta = ResolveMemoryAsset<VansAssetMeta>(objectRepository, record->second);
+							std::string error;
+							if (!meta || !ValidateClothTextureImport(slot, *meta, error))
+								AppendDependencyError(result, "Material '" + material.guid + "'.textures['" + slot +
+									"'] -> " + guidText + ": " + (meta ? error : "texture import metadata is not published"));
+						}
+					}
 				}
 			}
 		}
@@ -555,9 +554,9 @@ namespace
 				"Material '" + material.guid + "'.parameters.skinProfile", recordsByGuid, result);
 	}
 
-	void CollectPhysicsMeshColliderDependencies(
+	void CollectCpuGeometryDependencies(
 		const VansSerializedValue& entities,
-		std::unordered_set<std::string>& meshColliderModels)
+		std::unordered_set<std::string>& cpuGeometryModels)
 	{
 		if (entities.kind != VansSerializedValue::Kind::Array)
 			return;
@@ -569,9 +568,16 @@ namespace
 				continue;
 			for (const VansSerializedValue& component : components->arrayItems)
 			{
-				if (ReadSerializedStringField(component, "type") != "Physics")
-					continue;
+				const auto type=ReadSerializedStringField(component,"type");
 				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				if(type=="NavigationSource" && data)
+				{
+					const auto* reference=FindObjectField(*data,"cpuMesh");
+					const auto guid=reference?ReadAssetGuidReference(*reference):std::string{};
+					if(!guid.empty()) cpuGeometryModels.insert(guid);
+					continue;
+				}
+				if(type!="Physics") continue;
 				if (data == nullptr || !ReadSerializedBoolField(*data, "useMeshCollider", false))
 					continue;
 
@@ -581,7 +587,7 @@ namespace
 
 				const std::string meshGuid = ReadSerializedStringField(*data, "mesh");
 				if (!meshGuid.empty())
-					meshColliderModels.insert(meshGuid);
+					cpuGeometryModels.insert(meshGuid);
 			}
 		}
 	}
@@ -1260,13 +1266,20 @@ namespace
 				const std::string type = ReadSerializedStringField(component, "type");
 				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
 				if (!data) continue;
-				if (type == "NavigationAgent")
+				if (type == "NavigationSurface")
 				{
 					CollectStrictAssetReference(FindObjectField(*data, "navigationMesh"),
 						VansAssetType::NavigationMesh,
-						"scene entity '" + entityName + "' NavigationAgent.navigationMesh",
+						"scene entity '" + entityName + "' NavigationSurface.navigationMesh",
 						dependencies, result);
 				}
+                else if(type=="NavigationSource")
+                {
+                    const auto* mesh=FindObjectField(*data,"cpuMesh");
+                    const auto* guid=mesh?FindObjectField(*mesh,"guid"):nullptr;
+                    if(guid && guid->kind==VansSerializedValue::Kind::String && !guid->stringValue.empty())
+                        CollectStrictAssetReference(mesh,VansAssetType::Model,"NavigationSource.cpuMesh",dependencies,result);
+                }
 				else if (type == "AIAgent")
 				{
 					CollectStrictAssetReference(FindObjectField(*data, "behavior"),
@@ -1288,13 +1301,31 @@ namespace
 	}
 }
 
+bool VansSceneAssetDependencyBuilder::ApplyTextureImportSettings(
+	VansSceneTextureResourceRequest& request,
+	const VansAssetMeta& meta,
+	std::string& error)
+{
+	VansTextureAssetImportSettings settings;
+	if (!VansAssetDatabase::ReadTextureImportSettings(meta, settings, error)) return false;
+	request.srgb = !settings.linear;
+	request.useCompress = settings.compressed;
+	request.needMip = settings.mipmapped;
+	request.maxResidentDimension = settings.maxResidentDimension;
+	request.precision = settings.precision;
+	request.importChannel = settings.channelCount;
+	request.addressMode = meta.ReadStringSetting("addressMode", "repeat");
+	return true;
+}
+
 VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResourcePlan(
 	VansAssetDatabase& database,
 	const VansSerializedValue& inputDocument,
 	const std::filesystem::path& sceneSourcePath,
 	const std::unordered_map<std::string, std::string>& runtimeAssetBindings,
 	const VansAssetObjectRepository& objectRepository,
-	VansAssetDatabase* builtInAssetDatabase)
+	VansAssetDatabase* builtInAssetDatabase,
+	const std::vector<VansAssetGuid>& projectRenderPasses)
 {
 	VansSceneAssetDependencyBuildResult result;
 	const VansSerializedValue& sceneDocument = inputDocument;
@@ -1370,7 +1401,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		prefabDependencyAssets.push_back(asset);
     }
 
-	std::unordered_set<std::string> meshColliderModels;
+	std::unordered_set<std::string> cpuGeometryModels;
 	std::unordered_set<std::string> terrainHeightTextures;
 	std::unordered_set<std::string> terrainSplatTextures;
 	std::unordered_set<std::string> pcgPixelTextures;
@@ -1395,7 +1426,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		CollectScriptFieldAssetDependencies(entityArray, catalogDependencies, result);
 		CollectModelRendererDependencies(
 			entityArray, modelRendererDependencies, result);
-		CollectPhysicsMeshColliderDependencies(entityArray, meshColliderModels);
+		CollectCpuGeometryDependencies(entityArray, cpuGeometryModels);
 		CollectAnimationDependencies(entityArray, animationDependencies, result);
 		CollectTimelineDependencies(entityArray, timelineDependencies, result);
 		CollectAIDependencies(entityArray, aiDependencies, result);
@@ -1414,7 +1445,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	for (const auto& prefab : prefabDependencyAssets)
 		collectEntityDependencies(prefab->entities);
 	CollectSceneSettingDependencies(sceneDocument, sceneSettingDependencies, result);
-	result.requiredModels.insert(meshColliderModels.begin(), meshColliderModels.end());
+	result.requiredModels.insert(cpuGeometryModels.begin(), cpuGeometryModels.end());
 	if (const VansSerializedValue* vegetationConfig = ReadVegetationField(sceneDocument))
 	{
 		const std::string vegetationGuidText =
@@ -1508,6 +1539,39 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	pendingDependencies.insert(pendingDependencies.end(),
 		sceneSettingDependencies.begin(), sceneSettingDependencies.end());
 	std::unordered_set<std::string> expandedAnimators;
+	std::unordered_set<std::string> projectPassIds, projectChannels, projectPassGuids;
+    std::unordered_set<std::uint32_t> projectExportSlots;
+	if (projectRenderPasses.size() > 64)
+		AppendDependencyError(result, "projectRenderPasses exceeds 64 references");
+	for (const auto& guid : projectRenderPasses)
+	{
+		const auto record = assetRecordsByGuid.find(guid.ToString());
+		if (!guid.IsValid() || !projectPassGuids.insert(guid.ToString()).second ||
+			record == assetRecordsByGuid.end() || record->second.type != VansAssetType::RenderPass)
+		{
+			AppendDependencyError(result, "projectRenderPasses contains an invalid, duplicate or non-renderPass reference: " + guid.ToString());
+			continue;
+		}
+		const auto asset = ResolveMemoryAsset<VansRenderPassAsset>(objectRepository, record->second);
+		if (!asset || !projectPassIds.insert(asset->passId).second)
+		{
+			AppendDependencyError(result, "RenderPass has no published memory object or a duplicate passId: " + guid.ToString());
+			continue;
+		}
+		result.requiredAssets.insert(guid.ToString());
+		result.resourcePlan.projectRenderPasses.push_back({ guid, *asset });
+		for (const auto& shader : asset->shaders)
+			pendingDependencies.push_back({ shader.ToString(), VansAssetType::Shader, "RenderPass " + asset->passId + " shader" });
+		for (const auto& texture : asset->textures)
+			pendingDependencies.push_back({ texture.asset.ToString(), VansAssetType::Texture, "RenderPass " + asset->passId + " texture " + texture.name });
+		if (asset->instanceMesh.IsValid())
+			pendingDependencies.push_back({ asset->instanceMesh.ToString(), VansAssetType::Model, "RenderPass " + asset->passId + " instance mesh" });
+		for (const auto& target : asset->targets)
+            if (!target.exportChannel.empty() && (!projectChannels.insert(target.exportChannel).second || !projectExportSlots.insert(target.exportSlot).second))
+				AppendDependencyError(result, "RenderPass export channel is duplicated: " + target.exportChannel);
+	}
+	std::sort(result.resourcePlan.projectRenderPasses.begin(), result.resourcePlan.projectRenderPasses.end(),
+		[](const auto& a, const auto& b) { return a.definition.order == b.definition.order ? a.definition.passId < b.definition.passId : a.definition.order < b.definition.order; });
 	std::unordered_set<std::string> expandedTimelines;
 	while (!pendingDependencies.empty())
 	{
@@ -1551,7 +1615,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		}
 		else if (record.type == VansAssetType::NavigationMesh)
 		{
-			if (!ResolveMemoryAsset<VansNavigationMesh>(objectRepository, record))
+			if (!ResolveMemoryAsset<VansNavigationMeshAsset>(objectRepository, record))
 			{
 				AppendDependencyError(result,
 					dependency.chain + " has no Navigation Mesh memory object");
@@ -1761,7 +1825,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		}
 
 		if (result.requiredMaterials.find(record.guid.ToString()) != result.requiredMaterials.end())
-			CollectMaterialDependencies(material, assetRecordsByGuid, result);
+			CollectMaterialDependencies(material, assetRecordsByGuid, objectRepository, result);
 	}
 	if (!result.errors.empty())
 		return result;
@@ -1813,7 +1877,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			request.supportRayTracing = meta.ReadBoolSetting("buildRayTracingData", true);
 			request.needCpuData = meta.ReadBoolSetting("keepCpuMeshData", false) ||
 				pcgGrassModels.find(record.guid.ToString()) != pcgGrassModels.end() ||
-				meshColliderModels.find(record.guid.ToString()) != meshColliderModels.end();
+				cpuGeometryModels.find(record.guid.ToString()) != cpuGeometryModels.end();
 			request.scaleFactor = meta.ReadFloatSetting("scaleFactor", 1.0f);
 			request.loadMultiMesh = meta.ReadBoolSetting("loadMultiMesh", isFbx);
 			request.skeletalImport = ReadSkeletalMeshImportSettings(meta);

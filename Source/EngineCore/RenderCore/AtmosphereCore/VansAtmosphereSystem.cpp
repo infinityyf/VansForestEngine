@@ -191,6 +191,7 @@ bool VansAtmosphereSystem::Initialize(
 	device.WaitForDevice();
 	m_AppliedEnvironmentGeneration = std::numeric_limits<std::uint64_t>::max();
 	m_HasUploadedStaticParams = false;
+	m_StaticParamsSlotUploaded.fill(false);
 	m_StaticLutsDirty = true;
 	m_Initialized = true;
 	return true;
@@ -201,13 +202,15 @@ bool VansAtmosphereSystem::CreateStaticResources()
 	if (!m_Device)
 		return false;
 	VkDevice device = m_Device->GetLogicDevice();
-	if (!CreateUniformBuffer(
-		m_StaticParamsBuffer, m_StaticParamsBufferCreated,
-		device, sizeof(VansAtmosphereStaticParamsGPU)) ||
-		!CreateUniformBuffer(
-		m_FrameParamsBuffer, m_FrameParamsBufferCreated,
-		device, sizeof(VansAtmosphereFrameParamsGPU)))
-		return false;
+	for (std::size_t slot = 0; slot < m_FrameParamsBuffers.size(); ++slot)
+	{
+		if (!CreateUniformBuffer(m_StaticParamsBuffers[slot], m_StaticParamsBufferCreated[slot],
+			device, sizeof(VansAtmosphereStaticParamsGPU)))
+			return false;
+		if (!CreateUniformBuffer(m_FrameParamsBuffers[slot], m_FrameParamsBufferCreated[slot],
+			device, sizeof(VansAtmosphereFrameParamsGPU)))
+			return false;
+	}
 
 	if (!m_TransmittanceLut.CreateVulkanImage(
 		device,
@@ -308,48 +311,106 @@ bool VansAtmosphereSystem::CreateDescriptorResources()
 		return false;
 	auto* descriptors = VansVKDescriptorManager::GetInstance();
 	std::vector<VkDescriptorSet> sets;
-	if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Atmosphere(m_PassLayout, sets)
-		|| sets.empty())
+	if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Atmosphere(
+		m_PassLayout, sets, static_cast<std::uint32_t>(m_PassSets.size()))
+		|| sets.size() != m_PassSets.size())
 		return false;
-	m_PassSet = sets[0];
+	std::copy(sets.begin(), sets.end(), m_PassSets.begin());
 
 	auto* renderPasses = VansRenderPassManager::GetInstance();
 	descriptors->BeginDescriptorUpdate();
-	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_TRANSMITTANCE_LUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	for (VkDescriptorSet passSet : m_PassSets)
+	{
+	descriptors->WriteImageDescriptor(passSet, ATMOSPHERE_BINDING_TRANSMITTANCE_LUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ m_TransmittanceLut.GetSampler(), m_TransmittanceLut.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_MULTI_SCATTERING_LUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(passSet, ATMOSPHERE_BINDING_MULTI_SCATTERING_LUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ m_MultiScatteringLut.GetSampler(), m_MultiScatteringLut.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_SKY_VIEW_LUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(passSet, ATMOSPHERE_BINDING_SKY_VIEW_LUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ m_SkyViewLut.GetSampler(), m_SkyViewLut.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_AERIAL_SCATTERING, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(passSet, ATMOSPHERE_BINDING_AERIAL_SCATTERING, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ m_AerialScattering.GetSampler(), m_AerialScattering.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_AERIAL_OPTICAL_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(passSet, ATMOSPHERE_BINDING_AERIAL_OPTICAL_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ m_AerialOpticalDepth.GetSampler(), m_AerialOpticalDepth.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_RAW_OPAQUE_SCENE_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{{ renderPasses->GetRawOpaqueSceneColor().GetSampler(),
-		   renderPasses->GetRawOpaqueSceneColor().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_SCENE_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{{ renderPasses->GetDepth().GetSampler(),
-		   renderPasses->GetDepth().GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_SCENE_COLOR_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(passSet, ATMOSPHERE_BINDING_SCENE_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{{ renderPasses->GetDepth(0).GetSampler(),
+		   renderPasses->GetDepth(0).GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
+	descriptors->WriteImageDescriptor(passSet, ATMOSPHERE_BINDING_SCENE_COLOR_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ renderPasses->GetColor().GetSampler(),
 		   renderPasses->GetColor().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_WATER_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descriptors->WriteImageDescriptor(passSet, ATMOSPHERE_BINDING_WATER_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{{ renderPasses->GetWaterGBufNormal().GetSampler(),
 		   renderPasses->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_WATER_POSITION_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descriptors->WriteImageDescriptor(passSet, ATMOSPHERE_BINDING_WATER_POSITION_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{{ renderPasses->GetWaterGBufLinearDepth().GetSampler(),
 		   renderPasses->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_AERIAL_CLEAR_SCATTERING_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descriptors->WriteImageDescriptor(passSet, ATMOSPHERE_BINDING_AERIAL_CLEAR_SCATTERING_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ m_AerialClearScattering.GetSampler(), m_AerialClearScattering.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, ATMOSPHERE_BINDING_AERIAL_CLEAR_SCATTERING_INPUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descriptors->WriteImageDescriptor(passSet, ATMOSPHERE_BINDING_AERIAL_CLEAR_SCATTERING_INPUT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{{ m_AerialClearScattering.GetSampler(), m_AerialClearScattering.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+	}
 	descriptors->CommitDescriptorUpdates();
+	m_SceneDepthTargetSlots.fill(0u);
+	m_SceneDepthTargetGenerations.fill(renderPasses->GetGBufferFrameTargetGeneration());
+	RefreshRawOpaqueSceneColorDescriptors();
 	return true;
+}
+
+bool VansAtmosphereSystem::SelectFrameGlobalDescriptorSet(
+	VkDescriptorSet globalSet, std::uint32_t frameSlot,
+	std::uint32_t gbufferTargetSlot)
+{
+	auto* renderPasses = VansRenderPassManager::GetInstance();
+	if (!m_Initialized || globalSet == VK_NULL_HANDLE || renderPasses == nullptr ||
+		frameSlot >= m_PassSets.size() ||
+		gbufferTargetSlot >= renderPasses->GetGBufferFrameTargetCount())
+		return false;
+	const std::uint64_t targetGeneration = renderPasses->GetGBufferFrameTargetGeneration();
+	if (m_SceneDepthTargetSlots[frameSlot] != gbufferTargetSlot ||
+		m_SceneDepthTargetGenerations[frameSlot] != targetGeneration)
+	{
+		auto* descriptors = VansVKDescriptorManager::GetInstance();
+		if (descriptors == nullptr)
+			return false;
+		VansVKImage& depth = renderPasses->GetDepth(gbufferTargetSlot);
+		descriptors->BeginDescriptorUpdate();
+		descriptors->WriteImageDescriptor(m_PassSets[frameSlot],
+			ATMOSPHERE_BINDING_SCENE_DEPTH,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ depth.GetSampler(), depth.GetImageView(),
+				VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
+		descriptors->CommitDescriptorUpdates();
+		m_SceneDepthTargetSlots[frameSlot] = gbufferTargetSlot;
+		m_SceneDepthTargetGenerations[frameSlot] = targetGeneration;
+	}
+	m_GlobalSet = globalSet;
+	m_FrameResourceSlot = frameSlot;
+	return true;
+}
+
+void VansAtmosphereSystem::RefreshRawOpaqueSceneColorDescriptors()
+{
+	auto* renderPasses = VansRenderPassManager::GetInstance();
+	if (renderPasses == nullptr || renderPasses->GetRawOpaqueSceneColorTargetCount() == 0)
+		return;
+	auto* descriptors = VansVKDescriptorManager::GetInstance();
+	descriptors->BeginDescriptorUpdate();
+	for (std::uint32_t slot = 0; slot < m_PassSets.size(); ++slot)
+	{
+		if (m_PassSets[slot] == VK_NULL_HANDLE)
+			continue;
+		VansVKImage& image = renderPasses->GetRawOpaqueSceneColor(
+			std::min(slot, renderPasses->GetRawOpaqueSceneColorTargetCount() - 1u));
+		descriptors->WriteImageDescriptor(m_PassSets[slot],
+			ATMOSPHERE_BINDING_RAW_OPAQUE_SCENE_COLOR,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ image.GetSampler(), image.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+	}
+	descriptors->CommitDescriptorUpdates();
 }
 
 void VansAtmosphereSystem::BindGlobalDescriptors(
 	VkDescriptorSet globalSet,
+	std::uint32_t slot,
 	const VkDescriptorImageInfo& cloudShadow,
 	const VkDescriptorImageInfo& cloudResult,
 	const VkDescriptorImageInfo& localScattering,
@@ -362,10 +423,10 @@ void VansAtmosphereSystem::BindGlobalDescriptors(
 	descriptors->BeginDescriptorUpdate();
 	descriptors->WriteBufferDescriptor(globalSet, GLOBAL_BINDING_ATMOSPHERE_STATIC_UBO,
 		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		{{ m_StaticParamsBuffer.GetNativeBuffer(), 0, sizeof(VansAtmosphereStaticParamsGPU) }});
+		{{ m_StaticParamsBuffers.at(slot).GetNativeBuffer(), 0, sizeof(VansAtmosphereStaticParamsGPU) }});
 	descriptors->WriteBufferDescriptor(globalSet, GLOBAL_BINDING_ATMOSPHERE_FRAME_UBO,
 		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		{{ m_FrameParamsBuffer.GetNativeBuffer(), 0, sizeof(VansAtmosphereFrameParamsGPU) }});
+		{{ m_FrameParamsBuffers.at(slot).GetNativeBuffer(), 0, sizeof(VansAtmosphereFrameParamsGPU) }});
 	descriptors->WriteImageDescriptor(globalSet, GLOBAL_BINDING_TRANSMITTANCE_LUT,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{{ m_TransmittanceLut.GetSampler(), m_TransmittanceLut.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
@@ -398,7 +459,7 @@ void VansAtmosphereSystem::UploadEnvironmentParameters(std::uint64_t frameIndex)
 		return;
 	const auto& environment = m_Scene->GetEnvironmentSettings();
 	const std::uint64_t generation = m_Scene->GetEnvironmentSettingsGeneration();
-	if (m_AppliedEnvironmentGeneration != generation)
+	if (!m_HasUploadedStaticParams || m_AppliedEnvironmentGeneration != generation)
 	{
 		VansAtmosphereStaticParamsGPU params{};
 		const float bottomRadius =
@@ -466,11 +527,19 @@ void VansAtmosphereSystem::UploadEnvironmentParameters(std::uint64_t frameIndex)
 		const bool staticLutInputsChanged = !m_HasUploadedStaticParams ||
 			!StaticLutInputsEqual(m_LastUploadedStaticParams, params);
 
-		m_StaticParamsBuffer.SetBufferData(&params, 0, sizeof(params));
 		m_AppliedEnvironmentGeneration = generation;
 		m_StaticLutsDirty = m_StaticLutsDirty || staticLutInputsChanged;
 		m_LastUploadedStaticParams = params;
 		m_HasUploadedStaticParams = true;
+	}
+	const std::uint32_t slot = m_FrameResourceSlot;
+	if (!m_StaticParamsSlotUploaded.at(slot) ||
+		m_StaticParamsSlotGeneration.at(slot) != generation)
+	{
+		m_StaticParamsBuffers.at(slot).SetBufferData(
+			&m_LastUploadedStaticParams, 0, sizeof(m_LastUploadedStaticParams));
+		m_StaticParamsSlotGeneration[slot] = generation;
+		m_StaticParamsSlotUploaded[slot] = true;
 	}
 
 	VansAtmosphereFrameParamsGPU frame{};
@@ -535,7 +604,7 @@ void VansAtmosphereSystem::UploadEnvironmentParameters(std::uint64_t frameIndex)
 			body.disk.radianceScale,
 			body.disk.occlusionStrength);
 	}
-	m_FrameParamsBuffer.SetBufferData(&frame, 0, sizeof(frame));
+	m_FrameParamsBuffers.at(m_FrameResourceSlot).SetBufferData(&frame, 0, sizeof(frame));
 }
 
 void VansAtmosphereSystem::TransitionForWrite(
@@ -589,17 +658,17 @@ void VansAtmosphereSystem::BarrierForSampling(
 		{}, {}, { barrier });
 }
 
-void VansAtmosphereSystem::RecordStaticLutUpdates(
+bool VansAtmosphereSystem::RecordStaticLutUpdates(
 	VansVKCommandBuffer& commandBuffer,
 	std::uint64_t frameIndex)
 {
 	if (!m_Initialized || m_GlobalSet == VK_NULL_HANDLE)
-		return;
+		return false;
 	UploadEnvironmentParameters(frameIndex);
 	const std::vector<VkDescriptorSetLayout> layouts = {
 		m_Scene->GetGlobalDescriptorSetLayout(), m_PassLayout
 	};
-	const std::vector<VkDescriptorSet> sets = { m_GlobalSet, m_PassSet };
+	const std::vector<VkDescriptorSet> sets = { m_GlobalSet, m_PassSets.at(m_FrameResourceSlot) };
 
 	if (m_StaticLutsDirty)
 	{
@@ -620,8 +689,21 @@ void VansAtmosphereSystem::RecordStaticLutUpdates(
 			DivideRoundUp(m_Quality.multiScatteringHeight, 8u), 1u, sets);
 		BarrierForSampling(commandBuffer, m_MultiScatteringLut);
 		m_MultiScatteringReady = true;
-		m_StaticLutsDirty = false;
+		return true;
 	}
+	return false;
+}
+
+void VansAtmosphereSystem::DiscardRecordedFrame()
+{
+	// A failed frame graph may have submitted only some LUT writes. Rebuild
+	// all dependent outputs from scratch on the next successful frame.
+	m_StaticLutsDirty = true;
+	m_TransmittanceReady = false;
+	m_MultiScatteringReady = false;
+	m_SkyViewReady = false;
+	m_AerialReady = false;
+	m_FinalColorReady = false;
 }
 
 void VansAtmosphereSystem::RecordViewLutUpdates(
@@ -634,7 +716,7 @@ void VansAtmosphereSystem::RecordViewLutUpdates(
 	const std::vector<VkDescriptorSetLayout> layouts = {
 		m_Scene->GetGlobalDescriptorSetLayout(), m_PassLayout
 	};
-	const std::vector<VkDescriptorSet> sets = { m_GlobalSet, m_PassSet };
+	const std::vector<VkDescriptorSet> sets = { m_GlobalSet, m_PassSets.at(m_FrameResourceSlot) };
 
 	TransitionForWrite(commandBuffer, m_SkyViewLut, m_SkyViewReady);
 	commandBuffer.EnsureComputeShader(*m_SkyViewShader, layouts);
@@ -671,8 +753,10 @@ void VansAtmosphereSystem::RecordComposite(VansVKCommandBuffer& commandBuffer)
 	toGeneral.srcAccessMask = m_FinalColorReady
 		? VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT : 0;
 	toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	// The previous frame leaves SceneColor in its idle GENERAL layout. Preserve
+	// that layout at the next composite instead of assuming the last sampled layout.
 	toGeneral.oldLayout = m_FinalColorReady
-		? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+		? color.GetImageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
 	toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 	toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -693,7 +777,7 @@ void VansAtmosphereSystem::RecordComposite(VansVKCommandBuffer& commandBuffer)
 		*m_CompositeShader,
 		DivideRoundUp(m_RenderWidth, 8u),
 		DivideRoundUp(m_RenderHeight, 8u), 1u,
-		{ m_GlobalSet, m_PassSet });
+		{ m_GlobalSet, m_PassSets.at(m_FrameResourceSlot) });
 
 	VkImageMemoryBarrier toSample = toGeneral;
 	toSample.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -749,12 +833,14 @@ void VansAtmosphereSystem::DestroyViewResources()
 void VansAtmosphereSystem::DestroyDescriptorResources()
 {
 	auto* descriptors = VansVKDescriptorManager::GetInstance();
-	if (m_PassSet != VK_NULL_HANDLE)
+	if (m_PassSets[0] != VK_NULL_HANDLE)
 	{
-		std::vector<VkDescriptorSet> sets = { m_PassSet };
+		std::vector<VkDescriptorSet> sets(m_PassSets.begin(), m_PassSets.end());
 		descriptors->DestroyDescriptorSet(sets);
-		m_PassSet = VK_NULL_HANDLE;
+		m_PassSets.fill(VK_NULL_HANDLE);
 	}
+	m_SceneDepthTargetSlots.fill(0u);
+	m_SceneDepthTargetGenerations.fill(0u);
 	if (m_PassLayout != VK_NULL_HANDLE)
 	{
 		descriptors->ReleaseDescriptorSetLayout(m_PassLayout);
@@ -774,12 +860,17 @@ void VansAtmosphereSystem::Shutdown()
 	m_NeutralCloudShadow.DestroyVulkanImage(device);
 	m_NeutralCloudResult.DestroyVulkanImage(device);
 	m_NeutralLocalMedia.DestroyVulkanImage(device);
-	if (m_StaticParamsBufferCreated)
-		m_StaticParamsBuffer.DestroyVulkanBuffer(device);
-	if (m_FrameParamsBufferCreated)
-		m_FrameParamsBuffer.DestroyVulkanBuffer(device);
-	m_StaticParamsBufferCreated = false;
-	m_FrameParamsBufferCreated = false;
+	for (std::size_t slot = 0; slot < m_FrameParamsBuffers.size(); ++slot)
+	{
+		if (m_StaticParamsBufferCreated[slot])
+			m_StaticParamsBuffers[slot].DestroyVulkanBuffer(device);
+		m_StaticParamsBufferCreated[slot] = false;
+		if (m_FrameParamsBufferCreated[slot])
+			m_FrameParamsBuffers[slot].DestroyVulkanBuffer(device);
+		m_FrameParamsBufferCreated[slot] = false;
+	}
+	m_StaticParamsSlotUploaded.fill(false);
+	m_FrameResourceSlot = 0;
 	m_TransmittanceReady = false;
 	m_MultiScatteringReady = false;
 	m_HasUploadedStaticParams = false;

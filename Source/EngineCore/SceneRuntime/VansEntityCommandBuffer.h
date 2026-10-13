@@ -140,6 +140,11 @@ public:
 		std::string stableGuid,
 		std::shared_ptr<VansActionHost> host,
 		bool enabled);
+	void AddNavigationSurfaceComponent(VansEntityHandle entity, std::string stableGuid, VansRuntimeNavigationSurfaceComponent component, bool enabled);
+	void AddNavigationSourceComponent(VansEntityHandle entity, std::string stableGuid, VansRuntimeNavigationSourceComponent component, bool enabled);
+	void AddNavigationModifierComponent(VansEntityHandle entity, std::string stableGuid, VansRuntimeNavigationModifierComponent component, bool enabled);
+    void AddNavigationObstacleComponent(VansEntityHandle entity, std::string stableGuid, VansRuntimeNavigationObstacleComponent component, bool enabled);
+    void AddNavigationLinkComponent(VansEntityHandle entity, std::string stableGuid, VansRuntimeNavigationLinkComponent component, bool enabled);
 	void AddNavigationAgentComponent(
 		VansEntityHandle entity,
 		std::string stableGuid,

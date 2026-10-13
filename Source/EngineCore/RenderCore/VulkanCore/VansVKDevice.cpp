@@ -272,44 +272,53 @@ namespace VansGraphics
 		VkResult result = VansGraphics::vkDeviceWaitIdle(m_VansVKLogicDevice);
 		if (VK_SUCCESS != result)
 		{
+			m_DeviceLost = m_DeviceLost || result == VK_ERROR_DEVICE_LOST;
 			VANS_LOG_ERROR("Waiting on a device failed.");
 			return false;
 		}
 
 		if (!RetireSubmittedFrame()) return false;
+		for (VansFrameContextRingSlot& slot : m_FrameContextRingSlots)
+		{
+			if (!WaitForFrameContextRingSlot(slot))
+			{
+				VANS_LOG_ERROR("[VansVKDevice] Failed to retire frame slot. slot="
+					<< slot.slotIndex);
+				return false;
+			}
+		}
+		Vans::VansGpuProfiler::Get().ReclaimDiscardedFramesAtDeviceIdle();
 
 		// VansGraphics::vkDeviceWaitIdle 之后所有已提交的 CB fence 都处于 signaled 状态。
 		// 若不在此处 reset，下一帧 async 路径直接用 signaled fence 提交 vkQueueSubmit
 		// 会触发 Vulkan Validation Error（NSight 对此会直接 crash）。
 		auto resetIfValid = [&](VkFence f)
 		{
-			if (f != VK_NULL_HANDLE)
-				VansGraphics::vkResetFences(m_VansVKLogicDevice, 1, &f);
+			if (f == VK_NULL_HANDLE)
+				return true;
+			const VkResult resetResult = VansGraphics::vkResetFences(m_VansVKLogicDevice, 1, &f);
+			m_DeviceLost = m_DeviceLost || resetResult == VK_ERROR_DEVICE_LOST;
+			if (resetResult != VK_SUCCESS)
+				VANS_LOG_ERROR("[VansVKDevice] Failed to reset a frame fence after device idle. VkResult="
+					<< static_cast<int>(resetResult));
+			return resetResult == VK_SUCCESS;
 		};
-		resetIfValid(m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKShadowMapsCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKGBufferMaterialCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKGTAORawCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKVegetationCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKEarlyAuxCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKAsyncAtmosphereCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKAsyncHZBCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKGIDataCommandBuffer.m_CommandBufferFinishSubmitFence);
+		if (!resetIfValid(m_MaintenanceGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence))
+			return false;
 		for (VansFrameContextRingSlot& slot : m_FrameContextRingSlots)
 		{
-			resetIfValid(slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
+			if (!resetIfValid(slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence))
+				return false;
+			for (VansVKCommandBuffer* buffer : slot.asyncCommands.All())
+				if (!resetIfValid(buffer->m_CommandBufferFinishSubmitFence))
+					return false;
 			slot.gpuWorkPending = false;
-			slot.commandBufferRecording = false;
 		}
-		m_LastSubmittedGraphicsFence = VK_NULL_HANDLE;
-		m_LastSubmittedGraphicsFencePending = false;
 		std::fill(
 			m_SwapchainImageInFlightFences.begin(),
 			m_SwapchainImageInFlightFences.end(),
 			VK_NULL_HANDLE);
+		m_CrossFrameResourceLedger.Clear();
 
 		return true;
 	}
@@ -440,27 +449,20 @@ namespace VansGraphics
 
 	void VansVKDevice::CmdBeginDebugLabel(VkCommandBuffer commandBuffer, const VkDebugUtilsLabelEXT& labelInfo)
 	{
-#ifdef _DEBUG
-		if (VansGraphics::vkCmdBeginDebugUtilsLabelEXT)
+		if (VansGraphics::vkCmdBeginDebugUtilsLabelEXT &&
+			VansGraphics::vkCmdEndDebugUtilsLabelEXT)
 		{
 			VansGraphics::vkCmdBeginDebugUtilsLabelEXT(commandBuffer, &labelInfo);
 		}
-#else
-		(void)commandBuffer;
-		(void)labelInfo;
-#endif
 	}
 
 	void VansVKDevice::CmdEndDebugLabel(VkCommandBuffer commandBuffer)
 	{
-#ifdef _DEBUG
-		if (VansGraphics::vkCmdEndDebugUtilsLabelEXT)
+		if (VansGraphics::vkCmdBeginDebugUtilsLabelEXT &&
+			VansGraphics::vkCmdEndDebugUtilsLabelEXT)
 		{
 			VansGraphics::vkCmdEndDebugUtilsLabelEXT(commandBuffer);
 		}
-#else
-		(void)commandBuffer;
-#endif
 	}
 
 	VkResult VansVKDevice::GetQueryPoolResults(VkDevice device, VkQueryPool pool, uint32_t firstQuery, uint32_t queryCount, size_t dataSize, void* data, VkDeviceSize stride, VkQueryResultFlags flags)
@@ -476,8 +478,14 @@ namespace VansGraphics
 			GetPhysicalDevice(),
 			GetGraphicsQueueFamilyIndex(),
 			GetComputeQueueFamilyIndex(),
-			m_Features12.hostQueryReset == VK_TRUE);
+			m_Features12.hostQueryReset == VK_TRUE,
+			m_CalibratedTimestampsEnabled);
 #endif
+	}
+
+	VansGpuMemorySnapshot VansVKDevice::QueryGpuMemorySnapshot() const
+	{
+		return VansVKMemoryAllocator::Get().QueryMemorySnapshot();
 	}
 
 	void* VansVKDevice::GetNativeGraphicsDevice()
@@ -607,6 +615,19 @@ namespace VansGraphics
 			}
 		}
 
+#ifndef _DEBUG
+		// GPU capture labels are metadata, independent of validation layers.
+		// A driver without debug-utils must still run the Release renderer.
+		for (const VkExtensionProperties& extension : available_extensions)
+		{
+			if (std::strcmp(extension.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0)
+			{
+				desired_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+				break;
+			}
+		}
+#endif
+
 		//检查layers
 		std::vector<VkLayerProperties> avaliable_layers;
 		if (!CheckAvaliableInstanceLayer(avaliable_layers))
@@ -664,6 +685,7 @@ namespace VansGraphics
 
 	bool VansVKDevice::CreateVulkanLogicDevice(std::vector<char const*>& desired_extensions)
 	{
+		m_CalibratedTimestampsEnabled = false;
 		uint32_t devices_count = 0;
 		VkResult result = VK_SUCCESS;
 		result = VansGraphics::vkEnumeratePhysicalDevices(m_VansVKInstance, &devices_count, nullptr);
@@ -743,6 +765,8 @@ namespace VansGraphics
 			}
 
 			m_VansVKPhysicalDevice = device;
+			VkPhysicalDeviceProperties selectedProperties{};
+			VansGraphics::vkGetPhysicalDeviceProperties(device, &selectedProperties);
 			//create queue
 			std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
 			for (auto& info : queue_infos)
@@ -758,6 +782,19 @@ namespace VansGraphics
 				});
 			};
 
+			// Timestamp queries are comparable across submissions only when a
+			// calibrated timestamps extension is enabled on this logical device.
+			std::vector<char const*> enabled_extensions = desired_extensions;
+			const char* calibratedExtension = nullptr;
+#if VANS_PROFILER_ENABLED
+			if (IsExtensionSupported(available_extensions, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME))
+				calibratedExtension = VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
+			else if (IsExtensionSupported(available_extensions, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME))
+				calibratedExtension = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
+#endif
+			if (calibratedExtension != nullptr)
+				enabled_extensions.push_back(calibratedExtension);
+
 			//create logical device
 			VkDeviceCreateInfo device_create_info =
 			{
@@ -768,21 +805,77 @@ namespace VansGraphics
 				 queue_create_infos.size() > 0 ? &queue_create_infos[0] : nullptr,
 				 0,
 				 nullptr,
-				 static_cast<uint32_t>(desired_extensions.size()),
-				 desired_extensions.size() > 0 ? &desired_extensions[0] : nullptr,
+				 static_cast<uint32_t>(enabled_extensions.size()),
+				 enabled_extensions.empty() ? nullptr : enabled_extensions.data(),
 				 nullptr
 			};
 
+			m_VansVKLogicDevice = VK_NULL_HANDLE;
 			VkResult result = VansGraphics::vkCreateDevice(device, &device_create_info, nullptr, &m_VansVKLogicDevice);
+			if ((result != VK_SUCCESS || m_VansVKLogicDevice == VK_NULL_HANDLE) && calibratedExtension != nullptr)
+			{
+				// This extension only improves profiler evidence; failure must
+				// not prevent the renderer from using the selected device.
+				enabled_extensions.pop_back();
+				device_create_info.enabledExtensionCount = static_cast<uint32_t>(enabled_extensions.size());
+				device_create_info.ppEnabledExtensionNames = enabled_extensions.data();
+				m_VansVKLogicDevice = VK_NULL_HANDLE;
+				result = VansGraphics::vkCreateDevice(device, &device_create_info, nullptr, &m_VansVKLogicDevice);
+				calibratedExtension = nullptr;
+			}
 			if ((result != VK_SUCCESS) || (m_VansVKLogicDevice == VK_NULL_HANDLE))
 			{
-				VANS_LOG_ERROR("Could not create logical device.");
-				return false;
+				VANS_LOG_WARN("[VansVKDevice] Could not create logical device for "
+					<< selectedProperties.deviceName << " (VkResult=" << result
+					<< "); trying the next compatible physical device.");
+				m_VansVKLogicDevice = VK_NULL_HANDLE;
+				continue;
 			}
 
+			m_CalibratedTimestampsEnabled = calibratedExtension != nullptr;
+			VANS_LOG("[VansVKDevice] Selected physical device: " << selectedProperties.deviceName);
 			return true;
 		}
+		m_VansVKPhysicalDevice = VK_NULL_HANDLE;
+		VANS_LOG_ERROR("Could not create a logical device on any compatible physical device.");
 		return false;
+	}
+
+	bool VansVKDevice::CreateAsyncFrameCommands(VansAsyncFrameCommands& commands)
+	{
+		CommandBufferCreateParams params = {
+			VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+			1
+		};
+		static constexpr std::array<const char*, 11> names = {
+			"ShadowMaps", "GBuffer", "GBufferMaterial", "GTAORaw",
+			"ComputeScreen", "Vegetation", "EarlyAux", "AsyncAtmosphere",
+			"AsyncHZB", "RayTracing", "GIData"
+		};
+		const auto buffers = commands.All();
+		for (std::size_t i = 0; i < buffers.size(); ++i)
+		{
+			const uint32_t queueFamily = i < 4
+				? m_GraphicsQueueFamilyIndex : m_ComputeQueueFamilyIndex;
+			if (!buffers[i]->CreateVulkanCommandBuffer(*this, queueFamily, params) ||
+				!CreateVKFence(false, buffers[i]->m_CommandBufferFinishSubmitFence))
+			{
+				VANS_LOG_ERROR("create " << names[i] << " frame command buffer failed");
+				DestroyAsyncFrameCommands(commands);
+				return false;
+			}
+		}
+		return true;
+	}
+
+	void VansVKDevice::DestroyAsyncFrameCommands(VansAsyncFrameCommands& commands)
+	{
+		for (VansVKCommandBuffer* buffer : commands.All())
+		{
+			DestroyVKFence(buffer->m_CommandBufferFinishSubmitFence);
+			buffer->DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		}
 	}
 
 	bool VansVKDevice::InitVulkanLogicDevice()
@@ -796,10 +889,19 @@ namespace VansGraphics
 		m_QueueCapabilities.hasDedicatedAsyncComputeQueue =
 			m_ComputeQueueFamilyIndex != VK_QUEUE_FAMILY_IGNORED &&
 			m_ComputeQueueFamilyIndex != m_GraphicsQueueFamilyIndex;
-		m_FrameSubmitOrchestrator.Bind(
-			m_VansVKLogicDevice,
-			m_VansVKGraphicsQueue,
-			m_VansVKComputeQueue);
+		if (m_Features12.timelineSemaphore == VK_TRUE &&
+			!m_FrameQueueTimelines.Initialize(m_VansVKLogicDevice,
+				m_VansVKGraphicsQueue, m_VansVKComputeQueue))
+		{
+			VANS_LOG_WARN("[VansVKDevice] Queue timelines unavailable; two GPU frames cannot be enabled.");
+		}
+		for (VansFrameContextRingSlot& slot : m_FrameContextRingSlots)
+		{
+			slot.submitGraph.Bind(
+				m_VansVKLogicDevice,
+				m_VansVKGraphicsQueue,
+				m_VansVKComputeQueue);
+		}
 		RefreshAsyncComputeState();
 
 		CommandBufferCreateParams params =
@@ -819,18 +921,9 @@ namespace VansGraphics
 			return true;
 		};
 
-		if (!createFrameCommandBuffer(m_VansVKCommandBuffer, m_GraphicsQueueFamilyIndex, "GraphicsMain")
-			|| !createFrameCommandBuffer(m_VansVKShadowMapsCommandBuffer, m_GraphicsQueueFamilyIndex, "ShadowMaps")
-			|| !createFrameCommandBuffer(m_VansVKGBufferCommandBuffer, m_GraphicsQueueFamilyIndex, "GBuffer")
-			|| !createFrameCommandBuffer(m_VansVKGBufferMaterialCommandBuffer, m_GraphicsQueueFamilyIndex, "GBufferMaterial")
-			|| !createFrameCommandBuffer(m_VansVKGTAORawCommandBuffer, m_GraphicsQueueFamilyIndex, "GTAORaw")
-			|| !createFrameCommandBuffer(m_VansVKGraphicsScreenCommandBuffer, m_ComputeQueueFamilyIndex, "ComputeScreen")
-			|| !createFrameCommandBuffer(m_VansVKVegetationCommandBuffer, m_ComputeQueueFamilyIndex, "Vegetation")
-			|| !createFrameCommandBuffer(m_VansVKEarlyAuxCommandBuffer, m_ComputeQueueFamilyIndex, "EarlyAux")
-			|| !createFrameCommandBuffer(m_VansVKAsyncAtmosphereCommandBuffer, m_ComputeQueueFamilyIndex, "AsyncAtmosphere")
-			|| !createFrameCommandBuffer(m_VansVKAsyncHZBCommandBuffer, m_ComputeQueueFamilyIndex, "AsyncHZB")
-			|| !createFrameCommandBuffer(m_VansVKRayTracingCommandBuffer, m_ComputeQueueFamilyIndex, "RayTracing")
-			|| !createFrameCommandBuffer(m_VansVKGIDataCommandBuffer, m_ComputeQueueFamilyIndex, "GIData")
+		if (!createFrameCommandBuffer(m_MaintenanceGraphicsCommandBuffer, m_GraphicsQueueFamilyIndex, "MaintenanceGraphics")
+			|| !createFrameCommandBuffer(m_FrameContextRingSlots[0].graphicsCommandBuffer, m_GraphicsQueueFamilyIndex, "GraphicsFrameSlot0")
+			|| !CreateAsyncFrameCommands(m_FrameContextRingSlots[0].asyncCommands)
 			|| !createFrameCommandBuffer(m_ImmediateGraphicsCommandBuffer, m_GraphicsQueueFamilyIndex, "ImmediateGraphics"))
 		{
 			return false;
@@ -844,7 +937,7 @@ namespace VansGraphics
 			VANS_LOG_ERROR("Failed to initialize VMA allocator.");
 			return false;
 		}
-		VansVKDescriptorManager::GetInstance()->BindDevice(m_VansVKPhysicalDevice, m_VansVKLogicDevice, m_VansVKCommandBuffer.GetVKCommandBuffer());
+		VansVKDescriptorManager::GetInstance()->BindDevice(m_VansVKPhysicalDevice, m_VansVKLogicDevice, m_MaintenanceGraphicsCommandBuffer.GetVKCommandBuffer());
 		VansVKDescriptorManager::GetInstance()->CreateDescriptorPool(true);
 
 		if (!m_StageBuffer.CreatVulkanBuffer(m_VansVKLogicDevice, 1024 * 1024 * 512, VK_FORMAT_R32_SFLOAT, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ||
@@ -864,14 +957,24 @@ namespace VansGraphics
 		{
 			WaitForDevice();
 			VANS_LOG("[VansVKDevice] Shutdown stage: logic-device idle");
-			m_FrameSubmitOrchestrator.Shutdown();
+			for (VansFrameContextRingSlot& slot : m_FrameContextRingSlots)
+			{
+				slot.submitGraph.Shutdown();
+				slot.projectPreludeSubmit.Shutdown();
+			}
+			m_ProjectRenderPassRuntime.ShutdownAtIdle();
+			m_RenderTextureCatalog.Clear();
+			m_FrameQueueTimelines.Shutdown();
 			VANS_LOG("[VansVKDevice] Shutdown stage: submit orchestrator released");
 			// Persist cache entries before shader-owned pipeline objects are released.
 			m_PipelineCacheService.Flush(VansPipelineCacheFlushReason::Shutdown);
 			VANS_LOG("[VansVKDevice] Shutdown stage: pipeline cache flushed");
 		}
 
-		VansShaderManager::Get().ReleaseLoadedShaderAssets();
+        // 退役代际必须先释放其 Shader 管线变体，不能延后到 VulkanDestroy。
+        if (!DrainDeferredDeletesAfterDeviceIdle())
+            std::terminate();
+        VansShaderManager::Get().ReleaseLoadedShaderAssets();
 		VANS_LOG("[VansVKDevice] Shutdown stage: loaded shader assets released");
 		VansPipelineRegistry::Get().Clear();
 		VANS_LOG("[VansVKDevice] Shutdown stage: pipeline registry cleared");
@@ -884,31 +987,12 @@ namespace VansGraphics
 		m_StageBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
 		DestroyFrameContextRingResources();
 
-		DestroyVKFence(m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKVegetationCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKEarlyAuxCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKAsyncAtmosphereCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKAsyncHZBCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKGIDataCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKShadowMapsCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKGBufferMaterialCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKGTAORawCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(m_MaintenanceGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(m_FrameContextRingSlots[0].graphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_ImmediateGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
-		m_VansVKCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKVegetationCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKEarlyAuxCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKAsyncAtmosphereCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKAsyncHZBCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKRayTracingCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKGIDataCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKShadowMapsCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-	m_VansVKGBufferCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-	m_VansVKGBufferMaterialCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKGTAORawCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKGraphicsScreenCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		m_MaintenanceGraphicsCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		m_FrameContextRingSlots[0].graphicsCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		DestroyAsyncFrameCommands(m_FrameContextRingSlots[0].asyncCommands);
 		m_ImmediateGraphicsCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 
 		// Tear down VMA before destroying the logical device. All buffer/image

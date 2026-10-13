@@ -1,4 +1,4 @@
-﻿#include "VansSceneProjectResourceBuilder.h"
+#include "VansSceneProjectResourceBuilder.h"
 
 #include "../VansGraphicsDevice.h"
 #include "../VansShaderManager.h"
@@ -311,6 +311,7 @@ bool VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
     {
         VansShaderEntry entry{};
         entry.name = shaderRequest.name;
+        entry.assetGuid = shaderRequest.assetGuid;
         if (entry.name.empty())
         {
 			VANS_LOG_ERROR("[VansScene] Shader asset is missing its required name");
@@ -347,6 +348,7 @@ bool VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
         entry.additiveBlendAttachmentMask = shaderRequest.additiveBlendAttachmentMask;
         entry.enablePremultipliedAlphaBlend = shaderRequest.premultipliedAlphaBlend;
         entry.colorAttachmentCount = shaderRequest.colorAttachmentCount;
+        entry.colorAttachmentBlends = shaderRequest.colorAttachmentBlends;
         if (entry.colorAttachmentCount < 0 && shaderRequest.renderPath == "deferredSurface")
             entry.colorAttachmentCount = 5;
         entry.polygonMode = ParsePolygonMode(shaderRequest.polygonMode, VK_POLYGON_MODE_FILL);

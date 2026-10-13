@@ -284,6 +284,34 @@ void VansEntityCommandBuffer::AddActionHostComponent(
 		VansRuntimeActionHostComponent{ std::move(host) }, enabled);
 }
 
+void VansEntityCommandBuffer::AddNavigationSurfaceComponent(VansEntityHandle entity, std::string stableGuid,
+    VansRuntimeNavigationSurfaceComponent component, bool enabled)
+{
+    AddComponentCommand(entity,VansRuntimeComponentType_NavigationSurface,std::move(stableGuid),std::move(component),enabled);
+}
+
+void VansEntityCommandBuffer::AddNavigationSourceComponent(VansEntityHandle entity, std::string stableGuid,
+    VansRuntimeNavigationSourceComponent component, bool enabled)
+{
+    AddComponentCommand(entity,VansRuntimeComponentType_NavigationSource,std::move(stableGuid),std::move(component),enabled);
+}
+
+void VansEntityCommandBuffer::AddNavigationModifierComponent(VansEntityHandle entity, std::string stableGuid,
+    VansRuntimeNavigationModifierComponent component, bool enabled)
+{
+    AddComponentCommand(entity,VansRuntimeComponentType_NavigationModifier,std::move(stableGuid),std::move(component),enabled);
+}
+void VansEntityCommandBuffer::AddNavigationObstacleComponent(VansEntityHandle entity,std::string stableGuid,
+    VansRuntimeNavigationObstacleComponent component,bool enabled)
+{
+    AddComponentCommand(entity,VansRuntimeComponentType_NavigationObstacle,std::move(stableGuid),std::move(component),enabled);
+}
+
+void VansEntityCommandBuffer::AddNavigationLinkComponent(VansEntityHandle entity,std::string stableGuid,
+    VansRuntimeNavigationLinkComponent component,bool enabled)
+{
+    AddComponentCommand(entity,VansRuntimeComponentType_NavigationLink,std::move(stableGuid),std::move(component),enabled);
+}
 void VansEntityCommandBuffer::AddNavigationAgentComponent(
 	VansEntityHandle entity, std::string stableGuid,
 	VansRuntimeNavigationAgentComponent component, bool enabled)

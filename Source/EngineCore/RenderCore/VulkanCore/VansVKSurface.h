@@ -103,13 +103,13 @@ namespace VansGraphics
 
 		VkColorSpaceKHR m_VansVKSwapChainColorSpace;
 
-		VkSwapchainKHR m_VansVKOldSwapChain;
+		VkSwapchainKHR m_VansVKOldSwapChain = VK_NULL_HANDLE;
 
 		VkImageUsageFlags m_VansVKSwapChainImageUsage;
 	private:
-		VkSwapchainKHR m_VansVKSwapChain;
+		VkSwapchainKHR m_VansVKSwapChain = VK_NULL_HANDLE;
 
-		VkSurfaceKHR m_VansVKPresentSurface;
+		VkSurfaceKHR m_VansVKPresentSurface = VK_NULL_HANDLE;
 
 		std::vector<VkImage> m_VansVKSwapChainImages;
 

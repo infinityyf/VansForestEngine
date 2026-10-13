@@ -6,17 +6,6 @@
 
 namespace Vans
 {
-struct VansRuntimeNavigationAgentComponent
-{
-	std::string navigationMeshGuid;
-	float maxSpeed = 3.2f;
-	float acceleration = 12.0f;
-	float stoppingDistance = 1.6f;
-	float repathInterval = 0.25f;
-	float targetMoveThreshold = 0.75f;
-	float forceRepathDistance = 6.0f;
-};
-
 struct VansRuntimeAISightConfig
 {
 	bool enabled = false;
@@ -58,7 +47,6 @@ struct VansRuntimeAIAgentComponent
 
 inline bool ValidateAIRuntimeTiming(
 	const VansRuntimeAIAgentComponent& ai,
-	const VansRuntimeNavigationAgentComponent& navigation,
 	std::string& error)
 {
 	if (!std::isfinite(ai.timing.perceptionInterval) ||
@@ -69,17 +57,6 @@ inline bool ValidateAIRuntimeTiming(
 		ai.timing.maximumDeltaSeconds <= 0.0f)
 	{
 		error = "AIAgent timing values must be positive and finite";
-		return false;
-	}
-	if (!std::isfinite(navigation.repathInterval) ||
-		navigation.repathInterval <= 0.0f ||
-		!std::isfinite(navigation.targetMoveThreshold) ||
-		navigation.targetMoveThreshold < 0.0f ||
-		!std::isfinite(navigation.forceRepathDistance) ||
-		navigation.forceRepathDistance <= navigation.targetMoveThreshold)
-	{
-		error = "NavigationAgent repath timing requires a positive interval and "
-			"forceRepathDistance greater than targetMoveThreshold";
 		return false;
 	}
 	error.clear();

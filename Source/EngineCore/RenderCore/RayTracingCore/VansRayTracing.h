@@ -12,6 +12,7 @@
 #include "../../RenderCore/VulkanCore/VansShader.h"
 #include "../../RenderCore/BRDFData/VansLight.h"
 #include "../../RenderCore/GICore/VansGISettings.h"
+#include "../../RenderCore/GICore/VansGIInstanceMaterial.h"
 #include "../../RenderCore/GICore/VansGIProbeWorkScheduler.h"
 #include "../../RenderCore/GICore/VansGIProbeLayout.h"
 #include "../../RenderCore/GICore/VansGIWorld.h"
@@ -25,6 +26,7 @@ namespace VansGraphics
 	class VansScene;
 	class VansMaterialManager;
 	struct VansRenderLightFrameData;
+	struct VansRenderMaterialFrameData;
 }
 namespace VansGraphics
 {
@@ -71,11 +73,14 @@ namespace VansGraphics
 		void PrepareGIProbeUpdate(
 			const VansRenderLightFrameData& lightFrame,
 			VansMaterialManager* materialManager, VkFence completionFence);
+        VkFence GetPendingGIProbeFeedbackFence() const { return m_State->m_GIFeedbackFence; }
         // 调用点必须已通过现有提交 fence 确认 GPU 完成；这些函数不会新增等待。
         void CompleteGIProbeUpdate(VkFence completionFence);
         void DiscardGIProbeUpdate();
 
 		void DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene);
+		bool PrepareClothMaterialUpdates(const VansRenderMaterialFrameData& frame);
+		void InvalidateClothTextureDescriptors();
 		
 		bool CreateRayTracingResource(VansVKDevice* device, VansVKCommandBuffer* commandBuffer,
 			VansScene* scene, const VansGISettings& settings);
@@ -220,6 +225,13 @@ namespace VansGraphics
 
 			VansVKBuffer m_BLASInstanceBuffer;
 			VansVKBuffer m_TLASInstanceMaterialBuffer;
+			struct ClothInstanceUpdate
+			{
+				uint32_t instanceIndex;
+				GIInstanceMaterialGPU material;
+			};
+			std::vector<ClothInstanceUpdate> m_ClothInstanceUpdates;
+			bool m_ClothLightingChanged = false;
 			VansVKBuffer m_TLASInstanceGIEmissionBuffer;
 
 			VansComputeShader* m_RayTracingPointLighting = nullptr;

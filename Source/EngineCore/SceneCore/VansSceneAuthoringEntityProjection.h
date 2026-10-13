@@ -24,6 +24,7 @@ struct VansSceneAuthoringComponentProjection
 	std::string type;
 	bool enabled = true;
 	std::optional<VansSerializedValue> localVolumetricFogComponent;
+	std::optional<VansSerializedValue> navigationData;
 };
 
 using VansSceneAuthoringLightConfig = std::variant<

@@ -43,6 +43,14 @@ bool VansPlantTypeAssetCodec::Decode(const Value& root, VansPlantTypeAsset& asse
 		item.Vector("offset", variant.offset);
 		item.Vector("rotation", variant.rotation);
 		item.Vector("scale", variant.scale);
+		if (const auto* value = item.OptionalField("collision"))
+		{
+			VansPlantCollisionPrototype collision;
+			PcgValue::Reader prototype(value, path + ".collision", error);
+			prototype.Reference("mesh", "model", collision.mesh);
+			prototype.String("layer", collision.layer);
+			prototype.Finish(); variant.collision = std::move(collision);
+		}
 		const auto* parts = item.Array("parts");
 		if (parts) for (std::size_t partIndex = 0; partIndex < parts->size(); ++partIndex)
 		{
@@ -117,6 +125,9 @@ bool VansPlantTypeAssetCodec::Encode(const VansPlantTypeAsset& asset, Value& roo
 			{ "offset", PcgValue::Vector(variant.offset) }, { "rotation", PcgValue::Vector(variant.rotation) },
 			{ "scale", PcgValue::Vector(variant.scale) }, { "parts", Value::Array(std::move(parts)) }
 		}));
+        if (variant.collision) variants.back().objectFields.emplace_back("collision", Value::Object({
+            {"mesh", PcgValue::Reference(variant.collision->mesh, "model")},
+            {"layer", Value::String(variant.collision->layer)}}));
         if (asset.category == VansPlantCategory::Tree) {
             std::vector<Value> levels;
             for (const auto& level:variant.lod.levels) {

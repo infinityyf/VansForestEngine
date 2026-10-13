@@ -116,9 +116,17 @@ namespace VansGraphics
 		std::uint32_t renderHeight,
 		std::uint32_t displayWidth,
 		std::uint32_t displayHeight,
-		VansVKImage& outputImage)
+		VansVKImage& outputImage,
+		std::uint32_t framesInFlight)
 	{
 		Cleanup();
+		if (m_ContextDestructionFailed)
+		{
+			m_Diagnostics.lastError =
+				"FSR context destruction failed; context cannot be recreated on this device";
+			VANS_LOG_ERROR("[FSR] " << m_Diagnostics.lastError);
+			return false;
+		}
 		m_Diagnostics = {};
 		m_Diagnostics.debugCheckerEnabled = true;
 
@@ -151,34 +159,11 @@ namespace VansGraphics
 		}
 		m_OutputImage = &outputImage;
 
-		ffx::CreateBackendVKDesc backendDesc{};
-		backendDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
-		backendDesc.header.pNext = nullptr;
-		backendDesc.vkDevice = device;
-		backendDesc.vkPhysicalDevice = physicalDevice;
-		backendDesc.vkDeviceProcAddr = VansVKDevice::GetDeviceProcAddr();
-
-		ffx::CreateContextDescUpscale createUpscaling{};
-		createUpscaling.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
-		createUpscaling.header.pNext = nullptr;
-		createUpscaling.maxUpscaleSize = { displayWidth, displayHeight };
-		createUpscaling.maxRenderSize = { renderWidth, renderHeight };
-		// SceneColor is upscaled in linear HDR. Exposure and display conversion
-		// are deliberately applied by the following display-resolution pass.
-		createUpscaling.flags =
-			FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE |
-			FFX_UPSCALE_ENABLE_DEBUG_CHECKING;
-		createUpscaling.fpMessage = FSRMessageCallback;
-
-		const ffx::ReturnCode createResult =
-			ffx::CreateContext(m_UpscalingContext, nullptr, createUpscaling, backendDesc);
-		m_Diagnostics.lastCreateReturnCode = static_cast<std::uint32_t>(createResult);
-		if (createResult != ffx::ReturnCode::Ok)
+		if (!CreateUpscalingContext(m_UpscalingContext, false))
 		{
 			m_Diagnostics.lastError = "ffx::CreateContext failed";
 			VANS_LOG_ERROR("[FSR] Context creation failed, code="
 				<< m_Diagnostics.lastCreateReturnCode);
-			m_UpscalingContext = nullptr;
 			return false;
 		}
 
@@ -229,15 +214,11 @@ namespace VansGraphics
 			return false;
 		}
 
-		FfxApiEffectMemoryUsage memoryUsage{};
-		ffx::QueryDescUpscaleGetGPUMemoryUsage memoryQuery{};
-		memoryQuery.gpuMemoryUsageUpscaler = &memoryUsage;
-		const ffx::ReturnCode memoryResult = ffx::Query(m_UpscalingContext, memoryQuery);
-		m_Diagnostics.lastQueryReturnCode = static_cast<std::uint32_t>(memoryResult);
-		if (memoryResult == ffx::ReturnCode::Ok)
+		if (!ConfigureFrameConcurrency(framesInFlight))
 		{
-			m_Diagnostics.gpuMemoryUsageBytes = memoryUsage.totalUsageInBytes;
-			m_Diagnostics.gpuMemoryAliasableBytes = memoryUsage.aliasableUsageInBytes;
+			m_Diagnostics.lastError = "FSR context frame concurrency configuration failed";
+			Cleanup();
+			return false;
 		}
 
 		m_Diagnostics.contextReady = true;
@@ -245,6 +226,93 @@ namespace VansGraphics
 		VANS_LOG("[FSR] Context ready: render=" << renderWidth << "x" << renderHeight
 			<< " output=" << displayWidth << "x" << displayHeight
 			<< " jitterPhases=" << m_JitterPhaseCount << " debugChecker=on");
+		return true;
+	}
+
+	bool VansFSR::CreateUpscalingContext(ffx::Context& context, bool reactiveOnly)
+	{
+		ffx::CreateBackendVKDesc backendDesc{};
+		backendDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
+		backendDesc.vkDevice = m_Device;
+		backendDesc.vkPhysicalDevice = m_PhysicalDevice;
+		backendDesc.vkDeviceProcAddr = VansVKDevice::GetDeviceProcAddr();
+
+		ffx::CreateContextDescUpscale createUpscaling{};
+		createUpscaling.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+		// Reactive-mask generation touches only render-resolution resources.
+		// Keep the unused temporal/output allocations in that context bounded.
+		createUpscaling.maxUpscaleSize = {
+			reactiveOnly ? m_RenderWidth : m_DisplayWidth,
+			reactiveOnly ? m_RenderHeight : m_DisplayHeight };
+		createUpscaling.maxRenderSize = { m_RenderWidth, m_RenderHeight };
+		// Both contexts use the same pipeline configuration. The second context
+		// records only the reactive pass when two host frames may be in flight.
+		createUpscaling.flags =
+			FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE |
+			FFX_UPSCALE_ENABLE_DEBUG_CHECKING;
+		createUpscaling.fpMessage = FSRMessageCallback;
+
+		const ffx::ReturnCode result =
+			ffx::CreateContext(context, nullptr, createUpscaling, backendDesc);
+		m_Diagnostics.lastCreateReturnCode = static_cast<std::uint32_t>(result);
+		if (result != ffx::ReturnCode::Ok)
+		{
+			context = nullptr;
+			return false;
+		}
+		return true;
+	}
+
+	void VansFSR::RefreshGpuMemoryUsage()
+	{
+		m_Diagnostics.gpuMemoryUsageBytes = 0;
+		m_Diagnostics.gpuMemoryAliasableBytes = 0;
+		for (ffx::Context context : { m_UpscalingContext, m_ReactiveMaskContext })
+		{
+			if (context == nullptr)
+				continue;
+			FfxApiEffectMemoryUsage memoryUsage{};
+			ffx::QueryDescUpscaleGetGPUMemoryUsage query{};
+			query.gpuMemoryUsageUpscaler = &memoryUsage;
+			const ffx::ReturnCode result = ffx::Query(context, query);
+			m_Diagnostics.lastQueryReturnCode = static_cast<std::uint32_t>(result);
+			if (result == ffx::ReturnCode::Ok)
+			{
+				m_Diagnostics.gpuMemoryUsageBytes += memoryUsage.totalUsageInBytes;
+				m_Diagnostics.gpuMemoryAliasableBytes += memoryUsage.aliasableUsageInBytes;
+				VANS_LOG("[FSR] SDK context memory role="
+					<< (context == m_UpscalingContext ? "upscale" : "reactive")
+					<< " bytes=" << memoryUsage.totalUsageInBytes
+					<< " aliasableBytes=" << memoryUsage.aliasableUsageInBytes);
+			}
+		}
+	}
+
+	bool VansFSR::ConfigureFrameConcurrency(std::uint32_t framesInFlight)
+	{
+		if (m_ContextDestructionFailed || m_UpscalingContext == nullptr ||
+			(framesInFlight != 1 && framesInFlight != 2))
+			return false;
+		if (framesInFlight == 2 && m_ReactiveMaskContext == nullptr &&
+			!CreateUpscalingContext(m_ReactiveMaskContext, true))
+			return false;
+		if (framesInFlight == 1 && m_ReactiveMaskContext != nullptr)
+		{
+			const ffx::ReturnCode result = ffx::DestroyContext(m_ReactiveMaskContext);
+			if (result != ffx::ReturnCode::Ok)
+			{
+				VANS_LOG_ERROR("[FSR] Reactive context destruction failed, code="
+					<< static_cast<std::uint32_t>(result));
+				// The SDK can fail after releasing some resources. Never retry this
+				// handle or create another FSR context on the same device.
+				m_ContextDestructionFailed = true;
+				m_Diagnostics.contextReady = false;
+				m_Diagnostics.lastError = "FSR reactive context destruction failed";
+				return false;
+			}
+			m_ReactiveMaskContext = nullptr;
+		}
+		RefreshGpuMemoryUsage();
 		return true;
 	}
 
@@ -316,11 +384,11 @@ namespace VansGraphics
 		{
 			if (image == VK_NULL_HANDLE)
 				return ffxApiGetResourceVK(
-					nullptr, FfxApiResourceDescription(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+					nullptr, FfxApiResourceDescription(), FFX_API_RESOURCE_STATE_GENERIC_READ);
 			return ffxApiGetResourceVK(
 				reinterpret_cast<void*>(image),
 				ffxApiGetImageResourceDescriptionVK(image, createInfo, 0),
-				FFX_API_RESOURCE_STATE_COMPUTE_READ);
+				FFX_API_RESOURCE_STATE_GENERIC_READ);
 		};
 		dispatch.reactive = makeOptionalResource(input.reactive, input.reactiveCreateInfo);
 		dispatch.transparencyAndComposition = makeOptionalResource(
@@ -405,7 +473,8 @@ namespace VansGraphics
 		reactive.flags = FFX_UPSCALE_AUTOREACTIVEFLAGS_APPLY_THRESHOLD |
 			FFX_UPSCALE_AUTOREACTIVEFLAGS_USE_COMPONENTS_MAX;
 
-		const ffx::ReturnCode result = ffx::Dispatch(m_UpscalingContext, reactive);
+		const ffx::ReturnCode result = ffx::Dispatch(
+			m_ReactiveMaskContext != nullptr ? m_ReactiveMaskContext : m_UpscalingContext, reactive);
 		m_Diagnostics.lastReactiveReturnCode = static_cast<std::uint32_t>(result);
 		if (result != ffx::ReturnCode::Ok)
 		{
@@ -445,13 +514,30 @@ namespace VansGraphics
 				m_TransparencyAndCompositionImage->DestroyVulkanImage(m_Device);
 			m_TransparencyAndCompositionImage.reset();
 		}
+		if (m_ReactiveMaskContext)
+		{
+			if (!m_ContextDestructionFailed)
+			{
+				const ffx::ReturnCode result = ffx::DestroyContext(m_ReactiveMaskContext);
+				if (result != ffx::ReturnCode::Ok)
+				{
+					m_ContextDestructionFailed = true;
+					VANS_LOG_ERROR("[FSR] Reactive context destruction failed, code="
+						<< static_cast<std::uint32_t>(result));
+				}
+			}
+			m_ReactiveMaskContext = nullptr;
+		}
 
 		if (m_UpscalingContext)
 		{
 			const ffx::ReturnCode result = ffx::DestroyContext(m_UpscalingContext);
 			if (result != ffx::ReturnCode::Ok)
+			{
+				m_ContextDestructionFailed = true;
 				VANS_LOG_ERROR("[FSR] Context destruction failed, code="
 					<< static_cast<std::uint32_t>(result));
+			}
 			m_UpscalingContext = nullptr;
 		}
 

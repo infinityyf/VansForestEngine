@@ -15,9 +15,14 @@
 
 #include "VansLuaUIBridge.h"
 #include "VansLuaGameplayActionBridge.h"
+#include "VansLuaProjectRenderPassBridge.h"
+#include "VansLuaTerrainBridge.h"
+#include "VansLuaNavigationBridge.h"
 #include "../SceneRuntime/Transform/VansTransformStore.h"
 #include <glm/gtc/matrix_inverse.hpp>
 #include "../AICore/VansAIEvents.h"
+#include "../NavigationCore/VansNavigationWorld.h"
+#include "../RuntimeCore/VansRuntimePhaseGuard.h"
 #include "../AnimationCore/VansAnimationController.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansPoseMath.h"
@@ -759,6 +764,44 @@ int LuaObjectGetGuid(lua_State* L)
 	return 1;
 }
 
+int LuaObjectGetLocalRotation(lua_State* L)
+{
+	auto* object = ResolveObject(CheckObject(L, 1));
+	auto* scene = Scene();
+	Vans::VansLocalTransform local;
+	if (!object || !scene || !scene->TryGetEntityLocalTransformByGuid(object->m_EntityGuid, local))
+	{
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_createtable(L, 0, 4);
+	lua_pushnumber(L, local.rotation.x); lua_setfield(L, -2, "x");
+	lua_pushnumber(L, local.rotation.y); lua_setfield(L, -2, "y");
+	lua_pushnumber(L, local.rotation.z); lua_setfield(L, -2, "z");
+	lua_pushnumber(L, local.rotation.w); lua_setfield(L, -2, "w");
+	return 1;
+}
+
+int LuaObjectSetLocalRotation(lua_State* L)
+{
+	auto* object = ResolveObject(CheckObject(L, 1));
+	const float x = static_cast<float>(luaL_checknumber(L, 2));
+	const float y = static_cast<float>(luaL_checknumber(L, 3));
+	const float z = static_cast<float>(luaL_checknumber(L, 4));
+	const float w = static_cast<float>(luaL_checknumber(L, 5));
+	const float lengthSquared = x*x + y*y + z*z + w*w;
+	if (!std::isfinite(lengthSquared) || lengthSquared <= 1e-12f)
+		return luaL_error(L, "set_local_rotation requires a finite nonzero quaternion");
+	auto* scene = Scene();
+	Vans::VansLocalTransform local;
+	const bool resolved = object && scene &&
+		scene->TryGetEntityLocalTransformByGuid(object->m_EntityGuid, local);
+	if (resolved)
+		local.rotation = glm::normalize(glm::quat(w, x, y, z));
+	lua_pushboolean(L, resolved && scene->SetEntityLocalTransformByGuid(object->m_EntityGuid, local));
+	return 1;
+}
+
 int LuaObjectGetParent(lua_State* L)
 {
 	auto* object = ResolveObject(CheckObject(L, 1));
@@ -1182,9 +1225,24 @@ int LuaComponentSetMotionDynamics(lua_State* L)
 	return 0;
 }
 
+std::string ReadCurrentLuaScriptSourceGuid(lua_State* L);
 int LuaComponentSetMotionIntent(lua_State* L)
 {
-	auto* component = CheckComponent(L, 1)->component;
+	auto* handle = CheckComponent(L, 1);
+	auto* component = handle->component;
+	if (auto* scene = Scene())
+	{
+		const auto* world = scene->GetRuntimeWorld();
+		const auto* header = world ? world->GetComponentHeader(handle->runtimeComponent) : nullptr;
+		const auto* navigation = scene->GetNavigationWorld();
+		if (header && navigation && navigation->HasAgent(header->owner) &&
+            !navigation->HasTraversalControl(header->owner,ReadCurrentLuaScriptSourceGuid(L)))
+		{
+			lua_pushnil(L);
+			lua_pushliteral(L, "NavigationAgent owns this motor; use vans.navigation");
+			return 2;
+		}
+	}
 	auto* cct = dynamic_cast<VansScriptCharacterControllerComponent*>(component);
 	if (!cct || !cct->m_ControllerNode)
 		return 0;
@@ -1250,6 +1308,36 @@ int LuaComponentVehicleSetInputs(lua_State* L)
 	return 0;
 }
 
+int LuaComponentVehicleGetForwardSpeed(lua_State* L)
+{
+	auto* vehicle = dynamic_cast<VansScriptVehicleComponent*>(CheckComponent(L, 1)->component);
+	lua_pushnumber(L, vehicle && vehicle->m_Vehicle ? vehicle->m_Vehicle->GetForwardSpeed() : 0.0f);
+	return 1;
+}
+
+int LuaComponentVehicleGetWheelContact(lua_State* L)
+{
+	auto* vehicle = dynamic_cast<VansScriptVehicleComponent*>(CheckComponent(L, 1)->component);
+	const auto index = luaL_checkinteger(L, 2);
+	VansEngine::VansVehicleWheelContact contact;
+	if (!vehicle || !vehicle->m_Vehicle || index < 0 || index >= vehicle->m_Vehicle->GetNumWheels() ||
+		!vehicle->m_Vehicle->GetWheelContact(static_cast<std::uint32_t>(index), contact))
+	{ lua_pushnil(L); return 1; }
+	lua_newtable(L);
+	const auto vector = [&](const char* name, const physx::PxVec3& value) {
+		lua_newtable(L);
+		lua_pushnumber(L, value.x); lua_setfield(L, -2, "x");
+		lua_pushnumber(L, value.y); lua_setfield(L, -2, "y");
+		lua_pushnumber(L, value.z); lua_setfield(L, -2, "z");
+		lua_setfield(L, -2, name);
+	};
+	vector("position", contact.position); vector("normal", contact.normal); vector("forward", contact.forward);
+	const auto scalar = [&](const char* name, float value) { lua_pushnumber(L, value); lua_setfield(L, -2, name); };
+	scalar("width", contact.width); scalar("load", contact.load); scalar("normalized_load", contact.normalizedLoad);
+	scalar("longitudinal_slip", contact.longitudinalSlip); scalar("longitudinal_speed", contact.longitudinalSpeed);
+	return 1;
+}
+
 int LuaComponentVehicleSetGear(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
@@ -1280,7 +1368,12 @@ int LuaComponentSetPosition(lua_State* L)
 	const glm::vec3 position = ReadVec3(L, 2);
 	if (auto* cct = dynamic_cast<VansScriptCharacterControllerComponent*>(component))
 	{
-		if (cct->m_ControllerNode) cct->m_ControllerNode->SetPosition(position);
+		if (cct->m_ControllerNode)
+		{
+			// 瞬移会写入控制器的运动学刚体，必须等待物理模拟完成。
+			std::lock_guard<std::mutex> lock(VansEngine::VansPhysicsSystem::GetInstance().GetSimulationMutex());
+			cct->m_ControllerNode->SetPosition(position);
+		}
 	}
 	else if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 	{
@@ -1309,7 +1402,12 @@ int LuaComponentGetPosition(lua_State* L)
 	{
 		if (cct->m_ControllerNode)
 		{
-			PushVec3(L, cct->m_ControllerNode->GetPosition());
+			glm::vec3 position;
+			{
+				std::lock_guard<std::mutex> lock(VansEngine::VansPhysicsSystem::GetInstance().GetSimulationMutex());
+				position = cct->m_ControllerNode->GetPosition();
+			}
+			PushVec3(L, position);
 			return 1;
 		}
 	}
@@ -1324,12 +1422,15 @@ int LuaComponentGetCapsuleState(lua_State* L)
 	const auto* node=cct->m_ControllerNode;
 	VansEngine::CharControllerProperties properties;
 	glm::vec3 center;
+	bool crouched = false;
 	{
 		std::lock_guard<std::mutex> lock(VansEngine::VansPhysicsSystem::GetInstance().GetSimulationMutex());
 		center=node->GetPosition();
 		properties=node->GetProperties();
+		crouched=node->IsCrouched();
 	}
-	lua_createtable(L,0,7);
+	lua_createtable(L,0,8);
+	lua_pushboolean(L,crouched);lua_setfield(L,-2,"crouched");
 	PushVec3(L,center);lua_setfield(L,-2,"center");
 	PushVec3(L,properties.m_UpDirection);lua_setfield(L,-2,"axis");
 	lua_pushnumber(L,properties.m_Radius);lua_setfield(L,-2,"radius");
@@ -1829,6 +1930,19 @@ int LuaComponentAnimPlaySlot(lua_State* L)
 	request.curveOverrideClipName=luaL_optstring(L,14,"");
 	const auto handle = motionController->PlaySlot(slotId, request);
 	lua_pushinteger(L, static_cast<lua_Integer>(handle.value));
+	return 1;
+}
+
+int LuaComponentAnimDriveSlot(lua_State* L)
+{
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(CheckComponent(L, 1)->component);
+	const auto handle = VansGraphics::VansSlotPlaybackHandle{
+		static_cast<std::uint64_t>(luaL_checkinteger(L, 2))};
+	const float time = static_cast<float>(luaL_checknumber(L, 3));
+	const float weight = static_cast<float>(luaL_checknumber(L, 4));
+	auto* controller = anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetCharacterMotionController() : nullptr;
+	lua_pushboolean(L, controller && controller->DriveSlot(handle, time, weight));
 	return 1;
 }
 
@@ -3509,6 +3623,8 @@ int LuaParticleDiagnostics(lua_State* L)
         lua_pushstring(L,effect.state.c_str()); lua_setfield(L,-2,"state");
         lua_pushboolean(L,effect.detached); lua_setfield(L,-2,"detached");
         PushVec3(L,effect.sourcePosition); lua_setfield(L,-2,"source_position");
+        PushVec3(L,effect.sourceForward); lua_setfield(L,-2,"source_forward");
+        number("group_index",effect.emissionGroup.index); number("group_generation",effect.emissionGroup.generation);
         number("play_time",effect.playTime); number("alive_points",effect.alivePoints); number("dropped_spawns",effect.droppedSpawns);
         number("breaks",effect.breaks); number("substep_overruns",effect.substepOverruns);
         lua_newtable(L); int stripIndex=0;
@@ -3621,7 +3737,7 @@ std::string ReadCurrentLuaScriptSourceGuid(lua_State* L)
 	return sourceGuid;
 }
 
-Vans::VansEntityHandle ReadAIEventTarget(lua_State* L, int index)
+Vans::VansEntityHandle ReadRuntimeEntityArgument(lua_State* L, int index)
 {
 	if (luaL_testudata(L, index, "Vans.Object"))
 	{
@@ -3640,7 +3756,7 @@ Vans::VansEntityHandle ReadAIEventTarget(lua_State* L, int index)
 
 int LuaAIRequestActivation(lua_State* L)
 {
-	const Vans::VansEntityHandle target = ReadAIEventTarget(L, 1);
+	const Vans::VansEntityHandle target = ReadRuntimeEntityArgument(L, 1);
 	const std::string sourceGuid = ReadCurrentLuaScriptSourceGuid(L);
 	const bool accepted = target.IsValid() && !sourceGuid.empty();
 	if (accepted)
@@ -3653,7 +3769,7 @@ int LuaAIRequestActivation(lua_State* L)
 
 int LuaAIReleaseToGameplay(lua_State* L)
 {
-	const Vans::VansEntityHandle target = ReadAIEventTarget(L, 1);
+	const Vans::VansEntityHandle target = ReadRuntimeEntityArgument(L, 1);
 	const std::string sourceGuid = ReadCurrentLuaScriptSourceGuid(L);
 	const bool accepted = target.IsValid() && !sourceGuid.empty();
 	if (accepted)
@@ -4833,6 +4949,7 @@ void VansLuaScriptComponent::ReleaseLuaRefs(lua_State* L)
 
 void VansLuaScriptComponent::EnterFaultedState(const char* phase, const std::string& error)
 {
+	VansRuntime::VansLuaNavigationBridge::CancelOwner(m_ComponentGuid);
 	m_IsValid = false;
 	m_Enabled = false;
 	m_State = VansLuaScriptState::Faulted;
@@ -4986,6 +5103,7 @@ void VansLuaScriptComponent::OnEnable()
 
 void VansLuaScriptComponent::OnDisable()
 {
+	Vans::VansRuntimePhaseGuard navigationCleanup([this]() { VansRuntime::VansLuaNavigationBridge::CancelOwner(m_ComponentGuid); });
 	if (!m_IsValid) return;
 	if (m_OnDisableRef == LUA_NOREF)
 	{
@@ -5005,9 +5123,13 @@ void VansLuaScriptComponent::OnDisable()
 
 void VansLuaScriptComponent::CallUpdate(float deltaTime)
 {
-	if (!m_IsValid || m_State != VansLuaScriptState::Active || m_UpdateRef == LUA_NOREF) return;
+	if (!m_IsValid || m_State != VansLuaScriptState::Active) return;
 	lua_State* L = VansScriptContext::GetInstance()->GetLuaState();
 	LuaScriptSourceScope sourceScope(L, m_ComponentGuid);
+    std::string navigationError;
+    if(!VansRuntime::VansLuaNavigationBridge::DispatchOwner(L,m_ComponentGuid,navigationError))
+    { EnterFaultedState("navigation event",navigationError); return; }
+    if(!m_IsValid || m_State!=VansLuaScriptState::Active || m_UpdateRef==LUA_NOREF) return;
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_UpdateRef);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, m_InstanceRef);
 	lua_pushnumber(L, deltaTime);
@@ -5018,6 +5140,7 @@ void VansLuaScriptComponent::CallUpdate(float deltaTime)
 
 void VansLuaScriptComponent::Teardown()
 {
+	VansRuntime::VansLuaNavigationBridge::CancelOwner(m_ComponentGuid);
 	if (m_State == VansLuaScriptState::Destroyed)
 		return;
 	// Teardown is the last point at which the Lua VM is guaranteed to exist.
@@ -5314,6 +5437,8 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "is_valid", LuaObjectIsValid },
 		{ "get_name", LuaObjectGetName },
 		{ "get_guid", LuaObjectGetGuid },
+		{ "get_local_rotation", LuaObjectGetLocalRotation },
+		{ "set_local_rotation", LuaObjectSetLocalRotation },
 		{ "get_parent", LuaObjectGetParent },
 		{ "get_transform", LuaObjectGetTransform },
 		{ "get_transform_id", LuaObjectGetTransformID },
@@ -5401,6 +5526,8 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "set_inputs", LuaComponentVehicleSetInputs },
 		{ "set_gear", LuaComponentVehicleSetGear },
 		{ "set_automatic_gear", LuaComponentVehicleSetAutomaticGear },
+		{ "get_wheel_contact", LuaComponentVehicleGetWheelContact },
+		{ "get_forward_speed", LuaComponentVehicleGetForwardSpeed },
 		{ "get_position", LuaComponentGetPosition },
 		{ "get_capsule_state", LuaComponentGetCapsuleState },
 		{ "resize_capsule", LuaComponentResizeCapsule },
@@ -5435,6 +5562,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "get_normalized_time", LuaComponentAnimGetNormalizedTime },
 		{ "restart_layer", LuaComponentAnimRestartLayer },
 		{ "play_slot", LuaComponentAnimPlaySlot },
+		{ "drive_slot", LuaComponentAnimDriveSlot },
 		{ "stop_slot", LuaComponentAnimStopSlot },
 		{ "stop_slot_by_id", LuaComponentAnimStopSlotById },
 		{ "get_slot_status", LuaComponentAnimGetSlotStatus },
@@ -5580,6 +5708,7 @@ void VansScriptContext::RegisterLuaBindings()
 	lua_newtable(L);
 	luaL_setfuncs(L, rootBindings, 0);
 	RegisterSubtable(L, "ai", aiBindings);
+	VansRuntime::VansLuaNavigationBridge::Register(L,{ReadRuntimeEntityArgument,ReadCurrentLuaScriptSourceGuid});
 	RegisterSubtable(L, "timeline", timelineBindings);
 	RegisterSubtable(L, "audio", audioBindings);
 	RegisterSubtable(L, "physics_query", physicsQueryBindings);
@@ -5587,6 +5716,8 @@ void VansScriptContext::RegisterLuaBindings()
 
 	VansRuntime::VansLuaUIBridge::Register(L);
 	VansRuntime::VansLuaGameplayActionBridge::Register(L);
+	VansRuntime::VansLuaProjectRenderPassBridge::Register(L);
+	VansRuntime::VansLuaTerrainBridge::Register(L);
 	lua_setglobal(L, "vans");
 
 	const luaL_Reg scriptInstanceBindings[] = {

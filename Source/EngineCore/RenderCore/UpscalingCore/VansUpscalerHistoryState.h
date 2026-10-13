@@ -23,7 +23,7 @@ namespace VansGraphics
 		}
 		VansUpscalerResetReason GetPendingReasons() const { return m_PendingReasons; }
 		VansUpscalerResetReason GetLastConsumedResetReasons() const { return m_LastConsumedResetReasons; }
-		void OnTemporalDispatchSucceeded();
+		void OnTemporalDispatchSubmission(bool submitted);
 		void ClearForOffBackend();
 
 	private:

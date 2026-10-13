@@ -48,7 +48,7 @@ namespace VansGraphics
 		std::vector<std::string> ValidatePlacement() const;
 
 		bool CreateGPUResources(VansVKDevice& device, VansVKCommandBuffer& commandBuffer);
-		void UpdateGlobalDescriptors(VkDescriptorSet globalSet);
+		void UpdateGlobalDescriptors(const std::vector<VkDescriptorSet>& globalSets);
 		void UploadMetadata();
 		void UpdateRealtimeProbes(uint32_t frameIndex);
 		bool HasCaptureWork() const { return !m_State->m_SpecularPages.empty() && !m_State->m_BakeQueue.empty(); }
@@ -62,6 +62,7 @@ namespace VansGraphics
 		void RequestBake(size_t index);
 		void RequestBakeAll();
         void SetSkyLightingSource(const std::string& sourceKey);
+        void InvalidateCapturedLighting();
 		void MarkBakeComplete(size_t index, bool success, const std::string& message);
 		void MarkDirty(size_t index);
 
@@ -106,7 +107,7 @@ namespace VansGraphics
 		bool InitializeMetadataResources(VansVKDevice& device);
 		void CommitResources(VansVKDevice& device, const std::shared_ptr<VansReflectionProbeSystem>& pending);
 		void ReleaseSharedPipelines();
-		void WriteGlobalDescriptors(VkDescriptorSet globalSet, const std::vector<std::unique_ptr<VansTexture>>& pages);
+		void WriteGlobalDescriptors(const std::vector<VkDescriptorSet>& globalSets, const std::vector<std::unique_ptr<VansTexture>>& pages);
 		void QueueCapture(size_t index, bool persistCache);
 		void EnsureDefaults();
 		void BuildGPUData();
@@ -150,7 +151,7 @@ namespace VansGraphics
 			VansVKBuffer m_MetadataBuffer;
 			VansReflectionProbeSpatialIndex m_SpatialIndex;
 			VansVKBuffer m_SpatialIndexBuffer;
-			VkDescriptorSet m_GlobalDescriptorSet = VK_NULL_HANDLE;
+			std::vector<VkDescriptorSet> m_GlobalDescriptorSets;
 			VansReflectionProbePageLayout m_PageLayout;
 			std::vector<std::unique_ptr<VansTexture>> m_SpecularPages;
 			std::unique_ptr<VansTexture> m_CaptureTexture;
@@ -163,6 +164,7 @@ namespace VansGraphics
 			std::vector<VkImageView> m_PrefilterSourceViews;
 			std::vector<uint32_t> m_PrefilterOffsets;
 			VansGraphicsShader* m_CaptureGeometryShader = nullptr;
+			VansGraphicsShader* m_CaptureClothShader = nullptr;
 			VansGraphicsShader* m_CaptureSkyShader = nullptr;
 			VansVKImage m_CaptureDepthImage;
 			VansVKBuffer m_CaptureCameraBuffer;

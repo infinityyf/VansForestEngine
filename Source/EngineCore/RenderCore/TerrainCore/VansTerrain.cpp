@@ -44,6 +44,7 @@ namespace VansGraphics
             m_InstanceBuffer.DestroyVulkanBuffer(device);
             m_TessParamsUBO.DestroyVulkanBuffer(device);
             m_HeightDetailUBO.DestroyVulkanBuffer(device);
+            for (auto& buffer : m_InteractionUBOs) buffer.DestroyVulkanBuffer(device);
         }
 
         if (m_DescriptorSetLayout != VK_NULL_HANDLE)
@@ -232,19 +233,36 @@ namespace VansGraphics
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         UpdateHeightDetailUBO();
 
-        VansDescriptorSetLayoutFactory::CreateAndAllocate_Terrain(m_DescriptorSetLayout, m_DescriptorSets, 1);
+        VansDescriptorSetLayoutFactory::CreateAndAllocate_Terrain(m_DescriptorSetLayout, m_DescriptorSets,
+            VansCommandRecordingConfig::MaximumFramesInFlight);
         if (m_DescriptorSets.empty())
             throw std::runtime_error("Terrain descriptor allocation failed.");
 
         auto* descriptorManager = VansVKDescriptorManager::GetInstance();
         descriptorManager->BeginDescriptorUpdate();
-        descriptorManager->WriteImageDescriptor(m_DescriptorSets[0], TERRAIN_BINDING_HEIGHT_MAP,
+        for (std::size_t slot=0; slot<m_DescriptorSets.size(); ++slot)
+        {
+        const auto set=m_DescriptorSets[slot];
+        auto& interaction=m_InteractionUBOs[slot];
+        if (!interaction.CreatVulkanBuffer(device->GetLogicDevice(), sizeof(TerrainInteractionParamsGPU),
+            VK_FORMAT_UNDEFINED, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+            throw std::runtime_error("Terrain interaction buffer allocation failed");
+        const TerrainInteractionParamsGPU neutral{};
+        interaction.SetBufferData(&neutral, 0, sizeof(neutral));
+        descriptorManager->WriteBufferDescriptor(set, TERRAIN_BINDING_INTERACTION_PARAMS,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{interaction.GetNativeBuffer(),0,sizeof(neutral)}});
+        // 未绑定的语义由 channels=0 返回中性值；占位描述符仅保持合法，shader 不读取它。
+        for (const auto binding : {TERRAIN_BINDING_INTERACTION_ALBEDO,TERRAIN_BINDING_INTERACTION_NORMAL,TERRAIN_BINDING_INTERACTION_HEIGHT})
+            descriptorManager->WriteImageDescriptor(set,binding,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{m_HeightMap->GetImage().GetSampler(),m_HeightMap->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+        descriptorManager->WriteImageDescriptor(set, TERRAIN_BINDING_HEIGHT_MAP,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             {{ m_HeightMap->GetImage().GetSampler(), m_HeightMap->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-        descriptorManager->WriteImageDescriptor(m_DescriptorSets[0], TERRAIN_BINDING_SPLATMAP_0,
+        descriptorManager->WriteImageDescriptor(set, TERRAIN_BINDING_SPLATMAP_0,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             {{ m_Splatmap0->GetImage().GetSampler(), m_Splatmap0->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-        descriptorManager->WriteImageDescriptor(m_DescriptorSets[0], TERRAIN_BINDING_SPLATMAP_1,
+        descriptorManager->WriteImageDescriptor(set, TERRAIN_BINDING_SPLATMAP_1,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             {{ m_Splatmap1->GetImage().GetSampler(), m_Splatmap1->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 
@@ -261,22 +279,81 @@ namespace VansGraphics
             roughnessInfos[i] = { m_LayerRoughness[source]->GetImage().GetSampler(),
                 m_LayerRoughness[source]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         }
-        descriptorManager->WriteImageDescriptor(m_DescriptorSets[0], TERRAIN_BINDING_ALBEDO_ARRAY,
+        descriptorManager->WriteImageDescriptor(set, TERRAIN_BINDING_ALBEDO_ARRAY,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, albedoInfos);
-        descriptorManager->WriteImageDescriptor(m_DescriptorSets[0], TERRAIN_BINDING_NORMAL_ARRAY,
+        descriptorManager->WriteImageDescriptor(set, TERRAIN_BINDING_NORMAL_ARRAY,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, normalInfos);
-        descriptorManager->WriteImageDescriptor(m_DescriptorSets[0], TERRAIN_BINDING_ROUGHNESS_ARRAY,
+        descriptorManager->WriteImageDescriptor(set, TERRAIN_BINDING_ROUGHNESS_ARRAY,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, roughnessInfos);
-        descriptorManager->WriteBufferDescriptor(m_DescriptorSets[0], TERRAIN_BINDING_PARAMS_UBO,
+        descriptorManager->WriteBufferDescriptor(set, TERRAIN_BINDING_PARAMS_UBO,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             {{ m_ParamsUBO.GetNativeBuffer(), 0, sizeof(TerrainParamsGPU) }});
-        descriptorManager->WriteBufferDescriptor(m_DescriptorSets[0], TERRAIN_BINDING_TESSELLATION_PARAMS,
+        descriptorManager->WriteBufferDescriptor(set, TERRAIN_BINDING_TESSELLATION_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             {{ m_TessParamsUBO.GetNativeBuffer(), 0, sizeof(TerrainTessellationParamsGPU) }});
-        descriptorManager->WriteBufferDescriptor(m_DescriptorSets[0], TERRAIN_BINDING_HEIGHT_DETAIL_PARAMS,
+        descriptorManager->WriteBufferDescriptor(set, TERRAIN_BINDING_HEIGHT_DETAIL_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             {{ m_HeightDetailUBO.GetNativeBuffer(), 0, sizeof(TerrainHeightDetailParamsGPU) }});
+        }
         descriptorManager->CommitDescriptorUpdates();
+    }
+
+    void VansTerrain::UpdateInteraction(const Vans::VansTerrainInteraction& input)
+    {
+        const auto slot=m_Device->GetFrameResourceSlot();
+        TerrainInteractionParamsGPU params{};
+        params.worldRect=input.window.worldRect;
+        params.response={input.albedoStrength,input.normalStrength,input.maxDisplacementMeters,input.edgeFadeMeters};
+        params.heightWeights=input.heightWeights;
+        params.heightFade={m_TessellationDistance*0.7f,m_TessellationDistance,0,0};
+        m_InteractionReads.clear(); m_InteractionHeightPadding=0;
+        auto& placeholder=m_HeightMap->GetImage();
+        const VkDescriptorImageInfo neutral{placeholder.GetSampler(),placeholder.GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        std::array<VkDescriptorImageInfo,3> images{neutral,neutral,neutral};
+        std::array<VansResolvedRenderTexture,3> resolved;
+        const std::array<const std::string*,3> keys{&input.albedo,&input.normal,&input.height};
+        std::string error;
+        std::optional<glm::vec4> producedRect;
+        if (input.enabled) for (std::size_t i=0; i<3; ++i)
+        {
+            if (keys[i]->empty()) continue;
+            resolved[i]=m_Device->ResolveSampledRenderTexture(*keys[i]);
+            auto* image=resolved[i].image;
+            if (!image) { error="Unproduced or unsupported Terrain interaction texture: "+*keys[i]; continue; }
+            const auto& create=image->GetImageCreateInfo();
+            if (input.window.cameraCentered &&
+                (create.extent.width!=input.window.resolution.x || create.extent.height!=input.window.resolution.y))
+            { error="Pixel-snapped Terrain interaction resolution does not match its texture"; resolved[i]={}; continue; }
+            if (input.window.cameraCentered && resolved[i].worldRect)
+            {
+                const auto rect=*resolved[i].worldRect;
+                if (rect.z!=input.window.worldRect.z || rect.w!=input.window.worldRect.w || (producedRect && *producedRect!=rect))
+                { error="Terrain interaction textures disagree about their produced world rectangle"; params.channels=glm::uvec4(0u); resolved={}; break; }
+                producedRect=rect;
+            }
+            params.channels[i]=1u;
+        }
+        if (producedRect) params.worldRect=*producedRect;
+        for (std::size_t i=0; i<3; ++i) if (params.channels[i] && resolved[i].image)
+        {
+            auto& image=*resolved[i].image;
+            images[i]={image.GetSampler(),image.GetImageView(),image.GetImageLayout()};
+            VansSubmitResourceAccess read;
+            read.name=resolved[i].physicalKey; read.image=true; read.persistent=true;
+            read.stages=VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT; read.access=VK_ACCESS_SHADER_READ_BIT;
+            read.layout=image.GetImageLayout(); read.physical=VansPhysicalResourceIdentity::ForImage(image.GetImage());
+            m_InteractionReads.push_back(std::move(read));
+        }
+        if (params.channels.z) m_InteractionHeightPadding=input.maxDisplacementMeters;
+        if (!error.empty() && error!=m_InteractionError) VANS_LOG_WARN("[TerrainInteraction] " << error);
+        m_InteractionError=std::move(error);
+        m_InteractionUBOs.at(slot).SetBufferData(&params,0,sizeof(params));
+        auto* descriptors=VansVKDescriptorManager::GetInstance();
+        descriptors->BeginDescriptorUpdate();
+        for (std::size_t i=0; i<3; ++i)
+            descriptors->WriteImageDescriptor(m_DescriptorSets.at(slot),TERRAIN_BINDING_INTERACTION_ALBEDO+static_cast<uint32_t>(i),
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,{images[i]});
+        descriptors->CommitDescriptorUpdates();
     }
 
     void VansTerrain::BuildPatchMesh()
@@ -384,6 +461,7 @@ namespace VansGraphics
         float heightDetailPadding = 0.0f;
         if (m_EnableHeightDetail)
             heightDetailPadding = std::abs(m_HeightDetailStrength);
+        heightDetailPadding += m_InteractionHeightPadding;
 
         for (const TerrainLodPatch& patch : m_SelectedPatches)
         {
@@ -451,6 +529,7 @@ namespace VansGraphics
     void VansTerrain::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalState,
         std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets)
     {
+        sets.at(1)=m_DescriptorSets.at(m_Device->GetFrameResourceSlot());
         auto bindGeometry = [&]()
         {
             VkBuffer vertexBuffers[] = { m_BasePatchMesh->GetVertexBufferParameter().Buffer };
@@ -485,6 +564,7 @@ namespace VansGraphics
     void VansTerrain::DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& globalState,
         std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets)
     {
+        sets.at(1)=m_DescriptorSets.at(m_Device->GetFrameResourceSlot());
         if (m_ShadowInstanceCount == 0)
             return;
 

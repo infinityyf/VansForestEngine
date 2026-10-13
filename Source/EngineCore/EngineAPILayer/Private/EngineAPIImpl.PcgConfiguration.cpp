@@ -141,6 +141,7 @@ PcgPlantConfiguration EngineAPIImpl::GetPcgPlantConfiguration(const std::string&
     item.offset=variant.offset;
     item.scale=variant.scale;
     item.rotation=variant.rotation;
+    if(variant.collision) item.collision=PcgPlantCollisionPrototype{variant.collision->mesh.ToString(),variant.collision->layer};
     item.lodRatios=variant.lodSettings.ratios;item.lodMaximumError=variant.lodSettings.maximumError;
     item.lodBuildKey=variant.lod.buildKey;
     for(const auto& level:variant.lod.levels){ModelLodLevel output;for(const auto& part:level.parts)
@@ -205,6 +206,11 @@ PcgEditorOperationResult EngineAPIImpl::ApplyPcgPlantConfiguration(const PcgPlan
     item.offset=variant.offset;
     item.scale=variant.scale;
     item.rotation=variant.rotation;
+    if(variant.collision) {
+        VansPlantCollisionPrototype collision;
+        if(!ReadGuid(variant.collision->mesh,collision.mesh,error)) return {false,error};
+        collision.layer=variant.collision->layer; item.collision=std::move(collision);
+    }
         for (const auto& part : variant.parts) {
             VansPlantPart value;
             value.id=part.id.empty()?VansAssetGuid::New().ToString():part.id;

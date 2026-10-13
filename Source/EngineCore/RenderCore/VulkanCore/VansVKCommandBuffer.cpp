@@ -1002,33 +1002,70 @@ bool VansGraphics::VansVKCommandBuffer::WaitForFence(VkDevice& device, const VkF
 	return true;
 }
 
-bool VansGraphics::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansGraphics::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, const VkFence& fence, bool wait_fence)
+bool VansGraphics::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansGraphics::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VansGraphics::SignalSemaphoreInfo>& signal_semaphores, const VkFence& fence, bool wait_fence, VkResult* submit_result)
 {
+	if (submit_result != nullptr)
+		*submit_result = VK_SUCCESS;
 	//semaphores should be waited
 	std::vector<VkSemaphore> wait_semaphore_handles;
 	std::vector<VkPipelineStageFlags> wait_semaphore_stages;
+	std::vector<uint64_t> wait_semaphore_values;
+	bool hasTimelineSemaphore = false;
 	for (auto& wait_semaphore_info : wait_semaphore_infos) 
 	{
+		if (!wait_semaphore_info.timeline && wait_semaphore_info.value != 0)
+		{
+			VANS_LOG_ERROR("Binary semaphore wait cannot carry a timeline value.");
+			return false;
+		}
 		wait_semaphore_handles.emplace_back(wait_semaphore_info.semaphore);
 		wait_semaphore_stages.emplace_back(wait_semaphore_info.waiting_stage);
+		wait_semaphore_values.emplace_back(wait_semaphore_info.value);
+		hasTimelineSemaphore = hasTimelineSemaphore || wait_semaphore_info.timeline;
+	}
+	std::vector<VkSemaphore> signal_semaphore_handles;
+	std::vector<uint64_t> signal_semaphore_values;
+	signal_semaphore_handles.reserve(signal_semaphores.size());
+	signal_semaphore_values.reserve(signal_semaphores.size());
+	for (const SignalSemaphoreInfo& signal : signal_semaphores)
+	{
+		if ((signal.timeline && signal.value == 0) || (!signal.timeline && signal.value != 0))
+		{
+			VANS_LOG_ERROR("Semaphore signal has an invalid timeline value.");
+			return false;
+		}
+		signal_semaphore_handles.push_back(signal.semaphore);
+		signal_semaphore_values.push_back(signal.value);
+		hasTimelineSemaphore = hasTimelineSemaphore || signal.timeline;
+	}
+	VkTimelineSemaphoreSubmitInfo timelineInfo{};
+	if (hasTimelineSemaphore)
+	{
+		timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+		timelineInfo.waitSemaphoreValueCount = static_cast<uint32_t>(wait_semaphore_values.size());
+		timelineInfo.pWaitSemaphoreValues = wait_semaphore_values.empty() ? nullptr : wait_semaphore_values.data();
+		timelineInfo.signalSemaphoreValueCount = static_cast<uint32_t>(signal_semaphore_values.size());
+		timelineInfo.pSignalSemaphoreValues = signal_semaphore_values.empty() ? nullptr : signal_semaphore_values.data();
 	}
 
 	VkSubmitInfo submit_info = 
 	{
 		 VK_STRUCTURE_TYPE_SUBMIT_INFO,
-		 nullptr,
+		 hasTimelineSemaphore ? &timelineInfo : nullptr,
 		 static_cast<uint32_t>(wait_semaphore_handles.size()),
 		 wait_semaphore_handles.size() > 0 ? &wait_semaphore_handles[0] : nullptr,
 		 wait_semaphore_stages.size() > 0 ? &wait_semaphore_stages[0] : nullptr,
 		 static_cast<uint32_t>(command_buffers.size()),
 		 command_buffers.data(),
 		 //semaphores should be signaled once the command buffer has finished execution
-		 static_cast<uint32_t>(signal_semaphores.size()),
-		 signal_semaphores.size() > 0 ? &signal_semaphores[0] : nullptr
+		 static_cast<uint32_t>(signal_semaphore_handles.size()),
+		 signal_semaphore_handles.empty() ? nullptr : signal_semaphore_handles.data()
 	};
 
 	//send this fence to queue, it will be signaled when the command buffer has finished execution
 	VkResult result = VansGraphics::vkQueueSubmit(queue, 1, &submit_info, fence);
+	if (submit_result != nullptr)
+		*submit_result = result;
 	if (VK_SUCCESS != result) 
 	{
 		VANS_LOG_ERROR("Error occurred during command buffer submission. VkResult=" << static_cast<int>(result));

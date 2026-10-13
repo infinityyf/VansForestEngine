@@ -4,12 +4,13 @@
 #include "../VansEditorCameraController.h"
 #include <string>
 #include <vector>
+#include <memory>
 
 namespace Vans
 {
 	class VansSceneEditService;
 }
-namespace Vans::EditorAPI { class IPcgEditorAPI; }
+namespace Vans::EditorAPI { class IPcgEditorAPI; class INavigationEditorAPI; }
 
 namespace VansGraphics
 {
@@ -59,6 +60,11 @@ namespace VansGraphics
 			glm::vec2 origin,glm::vec2 size,bool mouseInside);
 
 		VansGizmos m_Gizmos;
+        struct NavigationToolState;
+        std::shared_ptr<NavigationToolState> m_NavigationTools;
+        void DrawNavigationPreviewToolbar(Vans::EditorAPI::INavigationEditorAPI&);
+        bool DrawNavigationPreview(Vans::EditorAPI::INavigationEditorAPI&,const glm::mat4& viewProjection,
+            glm::vec2 origin,glm::vec2 size,bool interactive);
 		void ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI) override;
 	};
 }

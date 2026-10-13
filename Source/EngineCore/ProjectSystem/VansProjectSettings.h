@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 #include "../CameraCore/VansCameraCore.h"
+#include "../AssetCore/VansAssetGuid.h"
 #include "../NavigationCore/VansNavigationTypes.h"
 #include "../PhysicsCore/VansPhysicsTiming.h"
 #include "../RenderCore/VansRenderRuntimeConfig.h"
@@ -73,6 +74,8 @@ namespace Vans
 			std::string* error = nullptr);
 		const VansProjectCommandRecordingSettings& GetCommandRecordingSettings() const { return m_CommandRecordingSettings; }
 		const VansProjectRenderOutputSettings& GetRenderOutputSettings() const { return m_RenderOutputSettings; }
+		const std::vector<VansAssetGuid>& GetProjectRenderPasses() const { return m_ProjectRenderPasses; }
+		bool SetProjectRenderPasses(const std::vector<VansAssetGuid>& passes, std::string& error);
 		const VansProjectAtmosphereQualitySettings& GetAtmosphereQualitySettings() const { return m_AtmosphereQualitySettings; }
 		const VansProjectNearMediaQualitySettings& GetNearMediaQualitySettings() const { return m_NearMediaQualitySettings; }
 		const VansProjectCloudShadowQualitySettings& GetCloudShadowQualitySettings() const { return m_CloudShadowQualitySettings; }
@@ -90,9 +93,8 @@ namespace Vans
 				m_CloudShadowQualitySettings
 			};
 		}
-		void SetCommandRecordingSettings(
+		bool SetCommandRecordingSettings(
 			bool parallelEnabled,
-			bool frameContextRingEnabled,
 			std::uint32_t framesInFlight,
 			bool asyncComputeEnabled);
 		const VansProjectMainCameraHiZCullSettings& GetMainCameraHiZCullSettings() const { return m_MainCameraHiZCullSettings; }
@@ -106,6 +108,7 @@ private:
 		VansProjectUpscalerSettings m_UpscalerSettings;
 		VansProjectCommandRecordingSettings m_CommandRecordingSettings;
 		VansProjectRenderOutputSettings m_RenderOutputSettings;
+		std::vector<VansAssetGuid> m_ProjectRenderPasses;
 		VansProjectAtmosphereQualitySettings m_AtmosphereQualitySettings;
 		VansProjectNearMediaQualitySettings m_NearMediaQualitySettings;
 		VansProjectCloudShadowQualitySettings m_CloudShadowQualitySettings;

@@ -6,6 +6,8 @@
 #include "../../GameplayActionCore/VansGameplayServiceRuntime.h"
 #include "../../RuntimeCore/VansGenerationPool.h"
 #include "../../GameplayTargeting/VansGameplayTargeting.h"
+#include "../../GameplayActionSchema/VansGAFPerformanceBudget.h"
+#include "../../GameplayTargeting/VansSurfaceField.h"
 
 #include <glm/glm.hpp>
 
@@ -14,6 +16,7 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <variant>
 
 namespace Vans
 {
@@ -90,7 +93,7 @@ public:
 		VansRuntimeWorld& world,
 		IVansGameplayServiceRuntime& runtime,
 		const VansGameplayAssetLibrary& assets,
-		std::string& error, VansCombatSceneBackend backend = {});
+		std::string& error, VansCombatSceneBackend backend = {}, VansGAFPerformanceBudget performance = {});
 
 	const VansActionServiceCapability& Capability() const override { return m_Capability; }
 	VansActionCommandResult Execute(const VansActionCommand& command) override;
@@ -100,6 +103,21 @@ public:
 	VansCombatDebugSnapshot CaptureDebugSnapshot() const;
 
 private:
+    struct SurfaceDamageField
+    {
+        VansGenerationHandle field;
+        VansEntityHandle owner,instigator;
+        VansAttributeId health,armor;
+        std::uint32_t blockingMask=0;
+        double period=0.2,damagePerTick=8,rampSeconds=0,nextSample=0;
+        float cellRadius=0,characterHeightOffset=0,broadphaseHalfHeight=0;
+        double armorRatio=1,armorScale=.5,armorMultiplier=1,minimumArmorConsumption=0;
+        bool integralArmor=false;
+        std::string damageType;
+        bool stopped=false;
+    };
+    VansActionCommandResult BeginSurfaceDamageField(const VansActionCommand& command);
+    bool SampleSurfaceDamage(const SurfaceDamageField& damage,const VansSurfaceFieldSnapshot& field,double sampleTime);
 	struct MeleeWindow
 	{
 		VansActionHandle action;
@@ -131,7 +149,7 @@ private:
 		VansRuntimeWorld& world,
 		IVansGameplayServiceRuntime& runtime,
 		const VansGameplayAssetLibrary& assets,
-		VansActionServiceCapability capability, VansCombatSceneBackend backend);
+		VansActionServiceCapability capability, VansCombatSceneBackend backend, VansGAFPerformanceBudget performance);
 
 	bool SampleWindow(MeleeWindow& window);
 	VansEntityHandle ResolveHitTarget(VansEntityHandle entity) const;
@@ -139,6 +157,7 @@ private:
 	VansActionCommandResult FireHitscan(const VansActionCommand& command);
 	VansActionCommandResult ApplyDamageProfile(const VansActionCommand& command);
 	VansActionCommandResult ApplyRadialBlast(const VansActionCommand& command);
+	VansActionCommandResult EmitRadialEvent(const VansActionCommand& command);
 	struct PendingBlast { VansEngine::VansPhysicsRadialImpulseRequest request; bool justCreated=true; };
 	std::vector<PendingBlast> m_PendingBlasts;
 	// 有界命中凭据：伤害只接受同一 Action 的真实查询结果，不重做射线。
@@ -162,7 +181,9 @@ private:
 	const VansGameplayAssetLibrary& m_Assets;
 	VansActionServiceCapability m_Capability;
 	VansCombatSceneBackend m_Backend;
-	VansGenerationPool<MeleeWindow> m_Windows;
+    using Resource=std::variant<MeleeWindow,SurfaceDamageField>;
+    VansGenerationPool<Resource> m_Resources;
+    VansGAFPerformanceBudget m_Performance;
 	VansCombatDebugSnapshot m_DebugSnapshot;
 };
 }

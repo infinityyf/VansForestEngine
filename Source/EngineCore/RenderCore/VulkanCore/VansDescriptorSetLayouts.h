@@ -38,7 +38,7 @@ namespace VansGraphics
 		GLOBAL_BINDING_REFLECTION_PROBE_SPECULAR = 13, // Prefiltered samplerCubeArray
 		GLOBAL_BINDING_REFLECTION_PROBE_BUFFER   = 14, // Reflection probe metadata SSBO
 		GLOBAL_BINDING_CUSTOM_MATERIAL_SSBO      = 15, // Custom shader material vec4s + texture indices
-		GLOBAL_BINDING_CLOTH_MATERIAL_SSBO       = 16, // Cloth model/color/anisotropy/transmission payloads
+		GLOBAL_BINDING_CLOTH_MATERIAL_SSBO       = 16, // Cloth canonical optical payload
 		GLOBAL_BINDING_TREE_LEAF_MATERIAL_SSBO   = 17, // Tree leaf subsurface/transmission payloads
 		GLOBAL_BINDING_SKIN_MATERIAL_SSBO        = 18, // Skin roughness/scatter/specular extension payloads
 		GLOBAL_BINDING_SKIN_PROFILE_LUT_ARRAY    = 19, // Skin profile pre-integrated LUT array
@@ -64,6 +64,8 @@ namespace VansGraphics
         GLOBAL_BINDING_GRASS_ENERGY_LUT = 40,
 		GLOBAL_BINDING_SURFACE_WEATHER_FRAME_UBO = 41,
 		GLOBAL_BINDING_SURFACE_WEATHER_RIPPLE    = 42,
+        GLOBAL_BINDING_PROJECT_RENDER_TEXTURES = 43,
+		GLOBAL_BINDING_CLOTH_LIGHTING_LUT        = 44,
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 
@@ -108,13 +110,17 @@ namespace VansGraphics
 	// Only used by VansCommonRenderNode when the material type is VAN_CLOTH.
 	// Each cloth node owns its descriptor set with dedicated albedo + normal textures.
 	// ====================================================================
-	enum ClothTextureBinding : uint32_t
-	{
-		CLOTH_TEXTURE_BINDING_ALBEDO     = 0,   // Cloth albedo texture (COMBINED_IMAGE_SAMPLER)
-		CLOTH_TEXTURE_BINDING_NORMAL     = 1,   // Cloth normal texture (COMBINED_IMAGE_SAMPLER)
-		CLOTH_TEXTURE_BINDING_ROUGHNESS  = 2,   // Cloth roughness texture (COMBINED_IMAGE_SAMPLER)
-		CLOTH_TEXTURE_BINDING_AO         = 3,   // Cloth ambient occlusion texture (COMBINED_IMAGE_SAMPLER)
-	};
+    enum ClothTextureBinding : uint32_t
+    {
+        CLOTH_TEXTURE_BINDING_ALBEDO = 0,
+        CLOTH_TEXTURE_BINDING_NORMAL = 1,
+        CLOTH_TEXTURE_BINDING_ROUGHNESS = 2,
+        CLOTH_TEXTURE_BINDING_AO = 3,
+        CLOTH_TEXTURE_BINDING_SHEEN_MASK = 4,
+        CLOTH_TEXTURE_BINDING_FIBER_DIRECTION = 5,
+        CLOTH_TEXTURE_BINDING_OPACITY = 6,
+        CLOTH_TEXTURE_BINDING_COUNT = 7
+    };
 
 	// ====================================================================
 	// Set 4 (Per-Node Hair Texture) Binding Indices
@@ -171,6 +177,7 @@ namespace VansGraphics
 		VEG_SIM_BINDING_LOD_FACTORS      = 4,  // SSBO (write) — per-instance LOD factor (1=full sim, 0=skip)
 		VEG_SIM_BINDING_SCATTER_OFFSETS  = 5,  // UBO (read) — shared sub-blade scatter offsets (P6a)
 		VEG_SIM_BINDING_VISIBILITY_FLAGS = 6,  // SSBO（读）— cull 结果，用于跳过不可见实例模拟
+		VEG_SIM_BINDING_WORKGROUPS       = 7,  // SSBO（读）— 当前帧槽的实例段工作表
 	};
 
 	// ====================================================================
@@ -186,7 +193,6 @@ namespace VansGraphics
 		VEG_DRAW_BINDING_LOD_FACTORS      = 4,  // SSBO (read) — per-instance LOD factor
 		VEG_DRAW_BINDING_INSTANCE_DATA    = 5,  // SSBO (read) — per-instance position/scale/cosR/sinR
 		VEG_DRAW_BINDING_TERRAIN_HEIGHTMAP = 6, // COMBINED_IMAGE_SAMPLER — terrain heightmap for VS sub-blade Y
-		VEG_DRAW_BINDING_VISIBILITY_FLAGS  = 7, // SSBO (read) — per-instance visibility from GPU cull (P0)
 	};
 
 	// ====================================================================
@@ -200,6 +206,7 @@ namespace VansGraphics
 		VEG_CULL_BINDING_VISIBLE_INDICES  = 3,  // SSBO (write) — compact list of visible instance indices
 		VEG_CULL_BINDING_TERRAIN_HEIGHTMAP = 4, // COMBINED_IMAGE_SAMPLER — terrain heightmap for correct Y
 		VEG_CULL_BINDING_HIZ              = 5,  // COMBINED_IMAGE_SAMPLER — Hi-Z depth pyramid for occlusion culling
+		VEG_CULL_BINDING_WORKGROUPS       = 6,  // SSBO（读）— 当前帧槽的实例段工作表
 	};
 
 	// ====================================================================
@@ -221,6 +228,7 @@ namespace VansGraphics
 		VEG_TREE_CULL_BINDING_VISIBLE_INDICES = 2, // SSBO (write) compact indices per species
 		VEG_TREE_CULL_BINDING_SPECIES_INFOS   = 3, // SSBO (read) TreeSpeciesCullInfo[]
 		VEG_TREE_CULL_BINDING_HIZ             = 4, // COMBINED_IMAGE_SAMPLER Hi-Z depth pyramid
+		VEG_TREE_CULL_BINDING_LOD_STATE       = 5, // SSBO (read/write) uint[] persistent LOD history
 	};
 
 	// ====================================================================
@@ -367,6 +375,10 @@ namespace VansGraphics
 		TERRAIN_BINDING_PARAMS_UBO          = 6,
 		TERRAIN_BINDING_TESSELLATION_PARAMS = 7,
 		TERRAIN_BINDING_HEIGHT_DETAIL_PARAMS = 8,
+		TERRAIN_BINDING_INTERACTION_PARAMS = 9,
+		TERRAIN_BINDING_INTERACTION_ALBEDO = 10,
+		TERRAIN_BINDING_INTERACTION_NORMAL = 11,
+		TERRAIN_BINDING_INTERACTION_HEIGHT = 12,
 	};
 
 	static constexpr uint32_t TERRAIN_MAX_LAYERS = 8;
@@ -895,6 +907,7 @@ namespace VansGraphics
 		// Combined Layout Creation + Set Allocation
 		// Uses VansVKDescriptorManager internally.
 		// ==============================================
+		static std::vector<VkDescriptorSetLayoutBinding> GlobalBindings(uint32_t maxBindlessTextures = MAX_BINDLESS_TEXTURES);
 		static void CreateAndAllocate_Global(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t maxBindlessTextures = MAX_BINDLESS_TEXTURES, uint32_t setCount = 1);
 		static void CreateAndAllocate_Object(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_VertexDeformation(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
@@ -903,14 +916,16 @@ namespace VansGraphics
 		static void CreateAndAllocate_Empty(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_Terrain(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
         static void CreateAndAllocate_GTAODepth(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount);
-        static void CreateAndAllocate_GTAOMain(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets);
-        static void CreateAndAllocate_GTAODenoise(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets);
+        static void CreateAndAllocate_GTAOMain(VkDescriptorSetLayout& outLayout,
+            std::vector<VkDescriptorSet>& outSets, uint32_t setCount);
+        static void CreateAndAllocate_GTAODenoise(VkDescriptorSetLayout& outLayout,
+            std::vector<VkDescriptorSet>& outSets, uint32_t setCount);
 		static void CreateAndAllocate_SSGI(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSGIProbeCache(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
 		static void CreateAndAllocate_ScreenSpaceShadow(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_CascadeShadowMinMax(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount);
 		static void CreateAndAllocate_SSGITemporal(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
-		static void CreateAndAllocate_SSGIAtrous(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
+		static void CreateAndAllocate_SSGIAtrous(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount);
 		static void CreateAndAllocate_AmbientSkyCache(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static bool CreateAndAllocate_Atmosphere(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_Trace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
@@ -948,7 +963,8 @@ namespace VansGraphics
 		// Water Composite Pass Set 1：WaterGBuf_Normal + WaterGBuf_LinearDepth + Params UBO
 		static void CreateAndAllocate_WaterComposite(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Hair Composite Pass Set 1：HairVis0(albedo + coverage)
-        static bool CreateAndAllocate_HairDebug(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets);
+        static bool CreateAndAllocate_HairDebug(VkDescriptorSetLayout& outLayout,
+            std::vector<VkDescriptorSet>& outSets, uint32_t setCount);
 		static void CreateAndAllocate_HairComposite(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Hair Lighting Pass Set 1：HairVis0-3 visibility buffers
 		static void CreateAndAllocate_HairLighting(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

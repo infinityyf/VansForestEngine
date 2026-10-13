@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <stdexcept>
 #include <unordered_set>
 #include <type_traits>
 using namespace VansGraphics;
@@ -499,19 +500,19 @@ VansGraphics::VansClothMaterial::~VansClothMaterial()
 
 VansGraphics::VansClothGPUParam VansGraphics::VansClothMaterial::BuildGPUParam() const
 {
-	VansClothGPUParam payload;
-	payload.sheenColorWeight = glm::vec4(
-		glm::max(m_SheenColor, glm::vec3(0.0f)),
-		std::clamp(m_SheenStrength, 0.0f, 1.0f));
-	payload.transmissionColorStrength = glm::vec4(
-		glm::max(m_TransmissionColor, glm::vec3(0.0f)),
-		std::clamp(m_Translucency, 0.0f, 1.0f));
-	payload.controls = glm::vec4(
-		static_cast<float>(m_ClothModel),
-		std::clamp(m_Anisotropy, -0.95f, 0.95f),
-		std::clamp(m_Thickness, 0.0f, 1.0f),
-		static_cast<float>(m_ClothFlags));
-	return payload;
+    auto rgb = [](const std::array<float, 3>& v) { return glm::vec3(v[0], v[1], v[2]); };
+    return {glm::vec4(rgb(m_Params.sheenColor), m_Params.sheenWeight),
+        glm::vec4(rgb(m_Params.diffuseTransmittance), m_Params.sheenRoughness),
+        glm::vec4(m_Params.specularWeight, m_Params.anisotropy,
+            m_Params.fiberRotationRadians, m_Params.alphaCutoff),
+        glm::uvec4(m_Params.alphaMode == Vans::VansClothAlphaMode::Mask ? 1u : 0u,
+            m_Params.doubleSided ? 1u : 0u, m_FiberDirectionTexture ? 1u : 0u, 0u)};
+}
+
+VansGraphics::VansBasePBRParam VansGraphics::VansClothMaterial::BuildBasePBRParam() const
+{
+    return {glm::vec3(m_Params.albedo[0], m_Params.albedo[1], m_Params.albedo[2]),
+        m_Params.roughness, 0.0f, m_Params.ao, 0.0f};
 }
 
 VansGraphics::VansHairMaterial::~VansHairMaterial()
@@ -754,7 +755,6 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 		RT_SSGI_MOMENTS_A, RT_SSGI_MOMENTS_B,
 		RT_SSGI_SURFACE_HISTORY_A, RT_SSGI_SURFACE_HISTORY_B,
 		RT_SSGI_ATROUS_A,
-		RT_AMBIENT_SKY_CACHE_X, RT_AMBIENT_SKY_CACHE_Y, RT_AMBIENT_SKY_CACHE_Z,
 		RT_HZB_RESULT, RT_HZB_OCCLUSION_RESULT,
 		RT_SCREEN_SPACE_SHADOW_RESULT, RT_CASCADE_SHADOW_MIN_MAX,
 		RT_SSR_HIT_INFO, RT_SSR_RAY_PDF, RT_SSR_RESULT,
@@ -769,20 +769,25 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 		RemoveRuntimeRenderTexture(name);
 
 	m_ScreenSpaceShadowParamsCBBuffer.DestroyVulkanBuffer(device);
-	m_SSGITemporalCBBuffer.DestroyVulkanBuffer(device);
+	for (VansVKBuffer& buffer : m_SSGITemporalCBBuffer)
+		buffer.DestroyVulkanBuffer(device);
 	m_SSGICBBuffer.DestroyVulkanBuffer(device);
-	m_AmbientSkyCacheParamsCBBuffer.DestroyVulkanBuffer(device);
-	m_AmbientSkyCacheInfoCBBuffer.DestroyVulkanBuffer(device);
-	m_TileLightHeaderBuffer.DestroyVulkanBuffer(device);
-	m_TileLightIndexBuffer.DestroyVulkanBuffer(device);
+	for (TileLightFrameBuffers& frame : m_TileLightFrames)
+	{
+		frame.header.DestroyVulkanBuffer(device);
+		frame.indices.DestroyVulkanBuffer(device);
+	}
 	m_TileLightBuildParamsCBBuffer.DestroyVulkanBuffer(device);
 	m_SSRRayListBuffer.DestroyVulkanBuffer(device);
 	m_SSRTraceControlBuffer.DestroyVulkanBuffer(device);
-	m_PostProcessParamsCBBuffer.DestroyVulkanBuffer(device);
-	m_ExposureAdaptParamsCBBuffer.DestroyVulkanBuffer(device);
+	for (VansVKBuffer& buffer : m_PostProcessParamsCBBuffer)
+		buffer.DestroyVulkanBuffer(device);
+	for (VansVKBuffer& buffer : m_ExposureAdaptParamsCBBuffer)
+		buffer.DestroyVulkanBuffer(device);
 	m_BloomParamsCBBuffer.DestroyVulkanBuffer(device);
 	m_BloomShapeParamsCBBuffer.DestroyVulkanBuffer(device);
-	m_DepthOfFieldParamsCBBuffer.DestroyVulkanBuffer(device);
+	for (VansVKBuffer& buffer : m_DepthOfFieldParamsCBBuffer)
+		buffer.DestroyVulkanBuffer(device);
 
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_SSGIDescriptorSets);
@@ -831,9 +836,6 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 	descMgr->ReleaseDescriptorSetLayout(m_SSGITemporalSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSGIAtrousDescriptorSets);
 	descMgr->ReleaseDescriptorSetLayout(m_SSGIAtrousSetLayout);
-	descMgr->DestroyDescriptorSet(m_AmbientSkyCacheDescriptorSets);
-	descMgr->ReleaseDescriptorSetLayout(m_AmbientSkyCacheSetLayout);
-	m_AmbientSkyCacheShader = nullptr;
 	descMgr->DestroyDescriptorSet(m_HIZSeedDescriptorSets);
 	descMgr->ReleaseDescriptorSetLayout(m_HIZSeedSetLayout);
 	descMgr->DestroyDescriptorSet(m_OcclusionHIZSeedDescriptorSets);
@@ -864,8 +866,10 @@ void VansGraphics::VansMaterialManager::ClearAmbientSkyCacheRenderData(VkDevice 
 	RemoveRuntimeRenderTexture(RT_AMBIENT_SKY_CACHE_X);
 	RemoveRuntimeRenderTexture(RT_AMBIENT_SKY_CACHE_Y);
 	RemoveRuntimeRenderTexture(RT_AMBIENT_SKY_CACHE_Z);
-	m_AmbientSkyCacheParamsCBBuffer.DestroyVulkanBuffer(device);
-	m_AmbientSkyCacheInfoCBBuffer.DestroyVulkanBuffer(device);
+	for (VansVKBuffer& buffer : m_AmbientSkyCacheParamsCBBuffer)
+		buffer.DestroyVulkanBuffer(device);
+	for (VansVKBuffer& buffer : m_AmbientSkyCacheInfoCBBuffer)
+		buffer.DestroyVulkanBuffer(device);
 	if (auto* descriptorManager = VansVKDescriptorManager::GetInstance())
 	{
 		descriptorManager->DestroyDescriptorSet(m_AmbientSkyCacheDescriptorSets);
@@ -1213,6 +1217,7 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	m_GlobalCustomMaterialParamData.clear();
 	m_GlobalBindlessDescriptorsDirty = false;
 	m_GlobalPBRTextures.clear();
+	ClearAmbientSkyCacheRenderData(device);
 	ClearResolutionDependentRenderData(device);
 	ClearRuntimeRenderTextures();
 	m_RectLightEmissiveArray = nullptr;
@@ -1220,23 +1225,25 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	deleteTexture(m_SkinBSDFLUT);
 	deleteTexture(m_SkinProfileLUTArray);
 	deleteTexture(m_ClothBRDFLUT);
+	deleteTexture(m_ClothLightingLUT);
     deleteTexture(m_GrassEnergyLUT);
 	deleteTexture(m_LTC1);
 	deleteTexture(m_LTC2);
 
 	// Destroy GPU buffers.
-	m_GlobalPBRDataBuffer.DestroyVulkanBuffer(device);
-	m_GlobalClothDataBuffer.DestroyVulkanBuffer(device);
-    m_GlobalHairDataBuffer.DestroyVulkanBuffer(device);
-	m_GlobalTreeLeafDataBuffer.DestroyVulkanBuffer(device);
-	m_GlobalSkinDataBuffer.DestroyVulkanBuffer(device);
-	m_GlobalCustomMaterialDataBuffer.DestroyVulkanBuffer(device);
+	for (FrameMaterialBuffers& frame : m_FrameMaterialBuffers)
+	{
+		frame.pbr.DestroyVulkanBuffer(device);
+		frame.cloth.DestroyVulkanBuffer(device);
+		frame.hair.DestroyVulkanBuffer(device);
+		frame.treeLeaf.DestroyVulkanBuffer(device);
+		frame.skin.DestroyVulkanBuffer(device);
+		frame.custom.DestroyVulkanBuffer(device);
+	}
 	m_SkyLighting.Destroy(device);
 
 	// Release descriptor sets and layouts.
 	auto descMgr = VansVKDescriptorManager::GetInstance();
-	descMgr->DestroyDescriptorSet(m_GlobalPBRDataDescriptorSets);
-	descMgr->ReleaseDescriptorSetLayout(m_GlobalPBRDataSetLayout);
 	descMgr->DestroyDescriptorSet(m_GlobalPBRTexDescriptorSets);
 	descMgr->ReleaseDescriptorSetLayout(m_GlobalPBRTexSetLayout);
 	descMgr->DestroyDescriptorSet(m_PunctualShadowDebugDescriptorSets);
@@ -1283,12 +1290,19 @@ bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& mater
 	}
 	if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
 	{
-		const bool pbrUpdated = stagePbrPayload(cloth->m_BasePBRParam);
-		if (index >= static_cast<int>(m_GlobalClothParamData.size()))
+		if (index >= static_cast<int>(m_GlobalClothParamData.size()) ||
+			index >= static_cast<int>(m_GlobalPBRParamData.size()))
 			return false;
 		const VansClothGPUParam clothPayload = cloth->BuildGPUParam();
+		const VansBasePBRParam pbrPayload = cloth->BuildBasePBRParam();
+		const auto& previousPbr = m_GlobalPBRParamData[index];
+		if (std::memcmp(&m_GlobalClothParamData[index], &clothPayload, sizeof(clothPayload)) != 0 ||
+			previousPbr.m_albedo != pbrPayload.m_albedo || previousPbr.m_roughness != pbrPayload.m_roughness ||
+			previousPbr.m_ao != pbrPayload.m_ao)
+			++m_ClothLightingRevision;
+		stagePbrPayload(pbrPayload);
 		m_GlobalClothParamData[index] = clothPayload;
-		return pbrUpdated;
+		return true;
 	}
 
 	if (index >= static_cast<int>(m_GlobalCustomMaterialParamData.size()))
@@ -1329,17 +1343,21 @@ VansGraphics::VansMaterialManager::CaptureRenderMaterialFrameData(
 	copyBytes(m_GlobalSkinParamData, frameData.skin);
 	copyBytes(m_GlobalCustomMaterialParamData, frameData.custom);
 	frameData.rewriteBindlessTextures = m_GlobalBindlessDescriptorsDirty;
+	// 累积修订号随快照发布；跳过中间帧也不会丢失布料光照失效事件。
+	frameData.clothLightingRevision = m_ClothLightingRevision;
 	m_GlobalBindlessDescriptorsDirty = false;
 	frameData.prepared = true;
 	return frameData;
 }
 
 bool VansGraphics::VansMaterialManager::UploadRenderMaterialFrameData(
-	const VansRenderMaterialFrameData& frameData)
+	const VansRenderMaterialFrameData& frameData,
+	std::uint32_t slot)
 {
 	VANS_ASSERT_NOT_MAIN_THREAD();
-	if (!frameData.prepared)
+	if (!frameData.prepared || slot >= m_FrameMaterialBuffers.size())
 		return false;
+	FrameMaterialBuffers& target = m_FrameMaterialBuffers[slot];
 
 	const auto upload = [](const VansRenderMaterialBufferSnapshot& source,
 		VansVKBuffer& target, std::uint32_t expectedStride)
@@ -1355,12 +1373,12 @@ bool VansGraphics::VansMaterialManager::UploadRenderMaterialFrameData(
 		return true;
 	};
 
-	if (!upload(frameData.pbr, m_GlobalPBRDataBuffer, sizeof(VansBasePBRParam)) ||
-		!upload(frameData.cloth, m_GlobalClothDataBuffer, sizeof(VansClothGPUParam)) ||
-        !upload(frameData.hair, m_GlobalHairDataBuffer, sizeof(VansHairParamsGPU)) ||
-		!upload(frameData.treeLeaf, m_GlobalTreeLeafDataBuffer, sizeof(VansTreeLeafParamsGPU)) ||
-		!upload(frameData.skin, m_GlobalSkinDataBuffer, sizeof(VansSkinGPUParam)) ||
-		!upload(frameData.custom, m_GlobalCustomMaterialDataBuffer, sizeof(VansCustomMaterialPayload)))
+	if (!upload(frameData.pbr, target.pbr, sizeof(VansBasePBRParam)) ||
+		!upload(frameData.cloth, target.cloth, sizeof(VansClothGPUParam)) ||
+        !upload(frameData.hair, target.hair, sizeof(VansHairParamsGPU)) ||
+		!upload(frameData.treeLeaf, target.treeLeaf, sizeof(VansTreeLeafParamsGPU)) ||
+		!upload(frameData.skin, target.skin, sizeof(VansSkinGPUParam)) ||
+		!upload(frameData.custom, target.custom, sizeof(VansCustomMaterialPayload)))
 	{
 		return false;
 	}
@@ -1863,81 +1881,33 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 			return true;
 		}
 	}
-	else if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
-	{
-		glm::vec3 color;
-		if ((key == "albedo" || key == "baseColor" || key == "basecolor" || key == "color") && ReadMaterialVec3(value, color))
-		{
-			cloth->m_BasePBRParam.m_albedo = color;
-			FlushMaterialPayload(material);
-			return true;
-		}
-		float scalar = 0.0f;
-		if ((key == "sheenRoughness" || key == "roughness") && ReadMaterialFloat(value, scalar))
-		{
-			cloth->m_SheenRoughness = std::clamp(scalar, 0.045f, 1.0f);
-			cloth->m_BasePBRParam.m_roughness = cloth->m_SheenRoughness;
-			FlushMaterialPayload(material);
-			return true;
-		}
-		if (key == "sheenStrength" && ReadMaterialFloat(value, scalar))
-		{
-			cloth->m_SheenStrength = std::clamp(scalar, 0.0f, 1.0f);
-			cloth->m_BasePBRParam.padding = cloth->m_SheenStrength;
-			FlushMaterialPayload(material);
-			return true;
-		}
-		if (key == "translucency" && ReadMaterialFloat(value, scalar))
-		{
-			cloth->m_Translucency = std::clamp(scalar, 0.0f, 1.0f);
-			cloth->m_BasePBRParam.m_metallic = cloth->m_Translucency;
-			FlushMaterialPayload(material);
-			return true;
-		}
-		if (key == "anisotropy" && ReadMaterialFloat(value, scalar))
-		{
-			cloth->m_Anisotropy = std::clamp(scalar, -0.95f, 0.95f);
-			FlushMaterialPayload(material);
-			return true;
-		}
-		if (key == "thickness" && ReadMaterialFloat(value, scalar))
-		{
-			cloth->m_Thickness = std::clamp(scalar, 0.0f, 1.0f);
-			FlushMaterialPayload(material);
-			return true;
-		}
-		if (key == "sheenColor" && ReadMaterialVec3(value, color))
-		{
-			cloth->m_SheenColor = glm::max(color, glm::vec3(0.0f));
-			cloth->m_ClothFlags &= ~VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT;
-			FlushMaterialPayload(material);
-			return true;
-		}
-		if (key == "transmissionColor" && ReadMaterialVec3(value, color))
-		{
-			cloth->m_TransmissionColor = glm::max(color, glm::vec3(0.0f));
-			FlushMaterialPayload(material);
-			return true;
-		}
-		if (key == "clothModel")
-		{
-			std::string model;
-			if (ReadMaterialString(value, model))
-			{
-				if (model == "silk" || model == "satin") cloth->m_ClothModel = VansClothModel::Silk;
-				else if (model == "thin") cloth->m_ClothModel = VansClothModel::Thin;
-				else cloth->m_ClothModel = VansClothModel::Fuzz;
-				FlushMaterialPayload(material);
-				return true;
-			}
-		}
-		if (key == "ao" && ReadMaterialFloat(value, scalar))
-		{
-			cloth->m_BasePBRParam.m_ao = std::clamp(scalar, 0.0f, 1.0f);
-			FlushMaterialPayload(material);
-			return true;
-		}
-	}
+    else if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
+    {
+        Vans::VansSerializedValue input;
+        glm::vec3 color;
+        float scalar;
+        bool boolean;
+        std::string text;
+        if (key == "doubleSided" && ReadMaterialBool(value, boolean))
+            input = Vans::VansSerializedValue::Bool(boolean);
+        else if (key == "alphaMode" && ReadMaterialString(value, text))
+            input = Vans::VansSerializedValue::String(text);
+        else if (ReadMaterialVec3(value, color))
+            input = Vans::VansSerializedValue::Array({Vans::VansSerializedValue::Float(color.x),
+                Vans::VansSerializedValue::Float(color.y), Vans::VansSerializedValue::Float(color.z)});
+        else if (ReadMaterialFloat(value, scalar)) input = Vans::VansSerializedValue::Float(scalar);
+        else return false;
+        auto candidate = cloth->m_Params;
+        std::string error;
+        if (!Vans::ApplyClothMaterialParameter(candidate, key, input, error)) return false;
+        if (candidate.alphaMode == Vans::VansClothAlphaMode::Mask && !cloth->m_OpacityTexture)
+            return false;
+        const auto previous = cloth->m_Params;
+        cloth->m_Params = candidate;
+        if (FlushMaterialPayload(material)) return true;
+        cloth->m_Params = previous;
+        return false;
+    }
 
 	if (auto* grass = dynamic_cast<VansGrassMaterial*>(&material))
 	{
@@ -2019,64 +1989,33 @@ void VansGraphics::VansMaterialManager::SetScreenSpaceShadowExtent(uint32_t widt
 
 void VansGraphics::VansClothMaterial::BuildClothTextureDescriptors()
 {
-	VansDescriptorSetLayoutFactory::CreateAndAllocate_ClothTexture(m_ClothOwnedLayout, m_ClothOwnedDescSets);
+    static_assert(CLOTH_TEXTURE_BINDING_COUNT == Vans::VansClothTextureSlots.size());
+    VansDescriptorSetLayoutFactory::CreateAndAllocate_ClothTexture(m_ClothOwnedLayout, m_ClothOwnedDescSets);
+    if (!RefreshClothTextureDescriptors())
+        throw std::runtime_error("Cloth texture descriptor initialization failed");
+}
 
-	auto* descManager = VansVKDescriptorManager::GetInstance();
-	descManager->BeginDescriptorUpdate();
-
-	if (m_BaseColorTexture)
-	{
-		descManager->WriteImageDescriptor(
-			m_ClothOwnedDescSets[0],
-			CLOTH_TEXTURE_BINDING_ALBEDO,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{
-				m_BaseColorTexture->GetImage().GetSampler(),
-				m_BaseColorTexture->GetImage().GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}});
-	}
-
-	if (m_NormalTexture)
-	{
-		descManager->WriteImageDescriptor(
-			m_ClothOwnedDescSets[0],
-			CLOTH_TEXTURE_BINDING_NORMAL,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{
-				m_NormalTexture->GetImage().GetSampler(),
-				m_NormalTexture->GetImage().GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}});
-	}
-
-	if (m_RoughnessTexture)
-	{
-		descManager->WriteImageDescriptor(
-			m_ClothOwnedDescSets[0],
-			CLOTH_TEXTURE_BINDING_ROUGHNESS,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{
-				m_RoughnessTexture->GetImage().GetSampler(),
-				m_RoughnessTexture->GetImage().GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}});
-	}
-
-	if (m_AoTexture)
-	{
-		descManager->WriteImageDescriptor(
-			m_ClothOwnedDescSets[0],
-			CLOTH_TEXTURE_BINDING_AO,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{
-				m_AoTexture->GetImage().GetSampler(),
-				m_AoTexture->GetImage().GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}});
-	}
-
-	descManager->CommitDescriptorUpdates();
+bool VansGraphics::VansClothMaterial::RefreshClothTextureDescriptors()
+{
+    if (m_ClothOwnedLayout == VK_NULL_HANDLE || m_ClothOwnedDescSets.empty()) return false;
+    // 无方向图仍绑定有效资源，是否采样由扩展参数的存在标记决定。
+    const std::array<VansTexture*, CLOTH_TEXTURE_BINDING_COUNT> textures{
+        m_BaseColorTexture, m_NormalTexture, m_RoughnessTexture, m_AoTexture,
+        m_SheenMaskTexture, m_FiberDirectionTexture ? m_FiberDirectionTexture : m_NormalTexture,
+        m_OpacityTexture ? m_OpacityTexture : m_AoTexture};
+    if (std::any_of(textures.begin(), textures.end(), [](const auto* texture) { return texture == nullptr; }))
+        return false;
+    auto* manager = VansVKDescriptorManager::GetInstance();
+    manager->BeginDescriptorUpdate();
+    for (uint32_t binding = 0; binding < textures.size(); ++binding)
+    {
+        auto& image = textures[binding]->GetImage();
+        manager->WriteImageDescriptor(m_ClothOwnedDescSets[0], binding,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {{image.GetSampler(), image.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+    }
+    manager->CommitDescriptorUpdates();
+    return true;
 }
 
 //void VansGraphics::VansMaterial::CreatePBRMaterialDataBuffer(VkDevice& logic_device)
@@ -2191,15 +2130,24 @@ VansGraphics::VansHairParamsGPU VansGraphics::VansHairMaterial::BuildGPUParams()
 }
 void VansGraphics::VansHairMaterial::BuildHairDescriptors(VansMaterialManager& materialManager)
 {
-    VansDescriptorSetLayoutFactory::CreateAndAllocate_HairTexture(m_HairOwnedLayout, m_HairOwnedDescSets);
+    VansDescriptorSetLayoutFactory::CreateAndAllocate_HairTexture(
+        m_HairOwnedLayout, m_HairOwnedDescSets,
+        VansCommandRecordingConfig::MaximumFramesInFlight);
+	if (m_HairOwnedDescSets.size() != VansCommandRecordingConfig::MaximumFramesInFlight ||
+		std::any_of(m_HairOwnedDescSets.begin(), m_HairOwnedDescSets.end(),
+			[](VkDescriptorSet set) { return set == VK_NULL_HANDLE; }))
+		throw std::runtime_error("Failed to allocate per-slot Hair material descriptors");
 
 	auto* descManager = VansVKDescriptorManager::GetInstance();
 	descManager->BeginDescriptorUpdate();
+	for (std::uint32_t slot = 0; slot < m_HairOwnedDescSets.size(); ++slot)
+	{
+		const VkDescriptorSet set = m_HairOwnedDescSets[slot];
 
 	if (m_AlbedoTexture)
 	{
 		descManager->WriteImageDescriptor(
-			m_HairOwnedDescSets[0],
+			set,
 			HAIR_TEXTURE_BINDING_ALBEDO,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
@@ -2212,7 +2160,7 @@ void VansGraphics::VansHairMaterial::BuildHairDescriptors(VansMaterialManager& m
 	if (m_AlphaTexture)
 	{
 		descManager->WriteImageDescriptor(
-			m_HairOwnedDescSets[0],
+			set,
 			HAIR_TEXTURE_BINDING_ALPHA,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
@@ -2225,7 +2173,7 @@ void VansGraphics::VansHairMaterial::BuildHairDescriptors(VansMaterialManager& m
 	if (m_NormalTexture)
 	{
 		descManager->WriteImageDescriptor(
-			m_HairOwnedDescSets[0],
+			set,
 			HAIR_TEXTURE_BINDING_NORMAL,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
@@ -2238,7 +2186,7 @@ void VansGraphics::VansHairMaterial::BuildHairDescriptors(VansMaterialManager& m
 	if (m_RoughnessTexture)
 	{
 		descManager->WriteImageDescriptor(
-			m_HairOwnedDescSets[0],
+			set,
 			HAIR_TEXTURE_BINDING_ROUGHNESS,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
@@ -2251,7 +2199,7 @@ void VansGraphics::VansHairMaterial::BuildHairDescriptors(VansMaterialManager& m
 	if (m_AOTexture)
 	{
 		descManager->WriteImageDescriptor(
-			m_HairOwnedDescSets[0],
+			set,
 			HAIR_TEXTURE_BINDING_AO,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
@@ -2267,7 +2215,7 @@ void VansGraphics::VansHairMaterial::BuildHairDescriptors(VansMaterialManager& m
 	if (flowTexture)
 	{
 		descManager->WriteImageDescriptor(
-			m_HairOwnedDescSets[0],
+			set,
 			HAIR_TEXTURE_BINDING_FLOW,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
@@ -2279,14 +2227,15 @@ void VansGraphics::VansHairMaterial::BuildHairDescriptors(VansMaterialManager& m
 
 
 	descManager->WriteBufferDescriptor(
-		m_HairOwnedDescSets[0],
+		set,
 		HAIR_TEXTURE_BINDING_PARAMS,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		{{
-			materialManager.m_GlobalHairDataBuffer.GetNativeBuffer(),
+			materialManager.m_FrameMaterialBuffers.at(slot).hair.GetNativeBuffer(),
 			0,
-			materialManager.m_GlobalHairDataBuffer.GetBufferSize()
+			materialManager.m_FrameMaterialBuffers.at(slot).hair.GetBufferSize()
 		}});
+	}
 
 	descManager->CommitDescriptorUpdates();
 }

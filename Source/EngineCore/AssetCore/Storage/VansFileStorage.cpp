@@ -1,6 +1,7 @@
 #include "VansFileStorage.h"
 
 #include <chrono>
+#include <atomic>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -23,6 +24,9 @@ namespace
 thread_local std::vector<VansIOContext> g_IOContextStack;
 std::mutex g_IOAuditMutex;
 std::vector<VansIOEvent> g_IOEvents;
+std::atomic<bool> g_IOCaptureEnabled{false};
+bool g_IOCaptureOverflow=false;
+constexpr std::size_t MaximumIOAuditEvents=16384;
 
 std::filesystem::path MakeTemporaryPath(const std::filesystem::path& target)
 {
@@ -61,11 +65,14 @@ void VansIOAudit::Reset()
 {
     std::lock_guard<std::mutex> lock(g_IOAuditMutex);
     g_IOEvents.clear();
+    g_IOCaptureOverflow=false;
+    g_IOCaptureEnabled.store(true,std::memory_order_release);
 }
 
 std::vector<VansIOEvent> VansIOAudit::Snapshot()
 {
     std::lock_guard<std::mutex> lock(g_IOAuditMutex);
+    if(g_IOCaptureOverflow) throw std::runtime_error("I/O audit capture exceeded its bounded event capacity");
     return g_IOEvents;
 }
 
@@ -90,6 +97,7 @@ void VansIOAudit::Record(
     const std::filesystem::path& path,
     bool success)
 {
+    if(!g_IOCaptureEnabled.load(std::memory_order_acquire)) return;
     const VansIOContext context = CurrentContext();
     VansIOEvent event;
     event.domain = context.domain;
@@ -98,6 +106,7 @@ void VansIOAudit::Record(
     event.callerTag = context.callerTag;
     event.success = success;
     std::lock_guard<std::mutex> lock(g_IOAuditMutex);
+    if(g_IOEvents.size()==MaximumIOAuditEvents) { g_IOCaptureOverflow=true; return; }
     g_IOEvents.push_back(std::move(event));
 }
 

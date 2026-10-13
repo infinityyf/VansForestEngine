@@ -1,6 +1,8 @@
 #pragma once
 #include "../VulkanCore/VansTexture.h"
 #include "../VulkanCore/VansVKBuffer.h"
+#include "../VansRenderRuntimeConfig.h"
+#include <array>
 #include <memory>
 #include "VansSkyLightingTypes.h"
 
@@ -13,16 +15,17 @@ namespace VansGraphics
     public:
         void Initialize(VansVKDevice& device, VansVKCommandBuffer& commandBuffer, const std::string& sourceDirectory);
         void Destroy(VkDevice device);
-        bool UploadFrame(const VansSkyLightingFrame& frame);
+        bool UploadFrame(const VansSkyLightingFrame& frame, std::uint32_t slot);
         std::string CaptureSourceKey(float authoredIntensity) const;
         VansTexture* Radiance() const { return m_Radiance.get(); }
         VansTexture* DiffuseIrradiance() const { return m_Diffuse.get(); }
         VansTexture* SpecularRadiance() const { return m_Specular.get(); }
         const VansVKBuffer& SH() const { return m_SH; }
-        const VansVKBuffer& Parameters() const { return m_Parameters; }
+        const VansVKBuffer& Parameters(std::uint32_t slot) const { return m_Parameters.at(slot); }
     private:
         std::unique_ptr<VansTexture> m_Radiance, m_Diffuse, m_Specular;
-        VansVKBuffer m_SH, m_Parameters;
+        VansVKBuffer m_SH;
+        std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_Parameters;
         uint64_t m_SourceHash = 0;
     };
 }

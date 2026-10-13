@@ -34,6 +34,7 @@ enum class VansEditorWindowId : std::uint8_t
 	PostProcess,
 	ReflectionProbe,
 	GI,
+	RenderTexturePreview,
 	Count
 };
 
@@ -62,7 +63,7 @@ public:
 		m_Open = defaults;
 	}
 
-	static constexpr const std::array<VansEditorWindowDescriptor, 25>& All()
+	static constexpr const std::array<VansEditorWindowDescriptor, 26>& All()
 	{
 		return Descriptors;
 	}
@@ -73,7 +74,7 @@ private:
 		return static_cast<std::size_t>(id);
 	}
 
-	inline static constexpr std::array<VansEditorWindowDescriptor, 25> Descriptors{{
+	inline static constexpr std::array<VansEditorWindowDescriptor, 26> Descriptors{{
 		{ VansEditorWindowId::Light, "Light", "Light", VansEditorWindowMenuGroup::General },
 		{ VansEditorWindowId::Scriptor, "Scriptor", "Scripts", VansEditorWindowMenuGroup::General },
 		{ VansEditorWindowId::Console, "Console", "Console", VansEditorWindowMenuGroup::General },
@@ -98,7 +99,8 @@ private:
 		{ VansEditorWindowId::Pcg, "Pcg", "PCG", VansEditorWindowMenuGroup::Rendering },
 		{ VansEditorWindowId::PostProcess, "PostProcess", "Post Process", VansEditorWindowMenuGroup::Rendering },
 		{ VansEditorWindowId::ReflectionProbe, "ReflectionProbe", "Reflection Probe Inspector", VansEditorWindowMenuGroup::Rendering },
-		{ VansEditorWindowId::GI, "GI", "GI Inspector", VansEditorWindowMenuGroup::Rendering }
+		{ VansEditorWindowId::GI, "GI", "GI Inspector", VansEditorWindowMenuGroup::Rendering },
+		{ VansEditorWindowId::RenderTexturePreview, "RenderTexturePreview", "RenderTexture Preview", VansEditorWindowMenuGroup::Rendering }
 	}};
 
 	std::array<bool, static_cast<std::size_t>(VansEditorWindowId::Count)> m_Open{};

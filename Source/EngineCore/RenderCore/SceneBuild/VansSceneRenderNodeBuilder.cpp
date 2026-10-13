@@ -388,6 +388,7 @@ VansRenderNodeBuildResult VansSceneRenderNodeBuilder::BuildRenderNode(
 	renderNode->m_SourceMesh = sourceMesh;
 	renderNode->m_SubmeshIndex = submeshIndex;
 	renderNode->m_EntityGuid = sceneRenderNode.entityGuid;
+	renderNode->m_RenderLayer = sceneRenderNode.renderLayer;
 	renderNode->m_ParentEntityGuid = sceneRenderNode.parentEntityGuid;
 	renderNode->m_Material = material;
 	if (auto* decal = dynamic_cast<VansDecalRenderNode*>(renderNode))

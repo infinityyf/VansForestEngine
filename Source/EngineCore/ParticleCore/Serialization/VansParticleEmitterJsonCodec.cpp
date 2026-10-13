@@ -11,6 +11,7 @@
 #include <string>
 #include <utility>
 #include <array>
+#include <limits>
 #include <unordered_set>
 
 namespace
@@ -83,23 +84,25 @@ void ValidateColorGradient(const VansColorGradient& gradient)
 }
 
 void ValidateNonNegativeFloatCurve(const VansFloatCurve& curve,
-    const char* field, float minimumValue)
+    const char* field, float minimumValue, float maximumValue = std::numeric_limits<float>::max(),
+    bool allowReversedRandomRange = false)
 {
-    const auto requireRange = [field, minimumValue](float minimum, float maximum)
+    const auto requireRange = [field, minimumValue, maximumValue, allowReversedRandomRange](float minimum, float maximum)
     {
+        if (allowReversedRandomRange && minimum > maximum) std::swap(minimum, maximum);
         if (!std::isfinite(minimum) || !std::isfinite(maximum) ||
-            minimum < minimumValue || maximum < minimum)
+            minimum < minimumValue || maximum < minimum || maximum > maximumValue)
         {
             throw std::invalid_argument(std::string(field) +
                 " must contain a finite non-decreasing non-negative range");
         }
     };
-    const auto requireKeys = [field, minimumValue](
+    const auto requireKeys = [field, minimumValue, maximumValue](
         const std::vector<CurveKey>& keys)
     {
         ValidateOrderedCurve(keys, field, true);
         for (const CurveKey& key : keys)
-            if (key.value < minimumValue)
+            if (key.value < minimumValue || key.value > maximumValue)
                 throw std::invalid_argument(std::string(field) +
                     " contains a value below its supported minimum");
     };
@@ -131,7 +134,11 @@ ParticleJsonValue EncodeFloatCurve(const VansFloatCurve& curve)
     case FloatCurveMode::RandomBetweenCurves: mode = "RandomBetweenCurves"; break;
     default: break;
     }
-    return {{"mode", mode}, {"value", curve.m_Value}, {"min", curve.m_Min}, {"max", curve.m_Max},
+    const char* distribution = curve.m_RandomDistribution == VansParticleRandomDistribution::StandardBias
+        ? "StandardBias" : curve.m_RandomDistribution == VansParticleRandomDistribution::ExponentialBias
+        ? "ExponentialBias" : "Uniform";
+    return {{"mode", mode}, {"randomDistribution", distribution}, {"randomBias", curve.m_RandomBias},
+        {"value", curve.m_Value}, {"min", curve.m_Min}, {"max", curve.m_Max},
         {"keys", EncodeCurveKeys(curve.m_Keys)}, {"minKeys", EncodeCurveKeys(curve.m_MinKeys)},
         {"maxKeys", EncodeCurveKeys(curve.m_MaxKeys)}};
 }
@@ -144,6 +151,14 @@ void DecodeFloatCurve(const ParticleJsonValue& root, VansFloatCurve& curve)
     else if (mode == "Curve") curve.m_Mode = FloatCurveMode::Curve;
     else if (mode == "RandomBetweenCurves") curve.m_Mode = FloatCurveMode::RandomBetweenCurves;
     else throw std::invalid_argument("Unknown float curve mode: " + mode);
+    const auto distribution = root.value("randomDistribution", "Uniform");
+    if (distribution == "Uniform") curve.m_RandomDistribution = VansParticleRandomDistribution::Uniform;
+    else if (distribution == "StandardBias") curve.m_RandomDistribution = VansParticleRandomDistribution::StandardBias;
+    else if (distribution == "ExponentialBias") curve.m_RandomDistribution = VansParticleRandomDistribution::ExponentialBias;
+    else throw std::invalid_argument("Unknown random distribution: " + distribution);
+    curve.m_RandomBias = root.value("randomBias", 0.f);
+    if (!std::isfinite(curve.m_RandomBias) || curve.m_RandomBias < -1.f || curve.m_RandomBias > 1.f)
+        throw std::invalid_argument("randomBias must be finite and in [-1,1]");
     curve.m_Value = root.value("value", curve.m_Value);
     curve.m_Min = root.value("min", curve.m_Min);
     curve.m_Max = root.value("max", curve.m_Max);
@@ -362,6 +377,7 @@ ParticleJsonValue EncodeRendererConfig(const VansParticleRendererConfig& config)
         switch (mode)
         {
         case VansParticleLightingMode::SixWayLit: return "SixWayLit";
+        case VansParticleLightingMode::SpriteCard: return "SpriteCard";
         default: return "UnlitFlipbook";
         }
     };
@@ -383,6 +399,29 @@ ParticleJsonValue EncodeRendererConfig(const VansParticleRendererConfig& config)
     root["lightingMode"] = lightingToString(config.m_LightingMode);
     root["sixWayLighting"] = EncodeSixWayLighting(config.m_SixWayLighting);
     root["volumetric"] = EncodeVolumetricConfig(config.m_Volumetric);
+    {
+        const auto& card = config.m_Card;
+        auto sequences = ParticleJsonValue::array();
+        for (const auto& sequence : card.sequences)
+            sequences.push_back({{"firstFrame",sequence.firstFrame},{"frameCount",sequence.frameCount}});
+        root["spriteCard"] = {{"orientation",card.orientation == VansParticleCardOrientation::Axis ? "Axis"
+            : card.orientation == VansParticleCardOrientation::Surface ? "Surface" : "Camera"},
+            {"output",card.output == VansParticleCardOutput::Additive ? "Additive"
+            : card.output == VansParticleCardOutput::HalfBlendAdd ? "HalfBlendAdd"
+            : card.output == VansParticleCardOutput::BlendAdd ? "BlendAdd" : "Alpha"},
+            {"aspectRatio",card.aspectRatio},{"pivotY",card.pivotY},{"softIntersection",card.softIntersection},
+            {"desaturation",card.desaturation},{"overbright",card.overbright},{"lookupBlend",card.lookupBlend},
+            {"lookupTextureGuid",card.lookupTextureGuid},{"sequences",sequences},
+            {"lookupMultiply",card.lookupMultiply},{"tintBeforeDesaturation",card.tintBeforeDesaturation},
+            {"channelMix",card.channels == VansParticleCardChannels::RGBAlpha ? "RGBAlpha" : card.channels == VansParticleCardChannels::RedAlpha ? "RedAlpha" : "RGBA"},
+            {"sizeOverEffect",EncodeFloatCurve(card.sizeOverEffect)},
+            {"breakup",card.breakup == VansParticleCardBreakup::Zoom ? "Zoom" : card.breakup == VansParticleCardBreakup::Standard ? "Standard" : "None"},
+            {"breakupTextureGuid",card.breakupTextureGuid},{"breakupPreserveAlpha",card.breakupPreserveAlpha},
+            {"breakupZoomScale",card.breakupZoomScale},{"breakupWeightOverEffect",EncodeFloatCurve(card.breakupWeightOverEffect)},
+            {"alphaOverEffect",EncodeFloatCurve(card.alphaOverEffect)},
+            {"alphaClock",card.alphaClock == VansParticleCardAlphaClock::EffectSeconds ? "EffectSeconds"
+                : card.alphaClock == VansParticleCardAlphaClock::EmissionPointSeconds ? "EmissionPointSeconds" : "NormalizedEffect"}};
+    }
     {
         const auto& ribbon = config.m_Ribbon;
         root["ribbon"] = {
@@ -438,8 +477,98 @@ void DecodeRendererConfig(const ParticleJsonValue& root, VansParticleRendererCon
     const std::string lightingMode = root.value("lightingMode", "UnlitFlipbook");
     if (lightingMode == "SixWayLit") config.m_LightingMode = VansParticleLightingMode::SixWayLit;
     else if (lightingMode == "UnlitFlipbook") config.m_LightingMode = VansParticleLightingMode::UnlitFlipbook;
+    else if (lightingMode == "SpriteCard") config.m_LightingMode = VansParticleLightingMode::SpriteCard;
     else throw std::invalid_argument("Invalid lightingMode");
 
+    if (root.contains("spriteCard"))
+    {
+        const auto& source = root.at("spriteCard");
+        if (!source.is_object()) throw std::invalid_argument("spriteCard must be an object");
+        if (source.contains("breakupUseAccumulatedAlpha"))
+            throw std::invalid_argument("spriteCard.breakupUseAccumulatedAlpha is retired; use breakupPreserveAlpha");
+        auto& card = config.m_Card;
+        const auto orientation = source.value("orientation","Camera");
+        if (orientation == "Camera") card.orientation = VansParticleCardOrientation::Camera;
+        else if (orientation == "Axis") card.orientation = VansParticleCardOrientation::Axis;
+        else if (orientation == "Surface") card.orientation = VansParticleCardOrientation::Surface;
+        else throw std::invalid_argument("Invalid spriteCard.orientation");
+        const auto output = source.value("output","Alpha");
+        if (output == "Alpha") card.output = VansParticleCardOutput::Alpha;
+        else if (output == "Additive") card.output = VansParticleCardOutput::Additive;
+        else if (output == "HalfBlendAdd") card.output = VansParticleCardOutput::HalfBlendAdd;
+        else if (output == "BlendAdd") card.output = VansParticleCardOutput::BlendAdd;
+        else throw std::invalid_argument("Invalid spriteCard.output");
+        const auto channels = source.value("channelMix","RGBA");
+        if (channels=="RGBA") card.channels=VansParticleCardChannels::RGBA;
+        else if (channels=="RGBAlpha") card.channels=VansParticleCardChannels::RGBAlpha;
+        else if (channels=="RedAlpha") card.channels=VansParticleCardChannels::RedAlpha;
+        else throw std::invalid_argument("Invalid spriteCard.channelMix");
+        card.aspectRatio = source.value("aspectRatio",card.aspectRatio);
+        card.pivotY = source.value("pivotY",card.pivotY);
+        card.softIntersection = source.value("softIntersection",card.softIntersection);
+        card.desaturation = source.value("desaturation",card.desaturation);
+        card.overbright = source.value("overbright",card.overbright);
+        card.lookupBlend = source.value("lookupBlend",card.lookupBlend);
+        card.lookupMultiply = source.value("lookupMultiply",false);
+        card.tintBeforeDesaturation = source.value("tintBeforeDesaturation",false);
+        if (!std::isfinite(card.aspectRatio) || card.aspectRatio<=0 || card.aspectRatio>100
+            || !std::isfinite(card.pivotY) || std::abs(card.pivotY)>1
+            || !std::isfinite(card.softIntersection) || card.softIntersection<0 || card.softIntersection>10
+            || !std::isfinite(card.desaturation) || card.desaturation<0 || card.desaturation>1
+            || !std::isfinite(card.overbright) || card.overbright<0 || card.overbright>100
+            || !std::isfinite(card.lookupBlend) || card.lookupBlend<0 || card.lookupBlend>1)
+            throw std::invalid_argument("SpriteCard material parameters are invalid");
+        card.lookupTextureGuid = source.value("lookupTextureGuid",std::string{});
+        if (!card.lookupTextureGuid.empty() && (!Vans::VansAssetGuid::TryParse(card.lookupTextureGuid,texture) || !texture.IsValid()))
+            throw std::invalid_argument("spriteCard.lookupTextureGuid requires an asset GUID");
+        if (card.lookupBlend > 0 && card.lookupTextureGuid.empty())
+            throw std::invalid_argument("spriteCard lookup needs a texture dependency");
+        const auto breakup = source.value("breakup","None");
+        if (breakup=="None") card.breakup=VansParticleCardBreakup::None;
+        else if (breakup=="Standard") card.breakup=VansParticleCardBreakup::Standard;
+        else if (breakup=="Zoom") card.breakup=VansParticleCardBreakup::Zoom;
+        else throw std::invalid_argument("Invalid spriteCard.breakup");
+        card.breakupTextureGuid=source.value("breakupTextureGuid",std::string{});
+        card.breakupPreserveAlpha=source.value("breakupPreserveAlpha",false);
+        card.breakupZoomScale=source.value("breakupZoomScale",card.breakupZoomScale);
+        if (!std::isfinite(card.breakupZoomScale) || card.breakupZoomScale<0 || card.breakupZoomScale>100)
+            throw std::invalid_argument("Invalid spriteCard.breakupZoomScale");
+        if ((!card.breakupTextureGuid.empty() || card.breakup!=VansParticleCardBreakup::None)
+            && (!Vans::VansAssetGuid::TryParse(card.breakupTextureGuid,texture) || !texture.IsValid()))
+            throw std::invalid_argument("spriteCard breakup requires a texture asset GUID");
+        if (source.contains("breakupWeightOverEffect")) DecodeFloatCurve(source.at("breakupWeightOverEffect"),card.breakupWeightOverEffect);
+        ValidateNonNegativeFloatCurve(card.breakupWeightOverEffect,"spriteCard.breakupWeightOverEffect",0,1);
+        if (source.contains("sizeOverEffect")) DecodeFloatCurve(source.at("sizeOverEffect"),card.sizeOverEffect);
+        if (source.contains("alphaOverEffect")) DecodeFloatCurve(source.at("alphaOverEffect"),card.alphaOverEffect);
+        const auto alphaClock = source.value("alphaClock", "NormalizedEffect");
+        if (alphaClock == "NormalizedEffect") card.alphaClock = VansParticleCardAlphaClock::NormalizedEffect;
+        else if (alphaClock == "EffectSeconds") card.alphaClock = VansParticleCardAlphaClock::EffectSeconds;
+        else if (alphaClock == "EmissionPointSeconds") card.alphaClock = VansParticleCardAlphaClock::EmissionPointSeconds;
+        else throw std::invalid_argument("Invalid spriteCard.alphaClock");
+        const float maxAlphaTime = card.alphaClock == VansParticleCardAlphaClock::NormalizedEffect ? 1.f : 3600.f;
+        for (const auto* keys : {&card.alphaOverEffect.m_Keys, &card.alphaOverEffect.m_MinKeys, &card.alphaOverEffect.m_MaxKeys})
+            for (const auto& key : *keys)
+                if (!std::isfinite(key.t) || key.t < 0 || key.t > maxAlphaTime)
+                    throw std::invalid_argument("spriteCard.alphaOverEffect time is outside its selected clock domain");
+        ValidateNonNegativeFloatCurve(card.sizeOverEffect,"spriteCard.sizeOverEffect",0);
+        ValidateNonNegativeFloatCurve(card.alphaOverEffect,"spriteCard.alphaOverEffect",0);
+        card.sequences.clear();
+        if (source.contains("sequences"))
+        {
+            if (!source.at("sequences").is_array() || source.at("sequences").size() > 64)
+                throw std::invalid_argument("spriteCard supports at most 64 sequences");
+            for (const auto& sequence : source.at("sequences"))
+            {
+                const auto first = sequence.at("firstFrame").get<uint32_t>();
+                const auto count = sequence.at("frameCount").get<uint32_t>();
+                if (count == 0 || uint64_t(first)+count > uint64_t(config.m_SpriteColumns)*config.m_SpriteRows)
+                    throw std::invalid_argument("SpriteCard sequence exceeds its atlas");
+                card.sequences.push_back({first,count});
+            }
+        }
+    }
+    if (config.m_LightingMode == VansParticleLightingMode::SpriteCard && config.m_Type != VansParticleRendererType::Billboard)
+        throw std::invalid_argument("SpriteCard requires Billboard geometry");
     if (root.contains("sixWayLighting"))
     {
         DecodeSixWayLighting(root["sixWayLighting"], config.m_SixWayLighting);
@@ -503,39 +632,73 @@ VansParticleFieldRule RangeRule(
     return {std::move(path), {}, true, minimum, maximum, step};
 }
 
-std::vector<VansParticleFieldRule> CurveRules(const std::string& path)
-{
-    std::vector<VansParticleFieldRule> rules;
-    rules.push_back(ChoiceRule(path + "/mode",
-        {"Constant", "RandomBetween", "Curve", "RandomBetweenCurves"}));
-    for (const char* keys : {"keys", "minKeys", "maxKeys"})
-        rules.push_back(RangeRule(path + "/" + keys + "/*/t", 0.0, 1.0));
-    return rules;
-}
-
 ParticleJsonValue EncodeInitLifetime(const VansInitLifetimeModule& module)
 {
-    return {{"module", "InitLifetime"}, {"lifetime", EncodeFloatCurve(module.m_Lifetime)}};
+    const char* operation = nullptr;
+    switch (module.m_CollectionAgeOperation)
+    {
+    case VansParticleLifetimeAgeOperation::None: operation = "None"; break;
+    case VansParticleLifetimeAgeOperation::Multiply: operation = "Multiply"; break;
+    case VansParticleLifetimeAgeOperation::Replace: operation = "Replace"; break;
+    default: throw std::invalid_argument("Unknown InitLifetime collection-age operation");
+    }
+    return {{"module", "InitLifetime"}, {"lifetime", EncodeFloatCurve(module.m_Lifetime)},
+        {"collectionAge", {{"operation", operation}, {"loopPeriod", module.m_CollectionAgeLoopPeriod},
+            {"curve", EncodeFloatCurve(module.m_CollectionAgeCurve)}}}};
 }
 
 void DecodeInitLifetime(const ParticleJsonValue& root, VansInitLifetimeModule& module)
 {
-    if (!root.contains("lifetime")) return;
-    DecodeFloatCurve(root["lifetime"], module.m_Lifetime);
+    if (root.contains("lifetime")) DecodeFloatCurve(root["lifetime"], module.m_Lifetime);
     ValidateNonNegativeFloatCurve(module.m_Lifetime, "InitLifetime.lifetime", 0.01f);
+    if (root.contains("collectionAge"))
+    {
+        const auto& age = root.at("collectionAge");
+        const auto operation = age.value("operation", "None");
+        if (operation == "None") module.m_CollectionAgeOperation = VansParticleLifetimeAgeOperation::None;
+        else if (operation == "Multiply") module.m_CollectionAgeOperation = VansParticleLifetimeAgeOperation::Multiply;
+        else if (operation == "Replace") module.m_CollectionAgeOperation = VansParticleLifetimeAgeOperation::Replace;
+        else throw std::invalid_argument("Unknown InitLifetime collection-age operation: " + operation);
+        module.m_CollectionAgeLoopPeriod = age.value("loopPeriod", 0.f);
+        if (age.contains("curve")) DecodeFloatCurve(age.at("curve"), module.m_CollectionAgeCurve);
+        ValidateNonNegativeFloatCurve(module.m_CollectionAgeCurve, "InitLifetime.collectionAge.curve",
+            module.m_CollectionAgeOperation == VansParticleLifetimeAgeOperation::Replace ? .01f : 0.f);
+    }
+}
+
+std::vector<VansParticleFieldRule> InitLifetimeFields()
+{
+    auto fields = VansParticleEmitterJsonCodec::FloatCurveFields("/lifetime");
+    fields.push_back(ChoiceRule("/collectionAge/operation", {"None", "Multiply", "Replace"}));
+    fields.push_back(RangeRule("/collectionAge/loopPeriod", 0, 3600));
+    const auto ageFields = VansParticleEmitterJsonCodec::FloatCurveFields("/collectionAge/curve", 3600);
+    fields.insert(fields.end(), ageFields.begin(), ageFields.end());
+    return fields;
 }
 
 ParticleJsonValue EncodeInitVelocity(const VansInitVelocityModule& module)
 {
     return {{"module", "InitVelocity"},
-        {"mode", module.m_VelocityMode == VansInitVelocityMode::Cone ? "Cone" : "Random"},
-        {"angle", module.m_ConeAngle}, {"speed", module.m_Speed}};
+        {"mode", module.m_VelocityMode == VansInitVelocityMode::Cone ? "Cone" : module.m_VelocityMode == VansInitVelocityMode::Box ? "Box" : "Random"},
+        {"angle", module.m_ConeAngle}, {"speed", module.m_Speed},
+        {"minVelocity",{module.m_MinVelocity.x,module.m_MinVelocity.y,module.m_MinVelocity.z}},
+        {"maxVelocity",{module.m_MaxVelocity.x,module.m_MaxVelocity.y,module.m_MaxVelocity.z}}};
 }
 
 void DecodeInitVelocity(const ParticleJsonValue& root, VansInitVelocityModule& module)
 {
-    module.m_VelocityMode = root.value("mode", "Cone") == "Random"
-        ? VansInitVelocityMode::Random : VansInitVelocityMode::Cone;
+    const auto mode=root.value("mode","Cone");
+    module.m_VelocityMode=mode=="Box" ? VansInitVelocityMode::Box : mode=="Random" ? VansInitVelocityMode::Random : VansInitVelocityMode::Cone;
+    const auto vector=[&](const char* name,glm::vec3& target) {
+        if (!root.contains(name)) return;
+        const auto& value=root.at(name);
+        if (!value.is_array() || value.size()!=3) throw std::invalid_argument("Velocity range requires three components");
+        target={value[0].get<float>(),value[1].get<float>(),value[2].get<float>()};
+    };
+    vector("minVelocity",module.m_MinVelocity); vector("maxVelocity",module.m_MaxVelocity);
+    if (!std::isfinite(glm::length(module.m_MinVelocity)) || !std::isfinite(glm::length(module.m_MaxVelocity))
+        || glm::any(glm::greaterThan(module.m_MinVelocity,module.m_MaxVelocity)))
+        throw std::invalid_argument("Velocity box must use finite ordered components");
     module.m_ConeAngle = root.value("angle", 25.0f);
     module.m_Speed = root.value("speed", 2.0f);
 }
@@ -554,15 +717,31 @@ void DecodeInitSize(const ParticleJsonValue& root, VansInitSizeModule& module)
 
 ParticleJsonValue EncodeInitColor(const VansInitColorModule& module)
 {
+    auto scales = ParticleJsonValue::array();
+    for (const auto& scale : module.m_AlphaScales) scales.push_back(EncodeFloatCurve(scale));
     return {{"module", "InitColor"},
-        {"color", {module.m_Color.r, module.m_Color.g, module.m_Color.b, module.m_Color.a}}};
+        {"color", {module.m_Color.r, module.m_Color.g, module.m_Color.b, module.m_Color.a}},
+        {"alphaScales", std::move(scales)}};
 }
 
 void DecodeInitColor(const ParticleJsonValue& root, VansInitColorModule& module)
 {
-    if (!root.contains("color") || !root["color"].is_array() || root["color"].size() < 4) return;
-    module.m_Color = glm::vec4(root["color"][0].get<float>(), root["color"][1].get<float>(),
-        root["color"][2].get<float>(), root["color"][3].get<float>());
+    if (root.contains("color") && root["color"].is_array() && root["color"].size() >= 4)
+        module.m_Color = glm::vec4(root["color"][0].get<float>(), root["color"][1].get<float>(),
+            root["color"][2].get<float>(), root["color"][3].get<float>());
+    if (root.contains("alphaScales"))
+    {
+        const auto& scales = root.at("alphaScales");
+        if (!scales.is_array() || scales.size() > 8)
+            throw std::invalid_argument("InitColor.alphaScales must be an array of at most 8 curves");
+        for (const auto& value : scales)
+        {
+            VansFloatCurve scale;
+            DecodeFloatCurve(value, scale);
+            ValidateNonNegativeFloatCurve(scale, "InitColor.alphaScales", 0, std::numeric_limits<float>::max(), true);
+            module.m_AlphaScales.push_back(std::move(scale));
+        }
+    }
 }
 
 ParticleJsonValue EncodeInitRotation(const VansInitRotationModule& module)
@@ -602,6 +781,28 @@ void DecodeInitPosition(const ParticleJsonValue& root, VansInitPositionModule& m
     module.m_Arc = root.value("arc", 360.0f);
 }
 
+ParticleJsonValue EncodeInitPositionOffset(const VansInitPositionOffsetModule& module)
+{
+    return {{"module","InitPositionOffset"},
+        {"minOffset",{module.m_MinOffset.x,module.m_MinOffset.y,module.m_MinOffset.z}},
+        {"maxOffset",{module.m_MaxOffset.x,module.m_MaxOffset.y,module.m_MaxOffset.z}},
+        {"localCoordinates",module.m_LocalCoordinates}};
+}
+void DecodeInitPositionOffset(const ParticleJsonValue& root,VansInitPositionOffsetModule& module)
+{
+    const auto vector=[&](const char* name,glm::vec3& target) {
+        if (!root.contains(name)) return;
+        const auto& value=root.at(name);
+        if (!value.is_array() || value.size()!=3) throw std::invalid_argument("Position offset requires three components");
+        target={value[0].get<float>(),value[1].get<float>(),value[2].get<float>()};
+    };
+    vector("minOffset",module.m_MinOffset); vector("maxOffset",module.m_MaxOffset);
+    if (!std::isfinite(glm::length(module.m_MinOffset)) || !std::isfinite(glm::length(module.m_MaxOffset))
+        || glm::any(glm::greaterThan(module.m_MinOffset,module.m_MaxOffset)))
+        throw std::invalid_argument("Position offset must use finite ordered components");
+    module.m_LocalCoordinates=root.value("localCoordinates",true);
+}
+
 ParticleJsonValue EncodeUpdateGravity(const VansUpdateGravityModule& module)
 {
     return {{"module", "UpdateGravity"},
@@ -618,14 +819,61 @@ void DecodeUpdateGravity(const ParticleJsonValue& root, VansUpdateGravityModule&
 ParticleJsonValue EncodeUpdateColor(const VansUpdateColorOverLifetime& module)
 {
     return {{"module", "UpdateColorOverLifetime"},
+        {"scaleInitialAlpha", module.m_ScaleInitialAlpha},
         {"gradient", EncodeColorGradient(module.m_Gradient)}};
 }
 
 void DecodeUpdateColor(const ParticleJsonValue& root, VansUpdateColorOverLifetime& module)
 {
+    module.m_ScaleInitialAlpha = root.value("scaleInitialAlpha", false);
     if (!root.contains("gradient")) return;
     DecodeColorGradient(root["gradient"], module.m_Gradient);
     ValidateColorGradient(module.m_Gradient);
+}
+
+ParticleJsonValue EncodeAlphaFade(const VansParticleAlphaFade& fade)
+{
+    return {{"enabled", fade.enabled}, {"durationMin", fade.durationMin},
+        {"durationMax", fade.durationMax}, {"randomExponent", fade.randomExponent},
+        {"timeDomain", fade.timeDomain == VansParticleFadeTimeDomain::Seconds ? "Seconds" : "Lifetime"},
+        {"easing", fade.easing == VansParticleFadeEasing::Linear ? "Linear" : "SmoothStep"}};
+}
+
+void DecodeAlphaFade(const ParticleJsonValue& root, VansParticleAlphaFade& fade)
+{
+    if (!root.is_object()) throw std::invalid_argument("Alpha fade must be an object");
+    const auto defaults = EncodeAlphaFade(fade);
+    for (const auto& field : root.items())
+        if (!defaults.contains(field.key()))
+            throw std::invalid_argument("Unknown Alpha fade field: " + field.key());
+    fade.enabled = root.value("enabled", fade.enabled);
+    fade.durationMin = root.value("durationMin", fade.durationMin);
+    fade.durationMax = root.value("durationMax", fade.durationMax);
+    fade.randomExponent = root.value("randomExponent", fade.randomExponent);
+    // 端点允许反向插值；标量范围与枚举由同一模块目录校验。
+    fade.timeDomain = root.value("timeDomain", "Lifetime") == "Seconds"
+        ? VansParticleFadeTimeDomain::Seconds : VansParticleFadeTimeDomain::Lifetime;
+    fade.easing = root.value("easing", "SmoothStep") == "Linear"
+        ? VansParticleFadeEasing::Linear : VansParticleFadeEasing::SmoothStep;
+}
+
+ParticleJsonValue EncodeUpdateAlphaFade(const VansUpdateAlphaFadeModule& module)
+{
+    return {{"module", "UpdateAlphaFade"}, {"fadeInDelay", module.m_FadeInDelay},
+        {"fadeInFirst", module.m_FadeInFirst}, {"fadeIn", EncodeAlphaFade(module.m_FadeIn)},
+        {"fadeOut", EncodeAlphaFade(module.m_FadeOut)}};
+}
+
+void DecodeUpdateAlphaFade(const ParticleJsonValue& root, VansUpdateAlphaFadeModule& module)
+{
+    for (const auto& field : root.items())
+        if (field.key() != "module" && field.key() != "enabled" &&
+            field.key() != "fadeIn" && field.key() != "fadeOut" && field.key() != "fadeInFirst" && field.key() != "fadeInDelay")
+            throw std::invalid_argument("Unknown UpdateAlphaFade field: " + field.key());
+    module.m_FadeInFirst = root.value("fadeInFirst", true);
+    module.m_FadeInDelay = root.value("fadeInDelay", 0.f);
+    if (root.contains("fadeIn")) DecodeAlphaFade(root["fadeIn"], module.m_FadeIn);
+    if (root.contains("fadeOut")) DecodeAlphaFade(root["fadeOut"], module.m_FadeOut);
 }
 
 ParticleJsonValue EncodeUpdateSize(const VansUpdateSizeOverLifetime& module)
@@ -727,25 +975,28 @@ ModuleEntry MakeModuleEntry(const char* name, VansParticleModulePhase phase,
         EncodeTypedModule<T, Encode>, DecodeTypedModule<T, Decode>};
 }
 
-const std::array<ModuleEntry, 12>& ModuleCatalog()
+const auto& ModuleCatalog()
 {
-    static const std::array<ModuleEntry, 12> entries{{
+    static const std::array entries{
         MakeModuleEntry<VansInitLifetimeModule, EncodeInitLifetime, DecodeInitLifetime>(
-            "InitLifetime", VansParticleModulePhase::Initialize, CurveRules("/lifetime")),
+            "InitLifetime", VansParticleModulePhase::Initialize, InitLifetimeFields()),
         MakeModuleEntry<VansInitVelocityModule, EncodeInitVelocity, DecodeInitVelocity>(
             "InitVelocity", VansParticleModulePhase::Initialize,
-            {ChoiceRule("/mode", {"Cone", "Random"}), RangeRule("/angle", 0.0, 180.0, 0.25),
-                RangeRule("/speed", 0.0, 10000.0)}),
+            {ChoiceRule("/mode", {"Cone", "Random", "Box"}), RangeRule("/angle", 0.0, 180.0, 0.25),
+                RangeRule("/speed", 0.0, 10000.0), RangeRule("/minVelocity/*",-10000,10000),RangeRule("/maxVelocity/*",-10000,10000)}),
         MakeModuleEntry<VansInitSizeModule, EncodeInitSize, DecodeInitSize>(
-            "InitSize", VansParticleModulePhase::Initialize, CurveRules("/size")),
+            "InitSize", VansParticleModulePhase::Initialize, VansParticleEmitterJsonCodec::FloatCurveFields("/size")),
         MakeModuleEntry<VansInitColorModule, EncodeInitColor, DecodeInitColor>(
-            "InitColor", VansParticleModulePhase::Initialize),
+            "InitColor", VansParticleModulePhase::Initialize, VansParticleEmitterJsonCodec::FloatCurveFields("/alphaScales/*")),
         MakeModuleEntry<VansInitRotationModule, EncodeInitRotation, DecodeInitRotation>(
-            "InitRotation", VansParticleModulePhase::Initialize, CurveRules("/angle")),
+            "InitRotation", VansParticleModulePhase::Initialize, VansParticleEmitterJsonCodec::FloatCurveFields("/angle")),
         MakeModuleEntry<VansInitPositionModule, EncodeInitPosition, DecodeInitPosition>(
             "InitPositionShape", VansParticleModulePhase::Initialize,
             {ChoiceRule("/shape", {"Sphere", "Box", "Cone", "Disk", "Edge"}),
                 RangeRule("/radius", 0.0, 10000.0), RangeRule("/arc", 0.0, 360.0, 0.25)}),
+        MakeModuleEntry<VansInitPositionOffsetModule,EncodeInitPositionOffset,DecodeInitPositionOffset>(
+            "InitPositionOffset",VansParticleModulePhase::Initialize,
+            {RangeRule("/minOffset/*",-10000,10000),RangeRule("/maxOffset/*",-10000,10000)}),
         MakeModuleEntry<VansUpdateGravityModule, EncodeUpdateGravity, DecodeUpdateGravity>(
             "UpdateGravity", VansParticleModulePhase::Update),
         MakeModuleEntry<VansUpdateColorOverLifetime, EncodeUpdateColor, DecodeUpdateColor>(
@@ -762,12 +1013,25 @@ const std::array<ModuleEntry, 12>& ModuleCatalog()
                 RangeRule("/turbulence/scrollSpeed", 0.0, 100.0)}),
         MakeModuleEntry<VansUpdateRotationOverLifetime, EncodeUpdateRotation, DecodeUpdateRotation>(
             "UpdateRotationOverLifetime", VansParticleModulePhase::Update,
-            CurveRules("/angularVelocity")),
+            VansParticleEmitterJsonCodec::FloatCurveFields("/angularVelocity")),
         MakeModuleEntry<VansUpdateSpriteAnimModule, EncodeUpdateSprite, DecodeUpdateSprite>(
             "UpdateSpriteAnim", VansParticleModulePhase::Update,
             {RangeRule("/columns", 1.0, 256.0, 1.0), RangeRule("/rows", 1.0, 256.0, 1.0),
-                RangeRule("/fps", 0.0, 1000.0, 0.1)})
-    }};
+                RangeRule("/fps", 0.0, 1000.0, 0.1)}),
+        MakeModuleEntry<VansUpdateAlphaFadeModule, EncodeUpdateAlphaFade, DecodeUpdateAlphaFade>(
+            "UpdateAlphaFade", VansParticleModulePhase::Update,
+            {RangeRule("/fadeInDelay", 0, 10000),
+                RangeRule("/fadeIn/durationMin", 0.000001, 10000),
+                RangeRule("/fadeIn/durationMax", 0.000001, 10000),
+                RangeRule("/fadeOut/durationMin", 0.000001, 10000),
+                RangeRule("/fadeOut/durationMax", 0.000001, 10000),
+                RangeRule("/fadeIn/randomExponent", 0, 256, 0.25),
+                RangeRule("/fadeOut/randomExponent", 0, 256, 0.25),
+                ChoiceRule("/fadeIn/timeDomain", {"Lifetime", "Seconds"}),
+                ChoiceRule("/fadeOut/timeDomain", {"Lifetime", "Seconds"}),
+                ChoiceRule("/fadeIn/easing", {"Linear", "SmoothStep"}),
+                ChoiceRule("/fadeOut/easing", {"Linear", "SmoothStep"})})
+    };
     return entries;
 }
 
@@ -792,6 +1056,18 @@ std::unique_ptr<VansParticleModule> DecodeModule(
     }
     throw std::invalid_argument("Unknown particle module or incorrect phase: " + name);
 }
+}
+
+std::vector<VansParticleFieldRule> VansParticleEmitterJsonCodec::FloatCurveFields(const std::string& path, double maximumTime)
+{
+    std::vector<VansParticleFieldRule> rules;
+    rules.push_back(ChoiceRule(path + "/mode",
+        {"Constant", "RandomBetween", "Curve", "RandomBetweenCurves"}));
+    rules.push_back(ChoiceRule(path + "/randomDistribution", {"Uniform", "StandardBias", "ExponentialBias"}));
+    rules.push_back(RangeRule(path + "/randomBias", -1, 1));
+    for (const char* keys : {"keys", "minKeys", "maxKeys"})
+        rules.push_back(RangeRule(path + "/" + keys + "/*/t", 0.0, maximumTime));
+    return rules;
 }
 
 const std::vector<VansParticleModuleSchema>& VansParticleEmitterJsonCodec::ModuleSchemas()
@@ -827,6 +1103,7 @@ Vans::VansSerializedValue VansParticleEmitterJsonCodec::EncodeEmitter(const Vans
     root["name"] = emitter.m_Name;
     root["enabled"] = emitter.m_Enabled;
     root["maxParticles"] = emitter.m_MaxParticles;
+    root["emissionChannel"] = emitter.m_EmissionChannel;
     root["spawn"] = EncodeSpawnConfig(emitter.m_SpawnConfig);
 
     auto initialize = ParticleJsonValue::array();
@@ -864,6 +1141,8 @@ void VansParticleEmitterJsonCodec::DecodeEmitter(
     emitter.m_Name = root.value("name", "Emitter");
     emitter.m_Enabled = root.value("enabled", true);
     emitter.m_MaxParticles = root.value("maxParticles", 1000u);
+    emitter.m_EmissionChannel = root.value("emissionChannel",0u);
+    if (emitter.m_EmissionChannel>255) throw std::invalid_argument("emissionChannel must be in [0,255]");
     if (emitter.m_MaxParticles == 0 || emitter.m_MaxParticles > 65536)
         throw std::invalid_argument("maxParticles must be in [1,65536]");
 

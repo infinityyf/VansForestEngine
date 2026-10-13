@@ -7,6 +7,8 @@
 #include "VansWaterGeometryClipmap.h"
 #include "../VulkanCore/VansVKImage.h"
 #include "../VulkanCore/VansVKBuffer.h"
+#include "../VansRenderRuntimeConfig.h"
+#include <array>
 #include <vector>
 
 // ============================================================
@@ -154,6 +156,8 @@ namespace VansGraphics
         // 必须在首次渲染之前调用。
         void SetGlobalDescriptorSet(VkDescriptorSetLayout globalLayout,
                                      VkDescriptorSet        globalSet);
+		bool SelectFrameDescriptorSets(VkDescriptorSet globalSet,
+			std::uint32_t frameSlot, std::uint32_t gbufferTargetSlot);
 
         void Shutdown();
         void ReinitializeResolutionResources(
@@ -220,6 +224,26 @@ namespace VansGraphics
         VansVKImage& GetVolumeTransmittanceImage() { return m_WaterVolumeTransmittanceImage; }
         VansVKImage& GetVolumeDepthImage()       { return m_WaterVolumeDepthImage; }
 
+        struct ResourceImages
+        {
+            VkImage waveDisplacement = VK_NULL_HANDLE;
+            VkImage waveDerivative = VK_NULL_HANDLE;
+            VkImage flowMap = VK_NULL_HANDLE;
+            VkImage fftSpectrum = VK_NULL_HANDLE;
+            VkImage fftPing = VK_NULL_HANDLE;
+            VkImage fftPong = VK_NULL_HANDLE;
+            VkImage reflection = VK_NULL_HANDLE;
+            VkImage refraction = VK_NULL_HANDLE;
+            VkImage thickness = VK_NULL_HANDLE;
+            VkImage volumeRawColor = VK_NULL_HANDLE;
+            VkImage volumeRawTransmittance = VK_NULL_HANDLE;
+            VkImage volumeRawDepth = VK_NULL_HANDLE;
+            VkImage volumeColor = VK_NULL_HANDLE;
+            VkImage volumeTransmittance = VK_NULL_HANDLE;
+            VkImage volumeDepth = VK_NULL_HANDLE;
+        };
+        ResourceImages GetResourceImages();
+
     private:
         // ── 原始 Vulkan 缓冲分配 ────────────────────────────────
         bool CreateWaterBuffer(VansVKBuffer& buffer, bool& created,
@@ -263,49 +287,56 @@ namespace VansGraphics
         // ── Descriptor Sets：Water GBuffer Pass（Set 1）──────────
         VansPcgSplineFieldResources* m_SplineFields = nullptr;
         VkDescriptorSetLayout m_GBufPassLayout = VK_NULL_HANDLE;
-        VkDescriptorSet       m_GBufPassSet    = VK_NULL_HANDLE;
 
         // ── Descriptor Sets：Water Wave Compute（Set 0）──────────
         VkDescriptorSetLayout m_WaveSimLayout  = VK_NULL_HANDLE;
-        VkDescriptorSet       m_WaveSimSet     = VK_NULL_HANDLE;
         VkDescriptorSetLayout m_WaveParticleLayout = VK_NULL_HANDLE;
-        VkDescriptorSet       m_WaveParticleSet    = VK_NULL_HANDLE;
         VkDescriptorSetLayout m_FlowMapLayout      = VK_NULL_HANDLE;
-        VkDescriptorSet       m_FlowMapSet         = VK_NULL_HANDLE;
 
         // ── Descriptor Sets：Water SSR Compute（Set 0, W-12）─────
         VkDescriptorSetLayout m_SSRLayout      = VK_NULL_HANDLE;
-        VkDescriptorSet       m_SSRSet         = VK_NULL_HANDLE;
 
         // ── Descriptor Sets：Water Refraction Compute（Set 0）─────
         VkDescriptorSetLayout m_RefractionLayout = VK_NULL_HANDLE;
-        VkDescriptorSet       m_RefractionSet    = VK_NULL_HANDLE;
 
         // ── W-16: Thickness Compute ───────────────────────────────
         VkDescriptorSetLayout m_ThicknessLayout = VK_NULL_HANDLE;
-        VkDescriptorSet       m_ThicknessSet    = VK_NULL_HANDLE;
 
         // ── PBRWater Volume Compute ──────────────────────────────
         VkDescriptorSetLayout m_VolumeLayout = VK_NULL_HANDLE;
-        VkDescriptorSet       m_VolumeSet    = VK_NULL_HANDLE;
         VkDescriptorSetLayout m_VolumeFilterLayout = VK_NULL_HANDLE;
-        VkDescriptorSet       m_VolumeFilterSet    = VK_NULL_HANDLE;
 
         // ── N-01: Detail Normal compute ───────────────────────────
 
         // ── Descriptor Sets：Water Composite Pass（Set 1）────────
         VkDescriptorSetLayout m_CompPassLayout = VK_NULL_HANDLE;
-        VkDescriptorSet       m_CompPassSet    = VK_NULL_HANDLE;
 
-        // ── GPU Params UBO ───────────────────────────────────────
-        VansVKBuffer m_GBufParamsBuffer;
-        VansVKBuffer m_CompParamsBuffer;
-        VansVKBuffer m_SSRParamsBuffer;
-        VansVKBuffer m_ThicknessParamsBuffer;   // W-16: 厚度图参数 UBO
-        bool m_GBufParamsBufferCreated = false;
-        bool m_CompParamsBufferCreated = false;
-        bool m_SSRParamsBufferCreated = false;
-        bool m_ThicknessParamsBufferCreated = false;
+        struct FrameResources
+        {
+            VansVKBuffer gbufParamsBuffer;
+            VansVKBuffer compParamsBuffer;
+            VansVKBuffer ssrParamsBuffer;
+            VansVKBuffer thicknessParamsBuffer;
+            VansVKBuffer riverWaveBuffer;
+            bool gbufParamsCreated = false;
+            bool compParamsCreated = false;
+            bool ssrParamsCreated = false;
+            bool thicknessParamsCreated = false;
+            bool riverWaveCreated = false;
+            VkDescriptorSet gbufPassSet = VK_NULL_HANDLE;
+            VkDescriptorSet waveSimSet = VK_NULL_HANDLE;
+            VkDescriptorSet waveParticleSet = VK_NULL_HANDLE;
+            VkDescriptorSet flowMapSet = VK_NULL_HANDLE;
+            VkDescriptorSet ssrSet = VK_NULL_HANDLE;
+            VkDescriptorSet refractionSet = VK_NULL_HANDLE;
+            VkDescriptorSet thicknessSet = VK_NULL_HANDLE;
+            VkDescriptorSet volumeSet = VK_NULL_HANDLE;
+            VkDescriptorSet volumeFilterSet = VK_NULL_HANDLE;
+            VkDescriptorSet compPassSet = VK_NULL_HANDLE;
+            std::uint32_t boundGBufferTargetSlot = 0;
+            std::uint64_t boundGBufferTargetGeneration = 0;
+        };
+        std::array<FrameResources, VansCommandRecordingConfig::MaximumFramesInFlight> m_FrameResources;
         WaterGBufferParamsGPU m_GBufParamsCache = {};
         uint32_t m_VolumeWidth = 1;
         uint32_t m_VolumeHeight = 1;
@@ -337,8 +368,6 @@ namespace VansGraphics
 
         // ── SSBO：Gerstner 波分量（W-04）───────────────────────────
         VansRiverWaveSimulation m_RiverWaves;
-        VansVKBuffer m_RiverWaveBuffer;
-        bool m_RiverWaveBufferCreated=false;
         VansVKBuffer   m_WaveSSBO;
         bool           m_WaveSSBOCreated = false;
         static constexpr uint32_t MAX_WAVE_COUNT = 64;

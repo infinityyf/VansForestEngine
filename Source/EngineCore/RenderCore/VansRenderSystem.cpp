@@ -41,6 +41,7 @@ namespace
 		RenderWorkType type = RenderWorkType::Frame;
 		std::unique_ptr<VansGraphics::VansRenderFrameSubmission> frame;
 		std::unique_ptr<VansGraphics::IVansRenderThreadTransaction> transaction;
+		std::vector<std::function<void()>> retirements;
 		std::shared_ptr<RenderControlCompletion> completion;
 		std::uint32_t width = 0;
 		std::uint32_t height = 0;
@@ -219,12 +220,20 @@ VansGraphics::VansRenderFrameSubmitResult VansGraphics::VansRenderSystem::Submit
 	}
 	// 一帧领先额度由上一条已接收帧的终态释放。等待固定放在当前帧发布前，
 	// 因此 Main 构建 N 时，RenderThread 可以完整执行 N-1。
-	if (m_IndependentRenderThreadEnabled && m_LastAcceptedFrameId.has_value() &&
-		!m_OutcomeLedger.LeadCreditReleasedFor(*m_LastAcceptedFrameId))
+	if (m_IndependentRenderThreadEnabled && m_LastAcceptedFrameId.has_value())
 	{
-		VANS_PROFILE_WAIT("Render::WaitPreviousFrameOutcome");
-		const VansRenderOutcomeWaitResult previous =
-			m_OutcomeLedger.WaitForOutcome(*m_LastAcceptedFrameId);
+		const bool previousFramePending =
+			!m_OutcomeLedger.LeadCreditReleasedFor(*m_LastAcceptedFrameId);
+		VansRenderOutcomeWaitResult previous;
+		if (previousFramePending)
+		{
+			VANS_PROFILE_WAIT("Render::WaitPreviousFrameOutcome");
+			previous = m_OutcomeLedger.WaitForOutcome(*m_LastAcceptedFrameId);
+		}
+		else
+		{
+			previous = m_OutcomeLedger.WaitForOutcome(*m_LastAcceptedFrameId);
+		}
 		if (previous.status != VansRenderOutcomeWaitStatus::OutcomeAvailable ||
 			!previous.outcome.has_value() ||
 			previous.outcome->status == VansRenderFrameStatus::FatalProtocolViolation ||
@@ -235,6 +244,9 @@ VansGraphics::VansRenderFrameSubmitResult VansGraphics::VansRenderSystem::Submit
 			result.status = VansRenderFrameSubmitStatus::BackendFrameFailed;
 			return result;
 		}
+		result.surfaceResizeRequired =
+			previous.outcome->status == VansRenderFrameStatus::SkippedSurfaceUnavailable &&
+			previous.outcome->surfaceEpoch == m_SurfaceEpoch;
 	}
 
 	if (!m_OutcomeLedger.TryAcceptFrame(m_CurrentWorkSerial, m_CurrentFrameId))
@@ -258,6 +270,7 @@ VansGraphics::VansRenderFrameSubmitResult VansGraphics::VansRenderSystem::Submit
 		RenderWorkItem item;
 		item.type = RenderWorkType::Frame;
 		item.frame = std::move(frameWork);
+		item.retirements = std::move(m_PendingFrameRetirements);
 		item.profilerFrameIndex = profilerFrameIndex;
 		m_RenderThreadState->workQueue.emplace_back(std::move(item));
 		++m_QueuedGpuWorkGeneration;
@@ -284,6 +297,9 @@ VansGraphics::VansRenderFrameSubmitResult VansGraphics::VansRenderSystem::Submit
 	}
 
 	const VansRenderFrameStatus outcomeStatus = waitResult.outcome->status;
+	result.surfaceResizeRequired =
+		outcomeStatus == VansRenderFrameStatus::SkippedSurfaceUnavailable &&
+		waitResult.outcome->surfaceEpoch == m_SurfaceEpoch;
 	if (outcomeStatus == VansRenderFrameStatus::FatalProtocolViolation ||
 		outcomeStatus == VansRenderFrameStatus::FatalDeviceLost)
 	{
@@ -300,6 +316,15 @@ VansGraphics::VansRenderFrameSubmitResult VansGraphics::VansRenderSystem::Submit
 	}
 	VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
 	return result;
+}
+
+bool VansGraphics::VansRenderSystem::QueueFrameRetirement(std::function<void()> destroy)
+{
+	VANS_ASSERT_MAIN_THREAD();
+	if (!destroy || m_State != VansRenderSystemState::Running)
+		return false;
+	m_PendingFrameRetirements.emplace_back(std::move(destroy));
+	return true;
 }
 
 bool VansGraphics::VansRenderSystem::RequestSurfaceResize(
@@ -327,7 +352,7 @@ bool VansGraphics::VansRenderSystem::WaitForIdle()
 		return true;
 	if (m_OpenSubmission.has_value())
 		return false;
-	if (m_LastGpuIdleGeneration.has_value() &&
+	if (m_PendingFrameRetirements.empty() && m_LastGpuIdleGeneration.has_value() &&
 		*m_LastGpuIdleGeneration == m_QueuedGpuWorkGeneration)
 	{
 		return true;
@@ -357,9 +382,11 @@ bool VansGraphics::VansRenderSystem::ExecuteRenderThreadTransaction(
 	std::unique_ptr<IVansRenderThreadTransaction> transaction)
 {
 	VANS_ASSERT_MAIN_THREAD();
+	const bool fatalCleanup = transaction &&
+		m_State == VansRenderSystemState::Fatal && transaction->CanExecuteAfterFatal();
 	if (!transaction || !m_RenderThreadState ||
 		(m_State != VansRenderSystemState::Running &&
-		 m_State != VansRenderSystemState::Quiesced) ||
+		 m_State != VansRenderSystemState::Quiesced && !fatalCleanup) ||
 		m_OpenSubmission.has_value())
 	{
 		return false;
@@ -438,6 +465,7 @@ bool VansGraphics::VansRenderSystem::EnqueueAndWait(
 		RenderWorkItem item;
 		item.type = workType;
 		item.transaction = std::move(transaction);
+		item.retirements = std::move(m_PendingFrameRetirements);
 		item.completion = completion;
 		item.width = width;
 		item.height = height;
@@ -537,6 +565,12 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 
 		try
 		{
+			auto releaseRetirements = [&item]()
+			{
+				for (auto& destroy : item.retirements)
+					destroy();
+				item.retirements.clear();
+			};
 		switch (item.type)
 		{
 		case RenderWorkType::Frame:
@@ -549,6 +583,7 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 			outcome.surfaceEpoch = item.frame->Frame().SurfaceEpoch();
 			VansRenderSubmissionPrepareResult prepareResult;
 			bool overlaySucceeded = true;
+			bool frameSubmitted = false;
 			Vans::VansProfiler::Get().BeginRenderFrame(item.profilerFrameIndex);
 			try
 			{
@@ -562,7 +597,11 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 					if (IVansRenderFrameOverlay* overlay = item.frame->Overlay())
 						overlaySucceeded = overlay->Record(m_Backend);
 					if (m_Backend.CanRecordCurrentFrame())
+					{
 						m_Backend.Present();
+						frameSubmitted = m_Backend.CanRecordCurrentFrame() &&
+							!m_Backend.HasDeviceLost();
+					}
 				}
 			}
 			catch (...)
@@ -572,10 +611,14 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 					"Unhandled exception escaped render-thread frame execution"
 				};
 			}
-			Vans::VansProfiler::Get().EndRenderFrame(item.profilerFrameIndex);
+			Vans::VansProfiler::Get().EndRenderFrame(item.profilerFrameIndex, frameSubmitted);
 
-			if (prepareResult && overlaySucceeded && m_Backend.CanRecordCurrentFrame())
+			if (prepareResult && overlaySucceeded && m_Backend.CanRecordCurrentFrame() &&
+				!m_Backend.HasDeviceLost())
 			{
+				for (auto& destroy : item.retirements)
+					m_Backend.RetireAfterCurrentFrame(std::move(destroy));
+				item.retirements.clear();
 				outcome.status = VansRenderFrameStatus::PresentQueued;
 			}
 			else if (prepareResult.status ==
@@ -583,6 +626,11 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 			{
 				outcome.status = VansRenderFrameStatus::FatalProtocolViolation;
 				outcome.error = prepareResult.error;
+			}
+			else if (prepareResult && m_Backend.CurrentFrameRequiresSurfaceResize())
+			{
+				outcome.status = VansRenderFrameStatus::SkippedSurfaceUnavailable;
+				outcome.error = "Swapchain is out of date";
 			}
 			else
 			{
@@ -593,6 +641,21 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 						? "Render backend failed before present was queued"
 						: prepareResult.error);
 			}
+			if (!item.retirements.empty())
+			{
+				// A failed frame cannot be used as a retirement fence. All earlier
+				// queued work is ordered before this item; wait for it before release.
+				if (m_Backend.WaitForIdle() || m_Backend.HasDeviceLost())
+					releaseRetirements();
+				else
+					VANS_LOG_ERROR("[RenderSystem] Could not retire resources after a failed frame.");
+			}
+			if (m_Backend.HasDeviceLost())
+			{
+				outcome.status = VansRenderFrameStatus::FatalDeviceLost;
+				outcome.error = "Render device was lost";
+				VANS_LOG_ERROR("[RenderSystem] Device lost; frame execution is terminal.");
+			}
 			if (!m_OutcomeLedger.PublishOutcome(std::move(outcome)))
 				m_OutcomeLedger.SignalFatal(
 					"Render frame outcome violated ordered ledger state");
@@ -600,13 +663,40 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 			break;
 		}
 		case RenderWorkType::Resize:
-			m_Backend.OnWindowResize(item.width, item.height);
-			CompleteControl(item.completion, true);
+		{
+			if (!item.retirements.empty() && !m_Backend.WaitForIdle())
+			{
+				CompleteControl(item.completion, false);
+				break;
+			}
+			releaseRetirements();
+			bool resized = false;
+			try
+			{
+				resized = m_Backend.OnWindowResize(item.width, item.height);
+			}
+			catch (...)
+			{
+				VANS_LOG_ERROR("[RenderSystem] Surface resize threw an exception.");
+			}
+			CompleteControl(item.completion, resized);
 			break;
+		}
 		case RenderWorkType::WaitIdle:
-			CompleteControl(item.completion, m_Backend.WaitForIdle());
+		{
+			const bool idle = m_Backend.WaitForIdle();
+			if (idle)
+				releaseRetirements();
+			CompleteControl(item.completion, idle);
 			break;
+		}
 		case RenderWorkType::InitializeProfiler:
+			if (!item.retirements.empty() && !m_Backend.WaitForIdle())
+			{
+				CompleteControl(item.completion, false);
+				break;
+			}
+			releaseRetirements();
 			m_Backend.InitializeGpuProfiler();
 			CompleteControl(item.completion, true);
 			break;
@@ -616,7 +706,15 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 			try
 			{
 				// 维护事务可替换 GPU 资源；已排队的 Present 不代表这些资源已空闲。
-				succeeded = item.transaction && m_Backend.WaitForIdle() && item.transaction->Execute(m_Backend);
+				const bool idle = m_Backend.WaitForIdle();
+				succeeded = item.transaction &&
+					(idle || (m_Backend.HasDeviceLost() &&
+						item.transaction->CanExecuteAfterFatal()));
+				if (succeeded)
+				{
+					releaseRetirements();
+					succeeded = item.transaction->Execute(m_Backend);
+				}
 			}
 			catch (...)
 			{
@@ -626,6 +724,9 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 			break;
 		}
 		case RenderWorkType::Stop:
+			if (!item.retirements.empty() &&
+				(m_Backend.WaitForIdle() || m_Backend.HasDeviceLost()))
+				releaseRetirements();
 			m_Backend.AfterRendering();
 			CompleteControl(item.completion, true);
 			running = false;

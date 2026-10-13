@@ -1,11 +1,13 @@
 #include "VansCombatActionService.h"
 #include "VansDamageProfile.h"
 #include "../../GameplayTargeting/VansSurfaceImpact.h"
+#include "../../GameplayTargeting/VansRadialVisibility.h"
 
 #include "../VansActionServiceAdapter.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../GameplayActionSchema/VansGameplayAssetLibrary.h"
 #include "../../PhysicsCore/VansPhysicsNode.h"
+#include "../../PhysicsCore/VansCharacterControllerNode.h"
 #include "../../PhysicsCore/VansCollisionLayerManager.h"
 #include "../../RuntimeCore/VansCharacterMotion.h"
 #include "../../SceneRuntime/VansComponentStorage.h"
@@ -37,6 +39,36 @@ const VansActionServiceCapability& VansCombatActionCapability()
 	};
 	static const VansActionServiceCapability capability =
 		VansActionServiceCapabilityDescriptor("Service.Combat", {
+            VansActionCommandCapability("Combat.SurfaceDamageField",ResourcePolicy::Create,{
+                VansActionCommandField("field",ValueKind::Object,true),
+                VansActionCommandField("blockingLayers",ValueKind::Array,true),
+                VansActionCommandField("healthAttribute",ValueKind::String,true),
+                optionalString("armorAttribute"),
+                VansActionCommandField("damageType",ValueKind::String,true),
+                VansActionCommandNumberField("period",ValueKind::Float,true,VansSerializedValue::Float(.2),.001,60),
+                VansActionCommandNumberField("damagePerTick",ValueKind::Float,true,VansSerializedValue::Float(8),0,1000000),
+                VansActionCommandNumberField("rampSeconds",ValueKind::Float,true,VansSerializedValue::Float(0),0,60),
+                VansActionCommandNumberField("cellRadius",ValueKind::Float,true,VansSerializedValue::Float(1),.001,30),
+                VansActionCommandNumberField("characterHeightOffset",ValueKind::Float,true,VansSerializedValue::Float(0),0,10),
+                VansActionCommandNumberField("broadphaseHalfHeight",ValueKind::Float,true,VansSerializedValue::Float(1),.001,30),
+                VansActionCommandNumberField("armorRatio",ValueKind::Float,false,VansSerializedValue::Float(1),0,1),
+                VansActionCommandNumberField("armorScale",ValueKind::Float,false,VansSerializedValue::Float(.5),.001,100),
+                VansActionCommandNumberField("armorMultiplier",ValueKind::Float,false,VansSerializedValue::Float(1),0,100),
+                VansActionCommandNumberField("minimumArmorConsumption",ValueKind::Float,false,VansSerializedValue::Float(0),0,100),
+                VansActionCommandField("integralArmor",ValueKind::Bool,false,VansSerializedValue::Bool(false))
+            }),
+			VansActionCommandCapability("Combat.EmitRadialEvent", ResourcePolicy::None, {
+				VansActionCommandField("origin",ValueKind::Object,true),
+				VansActionCommandField("blockingLayers",ValueKind::Array,true),
+				VansActionCommandField("event",ValueKind::String,true),
+				VansActionCommandField("healthAttribute",ValueKind::String,false,VansSerializedValue::String("Health")),
+				VansActionCommandNumberField("radius",ValueKind::Float,true,VansSerializedValue::Float(1),0.001,1000),
+				VansActionCommandNumberField("fullRadius",ValueKind::Float,false,VansSerializedValue::Float(0),0,1000),
+				VansActionCommandNumberField("duration",ValueKind::Float,true,VansSerializedValue::Float(1),0.001,3600),
+				VansActionCommandNumberField("eyeHeight",ValueKind::Float,false,VansSerializedValue::Float(1.6),0,10),
+				optionalString("eyeBone"),
+				VansActionCommandField("visibilityProbes",ValueKind::Array,false,VansSerializedValue::Array({}))
+			}),
 			VansActionCommandCapability("Combat.ApplyRadialBlast", ResourcePolicy::None, {
 				VansActionCommandField("origin",ValueKind::Object,true),
 				VansActionCommandField("blockingLayers",ValueKind::Array,true),
@@ -407,12 +439,13 @@ VansCombatActionService::VansCombatActionService(
 	VansRuntimeWorld& world,
 	IVansGameplayServiceRuntime& runtime,
 	const VansGameplayAssetLibrary& assets,
-	VansActionServiceCapability capability, VansCombatSceneBackend backend)
+	VansActionServiceCapability capability, VansCombatSceneBackend backend,VansGAFPerformanceBudget performance)
 	: m_World(world)
 	, m_Runtime(runtime)
 	, m_Assets(assets)
 	, m_Capability(std::move(capability))
 	, m_Backend(std::move(backend))
+    , m_Performance(performance)
 {
 }
 
@@ -420,12 +453,12 @@ std::shared_ptr<VansCombatActionService> VansCombatActionService::Create(
 	VansRuntimeWorld& world,
 	IVansGameplayServiceRuntime& runtime,
 	const VansGameplayAssetLibrary& assets,
-	std::string& error, VansCombatSceneBackend backend)
+	std::string& error, VansCombatSceneBackend backend,VansGAFPerformanceBudget performance)
 {
 	(void)error;
 	return std::shared_ptr<VansCombatActionService>(
 		new VansCombatActionService(
-			world, runtime, assets, VansCombatActionCapability(), std::move(backend)));
+			world, runtime, assets, VansCombatActionCapability(), std::move(backend),performance));
 }
 
 VansActionCommandResult VansCombatActionService::Execute(const VansActionCommand& command)
@@ -433,6 +466,8 @@ VansActionCommandResult VansCombatActionService::Execute(const VansActionCommand
 	if (command.stableName == "Combat.FireHitscan") return FireHitscan(command);
 	if (command.stableName == "Combat.ApplyDamageProfile") return ApplyDamageProfile(command);
 	if (command.stableName == "Combat.ApplyRadialBlast") return ApplyRadialBlast(command);
+	if (command.stableName == "Combat.EmitRadialEvent") return EmitRadialEvent(command);
+    if (command.stableName == "Combat.SurfaceDamageField") return BeginSurfaceDamageField(command);
 	if (command.stableName != "Combat.BeginMeleeWindow")
 	{
 		return { VansActionError::InvalidDefinition, {}, VansSerializedValue::Object({}),
@@ -471,7 +506,7 @@ VansActionCommandResult VansCombatActionService::Execute(const VansActionCommand
 		return { VansActionError::Rejected, {}, VansSerializedValue::Object({}),
 			"Combat melee window source nodes do not resolve in the runtime scene" };
 	}
-	const VansGenerationHandle resource = m_Windows.Emplace(std::move(window));
+	const VansGenerationHandle resource = m_Resources.Emplace(Resource{std::move(window)});
 	return { VansActionError::None, resource, VansSerializedValue::Object({}), {} };
 }
 
@@ -617,6 +652,274 @@ void VansCombatActionService::EmitWindowEvent(MeleeWindow& window, std::string_v
 	std::string error;
 	if (!m_Runtime.EnqueueActionEvent(window.owner, window.action, std::move(event), error))
 		VANS_LOG_WARN("[GAF Combat] Could not emit window edge: " << error);
+}
+
+VansActionCommandResult VansCombatActionService::EmitRadialEvent(const VansActionCommand& command)
+{
+    using V=VansSerializedValue;
+    const auto reject=[](const char* reason) { return VansActionCommandResult{VansActionError::Rejected,{},{},reason}; };
+    const auto* point=FindObjectField(command.payload,"origin");
+    if (!point) return reject("Radial event requires a world origin");
+    const glm::vec3 origin(ReadNumberField(*point,"x",NAN),ReadNumberField(*point,"y",NAN),ReadNumberField(*point,"z",NAN));
+    const auto radius=ReadNumberField(command.payload,"radius",0), fullRadius=ReadNumberField(command.payload,"fullRadius",0);
+    const auto duration=ReadNumberField(command.payload,"duration",0), eyeHeight=ReadNumberField(command.payload,"eyeHeight",1.6);
+    const auto name=ReadSerializedStringField(command.payload,"event");
+    if (!std::isfinite(glm::length(origin)) || !std::isfinite(radius) || radius<=0 || radius>1000
+        || !std::isfinite(fullRadius) || fullRadius<0 || fullRadius>=radius || !std::isfinite(duration) || duration<=0 || duration>3600
+        || !std::isfinite(eyeHeight) || eyeHeight<0 || eyeHeight>10 || name.empty()) return reject("Radial event parameters are invalid");
+    const auto health=VansMakeStableId<VansAttributeIdTag>(ReadSerializedStringField(command.payload,"healthAttribute","Health"));
+    if (!m_Assets.Attributes().Resolve(health)) return reject("Radial event Health attribute is unknown");
+    const auto* layers=FindObjectField(command.payload,"blockingLayers");
+    if (!layers || layers->kind!=V::Kind::Array || !VansEngine::VansPhysicsQuery::IsAvailable())
+        return reject("Radial event requires Physics and blocking layers");
+    std::uint32_t mask=0;
+    for (const auto& layer : layers->arrayItems) {
+        int index=0;
+        if (layer.kind!=V::Kind::String || !VansEngine::VansCollisionLayerManager::Get().TryGetLayerIndex(layer.stringValue,index))
+            return reject("Radial event blocking layer is unknown");
+        mask |= 1u<<index;
+    }
+    const auto* transforms=m_World.FindStorage<VansRuntimeTransformComponent>(VansRuntimeComponentType_Transform);
+    if (!transforms) return reject("Radial event transforms are unavailable");
+    std::vector<VansRadialVisibilityProbe> probes;
+    if (const auto* values=FindObjectField(command.payload,"visibilityProbes")) {
+        if (values->kind!=V::Kind::Array || values->arrayItems.size()>8)
+            return reject("Radial event visibilityProbes must contain at most eight probes");
+        float weightSum=0;
+        for (const auto& value : values->arrayItems) {
+            const float left=ReadNumberField(value,"left",NAN),up=ReadNumberField(value,"up",NAN),weight=ReadNumberField(value,"weight",NAN);
+            if (value.kind!=V::Kind::Object || !std::isfinite(left) || !std::isfinite(up) || !std::isfinite(weight)
+                || std::abs(left)>10 || std::abs(up)>10 || weight<=0 || weight>1)
+                return reject("Radial event visibility probe is invalid");
+            probes.push_back({left,up,weight});weightSum+=weight;
+        }
+        if (weightSum>1) return reject("Radial event visibility probe weights exceed one");
+    }
+    const auto eyeBone=ReadSerializedStringField(command.payload,"eyeBone");
+    const auto source=command.context.Entity(VansActionContextSlots::Source);
+    const auto* sourceTransform=transforms->Get(transforms->FindFirstOwnedBy(source));
+    const auto sourceId=sourceTransform ? sourceTransform->transformStoreId : UINT32_MAX;
+    auto affected=V::Array({});
+    std::vector<VansActionEvent> pending;
+    // 查询拥有 Health 的启用宿主，一名角色只接受一次事件；眼睛视线避免隔墙受闪。
+    for (std::size_t i=0;i<transforms->DenseData().size();++i) {
+        const auto& header=transforms->Headers()[i];
+        const auto& transform=transforms->DenseData()[i];
+        double hp=0;
+        if (!header.effectiveEnabled || !m_Runtime.HasHost(header.owner) || !m_Runtime.ReadAttribute(header.owner,health,hp)
+            || hp<=0 || !VansTransformStore::IsAllocated(transform.transformStoreId)) continue;
+        auto eye=VansTransformStore::Read(transform.transformStoreId).m_Position+glm::vec3(0,eyeHeight,0);
+        if (!eyeBone.empty() && m_Backend.viewPoint) {
+            glm::vec3 resolved;
+            if (m_Backend.viewPoint(header.owner,eyeBone,resolved) && std::isfinite(glm::length(resolved))) eye=resolved;
+        }
+        const auto delta=eye-origin; const auto distance=glm::length(delta);
+        if (!std::isfinite(distance) || distance>=radius) continue;
+        float visibility=1;
+        if (mask && distance>0.002f && !probes.empty()) {
+            visibility=VansEvaluateRadialVisibility(origin,eye,probes,[&](const glm::vec3& start,const glm::vec3& end) {
+                const auto segment=end-start;const auto length=glm::length(segment);
+                if (!(length>0)) return VansRadialVisibilityTrace{end,true};
+                VansEngine::VansPhysicsRaycastRequest ray;ray.origin=start;ray.direction=segment/length;ray.distance=length;
+                ray.filter.layerMask=mask;ray.filter.includeTriggers=false;ray.filter.includeControllers=false;
+                ray.filter.ignoredTransformId=transform.transformStoreId;
+                ray.filter.accept=[sourceId](const auto& candidate) { return candidate.transformId!=sourceId; };
+                VansEngine::VansPhysicsQueryHit hit;
+                if (!VansEngine::VansPhysicsQuery::RaycastClosest(ray,hit) || hit.distance>=length)
+                    return VansRadialVisibilityTrace{end,true};
+                return VansRadialVisibilityTrace{start+ray.direction*hit.distance,false};
+            });
+            if (visibility<=0) continue;
+        } else if (mask && distance>0.002f) {
+            VansEngine::VansPhysicsRaycastRequest ray; ray.origin=origin; ray.direction=delta/distance; ray.distance=distance-0.001f;
+            ray.filter.layerMask=mask; ray.filter.includeTriggers=false; ray.filter.includeControllers=false;
+            ray.filter.ignoredTransformId=transform.transformStoreId;
+            ray.filter.accept=[sourceId](const auto& candidate) { return candidate.transformId!=sourceId; };
+            VansEngine::VansPhysicsQueryHit obstruction;
+            if (VansEngine::VansPhysicsQuery::RaycastClosest(ray,obstruction)) continue;
+        }
+        const auto strength=std::clamp((radius-distance)/(radius-fullRadius),0.f,1.f)*visibility;
+        VansActionEvent event; event.stableName=name; event.type=VansMakeStableId<VansActionFieldIdTag>(name);
+        event.source=command.context.Entity(VansActionContextSlots::Instigator); event.target=header.owner;
+        event.payload=V::Object({{"intensity",V::Float(strength)},{"duration",V::Float(duration*strength)},
+            {"origin",*point},{"distance",V::Float(distance)}});
+        if (!probes.empty()) event.payload.objectFields.emplace_back("visibility",V::Float(visibility));
+        const auto* record=m_World.Entities().Get(header.owner);
+        affected.arrayItems.push_back(V::String(record ? record->stableGuid : ""));
+        pending.push_back(std::move(event));
+    }
+    // 回调可以增删实体；查询结束后才发布，避免订阅者使 storage 迭代失效。
+    for (auto& event : pending) if (m_World.IsAlive(event.target) && m_Runtime.HasHost(event.target))
+        m_Runtime.PublishGameplayEvent(event.target,std::move(event));
+    return {VansActionError::None,{},V::Object({{"affected",std::move(affected)}}),{}};
+}
+
+VansActionCommandResult VansCombatActionService::BeginSurfaceDamageField(const VansActionCommand& command)
+{
+    using V=VansSerializedValue;
+    const auto reject=[](const char* reason) {
+        VANS_LOG_WARN("[GAF SurfaceDamage] Start rejected: " << reason);
+        return VansActionCommandResult{VansActionError::Rejected,{},{},reason};
+    };
+    if (!m_Backend.surfaceFields || !VansEngine::VansPhysicsQuery::IsAvailable())
+        return reject("Surface damage requires the shared surface field registry and Physics");
+    const auto* reference=FindObjectField(command.payload,"field");
+    const auto index=reference ? ReadSerializedIntField(*reference,"index",-1) : -1;
+    const auto generation=reference ? ReadSerializedIntField(*reference,"generation",0) : 0;
+    if (index<0 || index>UINT32_MAX || generation<=0 || generation>UINT32_MAX) return reject("Surface damage field handle is invalid");
+    SurfaceDamageField damage;
+    damage.field={static_cast<std::uint32_t>(index),static_cast<std::uint32_t>(generation)};
+    damage.owner=command.context.Entity(VansActionContextSlots::Owner);
+    damage.instigator=command.context.Entity(VansActionContextSlots::Instigator);
+    if (!damage.instigator.IsValid()) damage.instigator=damage.owner;
+    VansSurfaceFieldSnapshot field;
+    if (!m_Backend.surfaceFields->Read(damage.field,field) || !field.active || field.owner!=damage.owner)
+        return reject("Surface damage field is stale, inactive or owned by another host");
+    bool duplicate=false; std::size_t count=0;
+    m_Resources.ForEach([&](auto,const Resource& resource) {
+        if (const auto* existing=std::get_if<SurfaceDamageField>(&resource)) { ++count; duplicate|=existing->field==damage.field; }
+    });
+    if (duplicate || count>=VansSurfaceFieldRegistry::MaximumFields) return reject("Surface damage field is already tracked or capacity is full");
+    damage.health=VansMakeStableId<VansAttributeIdTag>(ReadSerializedStringField(command.payload,"healthAttribute"));
+    damage.damageType=ReadSerializedStringField(command.payload,"damageType");
+    damage.period=ReadNumberField(command.payload,"period",NAN);
+    damage.damagePerTick=ReadNumberField(command.payload,"damagePerTick",NAN);
+    damage.rampSeconds=ReadNumberField(command.payload,"rampSeconds",NAN);
+    damage.cellRadius=ReadNumberField(command.payload,"cellRadius",NAN);
+    damage.characterHeightOffset=ReadNumberField(command.payload,"characterHeightOffset",NAN);
+    damage.broadphaseHalfHeight=ReadNumberField(command.payload,"broadphaseHalfHeight",NAN);
+    const auto armorName=ReadSerializedStringField(command.payload,"armorAttribute");
+    damage.armor=armorName.empty() ? VansAttributeId{} : VansMakeStableId<VansAttributeIdTag>(armorName);
+    damage.armorRatio=ReadNumberField(command.payload,"armorRatio",1);
+    damage.armorScale=ReadNumberField(command.payload,"armorScale",.5);
+    damage.armorMultiplier=ReadNumberField(command.payload,"armorMultiplier",1);
+    damage.minimumArmorConsumption=ReadNumberField(command.payload,"minimumArmorConsumption",0);
+    const auto* integral=FindObjectField(command.payload,"integralArmor");
+    damage.integralArmor=integral && integral->kind==V::Kind::Bool && integral->boolValue;
+    if (!m_Assets.Attributes().Resolve(damage.health) || damage.damageType.empty()
+        || !std::isfinite(damage.period) || damage.period<m_Performance.minimumEffectPeriodSeconds || damage.period>60
+        || !std::isfinite(damage.damagePerTick) || damage.damagePerTick<0 || damage.damagePerTick>1000000
+        || !std::isfinite(damage.rampSeconds) || damage.rampSeconds<0 || damage.rampSeconds>60
+        || !std::isfinite(damage.cellRadius) || damage.cellRadius<=0 || damage.cellRadius>30
+        || !std::isfinite(damage.characterHeightOffset) || damage.characterHeightOffset<0 || damage.characterHeightOffset>10
+        || !std::isfinite(damage.broadphaseHalfHeight) || damage.broadphaseHalfHeight<=0 || damage.broadphaseHalfHeight>30
+        || (damage.armor && !m_Assets.Attributes().Resolve(damage.armor))
+        || !std::isfinite(damage.armorRatio) || damage.armorRatio<0 || damage.armorRatio>1
+        || !std::isfinite(damage.armorScale) || damage.armorScale<=0 || damage.armorScale>100
+        || !std::isfinite(damage.armorMultiplier) || damage.armorMultiplier<0 || damage.armorMultiplier>100
+        || !std::isfinite(damage.minimumArmorConsumption) || damage.minimumArmorConsumption<0 || damage.minimumArmorConsumption>100)
+        return reject("Surface damage parameters or Health attribute are invalid");
+    const auto* blockers=FindObjectField(command.payload,"blockingLayers");
+    if (!blockers || blockers->kind!=V::Kind::Array) return reject("Surface damage blocking layers are required");
+    for (const auto& name : blockers->arrayItems) {
+        int layer=0;
+        if (name.kind!=V::Kind::String || !VansEngine::VansCollisionLayerManager::Get().TryGetLayerIndex(name.stringValue,layer))
+            return reject("Surface damage blocking layer is unknown");
+        damage.blockingMask|=1u<<layer;
+    }
+    damage.nextSample=field.age+damage.period;
+    return {VansActionError::None,m_Resources.Emplace(Resource{std::move(damage)}),{}, {}};
+}
+
+bool VansCombatActionService::SampleSurfaceDamage(const SurfaceDamageField& damage,const VansSurfaceFieldSnapshot& field,double sampleTime)
+{
+    using V=VansSerializedValue;
+    if (sampleTime>=field.duration || !field.cellCount) return true;
+    std::unordered_map<std::uint32_t,VansEntityHandle> owners;
+    if (const auto* transforms=m_World.FindStorage<VansRuntimeTransformComponent>(VansRuntimeComponentType_Transform))
+        for (std::size_t i=0;i<transforms->DenseData().size();++i)
+            if (transforms->Headers()[i].effectiveEnabled) owners.emplace(transforms->DenseData()[i].transformStoreId,transforms->Headers()[i].owner);
+    std::unordered_map<std::uint64_t,VansTargetHitResult> targets;
+    float minimumY=field.cells[0].position.y,maximumY=minimumY;
+    for (std::size_t i=0;i<field.cellCount;++i) {
+        minimumY=std::min(minimumY,field.cells[i].position.y);
+        maximumY=std::max(maximumY,field.cells[i].position.y);
+    }
+    std::vector<VansEngine::VansPhysicsQueryHit> hits;
+    // A field is at most sixteen cells. Closest points are copied under the
+    // PhysicsCore lock; no native shape/actor is dereferenced by Combat.
+    for (std::size_t i=0;i<field.cellCount;++i) {
+        const auto& cell=field.cells[i];
+        if (!cell.active || cell.bornTime>sampleTime+1.e-6) continue;
+        VansEngine::VansPhysicsSphereOverlapRequest query;
+        query.center=cell.position+glm::vec3(0,damage.characterHeightOffset,0);
+        query.radius=damage.cellRadius; query.returnClosestPoint=true;
+        VansEngine::VansPhysicsQuery::OverlapSphere(query,4096,hits);
+        if (hits.size()>=4096) { VANS_LOG_ERROR("[GAF Combat] Surface damage cell overlap capacity exceeded"); return false; }
+        for (const auto& hit : hits) {
+        const auto found=owners.find(hit.transformId);
+        if (found==owners.end()) continue;
+        const auto target=ResolveHitTarget(found->second);
+        if (!target.IsValid()) continue;
+        double health=0;
+        if (!m_Runtime.ReadAttribute(target,damage.health,health) || health<=0) continue;
+        // An active CCT is the actor's collision volume. Regional hurt bodies
+        // are used only when no controller exists, avoiding animated hand/head
+        // triggers making a jumping character touch fire from above.
+        if (const auto* controllers=m_World.FindStorage<VansRuntimeCharacterControllerComponent>(VansRuntimeComponentType_CharacterController))
+            if (const auto* controller=controllers->Get(controllers->FindFirstOwnedBy(target)); controller && controller->controllerNode) {
+                const auto& node=*controller->controllerNode;
+                if (!node.IsEnabled() || !node.IsCollisionEnabled() || !hit.isController) continue;
+            }
+        if (!hit.hasBounds || hit.boundsMin.y>maximumY+damage.broadphaseHalfHeight || hit.boundsMax.y<minimumY-damage.broadphaseHalfHeight) continue;
+        const auto existing=targets.find(EntityKey(target));
+        if (existing!=targets.end() && existing->second.distance<=hit.distance) continue;
+        {
+            const auto start=query.center, end=hit.position;
+            const auto rayDelta=end-start; const auto rayDistance=glm::length(rayDelta);
+            if (damage.blockingMask && rayDistance>.002f) {
+                VansEngine::VansPhysicsRaycastRequest ray;
+                ray.origin=start; ray.direction=rayDelta/rayDistance; ray.distance=rayDistance-.001f;
+                ray.filter.layerMask=damage.blockingMask; ray.filter.includeTriggers=false; ray.filter.includeControllers=false;
+                ray.filter.ignoredTransformId=hit.transformId;
+                VansEngine::VansPhysicsQueryHit obstruction;
+                if (VansEngine::VansPhysicsQuery::RaycastClosest(ray,obstruction)) continue;
+            }
+        }
+        VansTargetHitResult selected;
+        selected.entity=target; selected.hitEntity=found->second; selected.region=hit.hitRegion;
+        selected.position={hit.position.x,hit.position.y,hit.position.z}; selected.distance=hit.distance;
+        if (const auto* physics=m_World.FindStorage<VansRuntimePhysicsComponent>(VansRuntimeComponentType_Physics))
+            if (const auto* header=physics->GetHeader(physics->FindFirstOwnedBy(found->second))) selected.componentGuid=header->stableGuid;
+        targets.insert_or_assign(EntityKey(target),std::move(selected));
+        }
+    }
+    const double amount=damage.damagePerTick*(damage.rampSeconds>0 ? std::clamp(sampleTime/damage.rampSeconds,0.,1.) : 1.);
+    for (const auto& [key,hit] : targets) {
+        double previous=0,remaining=0;
+        if (!m_World.IsAlive(hit.entity) || !m_Runtime.ReadAttribute(hit.entity,damage.health,previous) || previous<=0) continue;
+        double healthDamage=amount,oldArmor=0,newArmor=0;
+        if (damage.armor && m_Runtime.ReadAttribute(hit.entity,damage.armor,oldArmor) && oldArmor>0) {
+            healthDamage=amount*damage.armorRatio;
+            double cost=(amount-healthDamage)*damage.armorScale*damage.armorMultiplier;
+            if (cost>oldArmor) { cost=oldArmor; healthDamage=std::max(0.,amount-oldArmor/damage.armorScale); }
+            else if (cost>0) { cost=std::max(cost,damage.minimumArmorConsumption); if (damage.integralArmor) cost=std::trunc(cost); cost=std::min(cost,oldArmor); }
+            if (!m_Runtime.ApplyBaseAttribute(hit.entity,damage.armor,VansAttributeBaseOperation::Add,-cost,newArmor)) {
+                VANS_LOG_ERROR("[GAF Combat] Surface damage Armor update failed"); return false;
+            }
+        }
+        const double applied=std::min(previous,healthDamage);
+        if (applied<=0 && newArmor==oldArmor) continue;
+        if (!m_Runtime.ApplyBaseAttribute(hit.entity,damage.health,VansAttributeBaseOperation::Add,-applied,remaining)) {
+            VANS_LOG_ERROR("[GAF Combat] Surface damage Health update failed"); return false;
+        }
+        auto payload=V::Object({{"damageType",V::String(damage.damageType)},{"damage",V::Float(healthDamage)},
+            {"rawDamage",V::Float(amount)},{"oldArmor",V::Float(oldArmor)},{"newArmor",V::Float(newArmor)},
+            {"appliedDamage",V::Float(applied)},{"oldHealth",V::Float(previous)},{"newHealth",V::Float(remaining)},
+            {"lethal",V::Bool(remaining<=0)},{"hitRegion",V::String(hit.region)},{"hitComponentGuid",V::String(hit.componentGuid)},
+            {"position",V::Array({V::Float(hit.position[0]),V::Float(hit.position[1]),V::Float(hit.position[2])})},
+            {"direction",V::Object({{"x",V::Float(0)},{"y",V::Float(1)},{"z",V::Float(0)}})},
+            {"distance",V::Float(hit.distance)},{"hit",VansEncodeTargetData(VansTargetData{{hit}})}});
+        for (const char* name : {"Combat.DamageReceived","Combat.Died"}) {
+            if (remaining>0 && std::string_view(name)=="Combat.Died") continue;
+            VansActionEvent event; event.stableName=name; event.type=VansMakeStableId<VansActionFieldIdTag>(name);
+            event.source=damage.instigator; event.target=hit.entity; event.payload=payload;
+            if (!m_Runtime.PublishGameplayEvent(hit.entity,std::move(event)))
+                VANS_LOG_WARN("[GAF Combat] Could not publish surface damage event " << name);
+        }
+        VANS_LOG("[GAF SurfaceDamage] target=" << hit.entity.index << " age=" << sampleTime << " damage=" << amount << " health=" << previous << "->" << remaining);
+    }
+    return true;
 }
 
 VansActionCommandResult VansCombatActionService::ApplyRadialBlast(const VansActionCommand& command)
@@ -1040,8 +1343,16 @@ void VansCombatActionService::Tick(double deltaSeconds)
 		}
 	}
 	const double dt = std::clamp(deltaSeconds, 0.0, 0.25);
-	m_Windows.ForEach([&](VansGenerationHandle, MeleeWindow& window)
+    std::uint32_t pulses=0;
+    std::vector<VansGenerationHandle> completedFields;
+    std::vector<VansGenerationHandle> damageFields;
+	m_Resources.ForEach([&](VansGenerationHandle handle,Resource& resource)
 	{
+        if (auto* damage=std::get_if<SurfaceDamageField>(&resource)) {
+            damageFields.push_back(handle);
+            return;
+        }
+        auto& window=std::get<MeleeWindow>(resource);
 		const double previousElapsed = window.elapsedSeconds;
 		window.elapsedSeconds += dt;
 		window.sampleActive = previousElapsed <= window.endSeconds &&
@@ -1058,22 +1369,53 @@ void VansCombatActionService::Tick(double deltaSeconds)
 			window.windowOpen = false;
 		}
 	});
+    // Events can end actions and release resources. Never retain a pool reference
+    // across the receiver callback, or iterate newly created fields this frame.
+    for (auto handle : damageFields) {
+        auto* resource=m_Resources.Resolve(handle);
+        auto* current=resource ? std::get_if<SurfaceDamageField>(resource) : nullptr;
+        if (!current) continue;
+        VansSurfaceFieldSnapshot field;
+        if (current->stopped || !m_Backend.surfaceFields || !m_Backend.surfaceFields->Read(current->field,field) || !field.active) {
+            current->stopped=true;
+            if (m_Runtime.ForgetCompletedWorldResource(Capability().service,handle)) completedFields.push_back(handle);
+            continue;
+        }
+        while (current && current->nextSample<=field.age+1.e-6) {
+            if (pulses>=m_Performance.maximumEffectPulsesPerTick) {
+                current->stopped=true;
+                VANS_LOG_ERROR("[GAF Combat] Surface damage exceeded the configured periodic pulse budget");
+                break;
+            }
+            ++pulses;
+            const auto sample=*current;
+            const bool succeeded=SampleSurfaceDamage(sample,field,sample.nextSample);
+            resource=m_Resources.Resolve(handle);
+            current=resource ? std::get_if<SurfaceDamageField>(resource) : nullptr;
+            if (!current) break;
+            if (!succeeded) { current->stopped=true; break; }
+            current->nextSample+=current->period;
+        }
+    }
+    for (auto handle : completedFields)
+        if (!m_Resources.Release(handle)) VANS_LOG_ERROR("[GAF Combat] Completed surface damage resource release failed");
 }
 
 bool VansCombatActionService::Release(VansGenerationHandle resource, std::string& error)
 {
-	MeleeWindow* window = m_Windows.Resolve(resource);
-	if (!window)
+    auto* value=m_Resources.Resolve(resource);
+	if (!value)
 	{
-		error = "Combat melee window resource is stale";
+		error = "Combat resource is stale";
 		return false;
 	}
-	if (window->windowOpen)
+    auto* window=std::get_if<MeleeWindow>(value);
+	if (window && window->windowOpen)
 	{
 		EmitWindowEvent(*window, "Close");
 		window->windowOpen = false;
 	}
-	return m_Windows.Release(resource);
+	return m_Resources.Release(resource);
 }
 
 VansCombatDebugSnapshot VansCombatActionService::CaptureDebugSnapshot() const

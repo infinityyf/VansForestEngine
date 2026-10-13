@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
+#include <cstddef>
 #include <limits>
 
 namespace Vans
@@ -10,6 +12,10 @@ inline constexpr double MaximumExactPcgCellCoordinate = 4503599627370495.0;
 
 // Grass 进入距离仍由 Plant cullDistance 决定，退出时多保留一个完整 cell 防抖。
 inline constexpr float PcgGrassResidencyHysteresisCells = 1.0f;
+
+// Explicit collision is independent of GPU residency; bound native actor/cooking peaks.
+inline constexpr std::size_t MaximumPcgCollisionInstances = 65536;
+inline constexpr std::uint64_t MaximumPcgCollisionWorkingBytes = 256ull * 1024 * 1024;
 
 inline bool ResolvePcgGrassResidencyExitDistance(float cullDistance, float cellSize, float& distance)
 {

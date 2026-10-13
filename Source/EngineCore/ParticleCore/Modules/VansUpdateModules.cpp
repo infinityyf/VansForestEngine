@@ -26,6 +26,85 @@ namespace VansGraphics
         for (uint32_t i = 0; i < pool.m_AliveCount; ++i)
         {
             pool.m_Color[i] = m_Gradient.Evaluate(pool.m_NormalizedAge[i]);
+            if (m_ScaleInitialAlpha && !pool.m_InitialAlpha.empty())
+                pool.m_Color[i].a *= pool.m_InitialAlpha[i];
+        }
+    }
+
+    void VansUpdateColorOverLifetime::ExecuteInit(VansParticlePool& pool,
+        uint32_t startIndex, uint32_t endIndex, const glm::mat4&) const
+    {
+        if (!m_ScaleInitialAlpha) return;
+        pool.AllocInitialAlpha();
+        for (uint32_t i=startIndex; i<endIndex; ++i) pool.m_InitialAlpha[i]=pool.m_Color[i].a;
+    }
+
+    namespace
+    {
+        float SampleFadeDuration(const VansParticleAlphaFade& fade, uint32_t& seed)
+        {
+            if (!fade.enabled) return 0.f;
+            if (fade.durationMin == fade.durationMax) return fade.durationMin;
+            const float u = RandFloat(seed);
+            // 外部算子以四分之一为指数步长；区间方向保留，不排序端点。
+            const float exponent = std::trunc(fade.randomExponent * 4.f) * 0.25f;
+            const float shaped = exponent == 0.f ? 1.f : std::pow(u, exponent);
+            return fade.durationMin + shaped * (fade.durationMax - fade.durationMin);
+        }
+
+        float EvaluateFade(float t, VansParticleFadeEasing easing)
+        {
+            t = std::clamp(t, 0.f, 1.f);
+            return easing == VansParticleFadeEasing::SmoothStep ? t*t*(3.f-2.f*t) : t;
+        }
+    }
+
+    void VansUpdateAlphaFadeModule::ExecuteInit(VansParticlePool& pool,
+        uint32_t startIndex, uint32_t endIndex, const glm::mat4&) const
+    {
+        if (!m_FadeIn.enabled && !m_FadeOut.enabled) return;
+        pool.AllocAlphaFade();
+        for (uint32_t i = startIndex; i < endIndex; ++i)
+        {
+            // 独立局部种子不推进其他模块/图集使用的粒子随机流。
+            uint32_t seed = pool.m_SeedRandom[i] ^ 0x9e3779b9u;
+            if (seed == 0) seed = 1;
+            const float fadeIn = SampleFadeDuration(m_FadeIn, seed);
+            const float fadeOut = SampleFadeDuration(m_FadeOut, seed);
+            pool.m_AlphaFade[i] = glm::vec3(pool.m_Color[i].a, fadeIn, fadeOut);
+        }
+    }
+
+    void VansUpdateAlphaFadeModule::Execute(VansParticlePool& pool, float,
+        const glm::mat4&) const
+    {
+        if ((!m_FadeIn.enabled && !m_FadeOut.enabled) || pool.m_AlphaFade.empty()) return;
+        for (uint32_t i = 0; i < pool.m_AliveCount; ++i)
+        {
+            const auto& cached = pool.m_AlphaFade[i];
+            float alpha = pool.m_Color[i].a;
+            const auto fadeIn = [&]
+            {
+                if (!m_FadeIn.enabled) return;
+                const float age = m_FadeIn.timeDomain == VansParticleFadeTimeDomain::Seconds
+                    ? pool.m_Age[i] : pool.m_NormalizedAge[i];
+                // 淡入结束后不重置为初始值，保留进入算子前的当前 alpha。
+                if (std::max(age, 0.f) < m_FadeInDelay + cached.y)
+                    alpha = cached.x * EvaluateFade((age-m_FadeInDelay)/cached.y, m_FadeIn.easing);
+            };
+            const auto fadeOut = [&]
+            {
+                if (!m_FadeOut.enabled) return;
+                const bool seconds = m_FadeOut.timeDomain == VansParticleFadeTimeDomain::Seconds;
+                const float age = seconds ? pool.m_Age[i] : pool.m_NormalizedAge[i];
+                const float start = (seconds ? pool.m_LifeTime[i] : 1.f) - cached.z;
+                // 严格进入末端区间才覆盖；时长大于寿命时不截短。
+                if (age > start)
+                    alpha = cached.x * (1.f-EvaluateFade((age-start)/cached.z, m_FadeOut.easing));
+            };
+            if (m_FadeInFirst) { fadeIn(); fadeOut(); }
+            else { fadeOut(); fadeIn(); }
+            pool.m_Color[i].a = alpha;
         }
     }
 

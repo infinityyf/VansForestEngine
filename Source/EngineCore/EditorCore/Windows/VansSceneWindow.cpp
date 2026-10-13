@@ -31,6 +31,7 @@
 #include "../../EngineAPILayer/Public/ISceneInteractionEditorAPI.h"
 #include "../../EngineAPILayer/Public/ITerrainEditorAPI.h"
 #include "../../EngineAPILayer/Public/IVehicleEditorAPI.h"
+#include "../../EngineAPILayer/Public/INavigationEditorAPI.h"
 #include "VansGAFDebuggerWindow.h"
 #include "VansSceneAnimationPreviewWindow.h"
 
@@ -43,6 +44,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 	Vans::EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI = editorAPI;
 	Vans::EditorAPI::ITerrainEditorAPI& terrainAPI = editorAPI;
 	Vans::EditorAPI::IVehicleEditorAPI& vehicleAPI = editorAPI;
+	Vans::EditorAPI::INavigationEditorAPI& navigationAPI = editorAPI;
 	Vans::EditorAPI::IGAFEditorAPI& gafAPI = editorAPI;
     m_GameCursorViewportInteractive = false;
 	const auto pcgBrush = pcgAPI.GetPcgBrushSnapshot();
@@ -148,6 +150,9 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
             ImGui::Spacing();
             ImGui::PopStyleVar();
         }
+
+        ImGui::Checkbox("Navigation Preview",&m_DebugViewState.navigationPreviewGizmos);
+        DrawNavigationPreviewToolbar(navigationAPI);
 
         // 获取当前窗口可用区域大小
         ImVec2 viewportSize = ImGui::GetContentRegionAvail();
@@ -326,7 +331,11 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 			const bool previewHandleActive =
 				VansEditorWindow::DrawSceneAnimationPreviewViewportHandle(
 					editorAPI, m_Camera, imageScreenPos, drawSize);
-			if (!previewHandleActive && !terrainBrushActive && !pcgBrushActive && !splineToolActive)
+			const bool navigationPicking=m_Camera && DrawNavigationPreview(navigationAPI,
+                m_Camera->GetProjectiveMatrix()*m_Camera->GetViewMatrix(),
+                {imageScreenPos.x,imageScreenPos.y},{drawSize.x,drawSize.y},
+                sceneImageHovered && !previewHandleActive && !terrainBrushActive && !pcgBrushActive && !splineToolActive);
+			if (!previewHandleActive && !terrainBrushActive && !pcgBrushActive && !splineToolActive && !navigationPicking)
 			{
 				m_Gizmos.HandleHotkeys();
 				m_Gizmos.Draw(editorAPI, m_SceneEdits, m_Camera, imageScreenPos, drawSize,
@@ -901,7 +910,8 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                         IM_COL32(255,170,90,255),m_PcgBrushMessage.c_str());
             }
 
-            const bool canPick = !terrainBrushActive && !pcgBrushActive && !splineToolActive &&
+            const bool canPick = playModeAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit &&
+                !terrainBrushActive && !pcgBrushActive && !splineToolActive && !navigationPicking &&
                 !previewHandleActive && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
                 !ImGui::IsMouseDown(ImGuiMouseButton_Right) && !ImGui::GetIO().KeyAlt &&
                 !ImGui::GetIO().AppFocusLost && !ImGui::GetDragDropPayload();

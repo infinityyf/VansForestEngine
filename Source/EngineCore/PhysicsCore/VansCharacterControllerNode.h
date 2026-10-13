@@ -123,7 +123,7 @@ namespace VansEngine
         VansCharacterMotionFlushResult FlushMoveAndSync();
 
         // ── 瞬移 ─────────────────────────────────────────────────────────
-        // pos 为胶囊中心坐标（忽略 positionOffset）
+        // pos 为胶囊中心坐标（忽略 positionOffset）；调用方持有 SimulationMutex。
         void SetPosition(const glm::vec3& pos);
 		bool SeedMotionVelocity(const glm::vec3& velocityWorld);
 		// Seed the next locomotion preparation after an externally controlled move.
@@ -139,6 +139,7 @@ namespace VansEngine
         // ── 状态查询 ──────────────────────────────────────────────────────
         glm::vec3 GetPosition() const;          // 返回胶囊中心坐标
         bool IsGrounded() const;                // COLLISION_DOWN 标志
+        bool IsCrouched() const;
         // 可在脚本状态切换时关闭/恢复胶囊与场景的碰撞；调用方持有 SimulationMutex。
         void SetCollisionEnabled(bool enabled);
         bool IsCollisionEnabled() const { return m_CollisionEnabled; }
@@ -147,7 +148,7 @@ namespace VansEngine
         const CharControllerProperties& GetProperties() const { return m_Properties; }
 
         // ── Transform 同步（编辑器瞬移用）────────────────────────────────
-        // 将 Vans::VansTransformStore 当前位置推送到 PhysX
+        // 将 Vans::VansTransformStore 当前位置推送到 PhysX；调用方持有 SimulationMutex。
         void SyncControllerFromTransform();
 
         // ── Ragdoll 接管接口 ────────────────────────────────────────

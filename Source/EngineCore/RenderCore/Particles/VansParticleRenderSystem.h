@@ -1,6 +1,7 @@
 #pragma once
 #include "VansParticleSurfaceRenderer.h"
 #include "../GeometryCore/VansPolylineMeshBuilder.h"
+#include <array>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -55,7 +56,7 @@ private:
     std::vector<std::uint8_t> m_Staging;
     std::uint32_t m_FrameSlot = 0;
     VkDevice m_Device = VK_NULL_HANDLE;
-    VkImageView m_DepthView = VK_NULL_HANDLE;
+	std::uint64_t m_GBufferTargetGeneration = 0;
     VansParticleRenderDiagnostics m_Diagnostics, m_PublishedDiagnostics;
     mutable std::mutex m_DiagnosticsMutex;
 };

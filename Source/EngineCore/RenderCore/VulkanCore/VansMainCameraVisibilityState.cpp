@@ -45,6 +45,7 @@ void VansGraphics::VansMainCameraVisibilityState::ReleaseSlotGpuResources(
 		slot.visibilityBuffer.DestroyVulkanBuffer(device);
 	slot.bufferCapacity = 0;
 	slot.pendingVisibilityReadback = false;
+	slot.recordedFramePendingSubmission = false;
 }
 
 bool VansGraphics::VansMainCameraVisibilityState::EnsureActiveGpuResources(
@@ -334,7 +335,10 @@ void VansGraphics::VansMainCameraVisibilityState::PrepareFrame(
 		m_Stats.historyValid = false;
 		m_Stats.hizCulledCount = 0;
 		for (FrameSlot& frameSlot : m_FrameSlots)
+		{
 			frameSlot.pendingVisibilityReadback = false;
+			frameSlot.recordedFramePendingSubmission = false;
+		}
 		PublishDebugSnapshot();
 		return;
 	}
@@ -423,6 +427,21 @@ void VansGraphics::VansMainCameraVisibilityState::MarkDispatched()
 		slot.dispatchedNodeIds.push_back(candidate.nodeId);
 	slot.dispatchedFrameSerial = m_CurrentFrameSerial;
 	slot.pendingVisibilityReadback = !slot.dispatchedNodeIds.empty();
+	slot.recordedFramePendingSubmission = slot.pendingVisibilityReadback;
+}
+
+void VansGraphics::VansMainCameraVisibilityState::ResolveRecordedFrameSubmission(bool submitted)
+{
+	FrameSlot& slot = ActiveSlot();
+	if (!slot.recordedFramePendingSubmission)
+		return;
+	slot.recordedFramePendingSubmission = false;
+	if (!submitted)
+	{
+		slot.pendingVisibilityReadback = false;
+		slot.dispatchedNodeIds.clear();
+		slot.dispatchedFrameSerial = 0;
+	}
 }
 
 void VansGraphics::VansMainCameraVisibilityState::PublishDebugSnapshot()
@@ -464,6 +483,7 @@ void VansGraphics::VansMainCameraVisibilityState::Reset()
 		slot.dispatchedNodeIds.clear();
 		slot.dispatchedFrameSerial = 0;
 		slot.pendingVisibilityReadback = false;
+		slot.recordedFramePendingSubmission = false;
 	}
 	m_Settings = VansMainCameraHiZCullSettings{};
 	m_History = VansMainCameraHiZHistoryState{};

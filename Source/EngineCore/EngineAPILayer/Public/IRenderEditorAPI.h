@@ -17,9 +17,16 @@ namespace Vans::EditorAPI
 		virtual ApplyUpscalerSettingsResult ApplyUpscalerSettings(
 			const UpscalerSettingsSnapshot& settings) = 0;
 		virtual CommandRecordingSettingsSnapshot GetCommandRecordingSettings() const = 0;
-		virtual void SetCommandRecordingSettings(const CommandRecordingSettingsSnapshot& settings) = 0;
+        virtual ProjectRenderPassSettingsSnapshot GetProjectRenderPassSettings() const = 0;
+        virtual ApplyProjectRenderPassSettingsResult ApplyProjectRenderPassSettings(const std::vector<std::string>& assetGuids) = 0;
+		virtual ApplyCommandRecordingSettingsResult SetCommandRecordingSettings(
+			const CommandRecordingSettingsSnapshot& settings) = 0;
 		virtual std::vector<RenderTexturePreview> QueryRenderTexturePreviews(
 			RenderTextureFilter filter) const = 0;
+		virtual std::vector<RenderTextureSourceInfo> QueryAvailableRenderTextures(RenderTextureFilter filter) const = 0;
+		virtual RenderTexturePreviewRegistrationResult RegisterRenderTexturePreview(const std::string& resourceKey, const RenderTexturePreviewViewSpec& view) = 0;
+		virtual void UnregisterRenderTexturePreview(std::uint64_t registration) = 0;
+		virtual std::vector<RenderTexturePreview> QueryRegisteredRenderTexturePreviews() const = 0;
 		virtual std::uint32_t GetAmbientSkyCacheDebugMode() const = 0;
 		virtual void SetAmbientSkyCacheDebugMode(std::uint32_t mode) = 0;
 		virtual void RequestPunctualShadowDebugPreview() = 0;

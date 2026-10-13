@@ -174,9 +174,10 @@ bool TestReflectionProbeResourcesGpuContract()
             Check(VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom({
                 {GLOBAL_BINDING_REFLECTION_PROBE_SPECULAR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, ReflectionProbeMaxTexturePages, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
                 {GLOBAL_BINDING_REFLECTION_PROBE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-                {GLOBAL_BINDING_REFLECTION_PROBE_INDEX, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}}, layout, sets, 1),
+                {GLOBAL_BINDING_REFLECTION_PROBE_INDEX, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}}, layout, sets, 2),
                 "Reflection descriptor allocation failed");
-            probes.UpdateGlobalDescriptors(sets[0]);
+            Check(sets.size() == 2, "Both reflection frame descriptor sets must be allocated");
+            probes.UpdateGlobalDescriptors(sets);
             auto* originalTexture = probes.GetProbeTexture(0);
             const VkImage originalImage = originalTexture->GetImage().GetImage();
             const VkImageView originalPreview = probes.GetPreviewFaceView(0, 0, 0);

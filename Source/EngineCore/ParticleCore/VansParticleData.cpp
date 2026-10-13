@@ -46,6 +46,18 @@ namespace VansGraphics
             m_SeedRandom.resize(m_MaxCount, 0u);
     }
 
+    void VansParticlePool::AllocAlphaFade()
+    {
+        if (m_AlphaFade.size() < m_MaxCount)
+            m_AlphaFade.resize(m_MaxCount, glm::vec3(0.f));
+    }
+
+    void VansParticlePool::AllocInitialAlpha()
+    {
+        if (m_InitialAlpha.size() < m_MaxCount)
+            m_InitialAlpha.resize(m_MaxCount, 1.f);
+    }
+
     void VansParticlePool::SwapRemoveAt(uint32_t index)
     {
         // 用最后一个存活粒子填充死亡槽位，保持数组紧凑
@@ -80,6 +92,14 @@ namespace VansGraphics
                 m_FrameIndex[index] = m_FrameIndex[last];
             if (!m_SeedRandom.empty())
                 m_SeedRandom[index] = m_SeedRandom[last];
+            if (!m_SurfaceNormal.empty())
+                m_SurfaceNormal[index] = m_SurfaceNormal[last];
+            if (!m_AlphaFade.empty())
+                m_AlphaFade[index] = m_AlphaFade[last];
+            if (!m_InitialAlpha.empty())
+                m_InitialAlpha[index] = m_InitialAlpha[last];
+            if (!m_CollectionBornTime.empty())
+                m_CollectionBornTime[index] = m_CollectionBornTime[last];
         }
 
         --m_AliveCount;

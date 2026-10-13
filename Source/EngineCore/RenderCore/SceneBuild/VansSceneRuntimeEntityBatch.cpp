@@ -104,8 +104,9 @@ Vans::VansSceneEntityBatchResult VansGraphics::VansSceneAssembly::CreateEntityBa
 		}
 	}
 
-    const VansSceneObjectBuildResult objectBuild =
+    VansSceneObjectBuildResult objectBuild =
         BuildObjectsInternal(device, buildPlan, projectRoot);
+    if(objectBuild.m_Built) objectBuild=InitializeDomainsInternal();
     bool success = objectBuild.m_Built;
     for (const auto& object : buildPlan.objects)
         success = (m_Scene.FindObjectByGuid(object.entityGuid) != nullptr) && success;

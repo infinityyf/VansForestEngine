@@ -1,13 +1,18 @@
 #include "VansMaterialLiveEditService.h"
 
 #include "../../AssetCore/VansAssetDatabase.h"
+#include "../../AssetCore/VansAssetMeta.h"
+#include "../../AssetCore/VansAssetObjectRepository.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../RenderCore/VansMaterial.h"
+#include "../../RenderCore/VansGraphicsDevice.h"
 #include "../../RenderCore/VansRenderNode.h"
 #include "../../RenderCore/VansRenderSystem.h"
 #include "../../RenderCore/VansRenderThreadTransaction.h"
 #include "../../RenderCore/VansScene.h"
+#include "../../RenderCore/SceneBuild/VansSceneProjectResourceBuilder.h"
 #include "../../RenderCore/VulkanCore/VansVKDescriptorManager.h"
+#include "../../SceneCore/VansSceneAssetDependencyBuilder.h"
 #include "../../RuntimeCore/VansThreadContract.h"
 #include "../../Util/VansLog.h"
 
@@ -177,8 +182,6 @@ int MaterialGlobalTextureBaseIndex(VansMaterial& material)
 
 	if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(&material))
 		return sss->m_MaterialIndex * 5;
-	if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
-		return cloth->m_MaterialIndex * 5;
 	if (auto* skin = dynamic_cast<VansSkinMaterial*>(&material))
 		return skin->m_MaterialIndex * 5;
 	return -1;
@@ -212,8 +215,7 @@ int StandardBindlessSlotIndexForMaterial(VansMaterial& material, const std::stri
 		return 3;
 	if (slot == "ao" || slot == "occlusion" || slot == "emissive" || slot == "mask")
 		return 4;
-	if (material.m_MaterialType == VansMaterialType::VAN_CLOTH && slot == "translucency")
-		return 2;
+
 	return -1;
 }
 
@@ -275,20 +277,6 @@ bool SetMaterialTexturePointer(VansMaterial& material, const std::string& slot, 
 			skin->m_ScatterMaskTexture = texture;
 		else if (slot == "thickness" || slot == "transmission" || slot == "thinness")
 			skin->m_ThicknessTexture = texture;
-		else
-			return false;
-		return true;
-	}
-	if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
-	{
-		if (slot == "basecolor" || slot == "albedo" || slot == "diffuse")
-			cloth->m_BaseColorTexture = texture;
-		else if (slot == "normal")
-			cloth->m_NormalTexture = texture;
-		else if (slot == "roughness")
-			cloth->m_RoughnessTexture = texture;
-		else if (slot == "ao" || slot == "occlusion")
-			cloth->m_AoTexture = texture;
 		else
 			return false;
 		return true;
@@ -416,7 +404,6 @@ bool UsesOwnedMaterialDescriptors(const VansMaterial& material)
 {
 	return material.m_MaterialType == VAN_TRANSPARENT ||
 		material.m_MaterialType == VAN_SKIN ||
-		material.m_MaterialType == VAN_CLOTH ||
 		material.m_MaterialType == VAN_HAIR ||
 		material.m_MaterialType == VAN_SUBSURFACE ||
 		material.m_MaterialType == VAN_GRASS;
@@ -438,13 +425,6 @@ void DestroyMaterialOwnedTextureDescriptors(VansMaterial& material)
 		descMgr->ReleaseDescriptorSetLayout(skin->m_SkinOwnedLayout);
 		skin->m_SkinOwnedLayout = VK_NULL_HANDLE;
 		skin->m_SkinOwnedDescSets.clear();
-	}
-	else if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
-	{
-		descMgr->DestroyDescriptorSet(cloth->m_ClothOwnedDescSets);
-		descMgr->ReleaseDescriptorSetLayout(cloth->m_ClothOwnedLayout);
-		cloth->m_ClothOwnedLayout = VK_NULL_HANDLE;
-		cloth->m_ClothOwnedDescSets.clear();
 	}
 	else if (auto* hair = dynamic_cast<VansHairMaterial*>(&material))
 	{
@@ -483,6 +463,106 @@ void RecreateNodesUsingMaterial(VansScene& scene, VansMaterial& material)
 	}
 }
 
+bool ApplyClothTextureEdits(VansScene& scene, VansClothMaterial& cloth,
+    const std::vector<Vans::EditorAPI::RuntimeMaterialTextureEdit>& edits,
+    Vans::VansClothAlphaMode targetAlphaMode)
+{
+    static constexpr std::array<VansTexture* VansClothMaterial::*, 7> members{
+        &VansClothMaterial::m_BaseColorTexture, &VansClothMaterial::m_NormalTexture,
+        &VansClothMaterial::m_RoughnessTexture, &VansClothMaterial::m_AoTexture,
+        &VansClothMaterial::m_SheenMaskTexture, &VansClothMaterial::m_FiberDirectionTexture,
+        &VansClothMaterial::m_OpacityTexture};
+    static_assert(members.size() == Vans::VansClothTextureSlots.size());
+    auto* manager = scene.GetMaterialManager();
+    const int index = cloth.GetGlobalMaterialIndex();
+    if (!manager || index < 0 || index >= static_cast<int>(manager->m_GlobalClothParamData.size()) ||
+        index >= static_cast<int>(manager->m_GlobalPBRParamData.size()) ||
+        static_cast<size_t>(index * 5 + 4) >= manager->m_GlobalPBRTextures.size()) return false;
+    std::array<VansTexture*, members.size()> previous{}, replacements{};
+    std::array<bool, members.size()> selected{};
+    for (size_t i = 0; i < members.size(); ++i) previous[i] = replacements[i] = cloth.*members[i];
+    // Resolve and validate the complete edit before publishing any pointer.
+    for (const auto& edit : edits)
+    {
+        const auto found = std::find(Vans::VansClothTextureSlots.begin(), Vans::VansClothTextureSlots.end(), edit.slot);
+        if (found == Vans::VansClothTextureSlots.end()) return false;
+        const size_t slotIndex = static_cast<size_t>(found - Vans::VansClothTextureSlots.begin());
+        if (selected[slotIndex]) return false;
+        selected[slotIndex] = true;
+        VansTexture* replacement = nullptr;
+        if (edit.textureGuid.empty())
+        {
+            if (edit.slot != "opacity" && edit.slot != "fiberDirection")
+                replacement = scene.ResolveTextureAssetOrDefault(nullptr,
+                    edit.slot == "sheenMask" ? "defaultAo" : DefaultTextureForSlot(edit.slot));
+        }
+        else
+        {
+            Vans::VansAssetGuid guid;
+            if (!Vans::VansAssetGuid::TryParse(edit.textureGuid, guid)) return false;
+            auto* database = Vans::VansProjectManager::Get().GetAssetDatabase();
+            const auto record = database ? database->Find(guid) : std::nullopt;
+            if (!record || record->type != Vans::VansAssetType::Texture || record->state == Vans::VansAssetState::Missing)
+                return false;
+            const auto meta = Vans::VansProjectManager::Get().GetAssetObjectRepository()
+                .ResolveLatest<Vans::VansAssetMeta>(guid);
+            std::string error;
+            if (!meta || !Vans::ValidateClothTextureImport(edit.slot, *meta, error))
+            {
+                VANS_LOG_ERROR("[Cloth] Texture edit rejected for " << edit.slot << " (" << edit.textureGuid << "): " <<
+                    (meta ? error : "texture import metadata is not published"));
+                return false;
+            }
+            replacement = static_cast<VansTexture*>(scene.FindTextureAssetByGuid(edit.textureGuid));
+            if (!replacement)
+            {
+                // Asset identity and published import settings must match initial scene loading.
+                Vans::VansSceneTextureResourceRequest request;
+                request.name = request.assetGuid = edit.textureGuid;
+                request.path = record->sourcePath.string();
+                request.artifactPath = record->artifactPath.string();
+                if (!Vans::VansSceneAssetDependencyBuilder::ApplyTextureImportSettings(request, *meta, error))
+                    return false;
+                auto& project = Vans::VansProjectManager::Get();
+                const auto context = Vans::VansSceneResourceLoadContext::ForEditor(
+                    project.GetProjectRootPath(), project.GetPathResolver().GetEngineRoot(), {*record});
+                if (!scene.GetRuntimeResourceDevice() || !VansSceneProjectResourceBuilder::LoadTextures(
+                    scene, {request}, context, scene.GetRuntimeResourceDevice(), false)) return false;
+                replacement = static_cast<VansTexture*>(scene.FindTextureAssetByGuid(edit.textureGuid));
+            }
+        }
+        if (!replacement && edit.slot != "opacity" && edit.slot != "fiberDirection") return false;
+        if (!edit.textureGuid.empty() && !replacement) return false;
+        replacements[slotIndex] = replacement;
+    }
+    if (targetAlphaMode == Vans::VansClothAlphaMode::Mask && !replacements.back()) return false;
+    if (replacements == previous) return true;
+    VANS_ASSERT_RENDER_THREAD();
+    // The owning RenderThread maintenance transaction has already retired GPU
+    // work. Repeating WaitForIdle here would stall the same batch twice.
+    for (size_t i = 0; i < members.size(); ++i) cloth.*members[i] = replacements[i];
+    if ((!cloth.m_ClothOwnedDescSets.empty() && !cloth.RefreshClothTextureDescriptors()) ||
+        !manager->FlushMaterialPayload(cloth))
+    {
+        for (size_t i = 0; i < members.size(); ++i) cloth.*members[i] = previous[i];
+        return false;
+    }
+    for (size_t i = 0; i < members.size(); ++i)
+    {
+        if (replacements[i] == previous[i]) continue;
+        const std::string slot = Vans::VansClothTextureSlots[i];
+        const int bindless = StandardBindlessSlotIndexForMaterial(cloth, slot);
+        if (bindless >= 0)
+            manager->ReplaceGlobalBindlessTexture(static_cast<size_t>(index * 5 + bindless),
+                replacements[i], scene.GetGlobalDescriptorSet());
+        if (slot == "basecolor")
+            manager->ReplaceGlobalBindlessTexture(static_cast<size_t>(index * 5 + 2),
+                replacements[i], scene.GetGlobalDescriptorSet());
+    }
+    scene.RefreshClothLightingTextures(cloth);
+    return true;
+}
+
 RenderNodeType NodeTypeForMaterial(const VansMaterial& material, RenderNodeType fallback)
 {
 	if (material.m_MaterialType == VAN_HAIR)
@@ -516,7 +596,8 @@ bool VansMaterialLiveEditService::ApplyMaterialPreviewChange(
 	VansScene* scene,
 	const std::filesystem::path& assetPath,
 	const std::vector<Vans::EditorAPI::RuntimeMaterialParameterEdit>& parameterEdits,
-	const std::vector<Vans::EditorAPI::RuntimeMaterialTextureEdit>& textureEdits)
+	const std::vector<Vans::EditorAPI::RuntimeMaterialTextureEdit>& textureEdits,
+	std::optional<Vans::VansClothAlphaMode> pendingClothAlphaMode)
 {
 	if (!scene || (parameterEdits.empty() && textureEdits.empty())) return false;
 	auto* database = Vans::VansProjectManager::Get().GetAssetDatabase();
@@ -537,6 +618,10 @@ bool VansMaterialLiveEditService::ApplyMaterialPreviewChange(
 	bool changed = false;
 	for (const Vans::EditorAPI::RuntimeMaterialParameterEdit& edit : parameterEdits)
 		changed |= ApplyMaterialParameter(scene, materialName, edit.parameterPath, edit.value);
+	if (!textureEdits.empty())
+		if (auto* cloth = dynamic_cast<VansClothMaterial*>(FindRuntimeMaterial(*scene, materialName)))
+			return ApplyClothTextureEdits(*scene, *cloth, textureEdits,
+                pendingClothAlphaMode.value_or(cloth->m_Params.alphaMode));
 	for (const Vans::EditorAPI::RuntimeMaterialTextureEdit& edit : textureEdits)
 		changed |= ApplyMaterialTexture(scene, materialName, edit.slot, edit.textureGuid);
 	return changed;
@@ -580,6 +665,8 @@ bool VansMaterialLiveEditService::ApplyMaterialTexture(
 	if (!material)
 		return false;
 
+    if (auto* cloth = dynamic_cast<VansClothMaterial*>(material))
+        return ApplyClothTextureEdits(*scene, *cloth, {{slot, textureGuid}}, cloth->m_Params.alphaMode);
 	const std::string normalizedSlot = NormalizeSlotName(slot);
 	VansTexture* texture = ResolveTextureGuid(*scene, textureGuid, normalizedSlot);
 	if (!texture || !SetMaterialTexturePointer(*material, normalizedSlot, texture))

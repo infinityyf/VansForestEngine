@@ -1763,6 +1763,8 @@ namespace
 		goalNode->m_Goal.binding = "grip";
 		goalNode->m_Goal.weightParameter = "gripWeight";
 		goalNode->m_Goal.fixedRotationWeight = 1;
+		goalNode->m_Goal.poleBoneName = "calf_l";
+		goalNode->m_Goal.poleOffsetLocal = glm::vec3(-0.3f, 0, 0.2f);
 		const int goalId = graph.AddNode(std::move(goalNode));
 		auto checkpoint = std::make_unique<AnimGraphPoseCheckpointNode>();
 		checkpoint->m_CheckpointId = "beforeIK";
@@ -1811,6 +1813,19 @@ namespace
 		workspace.Initialize(fixture.skeleton,output);
 		const auto expected=glm::vec3(checkpointMatrix*target.sourceLocal*glm::vec4(0,0,0,1));
 		if (!Check(glm::length(workspace.GetComponentPosition(foot)-expected)<0.003f,"IK did not reach current checkpoint target")) return false;
+		const int thigh = fixture.skeleton.FindBoneIndex("thigh_l");
+		const int calf = fixture.skeleton.FindBoneIndex("calf_l");
+		VansPoseWorkspace inputPose;
+		inputPose.Initialize(fixture.skeleton, fixture.localPose);
+		const auto rootPosition = inputPose.GetComponentPosition(thigh);
+		const auto direction = glm::normalize(expected - rootPosition);
+		auto pole = inputPose.GetComponentPosition(calf)
+			+ inputPose.GetComponentRotation(calf) * glm::vec3(-0.3f, 0, 0.2f) - rootPosition;
+		pole -= direction * glm::dot(pole, direction);
+		auto bend = workspace.GetComponentPosition(calf) - rootPosition;
+		bend -= direction * glm::dot(bend, direction);
+		if (!Check(glm::dot(glm::normalize(pole), glm::normalize(bend)) > 0.999f,
+			"Binding goal ignored its independent input-pose pole")) return false;
 		// 下一帧从输入姿态重新采样，不能把上一帧 IK 输出积累到目标上。
 		if (!Check(prepare(),error.c_str())) return false;
 		glm::mat4 next;

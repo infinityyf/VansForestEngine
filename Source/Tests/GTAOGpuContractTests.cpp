@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -20,7 +21,6 @@
 namespace
 {
     using namespace VansGraphics;
-    constexpr uint32_t Width = 17, Height = 13, Count = Width * Height;
     enum ImageSlot { Position, Normal, Material, Depth, Raw, Edges, Result, ImageCount };
     std::atomic<uint32_t> validationErrors{0};
     VKAPI_ATTR VkBool32 VKAPI_CALL Validation(VkDebugUtilsMessageSeverityFlagBitsEXT,
@@ -56,10 +56,14 @@ namespace
     // Run production GTAO SPIR-V with sync validation, odd dimensions and GPU readback.
     struct Fixture
     {
+        const uint32_t Width, Height, Count;
+        explicit Fixture(uint32_t width = 17, uint32_t height = 13)
+            : Width(width), Height(height), Count(width * height) {}
         VkInstance instance{}; VkPhysicalDevice physical{}; VkDevice device{}; VkQueue queue{};
         uint32_t family = 0; VkDebugUtilsMessengerEXT messenger{};
         PFN_vkDestroyDebugUtilsMessengerEXT destroyMessenger{};
         VkCommandPool commands{}; VkCommandBuffer command{}; VkDescriptorPool pool{}; VkSampler sampler{};
+        VkQueryPool timestamps{};
         VkDescriptorSetLayout cameraLayout{}; VkDescriptorSet cameraSet{};
         std::array<VkDescriptorSet, 5> depthSets{}; VkDescriptorSet mainSet{}, denoiseSet{};
         std::array<Image, ImageCount> images{};
@@ -81,6 +85,7 @@ namespace
                     if (p.setLayout) vkDestroyDescriptorSetLayout(device, p.setLayout, nullptr);
                 }
                 if (commands) vkDestroyCommandPool(device, commands, nullptr);
+                if (timestamps) vkDestroyQueryPool(device, timestamps, nullptr);
                 if (pool) vkDestroyDescriptorPool(device, pool, nullptr);
                 if (cameraLayout) vkDestroyDescriptorSetLayout(device, cameraLayout, nullptr);
                 if (sampler) vkDestroySampler(device, sampler, nullptr);
@@ -314,7 +319,7 @@ namespace
         samplerInfo.maxLod = 5.0f;
         samplerInfo.addressModeU = samplerInfo.addressModeV = samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         Require(vkCreateSampler(device, &samplerInfo, nullptr, &sampler), "sampler");
-        CreateBuffer(0, sizeof(camera)); CreateBuffer(1, 1024 * 1024); CreateBuffer(2, Count * sizeof(glm::vec4));
+        CreateBuffer(0, sizeof(camera)); CreateBuffer(1, Count * sizeof(glm::vec4) * 3 + 64); CreateBuffer(2, Count * sizeof(glm::vec4));
         Begin();
         for (uint32_t slot = 0; slot < ImageCount; ++slot)
         {
@@ -374,6 +379,116 @@ namespace
         camera.screenParams = glm::vec4(Width,Height,1.0f/Width,1.0f/Height);
         parameters.mipCount = int32_t(images[Depth].levels);
     }
+
+    void SaveVisibility(const char* name, const Fixture& gpu, const std::vector<glm::vec4>& values)
+    {
+        const char* directory = std::getenv("FORESTENGINE_GTAO_CAPTURE_DIR");
+        if (!directory || !*directory) return;
+        std::filesystem::create_directories(directory);
+        std::ofstream output(std::filesystem::path(directory) / name, std::ios::binary);
+        output << "P5\n" << gpu.Width << ' ' << gpu.Height << "\n255\n";
+        for (const auto& value : values)
+        {
+            const auto pixel = static_cast<unsigned char>(std::round(std::clamp(value.x, 0.0f, 1.0f) * 255));
+            output.write(reinterpret_cast<const char*>(&pixel), 1);
+        }
+        Expect(output.good(), "Cannot write GTAO visibility capture");
+    }
+
+    void TestSpatialQuality()
+    {
+        Fixture gpu(257, 193); gpu.Initialize(); gpu.Plane();
+        // 两个真实相交的平面，包含连续接触阴影、斜视深度和法线边界。
+        for (uint32_t i = 0; i < gpu.Count; ++i)
+        {
+            const glm::vec3 ray = glm::vec3(gpu.position[i]) / gpu.position[i].w;
+            const float floorDepth = ray.y < 0.0f ? -0.30f / ray.y : 100.0f;
+            const float depth = std::min(2.0f, floorDepth);
+            gpu.position[i] = glm::vec4(ray * depth, depth);
+            gpu.normal[i] = floorDepth < 2.0f ? glm::vec4(0, 1, 0, 0) : glm::vec4(0, 0, 1, 0);
+        }
+        gpu.Frame(); const auto filtered = gpu.Read(Result);
+        SaveVisibility("contact-raw.pgm", gpu, gpu.Read(Raw));
+        SaveVisibility("contact-denoised.pgm", gpu, filtered);
+        gpu.parameters.sliceCount = 32; gpu.parameters.stepsPerSide = 32;
+        gpu.Frame(); const auto reference = gpu.Read(Result);
+        SaveVisibility("contact-reference.pgm", gpu, reference);
+        double squaredError = 0, squaredNoise = 0, meanError = 0;
+        uint32_t samples = 0;
+        for (uint32_t y = 8; y + 8 < gpu.Height; ++y)
+            for (uint32_t x = 8; x + 8 < gpu.Width; ++x)
+            {
+                const uint32_t i = y * gpu.Width + x;
+                if (reference[i].x > 0.98f || gpu.normal[i] != gpu.normal[i - gpu.Width]
+                    || gpu.normal[i] != gpu.normal[i + gpu.Width]) continue;
+                const double error = filtered[i].x - reference[i].x;
+                const double neighbours = ((filtered[i-1].x-reference[i-1].x)
+                    + (filtered[i+1].x-reference[i+1].x)
+                    + (filtered[i-gpu.Width].x-reference[i-gpu.Width].x)
+                    + (filtered[i+gpu.Width].x-reference[i+gpu.Width].x)) * 0.25;
+                squaredError += error * error;
+                squaredNoise += (error - neighbours) * (error - neighbours);
+                meanError += error; ++samples;
+            }
+        Expect(samples > 1000, "Contact quality fixture has no useful AO region");
+        std::cout << "contact quality: samples=" << samples << " rmse=" << std::sqrt(squaredError/samples)
+            << " spatialNoise=" << std::sqrt(squaredNoise/samples) << " bias=" << meanError/samples << '\n';
+        // 沿接触线减去每行均值，隔离颗粒与正常的 AO 渐变；不靠减弱 AO 通过验收。
+        double rowVariance = 0;
+        for (uint32_t y = 90; y < 145; ++y)
+        {
+            double sum = 0, sumSquared = 0;
+            for (uint32_t x = 8; x + 8 < gpu.Width; ++x)
+            {
+                const double value = filtered[y * gpu.Width + x].x;
+                sum += value; sumSquared += value * value;
+            }
+            const double count = gpu.Width - 16;
+            rowVariance += std::max(0.0, sumSquared/count - (sum/count)*(sum/count));
+        }
+        const double rowNoise = std::sqrt(rowVariance / 55);
+        std::cout << "contact wall row noise=" << rowNoise << '\n';
+        Expect(rowNoise < 0.0065, "Contact shadow retained clustered spatial noise");
+        Expect(std::sqrt(squaredError/samples) < 0.125 && std::abs(meanError/samples) < 0.085,
+            "Denoise weakened contact occlusion relative to the high-sample reference");
+    }
+
+    void BenchmarkPasses()
+    {
+        if (!std::getenv("FORESTENGINE_GTAO_BENCHMARK")) return;
+        Fixture gpu(1920, 1080); gpu.Initialize(); gpu.Plane();
+        for (uint32_t y = 0; y < gpu.Height; ++y)
+            for (uint32_t x = gpu.Width / 2; x < gpu.Width; ++x) gpu.position[y * gpu.Width + x] *= 0.9f;
+        gpu.Frame();
+        constexpr uint32_t runs = 64;
+        VkQueryPoolCreateInfo query{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        query.queryType = VK_QUERY_TYPE_TIMESTAMP; query.queryCount = 2 * runs + 1;
+        Require(vkCreateQueryPool(gpu.device, &query, nullptr, &gpu.timestamps), "create timestamp pool");
+        VkPhysicalDeviceProperties properties{}; vkGetPhysicalDeviceProperties(gpu.physical, &properties);
+        Expect(properties.limits.timestampComputeAndGraphics, "Compute timestamps unavailable");
+        gpu.Begin(); vkCmdResetQueryPool(gpu.command, gpu.timestamps, 0, query.queryCount);
+        vkCmdWriteTimestamp(gpu.command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, gpu.timestamps, 0);
+        for (uint32_t run = 0; run < runs; ++run)
+        {
+            gpu.Dispatch(1, gpu.mainSet);
+            vkCmdWriteTimestamp(gpu.command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, gpu.timestamps, 2 * run + 1);
+            gpu.Dispatch(2, gpu.denoiseSet);
+            vkCmdWriteTimestamp(gpu.command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, gpu.timestamps, 2 * run + 2);
+        }
+        gpu.Submit();
+        std::array<uint64_t, 2 * runs + 1> times{};
+        Require(vkGetQueryPoolResults(gpu.device, gpu.timestamps, 0, query.queryCount, sizeof(times),
+            times.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT), "read timestamps");
+        std::vector<double> main, denoise;
+        for (uint32_t run = 16; run < runs; ++run)
+        {
+            main.push_back((times[2*run+1]-times[2*run]) * properties.limits.timestampPeriod / 1e6);
+            denoise.push_back((times[2*run+2]-times[2*run+1]) * properties.limits.timestampPeriod / 1e6);
+        }
+        std::sort(main.begin(), main.end()); std::sort(denoise.begin(), denoise.end());
+        std::cout << "1920x1080 GPU median (48 warm samples): main=" << main[main.size()/2]
+            << " ms denoise=" << denoise[denoise.size()/2] << " ms\n";
+    }
 }
 
 bool TestGTAOGpuContract()
@@ -382,6 +497,7 @@ bool TestGTAOGpuContract()
     {
         validationErrors = 0;
         {
+            constexpr uint32_t Width = 17, Height = 13, Count = Width * Height;
             Fixture gpu; gpu.Initialize(); gpu.Plane(); gpu.Frame();
             const auto flat = gpu.Read(Result);
             for (const auto& v : flat) Expect(std::isfinite(v.x) && v.x > 0.96f && v.x <= 1.0f && v.x == v.y,"Unoccluded plane darkened or channels differ");
@@ -414,8 +530,27 @@ bool TestGTAOGpuContract()
             gpu.Plane(); gpu.material.assign(Count,glm::vec4(0,1,8,0)); gpu.Frame();
             gpu.raw.assign(Count,glm::vec4(0.2f,0.8f,0,0));
             const auto dual = gpu.Filter(); Expect(std::abs(dual[center].x-0.2f)<0.001f && std::abs(dual[center].y-0.8f)<0.001f,"Dual AO channels were merged");
-            std::cout << "depth edges and independent front/back channels: PASS\n";
+            // 同深度下也必须保留普通/草地语义和硬法线边界。
+            gpu.Plane();
+            for (uint32_t y=0;y<Height;++y) for (uint32_t x=Width/2+1;x<Width;++x)
+                gpu.material[y*Width+x].z = 8;
+            gpu.Frame();
+            for (uint32_t i=0;i<Count;++i) gpu.raw[i] = i%Width<=Width/2 ? glm::vec4(0.2f) : glm::vec4(0.7f,0.9f,0,0);
+            const auto materials = gpu.Filter();
+            Expect(std::abs(materials[center].x-0.2f)<0.001f && std::abs(materials[center+1].y-0.9f)<0.001f,
+                "Denoise mixed opaque and grass hemispheres");
+            gpu.Plane();
+            for (uint32_t y=0;y<Height;++y) for (uint32_t x=Width/2+1;x<Width;++x)
+                gpu.normal[y*Width+x] = glm::vec4(0,1,0,0);
+            gpu.Frame();
+            for (uint32_t i=0;i<Count;++i) gpu.raw[i] = glm::vec4(i%Width<=Width/2 ? 0.2f : 0.9f);
+            const auto normals = gpu.Filter();
+            Expect(std::abs(normals[center].x-0.2f)<0.001f && std::abs(normals[center+1].x-0.9f)<0.001f,
+                "Denoise crossed a hard normal edge");
+            std::cout << "depth/normal/material edges and independent front/back channels: PASS\n";
         }
+        TestSpatialQuality();
+        BenchmarkPasses();
         Expect(validationErrors==0,"GTAO Vulkan validation errors");
         std::cout << "GTAO production GPU contract: PASS\n"; return true;
     }

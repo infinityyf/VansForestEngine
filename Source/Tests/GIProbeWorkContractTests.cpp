@@ -1,4 +1,4 @@
-#include "../EngineCore/RenderCore/GICore/VansGIProbeWorkScheduler.h"
+﻿#include "../EngineCore/RenderCore/GICore/VansGIProbeWorkScheduler.h"
 #include "../EngineCore/RenderCore/GICore/VansGIScrollingGrid.h"
 #include "../EngineCore/RenderCore/VansScene.h"
 #include "../EngineCore/EngineAPILayer/Private/EngineAPIImpl.h"
@@ -36,6 +36,13 @@ namespace
 			const Vans::SceneEditResult result = edits->Set(path, std::move(value));
 			return { result.success, result.message };
 		}
+        Vans::VansSceneAuthoringResult CommitSceneValues(std::vector<Vans::VansSceneAuthoringValue> values,
+            std::uint64_t expectedState,const Vans::VansSceneAuthoringCommit& commit) override
+        {
+            if(!edits) return {false,"Capture-only host cannot commit a Scene transaction"};
+            const auto result=edits->CommitValues(std::move(values),expectedState,commit);
+            return {result.success,result.message};
+        }
 		std::vector<Vans::EditorAPI::ScenePropertyEdit> Take()
 		{
 			auto result = std::move(captured);

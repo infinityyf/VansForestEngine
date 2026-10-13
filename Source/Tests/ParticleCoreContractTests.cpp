@@ -19,6 +19,7 @@
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
+#include <glm/gtc/packing.hpp>
 
 namespace
 {
@@ -46,6 +47,463 @@ public:
     void Execute(VansGraphics::VansParticlePool&, float, const glm::mat4&) const override {}
 };
 
+bool TestParticleAlphaFade()
+{
+    using namespace VansGraphics;
+    const auto check = [](bool ok, const char* message)
+    { if (!ok) std::cerr << "[ParticleAlphaFade] " << message << '\n'; return ok; };
+    const auto near = [](float a, float b) { return std::abs(a-b) < 1.e-5f; };
+    VansParticlePool pool; pool.Resize(32); pool.AllocSeedRandom(); pool.m_AliveCount=32;
+    const glm::vec4 initial(.2f,.4f,.6f,.8f);
+    for (uint32_t i=0;i<32;++i)
+    { pool.m_Color[i]=initial; pool.m_SeedRandom[i]=1234u+i*2654435761u; pool.m_LifeTime[i]=.25f; }
+    const auto seeds=pool.m_SeedRandom;
+    VansUpdateAlphaFadeModule fade;
+    fade.ExecuteInit(pool,0,32,glm::mat4(1)); fade.Execute(pool,1.f,glm::mat4(1));
+    if (!check(pool.m_AlphaFade.empty() && pool.m_Color[0]==initial,
+        "Disabled fades allocated state or changed existing color")) return false;
+    fade.m_FadeOut.enabled=true; fade.m_FadeOut.timeDomain=VansParticleFadeTimeDomain::Seconds;
+    fade.m_FadeOut.durationMin=fade.m_FadeOut.durationMax=.4f;
+    fade.m_FadeOut.easing=VansParticleFadeEasing::Linear;
+    fade.ExecuteInit(pool,0,32,glm::mat4(1)); fade.Execute(pool,.016f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,.5f) && glm::vec3(pool.m_Color[0])==glm::vec3(initial),
+        "Longer-than-life seconds fade was clamped or RGB changed")) return false;
+    pool.m_Age[0]=.1f; pool.m_NormalizedAge[0]=.4f;
+    fade.Execute(pool,.1f,glm::mat4(1)); fade.Execute(pool,.001f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,.3f),"Fade accumulated alpha or used normalized seconds")) return false;
+    pool.m_Color[0]=initial; pool.m_Age[0]=.05f; pool.m_NormalizedAge[0]=.1f;
+    fade.m_FadeOut.enabled=false; fade.m_FadeIn.enabled=true;
+    fade.m_FadeIn.timeDomain=VansParticleFadeTimeDomain::Seconds;
+    fade.m_FadeIn.durationMin=fade.m_FadeIn.durationMax=.2f;
+    fade.ExecuteInit(pool,0,1,glm::mat4(1)); fade.Execute(pool,.01f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,.125f),"Seconds fade-in did not use smoothstep")) return false;
+    pool.m_Color[0]=initial; pool.m_NormalizedAge[0]=.0625f;
+    fade.m_FadeIn.timeDomain=VansParticleFadeTimeDomain::Lifetime;
+    fade.m_FadeIn.durationMin=fade.m_FadeIn.durationMax=.25f;
+    fade.m_FadeOut.enabled=true; fade.m_FadeOut.timeDomain=VansParticleFadeTimeDomain::Lifetime;
+    fade.m_FadeOut.durationMin=fade.m_FadeOut.durationMax=.25f;
+    fade.m_FadeOut.easing=VansParticleFadeEasing::SmoothStep;
+    fade.ExecuteInit(pool,0,1,glm::mat4(1)); fade.Execute(pool,1.f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,.125f),"Normalized fade-in used the wrong time domain")) return false;
+    pool.m_NormalizedAge[0]=.2f; fade.Execute(pool,.01f,glm::mat4(1));
+    pool.m_NormalizedAge[0]=.25f; fade.Execute(pool,.01f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,.7168f),"Fade-in boundary reset the held alpha")) return false;
+    pool.m_NormalizedAge[0]=.5f; fade.Execute(pool,.01f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,.7168f),"Hold interval overwrote the current alpha")) return false;
+    pool.m_NormalizedAge[0]=.8125f; fade.Execute(pool,.01f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,.675f),"Normalized fade-out easing is incorrect")) return false;
+    pool.m_Color[0]=initial; pool.m_NormalizedAge[0]=.2f;
+    fade.m_FadeIn.durationMin=fade.m_FadeIn.durationMax=.5f;
+    fade.m_FadeOut.durationMin=fade.m_FadeOut.durationMax=.9f;
+    fade.m_FadeOut.easing=VansParticleFadeEasing::Linear;
+    fade.ExecuteInit(pool,0,1,glm::mat4(1)); fade.Execute(pool,.01f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,.8f*8.f/9.f),
+        "Overlapping fade-out multiplied instead of overwriting fade-in")) return false;
+    fade.m_FadeInFirst=false; fade.Execute(pool,.01f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,.2816f),"Authored Out-to-In write order was changed")) return false;
+    // splash 的 Out→In 两区间不重叠；后执行的 In 不得撤销末端淡出。
+    fade.m_FadeIn.durationMin=fade.m_FadeIn.durationMax=.1f;
+    fade.m_FadeOut.durationMin=fade.m_FadeOut.durationMax=.75f;
+    pool.m_Color[0]=initial; fade.ExecuteInit(pool,0,1,glm::mat4(1));
+    pool.m_NormalizedAge[0]=.625f; fade.Execute(pool,.01f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,.4f),"Late fade-in undid splash fade-out")) return false;
+    pool.m_NormalizedAge[0]=.25f; pool.m_Color[0].a=.37f;
+    fade.Execute(pool,.01f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,.37f),"Fade-out boundary overwrote an inactive lane")) return false;
+    fade.m_FadeInFirst=true;
+    fade.m_FadeOut.enabled=false; fade.m_FadeIn.durationMin=.1f; fade.m_FadeIn.durationMax=.05f;
+    fade.m_FadeIn.randomExponent=1.12f;
+    for (auto& color : pool.m_Color) color=initial;
+    fade.ExecuteInit(pool,0,32,glm::mat4(1)); const auto sampled=pool.m_AlphaFade;
+    fade.m_FadeIn.randomExponent=1.f; fade.ExecuteInit(pool,0,32,glm::mat4(1));
+    float minimum=1,maximum=0;
+    for (uint32_t i=0;i<32;++i)
+    {
+        uint32_t seed=seeds[i]^0x9e3779b9u;
+        const float u=RandFloat(seed);
+        if (!check(pool.m_AlphaFade[i]==sampled[i] && near(sampled[i].y,.1f-.05f*u),
+            "Random exponent quantization or reversed endpoint direction changed")) return false;
+        minimum=std::min(minimum,sampled[i].y); maximum=std::max(maximum,sampled[i].y);
+    }
+    if (!check(minimum>=.05f && maximum<=.1f && maximum-minimum>.02f && pool.m_SeedRandom==seeds,
+        "Random fades were not varied/stable or advanced the atlas seed")) return false;
+    pool.m_Age[31]=.03f; pool.m_NormalizedAge[31]=.03f;
+    fade.Execute(pool,.01f,glm::mat4(1)); const float lastAlpha=pool.m_Color[31].a;
+    pool.SwapRemoveAt(0); fade.Execute(pool,.5f,glm::mat4(1));
+    if (!check(pool.m_AlphaFade[0]==sampled[31] && near(pool.m_Color[0].a,lastAlpha),
+        "Swap removal changed the surviving particle fade")) return false;
+    pool.m_Color[0]=glm::vec4(.1f,.2f,.3f,.4f); fade.ExecuteInit(pool,0,1,glm::mat4(1));
+    if (!check(near(pool.m_AlphaFade[0].x,.4f),"Reused slot retained old initial alpha")) return false;
+
+    // 实际发射器延迟出生与帧分割：到集合 .25 秒时，粒子只活了 .05 秒。
+    ParticleTestJson json={{"name","FadeLateBirth"},{"global",{{"duration",1},{"fixedStep",0}}},
+        {"emitters",ParticleTestJson::array({{{"name","Fade"},{"maxParticles",8},
+            {"spawn",{{"type","Burst"},{"bursts",ParticleTestJson::array({{{"time",.2},{"count",1}}})}}},
+            {"initialize",ParticleTestJson::array({{{"module","InitLifetime"},{"lifetime",{{"mode","Constant"},{"value",1}}}},
+                {{"module","InitColor"},{"color",{.2,.4,.6,.8}}}})},
+            {"update",ParticleTestJson::array({{{"module","UpdateAlphaFade"},{"fadeIn",{{"enabled",true},
+                {"durationMin",.2},{"durationMax",.2},{"timeDomain","Seconds"}}}}})}}})}};
+    auto asset=std::make_shared<VansParticleAsset>(); std::string error;
+    if (!check(DecodeParticleAsset(json,{},*asset,error),error.c_str())) return false;
+    VansParticleRuntime coarse,fine; coarse.SetAsset(asset); fine.SetAsset(asset);
+    coarse.Play();fine.Play();
+    coarse.Update(.25f);coarse.SwapBuffers();
+    for (int i=0;i<5;++i) { fine.Update(.05f);fine.SwapBuffers(); }
+    if (!check(coarse.GetRenderBuffer().size()==1 && fine.GetRenderBuffer().size()==1 &&
+        near(coarse.GetRenderBuffer()[0].m_Color.a,.125f) &&
+        near(fine.GetRenderBuffer()[0].m_Color.a,.125f),"Delayed birth or frame partition changed fade")) return false;
+    // 淡入延迟使用同一时间域；零默认值的现有测试继续验证原写入语义。
+    json["emitters"][0]["update"][0]["fadeInDelay"]=.1;
+    auto delayed=std::make_shared<VansParticleAsset>();
+    if (!check(DecodeParticleAsset(json,{},*delayed,error),error.c_str())) return false;
+    if (!check(std::abs(double(EncodeParticleAsset(*delayed)["emitters"][0]["update"][0]["fadeInDelay"])-.1)<1.e-6,
+        "Fade-in delay was lost during authoring round trip")) return false;
+    VansParticleRuntime delayRuntime;delayRuntime.SetAsset(delayed);delayRuntime.Play();
+    delayRuntime.Update(.3f);delayRuntime.SwapBuffers();
+    if (!check(near(delayRuntime.GetEmitter(0)->ParticlePool().m_Color[0].a,0),
+        "Fade-in delay started from collection age instead of particle birth")) return false;
+    delayRuntime.Update(.1f);delayRuntime.SwapBuffers();
+    if (!check(near(delayRuntime.GetEmitter(0)->ParticlePool().m_Color[0].a,.4f),
+        "Delayed smoothstep did not start at the authored age")) return false;
+    auto negativeDelay=json;negativeDelay["emitters"][0]["update"][0]["fadeInDelay"]=-.1;
+    VansParticleAsset badDelay;
+    if (!check(!DecodeParticleAsset(negativeDelay,{},badDelay,error),"Negative fade delay accepted")) return false;
+    for (const auto& invalid : std::vector<ParticleTestJson>{
+        {{"durationMin",0}},{{"durationMax",-1}},{{"randomExponent",-1}},
+        {{"timeDomain","Frames"}},{{"easing","Bias"}},{{"fadeBias",.75}}})
+    {
+        auto bad=json;
+        for (const auto& field : invalid.items()) bad["emitters"][0]["update"][0]["fadeIn"][field.key()]=field.value();
+        VansParticleAsset rejected;
+        if (!check(!DecodeParticleAsset(bad,{},rejected,error),"Invalid fade schema was accepted")) return false;
+    }
+    std::cout<<"[ParticleAlphaFade] seconds=1 longerThanLifetime=1 normalized=1 smoothstep=1 overwriteOrder=1 inactiveLanePreserved=1 strictBoundaries=1 splashOrder=1 stableRandom=1 reversedBounds=1 quantizedExponent=1 atlasSeedPreserved=1 swapRemove=1 reusedSlot=1 delayedBirth=1 framePartition=1 fadeInDelay=1 disabledAllocation=0 schemaReject=1\n";
+    return true;
+}
+
+bool TestParticleSourceRandomInit()
+{
+    using namespace VansGraphics;
+    const auto check=[](bool ok,const char* why) {
+        if (!ok) std::cerr<<"[ParticleSourceRandom] "<<why<<'\n';return ok;
+    };
+    const auto near=[](float a,float b) { return std::abs(a-b)<1.e-5f; };
+    VansFloatCurve scalar;scalar.m_Mode=FloatCurveMode::RandomBetween;
+    scalar.m_Min=.5f;scalar.m_Max=1.5f;
+    for (const float u : {0.f,.25f,.5f,.75f,1.f})
+        if (!check(scalar.Evaluate(0,u)==.5f+u,"Default uniform changed")) return false;
+    scalar.m_RandomDistribution=VansParticleRandomDistribution::ExponentialBias;
+    scalar.m_RandomBias=-.052632f;
+    if (!check(near(scalar.Evaluate(0,0),.5f) && near(scalar.Evaluate(0,1),1.5f)
+        && near(scalar.Evaluate(0,.5f),.75f),"Source exponential lifetime anchors incorrect")) return false;
+    scalar.m_RandomDistribution=VansParticleRandomDistribution::StandardBias;scalar.m_RandomBias=-.19f;
+    if (!check(near(scalar.Evaluate(0,.5f),.905f),"Source standard negative bias anchor incorrect")) return false;
+    VansParticlePool pool;pool.Resize(4096);pool.AllocSeedRandom();pool.m_AliveCount=4096;
+    for (uint32_t i=0;i<4096;++i)pool.m_SeedRandom[i]=17u+i*2654435761u;
+    VansInitLifetimeModule life;life.m_Lifetime=scalar;
+    life.m_Lifetime.m_RandomDistribution=VansParticleRandomDistribution::ExponentialBias;
+    life.m_Lifetime.m_RandomBias=-.052632f;
+    life.ExecuteInit(pool,0,4096,glm::mat4(1));
+    auto distribution=pool.m_LifeTime;std::sort(distribution.begin(),distribution.end());
+    // CDF 分位数来自 u² 分布，独立检查真实初始化采样，不用待测资产生成期望值。
+    for (const float q : {.25f,.5f,.75f})
+        if (!check(std::abs(distribution[uint32_t(q*4095)]-(.5f+q*q))<.025f,
+            "Biased population became uniform or lost its source distribution")) return false;
+    VansInitColorModule tint;tint.m_Color={.2f,.4f,.6f,.8f};
+    const auto before=pool.m_SeedRandom;tint.ExecuteInit(pool,0,4096,glm::mat4(1));
+    if (!check(pool.m_SeedRandom==before && pool.m_Color[0]==tint.m_Color,"Default tint consumed RNG")) return false;
+    VansFloatCurve first;first.m_Mode=FloatCurveMode::RandomBetween;first.m_Min=.6f;first.m_Max=.4f;
+    VansFloatCurve second;second.m_Mode=FloatCurveMode::RandomBetween;second.m_Min=.5f;second.m_Max=.8f;
+    tint.m_Color.a=1;tint.m_AlphaScales={first,second};tint.ExecuteInit(pool,0,4096,glm::mat4(1));
+    bool varied=false;
+    for (uint32_t i=0;i<4096;++i) {
+        varied|=pool.m_Color[i].a!=pool.m_Color[0].a;
+        if (!check(pool.m_Color[i].a>=.2f && pool.m_Color[i].a<=.48f
+            && glm::vec3(pool.m_Color[i])==glm::vec3(tint.m_Color),"Independent alpha scales changed RGB or escaped bounds")) return false;
+    }
+    if (!check(varied,"Random Alpha/Alpha2 were folded into one mean")) return false;
+    VansUpdateColorOverLifetime gradient;
+    gradient.m_Gradient.m_Stops={{0,{.2f,.4f,.6f,1}},{1,{.2f,.4f,.6f,0}}};
+    gradient.ExecuteInit(pool,0,4096,glm::mat4(1));
+    if (!check(pool.m_InitialAlpha.empty(),"Default gradient allocated initial alpha")) return false;
+    gradient.m_ScaleInitialAlpha=true;gradient.ExecuteInit(pool,0,4096,glm::mat4(1));
+    const float initial=pool.m_Color[0].a;
+    std::fill(pool.m_NormalizedAge.begin(),pool.m_NormalizedAge.end(),.5f);
+    gradient.Execute(pool,.1f,glm::mat4(1));gradient.Execute(pool,.1f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,initial*.5f),"Gradient overwrote or repeatedly multiplied initial alpha")) return false;
+    const float last=pool.m_InitialAlpha.back();pool.SwapRemoveAt(0);
+    if (!check(pool.m_InitialAlpha[0]==last,"Swap removal lost initial alpha")) return false;
+    pool.m_Color[0].a=.123f;gradient.ExecuteInit(pool,0,1,glm::mat4(1));gradient.Execute(pool,.1f,glm::mat4(1));
+    if (!check(near(pool.m_Color[0].a,.0615f),"Reused slot retained a previous initial alpha")) return false;
+    auto workspace=std::filesystem::current_path();
+    while (!std::filesystem::exists(workspace/"DustV3Project")) {
+        if (workspace==workspace.root_path())return check(false,"DustV3 fixture root unavailable");
+        workspace=workspace.parent_path();
+    }
+    uint32_t layers=0,biased=0;
+    for (const auto* name : {"Fire","Ignition","Air","Extinguish"}) {
+        const auto path=workspace/(std::string("DustV3Project/Assets/CS2/Throwables/Utility/")+name+".particle");
+        std::ifstream file(path);ParticleTestJson json;file>>json;
+        VansParticleAsset decoded;std::string error;
+        if (!check(DecodeParticleAsset(json,path,decoded,error),error.c_str())) return false;
+        for (const auto& emitter : decoded.m_Emitters) {
+            ++layers;bool colorFound=false;
+            for (const auto& module : emitter->m_InitModules) {
+                if (const auto* l=dynamic_cast<const VansInitLifetimeModule*>(module.get()))
+                    biased+=l->m_Lifetime.m_RandomDistribution!=VansParticleRandomDistribution::Uniform;
+                if (const auto* c=dynamic_cast<const VansInitColorModule*>(module.get())) {
+                    colorFound=true;if (!check(c->m_Color.a==1 && c->m_AlphaScales.size()<=3,"Formal layer folded or duplicated alpha sampling"))return false;
+                    if (emitter->m_Name=="incendiary_groundfire_main_center"
+                        && !check(c->m_AlphaScales.size()==2,"Main-center lost its independent Alpha2"))return false;
+                }
+            }
+            if (!check(colorFound,"Formal layer missing tint initializer"))return false;
+        }
+        auto encoded=EncodeParticleAsset(decoded);VansParticleAsset again;
+        if (!check(DecodeParticleAsset(encoded,path,again,error) && encoded==EncodeParticleAsset(again),"Source scalar codec roundtrip failed"))return false;
+        auto invalid=encoded;invalid["emitters"][0]["initialize"][0]["lifetime"]["randomDistribution"]="Unknown";
+        if (!check(!DecodeParticleAsset(invalid,path,again,error),"Unknown distribution accepted"))return false;
+        invalid=encoded;invalid["emitters"][0]["initialize"][0]["lifetime"]["randomBias"]=2;
+        if (!check(!DecodeParticleAsset(invalid,path,again,error),"Invalid bias accepted"))return false;
+    }
+    if (!check(layers==23 && biased==8,"Formal source layer/biased lifetime coverage changed"))return false;
+    std::cout<<"[ParticleSourceRandom] sourceLayers=23 biasedLifetimes=8 exponentialCDF=1 standardNegativeBias=1 reversedAlphaBounds=1 independentAlpha=1 gradientInitial=1 noRepeatedMultiply=1 swapReuse=1 defaultsPreserved=1 typedRoundtrip=1 invalidRejected=1\n";
+    return true;
+}
+
+bool TestParticleCollectionAlphaClock()
+{
+    using namespace VansGraphics;
+    const auto check=[](bool ok,const char* why) {
+        if (!ok)std::cerr<<"[ParticleCollectionAlpha] "<<why<<'\n';return ok;
+    };
+    for (const int fps : {30,120}) {
+        auto asset=std::make_shared<VansParticleAsset>();asset->m_Duration=10;asset->m_Loop=false;
+        asset->m_DrainFade=0;asset->m_FixedStep=0;
+        auto emitter=std::make_unique<VansParticleEmitter>();emitter->m_MaxParticles=128;emitter->m_EmissionChannel=1;
+        emitter->m_SpawnConfig.m_Rate=2;emitter->m_RendererConfig.m_LightingMode=VansParticleLightingMode::SpriteCard;
+        auto life=std::make_unique<VansInitLifetimeModule>();life->m_Lifetime.m_Mode=FloatCurveMode::Constant;life->m_Lifetime.m_Value=20;
+        emitter->m_InitModules.push_back(std::move(life));
+        auto& card=emitter->m_RendererConfig.m_Card;
+        if (!check(card.alphaClock==VansParticleCardAlphaClock::NormalizedEffect,"Default clock changed"))return false;
+        card.alphaClock=VansParticleCardAlphaClock::EmissionPointSeconds;
+        card.alphaOverEffect.m_Mode=FloatCurveMode::Curve;card.alphaOverEffect.m_Keys={{0,1},{7,1},{8,0}};
+        asset->m_Emitters.push_back(std::move(emitter));
+        const auto json=EncodeParticleAsset(*asset);VansParticleAsset decoded;std::string error;
+        if (!check(DecodeParticleAsset(json,{},decoded,error),error.c_str()))return false;
+        auto invalid=json;invalid["emitters"][0]["renderer"]["spriteCard"]["alphaClock"]="Unknown";
+        if (!check(!DecodeParticleAsset(invalid,{},decoded,error),"Unknown clock accepted"))return false;
+        invalid=json;invalid["emitters"][0]["renderer"]["spriteCard"]["alphaClock"]="NormalizedEffect";
+        if (!check(!DecodeParticleAsset(invalid,{},decoded,error),"Seconds keys accepted in normalized domain"))return false;
+        VansParticleManager manager;auto handle=manager.Create(asset);
+        VansParticleEmissionPoint first;first.id=1;first.channel=1;first.position={1,0,0};
+        auto later=first;later.id=2;later.position={2,0,0};later.bornTime=2;
+        if (!check(manager.SetEmissionPoints(handle,{first,later}) && manager.Queue(handle,VansParticleControl::Play),"Point initialization failed"))return false;
+        const auto tick=[&](float dt) { manager.TickMainThread(dt);manager.WaitForUpdateAndSwap(); };
+        for (int frame=0;frame<fps*15/2;++frame)tick(1.f/fps);
+        auto* runtime=manager.Resolve(handle);bool fresh=false,late=false;
+        for (const auto& value : runtime->GetRenderBuffer()) {
+            const float expected=value.m_WorldPosition.x==1 ? .5f : 1.f;
+            if (!check(std::abs(value.m_Color.a-expected)<.001f,"Collection age became particle age or global age"))return false;
+            late|=value.m_WorldPosition.x==2;
+        }
+        const auto& pool=runtime->GetEmitter(0)->ParticlePool();
+        for (uint32_t i=0;i<pool.m_AliveCount;++i)
+            fresh|=pool.m_Position[i].x==1 && pool.m_Age[i]<.01f;
+        if (!check(late && fresh,"Late point or newly born particle was not covered"))return false;
+        manager.Queue(handle,VansParticleControl::Pause);tick(0);const double paused=runtime->GetPlayTime();tick(1);
+        if (!check(runtime->GetPlayTime()==paused,"Paused collection age advanced"))return false;
+        manager.Queue(handle,VansParticleControl::Play);tick(0);
+        for (int frame=0;frame<fps;++frame)tick(1.f/fps);
+        manager.Queue(handle,VansParticleControl::StopEmitting);tick(0);const auto before=runtime->AliveInstanceCount();
+        for (int frame=0;frame<fps;++frame)tick(1.f/fps);
+        if (!check(runtime->AliveInstanceCount()==before && runtime->GetState()==VansParticlePlaybackState::Draining,
+            "Drain emitted or prematurely removed particles"))return false;
+        for (const auto& value : runtime->GetRenderBuffer())
+            if (!check(std::abs(value.m_Color.a-(value.m_WorldPosition.x==1 ? 0.f : .5f))<.001f,
+                "Local collection clock froze or restarted during drain"))return false;
+        manager.Queue(handle,VansParticleControl::Stop);tick(0);
+        if (!check(runtime->IsFinished() && runtime->GetRenderBuffer().empty(),"Clock-owned particles failed to clear"))return false;
+    }
+    std::cout<<"[ParticleCollectionAlpha] fps30_120=1 localPointClock=1 lateBirth=1 newParticleInheritsCollectionAge=1 pauseResume=1 drainContinues=1 explicitStop=1 defaultClockPreserved=1 typedDomainReject=1\n";
+    return true;
+}
+
+bool TestParticleInitializationAge()
+{
+    using namespace VansGraphics;
+    const auto check=[](bool ok,const char* why) {
+        if (!ok)std::cerr<<"[ParticleInitializationAge] "<<why<<'\n';return ok;
+    };
+    const auto near=[](float a,float b) { return std::abs(a-b)<.0002f; };
+    VansParticlePool pool;pool.Resize(1);pool.AllocSeedRandom();pool.m_AliveCount=1;
+    VansInitLifetimeModule life;life.m_Lifetime.m_Mode=FloatCurveMode::Constant;life.m_Lifetime.m_Value=2;
+    pool.m_InitializationCollectionAge=6;pool.m_SeedRandom[0]=197;
+    uint32_t expectedSeed=197;RandFloat(expectedSeed);life.ExecuteInit(pool,0,1,glm::mat4(1));
+    if (!check(pool.m_LifeTime[0]==2 && pool.m_SeedRandom[0]==expectedSeed,"Default lifetime or RNG changed"))return false;
+    life.m_CollectionAgeOperation=VansParticleLifetimeAgeOperation::Multiply;
+    life.m_CollectionAgeCurve.m_Mode=FloatCurveMode::Curve;life.m_CollectionAgeCurve.m_Keys={{5,1},{7,.5f}};
+    for (const auto anchor : {glm::vec2(4,2),glm::vec2(5,2),glm::vec2(6,1.5f),glm::vec2(7,1),glm::vec2(8,1)}) {
+        pool.m_InitializationCollectionAge=anchor.x;life.ExecuteInit(pool,0,1,glm::mat4(1));
+        if (!check(near(pool.m_LifeTime[0],anchor.y),"Clamped collection-age multiplier missed source anchor"))return false;
+    }
+    life.m_CollectionAgeOperation=VansParticleLifetimeAgeOperation::Replace;
+    life.m_CollectionAgeLoopPeriod=1;life.m_CollectionAgeCurve.m_Keys={{0,.75f},{1,1.5f}};
+    for (const auto anchor : {glm::vec2(0,.75f),glm::vec2(.25f,.9375f),glm::vec2(.75f,1.3125f),glm::vec2(1,.75f),glm::vec2(2,.75f)}) {
+        pool.m_InitializationCollectionAge=anchor.x;life.ExecuteInit(pool,0,1,glm::mat4(1));
+        if (!check(near(pool.m_LifeTime[0],anchor.y),"Looped replacement missed source cycle or seam"))return false;
+    }
+    VansInitColorModule tint;tint.m_Color={.2f,.4f,.6f,1};VansFloatCurve factor;factor.m_Value=2;
+    tint.m_AlphaScales={factor};const auto seedBefore=pool.m_SeedRandom[0];tint.ExecuteInit(pool,0,1,glm::mat4(1));
+    if (!check(pool.m_Color[0].a==2 && glm::vec3(pool.m_Color[0])==glm::vec3(tint.m_Color)
+        && pool.m_SeedRandom[0]==seedBefore,"Detail multiplier was clamped, changed RGB or consumed RNG"))return false;
+    const auto makeAsset=[](bool delayed=false) {
+        auto asset=std::make_shared<VansParticleAsset>();asset->m_Duration=8;asset->m_Loop=false;
+        asset->m_DrainFade=0;asset->m_FixedStep=0;
+        asset->m_StartDelay=delayed ? .4f : 0.f;
+        auto emitter=std::make_unique<VansParticleEmitter>();emitter->m_MaxParticles=64;
+        emitter->m_SpawnConfig.m_Type=VansSpawnType::Burst;emitter->m_SpawnConfig.m_Bursts={{.125f,1,8,.25f}};
+        auto module=std::make_unique<VansInitLifetimeModule>();module->m_Lifetime.m_Mode=FloatCurveMode::Constant;
+        module->m_Lifetime.m_Value=2;module->m_CollectionAgeOperation=delayed
+            ? VansParticleLifetimeAgeOperation::None : VansParticleLifetimeAgeOperation::Replace;
+        module->m_CollectionAgeLoopPeriod=1;module->m_CollectionAgeCurve.m_Mode=FloatCurveMode::Curve;
+        module->m_CollectionAgeCurve.m_Keys={{0,.75f},{1,1.5f}};emitter->m_InitModules.push_back(std::move(module));
+        if (delayed) {
+            emitter->m_RendererConfig.m_LightingMode=VansParticleLightingMode::SpriteCard;
+            auto& card=emitter->m_RendererConfig.m_Card;card.alphaClock=VansParticleCardAlphaClock::EffectSeconds;
+            card.alphaOverEffect.m_Mode=FloatCurveMode::Curve;card.alphaOverEffect.m_Keys={{0,1},{.5f,0}};
+        }
+        asset->m_Emitters.push_back(std::move(emitter));return asset;
+    };
+    for (const int fps : {30,120}) {
+        auto asset=makeAsset();const auto json=EncodeParticleAsset(*asset);VansParticleAsset decoded;std::string error;
+        if (!check(DecodeParticleAsset(json,{},decoded,error) && json==EncodeParticleAsset(decoded),"Collection-age typed roundtrip failed"))return false;
+        auto invalid=json;invalid["emitters"][0]["initialize"][0]["collectionAge"]["operation"]="Unknown";
+        if (!check(!DecodeParticleAsset(invalid,{},decoded,error),"Unknown age operation accepted"))return false;
+        invalid=json;invalid["emitters"][0]["initialize"][0]["collectionAge"]["loopPeriod"]=-1;
+        if (!check(!DecodeParticleAsset(invalid,{},decoded,error),"Negative period accepted"))return false;
+        invalid=json;invalid["emitters"][0]["initialize"][0]["collectionAge"]["curve"]["keys"][1]["t"]=3601;
+        if (!check(!DecodeParticleAsset(invalid,{},decoded,error),"Out-of-domain age curve accepted"))return false;
+        VansParticleManager manager;const auto handle=manager.Create(asset);
+        VansParticleEmissionPoint first;first.id=1;first.position={1,0,0};
+        auto later=first;later.id=2;later.position={2,0,0};later.bornTime=.35f;
+        if (!check(manager.SetEmissionPoints(handle,{first,later}) && manager.Queue(handle,VansParticleControl::Play),"Point initialization rejected"))return false;
+        const auto tick=[&](float dt) {manager.TickMainThread(dt);manager.WaitForUpdateAndSwap();};tick(0);
+        const auto& runtime=*manager.Resolve(handle);
+        const auto verify=[&] {
+            const auto& particles=runtime.GetEmitter(0)->ParticlePool();bool foundLater=false;
+            for (uint32_t i=0;i<particles.m_AliveCount;++i) {
+                const bool late=particles.m_Position[i].x==2;foundLater|=late;
+                const float age=runtime.GetPlayTime()-particles.m_Age[i]-(late ? .35f : 0.f);
+                const float expected=.75f+.75f*(age-std::floor(age));
+                if (!check(near(particles.m_LifeTime[i],expected),"Birth used particle age, frame end, global point age or frozen emission time"))return false;
+            }
+            return check(particles.m_AliveCount>0 && foundLater,"Actual point births missing");
+        };
+        for (int frame=0;frame<fps*3/2;++frame)tick(1.f/fps);
+        if (!verify())return false;
+        manager.Queue(handle,VansParticleControl::Pause);tick(0);const auto paused=runtime.GetPlayTime();tick(1);
+        if (!check(runtime.GetPlayTime()==paused,"Paused initialization clock advanced"))return false;
+        manager.Queue(handle,VansParticleControl::Play);manager.Queue(handle,VansParticleControl::StopEmitting);tick(.2f);
+        if (!check(!runtime.IsFinished() && manager.Queue(handle,VansParticleControl::RefreshEmission),"Drain ended before refresh check"))return false;
+        tick(0);for (int frame=0;frame<fps/2;++frame)tick(1.f/fps);
+        if (!verify())return false;
+        manager.Queue(handle,VansParticleControl::Restart);tick(.5f);
+        if (!verify())return false;
+    }
+    auto delayed=makeAsset(true);
+    VansParticleRuntime delayRuntime;delayRuntime.SetAsset(delayed);delayRuntime.Play();delayRuntime.Update(.7f);delayRuntime.SwapBuffers();
+    if (!check(near(delayRuntime.GetPlayTime(),.3f) && !delayRuntime.GetRenderBuffer().empty(),"Delayed clock fixture failed"))return false;
+    for (const auto& value : delayRuntime.GetRenderBuffer())
+        if (!check(near(value.m_Color.a,.4f),"Start delay was subtracted twice from seconds renderer clock"))return false;
+    auto workspace=std::filesystem::current_path();while (!std::filesystem::exists(workspace/"DustV3Project")) {
+        if (workspace==workspace.root_path())return check(false,"DustV3 root unavailable");workspace=workspace.parent_path();
+    }
+    const auto path=workspace/"DustV3Project/Assets/CS2/Throwables/Utility/Fire.particle";
+    std::ifstream file(path);ParticleTestJson json;file>>json;VansParticleAsset formal;std::string error;
+    if (!check(DecodeParticleAsset(json,path,formal,error),error.c_str()))return false;
+    uint32_t ages=0,detail=0;
+    for (const auto& layer : formal.m_Emitters)for (const auto& module : layer->m_InitModules) {
+        if (const auto* l=dynamic_cast<const VansInitLifetimeModule*>(module.get())) {
+            if (layer->m_Name=="incendiary_child_flame03a") {
+                ++ages;if (!check(l->m_CollectionAgeOperation==VansParticleLifetimeAgeOperation::Replace
+                    && l->m_CollectionAgeLoopPeriod==1 && near(l->m_CollectionAgeCurve.Evaluate(.25f),.9375f),"Formal flame03a cycle missing"))return false;
+            }
+            if (layer->m_Name=="incendiary_groundfire_snapshot_child_base") {
+                ++ages;if (!check(l->m_CollectionAgeOperation==VansParticleLifetimeAgeOperation::Multiply
+                    && l->m_CollectionAgeLoopPeriod==0 && near(l->m_CollectionAgeCurve.Evaluate(6),.75f),"Formal late-collection lifetime multiplier missing"))return false;
+            }
+        }
+        if (const auto* c=dynamic_cast<const VansInitColorModule*>(module.get()))
+            if (layer->m_Name=="incendiary_child_flame01a" || layer->m_Name=="incendiary_child_flame03a" || layer->m_Name=="incendiary_groundfire_climbingoutline") {
+                ++detail;if (!check(c->m_AlphaScales.size()==2 && c->m_AlphaScales.back().m_Mode==FloatCurveMode::Constant
+                    && c->m_AlphaScales.back().m_Value==2,"Formal LOD0/1 alpha multiplier missing or Alpha2 duplicated"))return false;
+            }
+    }
+    if (!check(ages==2 && detail==3,"Formal dynamic initialization coverage incomplete"))return false;
+    std::cout<<"[ParticleInitializationAge] sourceMultiply=1 loopReplace=1 exactSeams=1 defaultsRngPreserved=1 alphaAboveOne=1 fps30_120=1 actualBirthTime=1 localPointOrigin=1 pauseResume=1 drainRefresh=1 restart=1 startDelayCountedOnce=1 formalAgeLayers=2 formalDetailLayers=3 typedRoundtrip=1 invalidRejected=1\n";
+    return true;
+}
+
+bool TestDustV3SmokeEnvelope()
+{
+    using namespace VansGraphics;
+    const auto check=[](bool ok,const char* text) {
+        if (!ok) std::cerr<<"[DustV3SmokeEnvelope] "<<text<<'\n';return ok;
+    };
+    auto workspace=std::filesystem::current_path();
+    while (!std::filesystem::exists(workspace/"DustV3Project")) {
+        if (workspace==workspace.root_path()) return check(false,"DustV3 fixture root unavailable");
+        workspace=workspace.parent_path();
+    }
+    const auto path=workspace/"DustV3Project/Assets/CS2/Throwables/Utility/Smoke.particle";
+    std::ifstream file(path);ParticleTestJson json;file>>json;
+    auto asset=std::make_shared<VansParticleAsset>();std::string error;
+    if (!check(DecodeParticleAsset(json,path,*asset,error),error.c_str())) return false;
+    if (!check(!asset->m_Loop && !asset->m_Prewarm && asset->m_StartDelay==0 && asset->m_FixedStep==0,
+        "Smoke clock did not start at volume deployment")) return false;
+    // 期望值直接来自部署时序证据；不从待测配置反推出正确答案。
+    const auto smooth=[](double x) { x=std::clamp(x,0.0,1.0);return x*x*(3-2*x); };
+    for (const bool fine : {false,true}) {
+        VansParticleRuntime runtime;runtime.SetAsset(asset);runtime.SetRandomSeed(1234);runtime.Play();
+        double previous=0;
+        for (const double target : {.05,.1,.2,.8,1.5,5.,17.,19.5,21.5,22.1}) {
+            double remaining=target-previous;
+            while (remaining>1.e-9) {
+                const double step=fine ? std::min(remaining,.01) : remaining;
+                runtime.Update(static_cast<float>(step));runtime.SwapBuffers();remaining-=step;
+            }
+            previous=target;
+            const double envelope=smooth((target-.1)/1.4)*smooth((22-target)/5);
+            const auto& pool=runtime.GetEmitter(0)->ParticlePool();
+            if (target<22) {
+                if (!check(pool.m_AliveCount==48,"Finite smoke burst changed particle count")) return false;
+                for (uint32_t i=0;i<pool.m_AliveCount;++i)
+                    if (!check(std::abs(pool.m_Color[i].a-.85*envelope)<.0002 &&
+                        glm::length(glm::vec3(pool.m_Color[i])-glm::vec3(.68f,.69f,.7f))<1.e-5f,
+                        "Source deployment envelope or preserved RGB differs across frame partitions")) return false;
+                const auto& medium=runtime.GetVolumetricRenderBuffer();
+                if (envelope>0) {
+                    if (!check(medium.size()==48,"Positive envelope did not reach published medium")) return false;
+                    for (const auto& point : medium)
+                        if (!check(std::abs(point.m_ScatteringAlbedoExtinction.a-1.7*envelope)<.0004,
+                            "Rendered medium did not carry CPU density fade")) return false;
+                    if (!check(runtime.SampleVolumetricExtinction(glm::vec3(medium[0].m_WorldPositionRadius))>0,
+                        "Extinguish consumer could not sample published smoke")) return false;
+                } else if (!check(medium.empty() && runtime.SampleVolumetricExtinction({0,0,0})==0,
+                    "Smoke had extinction before fade-in")) return false;
+                if (target==5) {
+                    runtime.Pause();runtime.Update(10);runtime.SwapBuffers();runtime.Play();
+                    if (!check(std::abs(runtime.GetPlayTime()-5)<.001,"Pause advanced or restarted smoke time")) return false;
+                }
+            } else if (!check(pool.m_AliveCount==0 && runtime.GetVolumetricRenderBuffer().empty() && runtime.IsFinished(),
+                "Smoke medium or particles survived the 22-second density window")) return false;
+        }
+    }
+    std::cout<<"[DustV3SmokeEnvelope] sourceAsset=1 fadeIn=.1-1.5 hold=1.5-17 fadeOut=17-22 smoothstep=1 partitions=2 publishedMedium=1 extinguishSampling=1 pauseResume=1 expiry=1\n";
+    return true;
+}
+
 bool TestParticleAuthoring()
 {
     using namespace VansGraphics;
@@ -67,8 +525,8 @@ bool TestParticleAuthoring()
             moduleDefault.at("definition").at("module") == schema.name,
             "Module catalog identity, phase or constructor default diverged")) return false;
     }
-    if (!check(moduleSchemas.size() == 12 && initializeCount == 6,
-        "Module catalog does not own all six initialize and six update modules")) return false;
+    if (!check(moduleSchemas.size() == 14 && initializeCount == 7,
+        "Module catalog does not own all seven initialize and seven update modules")) return false;
     VansSceneAssetRegistry registry;
     VansAsset texture; texture.SetName("particleWhite");
     registry.AddTexture(&texture,"34a4e372-93c5-44a1-a985-768a099c3c95");
@@ -122,6 +580,8 @@ bool TestParticleAuthoring()
         {{"renderer",{{"sortMode","ByDistance"}}}},
         {{"renderer",{{"simulationOrder","OldestFirst"},{"renderSortMode","ByDistance"}}}},
         {{"initialize",ParticleTestJson::array({{{"module","UpdateGravity"}}})}},
+        {{"initialize",ParticleTestJson::array({{{"module","InitPositionOffset"},{"minOffset",{1,2,3}},{"maxOffset",{0,1,2}}}})}},
+        {{"initialize",ParticleTestJson::array({{{"module","InitPositionOffset"},{"minOffset",{0,0}}}})}},
         {{"update",ParticleTestJson::array({{{"module","UnknownModule"}}})}},
         {{"renderer",{{"type","Ribbon"},{"lightingMode","SixWayLit"}}}} })
     {
@@ -139,6 +599,7 @@ bool TestParticleAuthoring()
         "Float precision at a supported scalar boundary did not round-trip: " + error)) return false;
     for (const auto& invalidModuleField : std::vector<ParticleTestJson>{
         {{"phase", "initialize"}, {"index", 1}, {"field", "speed"}, {"value", 10001.0}},
+        {{"phase", "initialize"}, {"index", 6}, {"field", "minOffset"}, {"value", {-10001,0,0}}},
         {{"phase", "update"}, {"index", 3}, {"field", "drag"}, {"value", 101.0}},
         {{"phase", "update"}, {"index", 5}, {"field", "columns"}, {"value", 257}}
     })
@@ -223,12 +684,47 @@ bool TestParticleAuthoring()
                 runtime.Update(2); runtime.SwapBuffers();
                 if (!check(runtime.IsFinished() && runtime.GetRenderBuffer().empty(), "Impact effect did not expire")) return false;
             }
+            if (entry.path().filename()=="Extinguish.particle")
+            {
+                auto definition=std::make_shared<VansParticleAsset>();
+                if (!check(VansParticleAssetStorage::Load(entry.path(),*definition,error),error)) return false;
+                if (!check(definition->m_EmissionFrame==VansParticleEmissionFrame::Source,
+                    "Extinguish root orientation is disabled by world emission-frame configuration")) return false;
+                VansParticleRuntime reference,directed;
+                reference.SetAsset(definition); directed.SetAsset(definition);
+                reference.SetRandomSeed(123); directed.SetRandomSeed(123);
+                glm::mat4 origin(1); origin[3]=glm::vec4(5,6,7,1);
+                auto pose=origin; pose[0]=glm::vec4(0,0,-1,0); pose[2]=glm::vec4(1,0,0,0);
+                reference.SetOwnerWorldTransform(origin); directed.SetOwnerWorldTransform(pose);
+                reference.Play(); directed.Play(); reference.Update(.12f); directed.Update(.12f);
+                const glm::mat3 rotation(pose);
+                for (std::size_t i=0;i<definition->m_Emitters.size();++i) {
+                    const auto& a=reference.GetEmitter(i)->ParticlePool();
+                    const auto& b=directed.GetEmitter(i)->ParticlePool();
+                    if (!check(a.m_AliveCount>0 && a.m_AliveCount==b.m_AliveCount,
+                        "Directed extinguish changed finite child emission counts")) return false;
+                    for (std::size_t j=0;j<a.m_AliveCount;++j)
+                        if (!check(glm::length(b.m_Velocity[j]-rotation*a.m_Velocity[j])<1.e-4f
+                            && glm::length((b.m_Position[j]-glm::vec3(origin[3]))-rotation*(a.m_Position[j]-glm::vec3(origin[3])))<1.e-4f,
+                            "Extinguish child velocity or position did not inherit root orientation")) return false;
+                }
+                const auto oldCount=directed.GetEmitter(0)->AliveCount();
+                pose[3].x+=100; directed.SetOwnerWorldTransform(pose); directed.Update(1.f/60);
+                for (std::size_t j=0;j<oldCount;++j)
+                    if (!check(glm::length(directed.GetEmitter(0)->ParticlePool().m_Position[j]-glm::vec3(origin[3]))<5,
+                        "Existing extinguish particles moved with a changed source transform")) return false;
+                directed.Update(3); directed.SwapBuffers();
+                if (!check(directed.IsFinished() && directed.GetRenderBuffer().empty(),
+                    "Directed extinguish did not finish and release its render points")) return false;
+                std::cout << "[ExtinguishRoot] children=" << definition->m_Emitters.size()
+                    << " localVelocity=1 localPosition=1 worldSimulation=1 expiry=1\n";
+            }
             ++count;
         }
     }
     if (!check(count>=8 && renderSortedEmitterCount>=1,
         "Production particle assets or render-owned sort policies were not validated")) return false;
-    std::cout << "[ParticleAuthoring] moduleCatalog=12 constructorDefaults=1 catalogConstraints=1 activeAndInactiveRoundTrip=1 invalidConfiguration=1 unsupportedEncodeRejected=1 serializedValueCodec=1 assets="
+    std::cout << "[ParticleAuthoring] moduleCatalog=14 constructorDefaults=1 catalogConstraints=1 activeAndInactiveRoundTrip=1 invalidConfiguration=1 unsupportedEncodeRejected=1 serializedValueCodec=1 assets="
         << count << " renderSortedEmitters=" << renderSortedEmitterCount << '\n';
     return true;
 }
@@ -423,6 +919,106 @@ bool TestParticleDebugSnapshot()
     if (!check(emitterCapped.totalEmitters == 260 && emitterCapped.emitters.size() == VansParticleDebugSnapshot::MaxEmitters &&
         emitterCapped.truncated, "Debug emitter budget is not enforced")) return false;
     std::cout << "[ParticleDebug] allInstances=1 mixedEmitters=1 exactPublishedNodes=1 ownedSnapshot=1 teardown=1 pointAndEmitterCaps=1\n";
+    return true;
+}
+bool TestSurfaceEmissionPoints()
+{
+    using namespace VansGraphics;
+    const auto check=[](bool ok,const char* why) { if (!ok) std::cerr<<"[ParticleCard] "<<why<<'\n'; return ok; };
+    auto asset=std::make_shared<VansParticleAsset>();
+    asset->m_Duration=2; asset->m_Loop=false; asset->m_DrainFade=.15f;
+    auto emitter=std::make_unique<VansParticleEmitter>();
+    emitter->m_EmissionChannel=1; emitter->m_MaxParticles=16;
+    emitter->m_SpawnConfig.m_Rate=2;
+    auto life=std::make_unique<VansInitLifetimeModule>();
+    life->m_Lifetime.m_Mode=FloatCurveMode::Constant; life->m_Lifetime.m_Value=10;
+    emitter->m_InitModules.push_back(std::move(life));
+    emitter->m_RendererConfig.m_LightingMode=VansParticleLightingMode::SpriteCard;
+    emitter->m_RendererConfig.m_SpriteSheetEnabled=true;
+    emitter->m_RendererConfig.m_SpriteColumns=2; emitter->m_RendererConfig.m_SpriteRows=4;
+    auto& card=emitter->m_RendererConfig.m_Card;
+    if (!check(!card.lookupMultiply && !card.tintBeforeDesaturation && !card.breakupPreserveAlpha,
+        "Default card color policy changed")) return false;
+    card.orientation=VansParticleCardOrientation::Surface;
+    card.output=VansParticleCardOutput::Additive;
+    card.lookupTextureGuid="12dabecb-3fea-4f62-8b6b-c9c2c2602891"; card.lookupBlend=.5f;
+    card.lookupMultiply=true; card.tintBeforeDesaturation=true;
+    card.breakup=VansParticleCardBreakup::Zoom;
+    card.breakupTextureGuid="1f7a1cca-02e5-4318-9c44-6b61a6ac092f";
+    card.breakupPreserveAlpha=true;
+    card.breakupWeightOverEffect.m_Mode=FloatCurveMode::Curve;
+    card.breakupWeightOverEffect.m_Keys={{0,0},{1,1}};
+    card.sequences={{0,4},{4,4}};
+    card.sizeOverEffect.m_Mode=FloatCurveMode::Curve;
+    card.sizeOverEffect.m_Keys={{0,1},{1,.5f}};
+    card.alphaOverEffect.m_Mode=FloatCurveMode::Curve;
+    card.alphaOverEffect.m_Keys={{0,1},{1,0}};
+    asset->m_Emitters.push_back(std::move(emitter));
+    std::string error; VansParticleAsset decoded;
+    if (!check(DecodeParticleAsset(EncodeParticleAsset(*asset),{},decoded,error),error.c_str())) return false;
+    card.output=VansParticleCardOutput::BlendAdd;
+    if (!check(DecodeParticleAsset(EncodeParticleAsset(*asset),{},decoded,error)
+        && decoded.m_Emitters[0]->m_RendererConfig.m_Card.output==VansParticleCardOutput::BlendAdd,
+        "Source BlendAdd output did not survive the typed asset codec")) return false;
+    if (!check(decoded.m_Emitters[0]->m_EmissionChannel==1 && decoded.TextureDependencies().size()==3
+        && decoded.m_Emitters[0]->m_RendererConfig.m_Card.breakup==VansParticleCardBreakup::Zoom
+        && decoded.m_Emitters[0]->m_RendererConfig.m_Card.breakupPreserveAlpha
+        && decoded.m_Emitters[0]->m_RendererConfig.m_Card.lookupMultiply
+        && decoded.m_Emitters[0]->m_RendererConfig.m_Card.tintBeforeDesaturation,
+        "Card channel or typed layer dependency was lost")) return false;
+    auto invalid=EncodeParticleAsset(*asset);
+    invalid["emitters"][0]["renderer"]["spriteCard"]["breakupUseAccumulatedAlpha"]=true;
+    if (!check(!DecodeParticleAsset(invalid,{},decoded,error),"Retired card alpha key was accepted")) return false;
+    invalid=EncodeParticleAsset(*asset);
+    invalid["emitters"][0]["renderer"]["spriteCard"]["sequences"][0]["frameCount"]=100;
+    if (!check(!DecodeParticleAsset(invalid,{},decoded,error),"Out-of-bounds sequence was accepted")) return false;
+    invalid=EncodeParticleAsset(*asset);
+    invalid["emitters"][0]["renderer"]["spriteCard"]["softIntersection"]=-1;
+    if (!check(!DecodeParticleAsset(invalid,{},decoded,error),"Invalid card material was accepted")) return false;
+    invalid=EncodeParticleAsset(*asset);
+    invalid["emitters"][0]["renderer"]["spriteCard"]["breakupTextureGuid"]="";
+    if (!check(!DecodeParticleAsset(invalid,{},decoded,error),"Missing breakup dependency was accepted")) return false;
+    invalid=EncodeParticleAsset(*asset);
+    invalid["emitters"][0]["renderer"]["spriteCard"]["breakupWeightOverEffect"]["keys"][1]["value"]=2;
+    if (!check(!DecodeParticleAsset(invalid,{},decoded,error),"Unbounded breakup weight was accepted")) return false;
+    VansParticleManager manager; const auto handle=manager.Create(asset);
+    VansParticleEmissionPoint first; first.id=7; first.channel=1; first.position={2,0,0};
+    VansParticleEmissionPoint filtered=first; filtered.id=8; filtered.channel=2;
+    if (!check(manager.SetEmissionPoints(handle,{first,filtered}) && manager.Queue(handle,VansParticleControl::Play),
+        "Snapshot initialization failed")) return false;
+    manager.TickMainThread(.5f); manager.WaitForUpdateAndSwap();
+    if (!check(manager.Resolve(handle)->AliveInstanceCount()==1,"Point filtering/emission count is incorrect")) return false;
+    auto later=first; later.id=9; later.position={4,0,0}; later.bornTime=.75f;
+    if (!check(manager.SetEmissionPoints(handle,{later,filtered,first}),"Snapshot update failed")) return false;
+    manager.TickMainThread(.5f); manager.WaitForUpdateAndSwap();
+    if (!check(manager.Resolve(handle)->AliveInstanceCount()==2,"Existing point clock was reset or future point emitted early")) return false;
+    manager.TickMainThread(.25f); manager.WaitForUpdateAndSwap();
+    const auto* runtime=manager.Resolve(handle);
+    if (!check(runtime->AliveInstanceCount()==3 && !runtime->CanSeek(),"Per-point birth time or replay guard is incorrect")) return false;
+    const auto& instances=runtime->GetRenderBuffer();
+    bool laterFound=false;
+    for (const auto& instance : instances) {
+        laterFound|=instance.m_WorldPosition.x==4;
+        if (!check(instance.m_WorldPosition.x==2 || instance.m_WorldPosition.x==4,"Snapshot leaked a legacy origin spawn")) return false;
+        const auto parameters=glm::unpackHalf2x16(instance.m_Padding.y);
+        if (!check(glm::unpackSnorm2x16(instance.m_Padding.x)==glm::vec2(0,1)
+            && std::abs(parameters.x-.625f)<.001f && parameters.y>=0 && parameters.y<=.125f
+            && instance.m_FrameIndex>=0 && instance.m_FrameIndex<=7
+            && std::abs(instance.m_Size-.6875f)<.001f && std::abs(instance.m_Color.a-.375f)<.001f,
+            "Surface normal, sequence or collection-age curves are incorrect")) return false;
+    }
+    if (!check(laterFound,"Late cell was not emitted at its world position")) return false;
+    if (!check(!manager.SetEmissionPoints(handle,{first,first}),"Duplicate point IDs were accepted")) return false;
+    std::vector<VansParticleEmissionPoint> oversized(VansParticleMaxEmissionPoints+1,first);
+    if (!check(!manager.SetEmissionPoints(handle,oversized),"Point budget was not bounded")) return false;
+    if (!check(manager.SetEmissionPoints(handle,{}),"Empty snapshot was rejected")) return false;
+    manager.TickMainThread(.5f); manager.WaitForUpdateAndSwap();
+    if (!check(manager.Resolve(handle)->AliveInstanceCount()==3,"Empty snapshot fell back to default source emission")) return false;
+    manager.TickMainThread(.5f); manager.WaitForUpdateAndSwap();
+    if (!check(manager.Resolve(handle)->IsFinished(),"Finite snapshot effect did not drain")) return false;
+    manager.Destroy(handle);
+    if (!check(manager.PointCapacity()==0 && manager.ActiveCount()==0,"Snapshot effect retained its particle capacity")) return false;
+    std::cout<<"[ParticleCard] typedDependencies=1 cardValidation=1 stablePointClocks=1 channels=1 lateBirth=1 surfaceNormal=1 globalDecay=1 emptySnapshot=1 boundedInput=1 reclaim=1\n";
     return true;
 }
 bool TestRibbonSimulation()
@@ -821,5 +1417,5 @@ bool TestParticleCoreContract()
     if (!check(manager.ActiveCount() == 0 && !manager.Resolve(b),
         "Shutdown did not join simulation and invalidate all instances")) return false;
     std::cout << "[ParticleCore] immutableDefinition=1 isolatedInstances=1 renderSortBoundary=1 pausedSnapshot=1 frozenDispatch=1 staleHandle=1 atomicBatch=1 boundedSeek=1 boundedPrewarm=1 overlapTiming=1 commandPayloadGuard=1 ownerThreadGuard=1 releaseInFlightGuard=1 deterministicRotation=1 zeroCapacityGuard=1 seekReset=1 shutdown=1\n";
-    return TestRibbonSimulation() && TestPolylineGeometry() && TestVFXServiceLifetime() && TestParticleAuthoring() && TestParticleDebugSnapshot();
+    return TestParticleAlphaFade() && TestParticleSourceRandomInit() && TestParticleCollectionAlphaClock() && TestParticleInitializationAge() && TestDustV3SmokeEnvelope() && TestSurfaceEmissionPoints() && TestRibbonSimulation() && TestPolylineGeometry() && TestVFXServiceLifetime() && TestParticleAuthoring() && TestParticleDebugSnapshot();
 }

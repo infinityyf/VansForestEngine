@@ -209,6 +209,8 @@ const char* ToString(EditorAPI::AssetType assetType)
     case EditorAPI::AssetType::Video: return "Video";
     case EditorAPI::AssetType::Scene: return "Scene";
     case EditorAPI::AssetType::Particle: return "Particle";
+    case EditorAPI::AssetType::NavigationMesh: return "NavigationMesh";
+    case EditorAPI::AssetType::AIBehavior: return "AIBehavior";
     case EditorAPI::AssetType::AnimationClip: return "AnimationClip";
     case EditorAPI::AssetType::AnimatorController: return "AnimatorController";
 	case EditorAPI::AssetType::AnimationRig: return "AnimationRig";
@@ -264,6 +266,8 @@ EditorAPI::AssetType EditorAssetTypeFromString(const std::string& value)
     if (type == "video") return EditorAPI::AssetType::Video;
     if (type == "scene") return EditorAPI::AssetType::Scene;
     if (type == "particle") return EditorAPI::AssetType::Particle;
+    if (type == "navigationmesh") return EditorAPI::AssetType::NavigationMesh;
+    if (type == "aibehavior") return EditorAPI::AssetType::AIBehavior;
     if (type == "animationclip") return EditorAPI::AssetType::AnimationClip;
     if (type == "animatorcontroller") return EditorAPI::AssetType::AnimatorController;
 	if (type == "animationrig") return EditorAPI::AssetType::AnimationRig;

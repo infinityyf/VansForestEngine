@@ -1,4 +1,6 @@
 #include "../EngineCore/SceneRuntime/Transform/VansTransformStore.h"
+#include "../EngineCore/RuntimeCore/VansFramePhase.h"
+#include "../EngineCore/RuntimeCore/VansThreadContract.h"
 #include "../EngineCore/Util/VansSceneViewMath.h"
 #include "../EngineCore/EditorCore/VansEditorSelectionService.h"
 #include "../EngineCore/EditorCore/VansEditorCameraController.h"
@@ -23,6 +25,7 @@
 #include "../EngineCore/EditorCore/VansEditorSceneLoadSession.h"
 #include "../EngineCore/EditorCore/VansEditorConfiguration.h"
 #include "../EngineCore/EngineAPILayer/Private/VansEditorSceneQuery.h"
+#include "../EngineCore/EngineAPILayer/Private/EngineAPIImpl.h"
 #include "../EngineCore/EngineAPILayer/Public/IAIEditorAPI.h"
 #include "../EngineCore/EngineAPILayer/Public/IAnimationEditorAPI.h"
 #include "../EngineCore/EngineAPILayer/Public/IAnimationPreviewEditorAPI.h"
@@ -85,8 +88,12 @@ public:
     CameraDevice() { m_RenderWidth = 1280; m_RenderHeight = 720; }
     bool BeforeRendering() override { return true; }
     void Rendering() override {}
+    bool HasDeviceLost() const override { return false; }
+    bool CurrentFrameRequiresSurfaceResize() const override { return false; }
     void Present() override {}
     void AfterRendering() override {}
+	bool OnWindowResize(uint32_t, uint32_t) override { return true; }
+	void RetireAfterCurrentFrame(std::function<void()> destroy) override { destroy(); }
     void* GetNativeGraphicsDevice() override { return nullptr; }
     void* GetNativeCommandBuffer() override { return nullptr; }
 };
@@ -117,6 +124,20 @@ bool TestEditorSceneInteractionContract()
 {
     try
     {
+        VANS_INIT_MAIN_THREAD();
+        VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
+        Vans::EditorAPI::EngineAPIImpl pickingAPI;
+        Vans::EditorAPI::EditorScenePickRequest pickingRequest;
+        for (const auto state : {Vans::EditorAPI::EnginePlayState::Play, Vans::EditorAPI::EnginePlayState::Pause})
+        {
+            pickingAPI.SetPlayState(state);
+            const auto result = pickingAPI.PickEditorScene(pickingRequest);
+            Check(!result.success && result.message == "Scene picking is available only in Edit mode.",
+                "Gameplay picking reached the scene geometry provider");
+        }
+        pickingAPI.SetPlayState(Vans::EditorAPI::EnginePlayState::Edit);
+        Check(pickingAPI.PickEditorScene(pickingRequest).message == "Scene is not ready for picking.",
+            "Returning to Edit mode did not restore the normal scene picking path");
 		std::filesystem::path sourceFile = std::filesystem::path(__FILE__);
 		if (sourceFile.is_relative())
 			sourceFile = std::filesystem::absolute(sourceFile);
@@ -186,7 +207,7 @@ bool TestEditorSceneInteractionContract()
 				"editor window catalog did not apply configured default visibility");
 		}
 		Check(VansEditorWindowCatalog::All().size() == seenWindowIds.size() &&
-			generalWindowCount == 9 && animationWindowCount == 2 && renderingWindowCount == 14 &&
+			generalWindowCount == 9 && animationWindowCount == 2 && renderingWindowCount == 15 &&
 			defaultOpenWindowCount == 7,
 			"editor window catalog coverage or menu grouping changed unexpectedly");
 		for (bool seen : seenWindowIds)
@@ -248,7 +269,7 @@ bool TestEditorSceneInteractionContract()
 		Check(windowRegistry.Empty() && windowRegistry.Find<RegistryWindowA>() == nullptr,
 			"editor window registry did not clear ordered and typed ownership together");
 
-		std::array<bool, 20> seenAssetCreationKinds{};
+		std::array<bool, 21> seenAssetCreationKinds{};
 		std::array<std::size_t, 5> assetMenuGroupCounts{};
 		for (const VansEditorAssetMenuEntry& entry :
 			VansEditorShellMenu::AssetCreationEntries())
@@ -261,7 +282,7 @@ bool TestEditorSceneInteractionContract()
 			seenAssetCreationKinds[kind] = true;
 			++assetMenuGroupCounts[group];
 		}
-		Check(assetMenuGroupCounts == std::array<std::size_t, 5>{ 1, 11, 1, 2, 3 },
+		Check(assetMenuGroupCounts == std::array<std::size_t, 5>{ 1, 11, 2, 2, 3 },
 			"editor asset menu changed its root/gameplay/rendering/animation/audio grouping");
 
 		int packageBuildCalls = 0;
@@ -1431,7 +1452,8 @@ bool TestEditorSceneInteractionContract()
 			"ForestPackageToolEntry.cpp");
 		const std::string packageBuilderSource = readSource(engineRoot / "Source" / "EngineCore" /
 			"PackagingCore" / "VansGamePackageBuilder.cpp");
-		Check(countText(apiSource,
+        const std::string previewRegistrySource=readSource(engineRoot/"Source"/"EngineCore"/"EngineAPILayer"/"Private"/"VansEditorPreviewRegistry.h");
+		Check(countText(previewRegistrySource,
 			"VansEditorTextureBridge::RegisterTexture(") == 1 &&
 			apiSource.find("static std::vector<PreviewTextureCache>") == std::string::npos &&
 			apiSource.find("GetAnimationPreviewSessions()") == std::string::npos &&
@@ -1442,7 +1464,7 @@ bool TestEditorSceneInteractionContract()
 			animationRigAuthoringSource.find("static std::unordered_map<AnimationPreviewSessionId") == std::string::npos &&
 			animationAttachmentAuthoringSource.find("static std::unordered_map<AnimationPreviewSessionId") == std::string::npos &&
 			apiSource.find("ClearEditorRenderTexturePreviewCaches(*m_EditorPreviewRegistry, oldDevice)") != std::string::npos &&
-			apiHeader.find("std::unique_ptr<VansEditorPreviewRegistry> m_EditorPreviewRegistry") != std::string::npos &&
+			apiHeader.find("std::shared_ptr<VansEditorPreviewRegistry> m_EditorPreviewRegistry") != std::string::npos &&
 			apiHeader.find("std::unique_ptr<VansAnimationPreviewSessionOwner> m_AnimationPreviewSessionOwner") != std::string::npos,
 			"editor preview textures or animation sessions bypass instance ownership");
 		Check(projectWindowSource.find("VansEditorWindow::m_PendingScenePath") == std::string::npos &&
@@ -1471,7 +1493,7 @@ bool TestEditorSceneInteractionContract()
 			packageToolSource.find("return Vans::ParseGamePackagePlatform(value, platform);") != std::string::npos &&
 			countText(packageBuilderSource, "value == \"Windows\"") == 1,
 			"Editor defaults, layout, fonts, or package platform escaped the strict configuration path");
-		Check(countText(editorWindowSource, "m_WindowRegistry.Add<") == 33 &&
+		Check(countText(editorWindowSource, "m_WindowRegistry.Add<") == 34 &&
 			editorWindowSource.find("m_WindowRegistry.All()") != std::string::npos &&
 			editorWindowSource.find("AddEditorWindowComponent") == std::string::npos &&
 			editorWindowHeader.find("m_Windows") == std::string::npos &&
@@ -1724,7 +1746,11 @@ bool TestEditorSceneInteractionContract()
 			uiEditorWindowSource.find("DrawPreviewViewport(Vans::EditorAPI::IEngineEditorAPI&") == std::string::npos,
 			"UI document or preview operations escaped their domain API facet");
 		Check(editorApiHeader.find("public IRenderEditorAPI") != std::string::npos &&
-			countText(renderApiHeader, "virtual ") == 21 &&
+			countText(renderApiHeader, "virtual ") == 27 &&
+			editorApiHeader.find("GetProjectRenderPassSettings(") == std::string::npos &&
+			editorApiHeader.find("ApplyProjectRenderPassSettings(") == std::string::npos &&
+			projectSettingsWindowSource.find("renderAPI.GetProjectRenderPassSettings(") != std::string::npos &&
+			projectSettingsWindowSource.find("renderAPI.ApplyProjectRenderPassSettings(") != std::string::npos &&
 			editorApiHeader.find("GetViewportPreview(") == std::string::npos &&
 			editorApiHeader.find("GetUpscalerSettings(") == std::string::npos &&
 			editorApiHeader.find("GetUpscalerCapabilities(") == std::string::npos &&
@@ -1959,11 +1985,15 @@ bool TestEditorSceneInteractionContract()
 			editorWindowSource.find("IRuntimePhysicsEditorAPI& m_RuntimePhysicsAPI") != std::string::npos,
 			"Runtime Physics operations escaped their facet or dead Vehicle input bridge survived");
 		Check(editorApiHeader.find("public IRuntimeFrameEditorAPI") != std::string::npos &&
-			countText(runtimeFrameApiHeader, "virtual ") == 14 &&
+			countText(runtimeFrameApiHeader, "virtual ") == 16 &&
 			editorApiHeader.find("UpdateRuntimeNonCameraScripts(") == std::string::npos &&
 			editorApiHeader.find("AdvanceCameraRuntime(") == std::string::npos &&
 			editorApiHeader.find("UpdateRuntimeActionsEarly(") == std::string::npos &&
 			editorApiHeader.find("UpdateRuntimeAI(") == std::string::npos &&
+			editorApiHeader.find("PrepareRuntimeNavigation(") == std::string::npos &&
+			editorApiHeader.find("UpdateRuntimeNavigation(") == std::string::npos &&
+			runtimeFrameApiHeader.find("virtual void PrepareRuntimeNavigation() = 0;") != std::string::npos &&
+			runtimeFrameApiHeader.find("virtual void UpdateRuntimeNavigation(double deltaSeconds) = 0;") != std::string::npos &&
 			editorApiHeader.find("RunRuntimeActionLateContinuation(") == std::string::npos &&
 			editorApiHeader.find("UpdateRuntimeTimelinesPostScript(") == std::string::npos &&
 			editorApiHeader.find("BeginRuntimeCameraControlFrame(") == std::string::npos &&
@@ -2151,7 +2181,9 @@ bool TestEditorSceneInteractionContract()
 			engineDtosHeader.find("ParticleEffectSnapshot") == std::string::npos,
 			"unused Particle diagnostics EditorAPI bridge or DTOs returned");
 		Check(editorApiHeader.find("public ITerrainEditorAPI") != std::string::npos &&
-			countText(terrainApiHeader, "virtual ") == 10 &&
+			countText(terrainApiHeader, "virtual ") == 12 &&
+			editorApiHeader.find("GetTerrainInteraction()") == std::string::npos &&
+			editorApiHeader.find("ApplyTerrainInteraction(") == std::string::npos &&
 			editorApiHeader.find("GetTerrainSettings()") == std::string::npos &&
 			editorApiHeader.find("ApplyTerrainSettings(") == std::string::npos &&
 			editorApiHeader.find("GetTerrainEditorSnapshot()") == std::string::npos &&
@@ -2405,7 +2437,7 @@ bool TestEditorSceneInteractionContract()
 			cameraArbiterSource.find("FrameStage::BaseCaptured") != std::string::npos &&
 			apiSource.find("IsBaseCameraWriteWindowOpen()") != std::string::npos,
 			"camera base-write and contribution phases became implicit again");
-		std::cout<<"EDITOR_SCENE_INTERACTION_PASS window_catalog=25+single_state+configured_defaults editor_config=strict+fonts+layout+windows+platform window_registry=33+ordered+typed+owned debug_view_state=owned+injected+automation shell_menu=18_assets+command_sink+lazy_availability shell_commands=shortcut_priority+semantic_dispatch authoring_commands=save_all+reload+exit_gate package_session=dirty_order+request_forward+result_state prefab_session=owned+queued+stage play_toolbar=edit+play+pause+scene_gate play_commands=gate+timer+physics+state+reload_order project_session=selector+loaded+pending_request project_switch=dirty_gate+unload+open+publish_order scene_load_session=current+pending+mode scene_document_session=paired_owner+prefab_swap scene_load_controller=gate+prepare+publish+mode_order scene_load_request=encapsulated theme_owner=fonts+base_style+49_colors+toolbar history=chronological history_adapter=five_sources+runtime_patch selection_snapshot=derived+single_service save_transaction=single+scene_assets entity_preview_projection=scene_reader+dto_translation serialized_value=direct_dto+single_pointer_validator scene_document=rebuild+live_diagnostics+schema_validation authoring_boundary=instance_sessions+scene_host+asset_creation_transaction+runtime_neutral_preview engine_configuration=explicit_paths+project_owner+immutable_render_bootstrap runtime_command_commit=typed_points+game_logic_guard+batched_hierarchy_recompute scene_vehicle=guid_keyed+postbuild_publish material_override_transaction=service_owned camera_base_write=explicit_window+phase_assert api_facets=animation_12+animation_preview_20+asset_authoring_8+asset_catalog_3+audio_6+ai_1+gaf_19+gi_6+motion_matching_1+particle_2+pcg_27+play_mode_4+project_13+reflection_probe_9+render_20+runtime_command_history_4+runtime_frame_13+runtime_physics_9+runtime_scene_9+scene_interaction_9+scene_settings_11+script_lifecycle_3+shader_2+terrain_9+timeline_7+ui_7+vehicle_1+water_3 asset_meta_dead_bridge=removed lighting_commit_dead_bridge=removed particle_dead_bridge=removed project_mesh_alias_dead_bridge=removed reflection_probe_rebuild_dead_bridge=removed runtime_history_can_helpers_dead_bridge=removed runtime_resource_ready_dead_bridge=removed runtime_script_module_dead_bridge=removed runtime_transform_command_dead_bridge=removed runtime_unique_name_dead_bridge=removed runtime_vehicle_input_dead_bridge=removed runtime_vehicle_step=private viewport_texture_dead_bridge=removed transform=preview+single_scene_commit+undo_redo preview_ownership=instance_registry+session_owner+runtime_detach ray_projection=perspective+orthographic bounds=finite+limited+parallel frame=wide+tall cancel=pass play_isolation=pass selection_toggle=pass\n";
+		std::cout<<"EDITOR_SCENE_INTERACTION_PASS window_catalog=26+single_state+configured_defaults editor_config=strict+fonts+layout+windows+platform window_registry=34+ordered+typed+owned debug_view_state=owned+injected+automation shell_menu=19_assets+command_sink+lazy_availability shell_commands=shortcut_priority+semantic_dispatch authoring_commands=save_all+reload+exit_gate package_session=dirty_order+request_forward+result_state prefab_session=owned+queued+stage play_toolbar=edit+play+pause+scene_gate play_commands=gate+timer+physics+state+reload_order project_session=selector+loaded+pending_request project_switch=dirty_gate+unload+open+publish_order scene_load_session=current+pending+mode scene_document_session=paired_owner+prefab_swap scene_load_controller=gate+prepare+publish+mode_order scene_load_request=encapsulated theme_owner=fonts+base_style+49_colors+toolbar history=chronological history_adapter=five_sources+runtime_patch selection_snapshot=derived+single_service save_transaction=single+scene_assets entity_preview_projection=scene_reader+dto_translation serialized_value=direct_dto+single_pointer_validator scene_document=rebuild+live_diagnostics+schema_validation authoring_boundary=instance_sessions+scene_host+asset_creation_transaction+runtime_neutral_preview engine_configuration=explicit_paths+project_owner+immutable_render_bootstrap runtime_command_commit=typed_points+game_logic_guard+batched_hierarchy_recompute scene_vehicle=guid_keyed+postbuild_publish material_override_transaction=service_owned camera_base_write=explicit_window+phase_assert api_facets=animation_12+animation_preview_20+asset_authoring_8+asset_catalog_3+audio_6+ai_1+gaf_19+gi_6+motion_matching_1+particle_2+pcg_27+play_mode_4+project_13+reflection_probe_9+render_24+runtime_command_history_4+runtime_frame_15+navigation_2+runtime_physics_9+runtime_scene_9+scene_interaction_9+scene_settings_11+script_lifecycle_3+shader_2+terrain_11+timeline_7+ui_7+vehicle_1+water_3 asset_meta_dead_bridge=removed lighting_commit_dead_bridge=removed particle_dead_bridge=removed project_mesh_alias_dead_bridge=removed reflection_probe_rebuild_dead_bridge=removed runtime_history_can_helpers_dead_bridge=removed runtime_resource_ready_dead_bridge=removed runtime_script_module_dead_bridge=removed runtime_transform_command_dead_bridge=removed runtime_unique_name_dead_bridge=removed runtime_vehicle_input_dead_bridge=removed runtime_vehicle_step=private viewport_texture_dead_bridge=removed transform=preview+single_scene_commit+undo_redo preview_ownership=instance_registry+session_owner+runtime_detach ray_projection=perspective+orthographic bounds=finite+limited+parallel frame=wide+tall cancel=pass play_isolation=pass selection_toggle=pass\n";
         return true;
     }
     catch(const std::exception& e) { std::cerr<<"EDITOR_SCENE_INTERACTION_FAIL "<<e.what()<<'\n'; return false; }

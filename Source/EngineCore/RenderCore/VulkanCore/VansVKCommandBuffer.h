@@ -21,6 +21,15 @@ namespace VansGraphics
 	{
 		VkSemaphore semaphore;
 		VkPipelineStageFlags waiting_stage;
+		uint64_t value = 0;
+		bool timeline = false;
+	};
+
+	struct SignalSemaphoreInfo
+	{
+		VkSemaphore semaphore;
+		uint64_t value = 0;
+		bool timeline = false;
 	};
 
 	struct CommandBufferInheritanceInfo
@@ -244,7 +253,7 @@ namespace VansGraphics
 			const std::vector<VkImageMemoryBarrier>& imageMemoryBarriers = {});
 
 		static bool WaitForFence(VkDevice& device, const VkFence& fence);
-		static bool SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansGraphics::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VkSemaphore>& signal_semaphores, const VkFence& fence, bool wait_fence = true);
+		static bool SubmitCommands(VkQueue& queue, VkDevice& device, const std::vector<VkCommandBuffer>& command_buffers, const std::vector<VansGraphics::WaitSemaphoreInfo>& wait_semaphore_infos, const std::vector<VansGraphics::SignalSemaphoreInfo>& signal_semaphores, const VkFence& fence, bool wait_fence = true, VkResult* submit_result = nullptr);
 
 		//同步fence
 		//应该每个commandbuffer对象对应一个

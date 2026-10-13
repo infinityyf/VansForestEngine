@@ -10,6 +10,7 @@
 #include "VansPhysicsNode.h"
 #include "../TerrainCore/VansTerrainAsset.h"
 #include <memory>
+#include "../AssetCore/VansHeightfieldData.h"
 
 namespace VansEngine
 {
@@ -23,6 +24,15 @@ namespace VansEngine
         PhysicsMaterialProperties material;
     };
 
+    struct VansPhysicsHeightfieldSnapshot
+    {
+        std::uint64_t signature = 0;
+        std::shared_ptr<const Vans::VansHeightfieldData> heightfield;
+        glm::mat4 worldTransform{1.0f};
+        glm::vec3 boundsMinimum{0.0f}, boundsMaximum{0.0f};
+        std::string collisionLayer;
+    };
+
     class VansTerrainPhysicsNode
     {
     public:
@@ -31,6 +41,9 @@ namespace VansEngine
 
         bool Initialize(const TerrainPhysicsProperties& properties);
         bool UpdateSurface(std::shared_ptr<const Vans::VansTerrainAsset> surface);
+        // 读取实际 PhysX 高度采样；内容未变时共享已有不可变 CPU 数据。
+        bool CaptureCollisionSurface(std::uint64_t maximumBytes,
+            VansPhysicsHeightfieldSnapshot& snapshot, std::string& error) const;
         void Shutdown();
 
         bool IsEnabled() const { return m_Enabled; }

@@ -54,6 +54,7 @@ bool VansRetargetProcessor::Build(
 {
 	m_BoneMap.clear();
 	m_LimbChains.clear();
+	m_ControlBones.clear();
 	m_TargetRig = {};
 	m_Stats = {};
 	m_SourceSkeleton = nullptr;
@@ -120,6 +121,21 @@ bool VansRetargetProcessor::Build(
 		}
 	}
 
+	std::unordered_set<std::string> controlBones;
+	for (const auto& control : desc.controlBones)
+	{
+		const int bone = targetSkeleton.FindBoneIndex(control.bone);
+		const int reference = targetSkeleton.FindBoneIndex(control.referenceBone);
+		if (bone < 0 || reference < 0 || bone == reference
+			|| !controlBones.insert(control.bone).second
+			|| std::any_of(targetSkeleton.virtualBoneLinks.begin(), targetSkeleton.virtualBoneLinks.end(),
+				[bone, reference](const auto& link) { return link.boneIndex == bone || link.boneIndex == reference; }))
+			return false;
+		m_ControlBones.push_back({bone, reference});
+	}
+	// 参考骨必须是已完成求解的姿态，禁止控制帧之间的顺序依赖或循环。
+	for (const auto& control : desc.controlBones)
+		if (controlBones.count(control.referenceBone)) return false;
 	for (size_t targetIndex = 0; targetIndex < targetSkeleton.bones.size(); ++targetIndex)
 	{
 		const BoneInfo& targetBone = targetSkeleton.bones[targetIndex];
@@ -553,7 +569,8 @@ bool VansRetargetProcessor::Process(
 					transform = m_RootAlignmentCorrection * transform;
 			}
 		}
-		return outTargetModelTransforms.size() == targetSkeleton.bones.size();
+		return FinalizeVirtualBones(sourceModelTransforms, sourceSkeleton, targetSkeleton,
+			outTargetModelTransforms);
 	}
 
 	for (const BoneMapEntry& entry : m_BoneMap)
@@ -643,7 +660,44 @@ bool VansRetargetProcessor::Process(
 				transform = m_RootAlignmentCorrection * transform;
 		}
 	}
-	return outTargetModelTransforms.size() == targetSkeleton.bones.size();
+	return FinalizeVirtualBones(sourceModelTransforms, sourceSkeleton, targetSkeleton,
+		outTargetModelTransforms);
+}
+
+bool VansRetargetProcessor::FinalizeVirtualBones(
+	const std::vector<glm::mat4>& sourceModelTransforms,
+	const Skeleton& sourceSkeleton, const Skeleton& targetSkeleton,
+	std::vector<glm::mat4>& targetModelTransforms) const
+{
+	if (targetModelTransforms.size() != targetSkeleton.bones.size()) return false;
+	for (const auto& control : m_ControlBones)
+		targetModelTransforms[control.bone] = targetModelTransforms[control.referenceBone];
+	// 虚拟骨骼是目标效应器的派生控制帧，不能保留目标 Bind Pose 的跨肢体偏移。
+	// 先从已重映射/求解的目标效应器重建，再保留源虚拟骨相对于源效应器的
+	// 动画偏差；源和目标父级的继承缩放由随后 Model -> Local 转换处理。
+	for (const auto& link : targetSkeleton.virtualBoneLinks)
+	{
+		glm::mat4 desired = targetModelTransforms[link.targetBoneIndex];
+		const int sourceVirtual = sourceSkeleton.FindBoneIndex(targetSkeleton.bones[link.boneIndex].name);
+		const auto sourceLink = std::find_if(sourceSkeleton.virtualBoneLinks.begin(),
+			sourceSkeleton.virtualBoneLinks.end(), [sourceVirtual](const auto& candidate)
+			{ return candidate.boneIndex == sourceVirtual; });
+		if (sourceLink != sourceSkeleton.virtualBoneLinks.end()
+			&& sourceSkeleton.bones[sourceLink->targetBoneIndex].name
+				== targetSkeleton.bones[link.targetBoneIndex].name)
+		{
+			glm::vec3 goalPosition, goalScale, effectorPosition, effectorScale, targetPosition, targetScale;
+			glm::quat goalRotation, effectorRotation, targetRotation;
+			if (!DecomposeTransform(sourceModelTransforms[sourceVirtual], goalPosition, goalRotation, goalScale)
+				|| !DecomposeTransform(sourceModelTransforms[sourceLink->targetBoneIndex],
+					effectorPosition, effectorRotation, effectorScale)
+				|| !DecomposeTransform(desired, targetPosition, targetRotation, targetScale)) return false;
+			desired = ComposeTransform(targetPosition + (goalPosition-effectorPosition)*m_Stats.translationScale,
+				glm::normalize(goalRotation*glm::inverse(effectorRotation)*targetRotation), targetScale);
+		}
+		targetModelTransforms[link.boneIndex] = desired;
+	}
+	return true;
 }
 
 glm::mat4 VansRetargetProcessor::ComposeTransform(

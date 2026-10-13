@@ -9,6 +9,8 @@ namespace Vans::EditorAPI
 		virtual void UpdateRuntimeNonCameraScripts() = 0;
 		virtual void AdvanceCameraRuntime(double deltaSeconds) = 0;
 		virtual void UpdateRuntimeActionsEarly(double deltaSeconds) = 0;
+		virtual void PrepareRuntimeNavigation() = 0;
+		virtual void UpdateRuntimeNavigation(double deltaSeconds) = 0;
 		virtual void UpdateRuntimeAI(double deltaSeconds) = 0;
 		virtual void RunRuntimeActionLateContinuation() = 0;
 		virtual void UpdateRuntimeTimelinesPostScript(double deltaSeconds) = 0;

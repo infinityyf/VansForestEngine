@@ -17,7 +17,7 @@ namespace VansGraphics
 		static constexpr std::uint32_t RecordsPerFrame = 262144;
 		static constexpr std::uint32_t InvalidRecordOffset = UINT32_MAX;
 
-		bool Initialize(VkDevice device);
+		bool Initialize(VkDevice device, std::uint32_t recordsPerFrame = RecordsPerFrame);
 		void Destroy(VkDevice device);
 		void BeginFrame(std::uint32_t frameSlot);
 		std::uint32_t Upload(const std::vector<VansDrawInstanceDataGPU>& records);
@@ -30,5 +30,6 @@ namespace VansGraphics
 		VansVKBuffer m_Buffer;
 		std::uint32_t m_FrameSlot = 0;
 		std::uint32_t m_RecordCount = 0;
+		std::uint32_t m_RecordsPerFrame = RecordsPerFrame;
 	};
 }

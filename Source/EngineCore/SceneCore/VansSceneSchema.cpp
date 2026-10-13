@@ -3,6 +3,7 @@
 #include "VansComponentTypeCatalog.h"
 #include "VansSceneRenderSettingsConfig.h"
 #include "VansSceneSchema.h"
+#include "VansSceneNavigationComponentReader.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 
@@ -123,6 +124,13 @@ void ValidateEntityComponentSemantics(
             }
             if (data)
             {
+                if (data->contains("renderLayer"))
+                {
+                    const auto& layer=(*data)["renderLayer"];
+                    if (!layer.is_string() || layer.get_ref<const std::string&>().empty() ||
+                        layer.get_ref<const std::string&>().size()>256 || layer.get_ref<const std::string&>().find('\0')!=std::string::npos)
+                        Error(diagnostics,componentPointer+"/data/renderLayer","ModelRenderer renderLayer must be a nonempty string of at most 256 bytes without NUL");
+                }
                 ValidateOptionalAssetReferenceMap(
                     *data, "materialOverrides", componentPointer + "/data", diagnostics);
                 ValidateOptionalAssetReferenceMap(
@@ -148,6 +156,23 @@ void ValidateEntityComponentSemantics(
                 Error(diagnostics, componentPointer + "/data/submeshCount",
                     "MultiMeshRoot submeshCount must be a positive unsigned integer");
             }
+            continue;
+        }
+        if (type=="NavigationSurface" || type=="NavigationSource" || type=="NavigationModifier" || type=="NavigationAgent" || type=="NavigationObstacle" || type=="NavigationLink")
+        {
+            std::string error;
+            bool valid=false;
+            if(data)
+            {
+                const auto value=DecodeSerializedValueJson(*data);
+                if(type=="NavigationSurface") { VansRuntimeNavigationSurfaceComponent config; valid=VansSceneNavigationComponentReader::Read(value,config,error); }
+                else if(type=="NavigationSource") { VansRuntimeNavigationSourceComponent config; valid=VansSceneNavigationComponentReader::Read(value,config,error); }
+                else if(type=="NavigationModifier") { VansRuntimeNavigationModifierComponent config; valid=VansSceneNavigationComponentReader::Read(value,config,error); }
+                else if(type=="NavigationObstacle") { VansRuntimeNavigationObstacleComponent config; valid=VansSceneNavigationComponentReader::Read(value,config,error); }
+                else if(type=="NavigationLink") { VansRuntimeNavigationLinkComponent config; valid=VansSceneNavigationComponentReader::Read(value,config,error); }
+                else { VansRuntimeNavigationAgentComponent config; valid=VansSceneNavigationComponentReader::Read(value,config,error); }
+            }
+            if(!valid) Error(diagnostics,componentPointer+"/data",error.empty()?"Navigation component requires current data":error);
             continue;
         }
         if (type != "LODGroup")

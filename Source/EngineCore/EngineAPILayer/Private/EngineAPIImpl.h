@@ -22,6 +22,7 @@ namespace Vans::EditorAPI
 {
 	class EngineAPIImpl;
 	class VansEditorPreviewRegistry;
+	class VansRenderTexturePreviewSession;
 	class VansAnimationPreviewSessionOwner;
 	class VansEditorSceneQuery;
 }
@@ -46,6 +47,7 @@ namespace Vans
 	class VansTerrainAuthoringSession;
 	class VansPcgMaskAuthoringSession;
 	class VansPcgSplineAuthoringSession;
+	class VansNavigationAuthoringSession;
 	class VansSceneDocument;
 	struct VansPcgBatchUpdate;
 	struct VansTerrainAsset;
@@ -154,8 +156,15 @@ namespace Vans::EditorAPI
 		ApplyUpscalerSettingsResult ApplyUpscalerSettings(
 			const UpscalerSettingsSnapshot& settings) override;
 		CommandRecordingSettingsSnapshot GetCommandRecordingSettings() const override;
-		void SetCommandRecordingSettings(const CommandRecordingSettingsSnapshot& settings) override;
+        ProjectRenderPassSettingsSnapshot GetProjectRenderPassSettings() const override;
+        ApplyProjectRenderPassSettingsResult ApplyProjectRenderPassSettings(const std::vector<std::string>& assetGuids) override;
+		ApplyCommandRecordingSettingsResult SetCommandRecordingSettings(
+			const CommandRecordingSettingsSnapshot& settings) override;
 		std::vector<RenderTexturePreview> QueryRenderTexturePreviews(RenderTextureFilter filter) const override;
+		std::vector<RenderTextureSourceInfo> QueryAvailableRenderTextures(RenderTextureFilter filter) const override;
+		RenderTexturePreviewRegistrationResult RegisterRenderTexturePreview(const std::string& resourceKey, const RenderTexturePreviewViewSpec& view) override;
+		void UnregisterRenderTexturePreview(std::uint64_t registration) override;
+		std::vector<RenderTexturePreview> QueryRegisteredRenderTexturePreviews() const override;
 		std::uint32_t GetAmbientSkyCacheDebugMode() const override;
 		void SetAmbientSkyCacheDebugMode(std::uint32_t mode) override;
 		void RequestPunctualShadowDebugPreview() override;
@@ -216,6 +225,20 @@ namespace Vans::EditorAPI
 		AnimationAssetBindingSnapshot GetAnimationAssetBinding(const std::string& entityGuid) const override;
 		MotionMatchingDebugSnapshot GetMotionMatchingDebugSnapshot() const override;
 		VansAIDiagnosticsSnapshot GetAIDiagnosticsSnapshot() const override;
+        NavigationAuthoringSchema GetNavigationAuthoringSchema() const override;
+        NavigationSettingsSnapshot GetNavigationSettings() const override;
+        NavigationComponentValidation ValidateNavigationSettingsDocument(const VansSerializedValue& document) const override;
+        NavigationComponentValidation ApplyNavigationSettings(const VansSerializedValue& document,
+            const VansSerializedValue& expectedDocument) override;
+        NavigationComponentValidation ValidateNavigationComponent(const std::string& type,const VansSerializedValue& data) const override;
+        NavigationComponentValidation BuildNavigationPreview(const std::string& mapId) override;
+        NavigationBuildPreviewSnapshot GetNavigationBuildPreview() override;
+        void CancelNavigationPreview() override;
+        NavigationPreviewGeometry GetNavigationPreviewGeometry(const NavigationPreviewView& view) override;
+        NavigationComponentValidation SubmitNavigationPreviewQuery(const NavigationPreviewQueryRequest& request) override;
+        NavigationPreviewQuerySnapshot GetNavigationPreviewQuery() override;
+        void CancelNavigationPreviewQuery() override;
+        NavigationComponentValidation BakeNavigationPreview(const std::string& projectRelativeOutputPath) override;
 		SceneSkeletonHierarchySnapshot GetSceneSkeletonHierarchy(
 			const std::string& entityGuidFilter) const override;
 		SceneSkeletonNodePoseSnapshot GetSceneSkeletonNodePose(
@@ -279,6 +302,8 @@ namespace Vans::EditorAPI
 		TimelinePreviewResult StopTimelinePreview(const std::string& previewId) override;
 		TimelinePreviewResult GetTimelinePreview(const std::string& previewId) const override;
 		TerrainSettingsSnapshot GetTerrainSettings() const override;
+		VansTerrainInteraction GetTerrainInteraction() const override;
+		TerrainEditorOperationResult ApplyTerrainInteraction(const VansTerrainInteraction& input) override;
 		TerrainEditorOperationResult ApplyTerrainSettings(
 			const TerrainSettingsSnapshot& settings) override;
 		TerrainEditorSnapshot GetTerrainEditorSnapshot() const override;
@@ -334,6 +359,8 @@ namespace Vans::EditorAPI
 		void UpdateRuntimeNonCameraScripts() override;
 		void AdvanceCameraRuntime(double deltaSeconds) override;
 		void UpdateRuntimeActionsEarly(double deltaSeconds) override;
+		void PrepareRuntimeNavigation() override;
+		void UpdateRuntimeNavigation(double deltaSeconds) override;
 		void UpdateRuntimeAI(double deltaSeconds) override;
 		void RunRuntimeActionLateContinuation() override;
 		void UpdateRuntimeTimelinesPostScript(double deltaSeconds) override;
@@ -366,7 +393,9 @@ namespace Vans::EditorAPI
 		void SubmitCommand(std::unique_ptr<IVansEditorRuntimeCommand> command);
 		void StepRuntimeVehicle(float deltaTimeSeconds);
 		std::shared_ptr<VansEditorSceneQuery> m_EditorSceneQueryCache;
-		std::unique_ptr<VansEditorPreviewRegistry> m_EditorPreviewRegistry;
+		std::shared_ptr<VansEditorPreviewRegistry> m_EditorPreviewRegistry;
+		mutable std::unique_ptr<VansRenderTexturePreviewSession> m_RenderTexturePreviewSession;
+		void EnsureRenderTexturePreviewSession() const;
 		std::unique_ptr<VansAnimationPreviewSessionOwner> m_AnimationPreviewSessionOwner;
 		RenderTexturePreview BuildReflectionProbePreview(RenderTextureFilter filter) const;
 		RenderTexturePreview BuildWaterTexturePreview(RenderTextureFilter filter) const;
@@ -376,6 +405,7 @@ namespace Vans::EditorAPI
 			const std::string& componentType,
 			bool enabled);
 		bool ReloadSceneAnimationDefinitions(std::string& error);
+        bool ApplyNavigationComponentPreview(const std::vector<RuntimeNavigationComponentEdit>& edits);
 		std::shared_ptr<Vans::VansTerrainAuthoringSession> EnsureTerrainAuthoringSession(
 			std::string& error) const;
 		void QueueTerrainPixelChange();
@@ -395,6 +425,11 @@ namespace Vans::EditorAPI
 		std::string m_PcgSceneRecipeGuid;
 		PcgEditorOperationResult CommitPcgPreview(std::shared_ptr<const VansPcgBatchUpdate> update);
 		Vans::IVansSceneAuthoringHost* m_SceneAuthoringHost = nullptr;
+        std::unique_ptr<Vans::VansNavigationAuthoringSession> m_NavigationAuthoringSession;
+        void TickNavigationAuthoringPreview();
+        const Vans::VansSceneDocument* m_NavigationPreviewDocument=nullptr;
+        std::uint64_t m_NavigationPreviewSceneState=0;
+        std::string m_NavigationPreviewProjectRoot;
 		VansSceneDocument* m_PcgSceneDocument = nullptr;
 		std::uint64_t m_PcgSceneAuthoringState = 0;
 

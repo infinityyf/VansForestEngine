@@ -32,5 +32,10 @@ enum VansRuntimeComponentTypeId : std::uint16_t
 	VansRuntimeComponentType_ActionHost = 22,
 	VansRuntimeComponentType_NavigationAgent = 23,
 	VansRuntimeComponentType_AIAgent = 24,
+	VansRuntimeComponentType_NavigationSurface = 25,
+	VansRuntimeComponentType_NavigationSource = 26,
+	VansRuntimeComponentType_NavigationModifier = 27,
+    VansRuntimeComponentType_NavigationObstacle = 28,
+    VansRuntimeComponentType_NavigationLink = 29,
 };
 }

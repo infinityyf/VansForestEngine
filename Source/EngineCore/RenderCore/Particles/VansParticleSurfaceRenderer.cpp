@@ -24,10 +24,19 @@ bool VansParticleSurfaceRenderer::Initialize(VansScene& scene, const VansParticl
     const bool ribbon = config.m_Type == VansParticleRendererType::Ribbon;
     const bool softRibbon = ribbon && config.m_Ribbon.softIntersection > 0.0f;
     const bool sixWay = config.m_LightingMode == VansParticleLightingMode::SixWayLit;
-    m_Shader = static_cast<VansGraphicsShader*>(scene.FindShaderAsset(ribbon
-        ? (softRibbon ? "ParticleRibbonSoft" : "ParticleRibbon") : sixWay ? "ParticleSixWay" : "Particle"));
+    const bool card = config.m_LightingMode == VansParticleLightingMode::SpriteCard;
+    const bool softCard = card && config.m_Card.softIntersection > 0;
+    const bool softDepth = softRibbon || softCard;
+    std::string program = ribbon ? (softRibbon ? "ParticleRibbonSoft" : "ParticleRibbon")
+        : sixWay ? "ParticleSixWay" : "Particle";
+    if (card) program = std::string("ParticleCard") +
+        (config.m_Card.output == VansParticleCardOutput::Additive ? "Additive"
+        : (config.m_Card.output == VansParticleCardOutput::HalfBlendAdd
+            || config.m_Card.output == VansParticleCardOutput::BlendAdd) ? "HalfBlendAdd" : "Alpha") + (softCard ? "Soft" : "");
+    m_Shader = static_cast<VansGraphicsShader*>(scene.FindShaderAsset(program));
     VansTexture* color = sixWay ? textures.positiveAxes : textures.color;
-    if (!m_Shader || !color || (sixWay && !textures.negativeAxes))
+    if (!m_Shader || !color || (sixWay && !textures.negativeAxes) || (card && config.m_Card.lookupBlend > 0 && !textures.lookup)
+        || (card && config.m_Card.breakup != VansParticleCardBreakup::None && !textures.breakup))
     { VANS_LOG_ERROR("[Particle] Surface material has unresolved shader or texture dependencies"); return false; }
     std::vector<VkDescriptorSetLayoutBinding> bindings = {
         {0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr}
@@ -39,33 +48,85 @@ bool VansParticleSurfaceRenderer::Initialize(VansScene& scene, const VansParticl
         bindings.push_back({3,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,VANS_PUNCTUAL_SHADOW_ATLAS_COUNT,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr});
     }
     if (softRibbon) bindings.push_back({1,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr});
-    if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(bindings,m_OwnedLayout,m_OwnedSets)) return false;
+    if (card) bindings.push_back({1,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr});
+    if (softCard) bindings.push_back({2,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr});
+    if (card) bindings.push_back({3,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr});
+    if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(bindings,m_OwnedLayout,m_OwnedSets,
+		softDepth ? VansCommandRecordingConfig::MaximumFramesInFlight : 1u)) return false;
     auto* manager = VansVKDescriptorManager::GetInstance();
     auto* passes = VansRenderPassManager::GetInstance();
     manager->BeginDescriptorUpdate();
-    const auto write = [&](uint32_t binding, VansVKImage& image, VkImageLayout layout) {
-        manager->WriteImageDescriptor(m_OwnedSets[0],binding,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            {{image.GetSampler(),image.GetImageView(),layout}});
-    };
-    write(0,color->GetImage(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    if (sixWay)
-    {
-        write(1,textures.negativeAxes->GetImage(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        manager->WriteImageDescriptor(m_OwnedSets[0],2,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            {{passes->GetCascadeShadowSampler(),passes->GetCascadeShadowArrayView(),VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL}});
-        manager->WriteImageDescriptor(m_OwnedSets[0],3,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            passes->GetPunctualShadowDescriptorInfos());
-    }
-    if (softRibbon) write(1,passes->GetDepth(),VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    for (VkDescriptorSet set : m_OwnedSets)
+	{
+		const auto write = [&](uint32_t binding, VansVKImage& image, VkImageLayout layout) {
+			manager->WriteImageDescriptor(set,binding,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{{image.GetSampler(),image.GetImageView(),layout}});
+		};
+		write(0,color->GetImage(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		if (sixWay)
+		{
+			write(1,textures.negativeAxes->GetImage(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			manager->WriteImageDescriptor(set,2,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{{passes->GetCascadeShadowSampler(),passes->GetCascadeShadowArrayView(),VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL}});
+			manager->WriteImageDescriptor(set,3,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				passes->GetPunctualShadowDescriptorInfos());
+		}
+		if (softRibbon) write(1,passes->GetDepth(0),VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        if (card) write(1,(textures.lookup ? textures.lookup : color)->GetImage(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (softCard) write(2,passes->GetDepth(0),VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        if (card) write(3,(textures.breakup ? textures.breakup : color)->GetImage(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	}
     manager->CommitDescriptorUpdates();
     m_Layouts = {scene.GetGlobalDescriptorSetLayout(),m_OwnedLayout};
     m_Sets = {scene.GetGlobalDescriptorSet(),m_OwnedSets[0]};
     return true;
 }
+
+bool VansParticleSurfaceRenderer::SelectFrameDescriptorSets(
+	VkDescriptorSet globalSet, std::uint32_t frameSlot,
+	std::uint32_t gbufferTargetSlot)
+{
+	auto* passes = VansRenderPassManager::GetInstance();
+	const bool softRibbon = m_Config.m_Type == VansParticleRendererType::Ribbon &&
+		m_Config.m_Ribbon.softIntersection > 0.0f;
+    const bool softCard = m_Config.m_LightingMode == VansParticleLightingMode::SpriteCard && m_Config.m_Card.softIntersection > 0;
+    const bool softDepth = softRibbon || softCard;
+	if (globalSet == VK_NULL_HANDLE || passes == nullptr ||
+		frameSlot >= VansCommandRecordingConfig::MaximumFramesInFlight ||
+		gbufferTargetSlot >= passes->GetGBufferFrameTargetCount() ||
+		m_OwnedSets.size() != (softDepth
+			? VansCommandRecordingConfig::MaximumFramesInFlight : 1u))
+	{
+		if (m_Sets.size() == 2) m_Sets[1] = VK_NULL_HANDLE;
+		return false;
+	}
+	const std::uint32_t setSlot = softDepth ? frameSlot : 0u;
+	if (softDepth && m_DepthTargetSlots[setSlot] != gbufferTargetSlot)
+	{
+		auto* descriptors = VansVKDescriptorManager::GetInstance();
+		if (descriptors == nullptr)
+		{
+			m_Sets[1] = VK_NULL_HANDLE;
+			return false;
+		}
+		VansVKImage& depth = passes->GetDepth(gbufferTargetSlot);
+		descriptors->BeginDescriptorUpdate();
+		descriptors->WriteImageDescriptor(m_OwnedSets[setSlot], softCard ? 2 : 1,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ depth.GetSampler(), depth.GetImageView(),
+				VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
+		descriptors->CommitDescriptorUpdates();
+		m_DepthTargetSlots[setSlot] = gbufferTargetSlot;
+	}
+	m_Sets[0] = globalSet;
+	m_Sets[1] = m_OwnedSets[setSlot];
+	return true;
+}
 void VansParticleSurfaceRenderer::Draw(VansVKCommandBuffer& cmd, GlobalStateData& state,
     VkBuffer buffer, const VansParticleDrawItem& item) const
 {
-    if (!m_Shader || !buffer || !item.indexCount || !item.instanceCount) return;
+    if (!m_Shader || !buffer || !item.indexCount || !item.instanceCount ||
+		m_Sets.size() != 2 || m_Sets[1] == VK_NULL_HANDLE) return;
     static std::vector<VkVertexInputBindingDescription> billboardBindings = {
         {0,16,VK_VERTEX_INPUT_RATE_VERTEX},{1,sizeof(VansParticleInstanceData),VK_VERTEX_INPUT_RATE_INSTANCE}
     };
@@ -76,7 +137,7 @@ void VansParticleSurfaceRenderer::Draw(VansVKCommandBuffer& cmd, GlobalStateData
         {4,1,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(VansParticleInstanceData,m_Color)},
         {5,1,VK_FORMAT_R32_SFLOAT,offsetof(VansParticleInstanceData,m_Rotation)},
         {6,1,VK_FORMAT_R32_SFLOAT,offsetof(VansParticleInstanceData,m_FrameIndex)},
-        {7,1,VK_FORMAT_R32G32_SFLOAT,offsetof(VansParticleInstanceData,m_Padding)}
+        {7,1,VK_FORMAT_R32G32_UINT,offsetof(VansParticleInstanceData,m_Padding)}
     };
     static std::vector<VkVertexInputBindingDescription> ribbonBindings = {{0,sizeof(VansPolylineVertex),VK_VERTEX_INPUT_RATE_VERTEX}};
     static std::vector<VkVertexInputAttributeDescription> ribbonAttributes = {
@@ -101,6 +162,19 @@ void VansParticleSurfaceRenderer::Draw(VansVKCommandBuffer& cmd, GlobalStateData
             {m_Config.m_SpriteSheetEnabled ? m_Config.m_SpriteColumns : 1,m_Config.m_SpriteSheetEnabled ? m_Config.m_SpriteRows : 1,0,0},
             {sixWay.m_LightIntensity,sixWay.m_AmbientIntensity,sixWay.m_EmissiveIntensity,sixWay.m_AbsorptionStrength},
             {sixWay.m_LightmapRemapMin,sixWay.m_LightmapRemapMax,0.004f,0}, {0,-1,0,0},{1,1,1,1}
+        };
+        cmd.UpdatePushConstants(*pipeline,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(constants),constants);
+    }
+    else if (m_Config.m_LightingMode == VansParticleLightingMode::SpriteCard)
+    {
+        const auto& card = m_Config.m_Card;
+        const glm::vec4 constants[] = {
+            {m_Config.m_SpriteSheetEnabled ? m_Config.m_SpriteColumns : 1,m_Config.m_SpriteSheetEnabled ? m_Config.m_SpriteRows : 1,
+                static_cast<float>(card.orientation),card.pivotY},
+            {card.aspectRatio,card.softIntersection,card.lookupBlend,card.desaturation},
+            {card.overbright,static_cast<float>(card.output),static_cast<float>(card.channels),static_cast<float>(card.breakup)},
+            {card.breakupZoomScale,card.breakupPreserveAlpha ? 1.f : 0.f,
+                card.lookupMultiply ? 1.f : 0.f,card.tintBeforeDesaturation ? 1.f : 0.f}
         };
         cmd.UpdatePushConstants(*pipeline,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(constants),constants);
     }

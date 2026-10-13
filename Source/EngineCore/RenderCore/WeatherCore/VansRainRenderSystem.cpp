@@ -11,6 +11,7 @@
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
 
+
 namespace VansGraphics
 {
 VansRainRenderSystem::~VansRainRenderSystem()
@@ -63,7 +64,9 @@ bool VansRainRenderSystem::Initialize(VansScene& scene)
 		{ 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }
 	};
 	if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
-		bindings, m_PassLayout, m_PassSets) || m_PassSets.empty())
+		bindings, m_PassLayout, m_PassSets,
+		VansCommandRecordingConfig::MaximumFramesInFlight) ||
+		m_PassSets.size() != VansCommandRecordingConfig::MaximumFramesInFlight)
 	{
 		VANS_LOG_ERROR("[Rain] Failed to allocate precipitation descriptor set");
 		Shutdown();
@@ -102,28 +105,28 @@ bool VansRainRenderSystem::RebindSceneTextures()
 	}
 
 	descriptorManager->BeginDescriptorUpdate();
-	auto writeImage = [&](std::uint32_t binding, VansVKImage& image)
+	for (VkDescriptorSet passSet : m_PassSets)
 	{
-		descriptorManager->WriteImageDescriptor(
-			m_PassSets.front(), binding,
+		auto writeImage = [&](std::uint32_t binding, VansVKImage& image)
+		{
+			descriptorManager->WriteImageDescriptor(passSet, binding,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{{ image.GetSampler(), image.GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		};
+		writeImage(0, renderPassManager->GetGbuffer2(0));
+		writeImage(1, renderPassManager->GetNormal(0));
+		writeImage(2, rainLayer->GetImage());
+		writeImage(3, splashAtlas->GetImage());
+		descriptorManager->WriteImageDescriptor(passSet, 4,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{ { image.GetSampler(), image.GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	};
-	writeImage(0, renderPassManager->GetGbuffer2());
-	writeImage(1, renderPassManager->GetNormal());
-	writeImage(2, rainLayer->GetImage());
-	writeImage(3, splashAtlas->GetImage());
-	descriptorManager->WriteImageDescriptor(
-		m_PassSets.front(), 4,
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { renderPassManager->GetCascadeShadowSampler(),
-			renderPassManager->GetCascadeShadowArrayView(),
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
-	descriptorManager->WriteImageDescriptor(
-		m_PassSets.front(), 5,
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		renderPassManager->GetPunctualShadowDescriptorInfos());
+			{{ renderPassManager->GetCascadeShadowSampler(),
+				renderPassManager->GetCascadeShadowArrayView(),
+				VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
+		descriptorManager->WriteImageDescriptor(passSet, 5,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			renderPassManager->GetPunctualShadowDescriptorInfos());
+	}
 	descriptorManager->WriteImageDescriptor(
 		m_SurfaceRippleSets.front(), 0,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -133,16 +136,56 @@ bool VansRainRenderSystem::RebindSceneTextures()
 		m_SurfaceRippleSets.front(), 1,
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{{ VK_NULL_HANDLE, m_SurfaceRippleImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptorManager->WriteImageDescriptor(
-		m_Scene->GetGlobalDescriptorSet(), GLOBAL_BINDING_SURFACE_WEATHER_RIPPLE,
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{{ m_SurfaceRippleImage.GetSampler(), m_SurfaceRippleImage.GetImageView(),
-			VK_IMAGE_LAYOUT_GENERAL }});
+	for (VkDescriptorSet globalSet : m_Scene->GetGlobalDescriptorSets())
+	{
+		descriptorManager->WriteImageDescriptor(
+			globalSet, GLOBAL_BINDING_SURFACE_WEATHER_RIPPLE,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ m_SurfaceRippleImage.GetSampler(), m_SurfaceRippleImage.GetImageView(),
+				VK_IMAGE_LAYOUT_GENERAL }});
+	}
 	descriptorManager->CommitDescriptorUpdates();
+	m_PassTargetSlots.fill(0u);
+	m_PassTargetGenerations.fill(renderPassManager->GetGBufferFrameTargetGeneration());
 	const auto& rippleInfo = m_SurfaceRippleImage.GetImageCreateInfo();
 	VANS_LOG("[Rain] Surface ripple ready: seed=" << rippleSeed->GetWidth()
 		<< "x" << rippleSeed->GetHeight() << ", normal=" << rippleInfo.extent.width
 		<< "x" << rippleInfo.extent.height << ", mips=" << rippleInfo.mipLevels);
+	return true;
+}
+
+bool VansRainRenderSystem::SelectFrameDescriptorSets(
+	VkDescriptorSet globalSet, std::uint32_t frameSlot,
+	std::uint32_t gbufferTargetSlot)
+{
+	auto* renderPasses = VansRenderPassManager::GetInstance();
+	if (globalSet == VK_NULL_HANDLE || renderPasses == nullptr ||
+		frameSlot >= m_PassSets.size() ||
+		gbufferTargetSlot >= renderPasses->GetGBufferFrameTargetCount())
+		return false;
+	const std::uint64_t targetGeneration = renderPasses->GetGBufferFrameTargetGeneration();
+	if (m_PassTargetSlots[frameSlot] != gbufferTargetSlot ||
+		m_PassTargetGenerations[frameSlot] != targetGeneration)
+	{
+		auto* descriptors = VansVKDescriptorManager::GetInstance();
+		if (descriptors == nullptr)
+			return false;
+		descriptors->BeginDescriptorUpdate();
+		const auto writeImage = [&](std::uint32_t binding, VansVKImage& image)
+		{
+			descriptors->WriteImageDescriptor(m_PassSets[frameSlot], binding,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{{ image.GetSampler(), image.GetImageView(),
+					VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		};
+		writeImage(0, renderPasses->GetGbuffer2(gbufferTargetSlot));
+		writeImage(1, renderPasses->GetNormal(gbufferTargetSlot));
+		descriptors->CommitDescriptorUpdates();
+		m_PassTargetSlots[frameSlot] = gbufferTargetSlot;
+		m_PassTargetGenerations[frameSlot] = targetGeneration;
+	}
+	m_Sets[0] = globalSet;
+	m_Sets[1] = m_PassSets[frameSlot];
 	return true;
 }
 
@@ -160,6 +203,8 @@ void VansRainRenderSystem::Shutdown()
 	if (m_Scene && m_Scene->GetRuntimeResourceDevice() && m_SurfaceRippleImage.HasResources())
 		m_SurfaceRippleImage.DestroyVulkanImage(m_Scene->GetRuntimeResourceDevice()->GetLogicDevice());
 	m_PassSets.clear();
+	m_PassTargetSlots.fill(0u);
+	m_PassTargetGenerations.fill(0u);
 	m_SurfaceRippleSets.clear();
 	m_Layouts.clear();
 	m_Sets.clear();

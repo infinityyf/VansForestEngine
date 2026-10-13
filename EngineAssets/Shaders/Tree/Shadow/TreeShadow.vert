@@ -19,7 +19,7 @@ struct TreeInstanceGPU
     uint speciesIndex;
     uint regionIndex;
     uint randomSeed;
-    uint flags;
+    uint padding;
 };
 
 layout(std430, set = 3, binding = 0) readonly buffer TreeInstances
@@ -42,7 +42,7 @@ layout(push_constant) uniform TreeShadowPC
 
 void main()
 {
-    // 独立的距离压缩列表，不受主相机视锥和遮挡剔除影响。
+    // 每级阴影独立的可见实例列表，不受主相机视锥和遮挡剔除影响。
     uint treeIndex = visibleIndices[pc.visibleOffset + gl_InstanceIndex];
     mat4 model = instances[treeIndex].modelMatrix;
 

@@ -2,12 +2,17 @@
 #include "VansPhysics.h"
 #include "VansPhysicsNativeAccess.h"
 #include "VansCollisionFilter.h"
-#include "../RenderCore/VulkanCore/VansMesh.h"
+#include "VansPhysicsShapeDimensions.h"
 #include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "../Util/VansLog.h"
+#include <glm/gtc/quaternion.hpp>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <iostream>
+#include <unordered_set>
+#include <unordered_map>
+#include <new>
 
 namespace VansEngine
 {
@@ -72,36 +77,8 @@ namespace VansEngine
     // Helper: Convert PxQuat to glm
     inline glm::quat ToGlmQuat(const PxQuat& q) { return glm::quat(q.w, q.x, q.y, q.z); }
 
-    bool BuildTriangleCollisionData(
-        VansGraphics::VansMesh* mesh,
-        std::vector<PxVec3>& outVertices,
-        std::vector<PxU32>& outIndices,
-        const std::string& ownerName)
-    {
-        if (!mesh)
-            return false;
-		Vans::VansTriangleMeshData data;
-		std::string error;
-		if (!mesh->CopyTriangleMeshData(data, error))
-		{
-			VANS_LOG_WARN("[PhysX] Mesh collider source '" << mesh->m_AssetName
-				<< "' for node '" << ownerName << "' is invalid: " << error);
-			return false;
-		}
-		outVertices.reserve(data.VertexCount());
-		for (std::size_t vertex = 0; vertex < data.VertexCount(); ++vertex)
-		{
-			const std::size_t base = vertex * 3u;
-			outVertices.emplace_back(data.positions[base],
-				data.positions[base + 1u], data.positions[base + 2u]);
-		}
-		outIndices.assign(data.indices.begin(), data.indices.end());
-		return true;
-    }
-
     VansPhysicsNode::VansPhysicsNode()
         : m_TransformID(0)
-        , m_Mesh(nullptr)
         , m_Actor(nullptr)
         , m_Material(nullptr)
         , m_Shape(nullptr)
@@ -115,22 +92,68 @@ namespace VansEngine
         Shutdown();
     }
 
-    void VansPhysicsNode::Initialize(const PhysicsNodeProperties& properties, uint32_t transformID, VansGraphics::VansMesh* mesh)
+    void VansPhysicsNode::Initialize(const PhysicsNodeProperties& properties, uint32_t transformID,
+        std::shared_ptr<const Vans::VansTriangleMeshData> collisionMesh)
     {
         auto& physics = VansPhysicsSystem::GetInstance();
         std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
-        InitializeLocked(properties, transformID, mesh);
+        InitializeLocked(properties, transformID, std::move(collisionMesh));
     }
+
+    bool VansPhysicsNode::InitializeStaticMeshBatch(const std::vector<VansStaticMeshPhysicsInput>& input, std::string& error)
+    try
+    {
+        std::unordered_set<VansPhysicsNode*> identities;
+        identities.reserve(input.size());
+        std::unordered_map<const Vans::VansTriangleMeshData*, PxTriangleMesh*> prototypes;
+        auto& physics = VansPhysicsSystem::GetInstance();
+        std::lock_guard<std::mutex> lease(physics.GetSimulationMutex());
+        for (const auto& item : input)
+        {
+            if (!item.node || !identities.insert(item.node).second || item.node->m_Actor || item.node->m_Material ||
+                item.node->m_Shape || item.node->m_TriangleMesh || item.node->m_ConvexMesh || item.node->m_UncookedGeometry)
+            { error = "Static mesh batch requires distinct fresh physics nodes"; return false; }
+            if (!item.properties.enabled || item.properties.bodyType != PhysicsBodyType::Static ||
+                item.properties.colliderType != PhysicsColliderType::Mesh || !item.properties.useMeshCollider || !item.geometry)
+            { error = "Static mesh batch requires enabled static Mesh inputs"; return false; }
+            if (prototypes.emplace(item.geometry.get(), nullptr).second &&
+                !item.geometry->Validate((std::numeric_limits<std::uint64_t>::max)(), error)) return false;
+        }
+        try
+        {
+            for (const auto& item : input)
+            {
+                auto& prototype = prototypes.at(item.geometry.get());
+                item.node->InitializeLocked(item.properties, item.transformID, item.geometry, prototype);
+                if (!item.node->m_Actor || !item.node->m_Shape || !item.node->m_TriangleMesh)
+                {
+                    error = "Static mesh batch failed triangle-mesh cooking";
+                    for (const auto& rollback : input) rollback.node->ShutdownLocked();
+                    return false;
+                }
+                prototype = item.node->m_TriangleMesh;
+            }
+        }
+        catch (...) { for (const auto& rollback : input) rollback.node->ShutdownLocked(); throw; }
+        error.clear(); return true;
+    }
+    catch (const std::bad_alloc&) { error = "Static mesh batch allocation failed"; return false; }
 
     void VansPhysicsNode::InitializeLocked(
         const PhysicsNodeProperties& properties,
         uint32_t transformID,
-        VansGraphics::VansMesh* mesh)
+        std::shared_ptr<const Vans::VansTriangleMeshData> collisionMesh,
+        PxTriangleMesh* cookedPrototype)
     {
         ShutdownLocked();
         m_Properties = properties;
         m_TransformID = transformID;
-        m_Mesh = mesh;
+        m_UncookedGeometry = std::move(collisionMesh);
+        if (cookedPrototype)
+        {
+            cookedPrototype->acquireReference();
+            m_TriangleMesh = cookedPrototype;
+        }
 
         if (!m_Properties.enabled)
         {
@@ -138,7 +161,8 @@ namespace VansEngine
             return;
         }
 
-        CreatePhysicsActor();
+        CreatePhysicsActor(m_UncookedGeometry.get());
+		m_UncookedGeometry.reset();
 		m_Enabled = m_Actor != nullptr && m_Shape != nullptr;
 		if (!m_Enabled)
 		{
@@ -153,6 +177,7 @@ namespace VansEngine
         {
             m_Shape = nullptr;
             m_Enabled = false;
+            m_UncookedGeometry.reset();
             return;
         }
         auto& physics = VansPhysicsSystem::GetInstance();
@@ -193,9 +218,10 @@ namespace VansEngine
         m_Material = nullptr;
         m_Shape = nullptr;
         m_Enabled = false;
+        m_UncookedGeometry.reset();
     }
 
-    void VansPhysicsNode::CreatePhysicsActor()
+    void VansPhysicsNode::CreatePhysicsActor(const Vans::VansTriangleMeshData* collisionMesh)
     {
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
         PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
@@ -246,7 +272,7 @@ namespace VansEngine
         }
 
         // Create and attach collision shape
-        CreateCollisionShape();
+        CreateCollisionShape(collisionMesh);
 
         // 惯量必须根据已挂载的形状计算；空 actor 上计算会丢失配置质量和惯量。
         if (m_Shape && m_Properties.bodyType == PhysicsBodyType::Dynamic && !needsKinematicUpgrade)
@@ -281,7 +307,7 @@ namespace VansEngine
         scene->addActor(*m_Actor);
     }
 
-    void VansPhysicsNode::CreateCollisionShape()
+    void VansPhysicsNode::CreateCollisionShape(const Vans::VansTriangleMeshData* collisionMesh)
     {
         PxShape* shape = nullptr;
 
@@ -297,10 +323,10 @@ namespace VansEngine
             shape = CreateCapsuleShape();
             break;
         case PhysicsColliderType::Mesh:
-            shape = CreateMeshShape();
+            shape = CreateMeshShape(collisionMesh);
             break;
         case PhysicsColliderType::ConvexMesh:
-            shape = CreateConvexMeshShape();
+            shape = CreateConvexMeshShape(collisionMesh);
             break;
         default:
             shape = CreateBoxShape(); // Default to box
@@ -352,7 +378,7 @@ namespace VansEngine
 
         // Apply scale from transform
         const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(m_TransformID);
-        glm::vec3 scaledExtents = m_Properties.boxExtents * transformData.m_Scale;
+        const auto scaledExtents=ResolvePhysicsShapeDimensions(m_Properties,transformData.m_Scale,VansPhysicsShapeScalePhase::Creation).boxExtents;
         
         PxBoxGeometry boxGeom(scaledExtents.x, scaledExtents.y, scaledExtents.z);
         return physics->createShape(boxGeom, *m_Material);
@@ -365,8 +391,7 @@ namespace VansEngine
 
         // Use uniform scale (average of x,y,z)
         const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(m_TransformID);
-        float avgScale = (transformData.m_Scale.x + transformData.m_Scale.y + transformData.m_Scale.z) / 3.0f;
-        float scaledRadius = m_Properties.sphereRadius * avgScale;
+        const auto scaledRadius=ResolvePhysicsShapeDimensions(m_Properties,transformData.m_Scale,VansPhysicsShapeScalePhase::Creation).sphereRadius;
 
         PxSphereGeometry sphereGeom(scaledRadius);
         return physics->createShape(sphereGeom, *m_Material);
@@ -379,15 +404,15 @@ namespace VansEngine
 
         // Apply scale
         const Vans::VansTransform& transformData = Vans::VansTransformStore::Read(m_TransformID);
-        float avgRadiusScale = (transformData.m_Scale.x + transformData.m_Scale.z) / 2.0f;
-        float scaledRadius = m_Properties.capsuleRadius * avgRadiusScale;
-        float scaledHalfHeight = m_Properties.capsuleHalfHeight * transformData.m_Scale.y;
+        const auto dimensions=ResolvePhysicsShapeDimensions(m_Properties,transformData.m_Scale,VansPhysicsShapeScalePhase::Creation);
+        const auto scaledRadius=dimensions.capsuleRadius;
+        const auto scaledHalfHeight=dimensions.capsuleHalfHeight;
 
         PxCapsuleGeometry capsuleGeom(scaledRadius, scaledHalfHeight);
         return physics->createShape(capsuleGeom, *m_Material);
     }
 
-    PxShape* VansPhysicsNode::CreateMeshShape()
+    PxShape* VansPhysicsNode::CreateMeshShape(const Vans::VansTriangleMeshData* collisionMesh)
     {
         //Triangle mesh validation: NOT supported for dynamic bodies
         if (m_Properties.bodyType == PhysicsBodyType::Dynamic)
@@ -398,7 +423,7 @@ namespace VansEngine
             return CreateBoxShape();
         }
 
-        if (!m_Mesh || !m_Properties.useMeshCollider)
+        if (!collisionMesh || !m_Properties.useMeshCollider)
         {
             VANS_LOG_ERROR("Mesh collider requested but no mesh available, falling back to box");
             return CreateBoxShape();
@@ -407,26 +432,24 @@ namespace VansEngine
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
         PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
 
-        std::vector<PxVec3> vertices;
-        std::vector<PxU32> indices;
-        if (!BuildTriangleCollisionData(m_Mesh, vertices, indices, m_Name))
+        if (!m_TriangleMesh)
         {
-            VANS_LOG_ERROR("[PhysX] Mesh collider requested but CPU mesh data is invalid, falling back to box");
-            return CreateBoxShape();
+            std::string error;
+            if (!collisionMesh->Validate((std::numeric_limits<std::uint64_t>::max)(), error))
+            {
+                VANS_LOG_ERROR("[PhysX] Mesh collider CPU data is invalid: " << error << "; falling back to box");
+                return CreateBoxShape();
+            }
+            // Batch instances share an owned cooked prototype; single nodes cook directly from packed CPU input.
+            PxTriangleMeshDesc meshDesc;
+            meshDesc.points.count = static_cast<PxU32>(collisionMesh->VertexCount());
+            meshDesc.points.stride = 3 * sizeof(float);
+            meshDesc.points.data = collisionMesh->positions.data();
+            meshDesc.triangles.count = static_cast<PxU32>(collisionMesh->TriangleCount());
+            meshDesc.triangles.stride = 3 * sizeof(PxU32);
+            meshDesc.triangles.data = collisionMesh->indices.data();
+            m_TriangleMesh = VansPhysicsNativeAccess::CookTriangleMesh(physicsSystem, meshDesc);
         }
-
-        // Build triangle mesh from VansMesh
-        PxTriangleMeshDesc meshDesc;
-        meshDesc.points.count = static_cast<PxU32>(vertices.size());
-        meshDesc.points.stride = sizeof(PxVec3);
-        meshDesc.points.data = vertices.data();
-
-        meshDesc.triangles.count = static_cast<PxU32>(indices.size() / 3);
-        meshDesc.triangles.stride = 3 * sizeof(PxU32);
-        meshDesc.triangles.data = indices.data();
-
-        // Cook the triangle mesh
-        m_TriangleMesh = VansPhysicsNativeAccess::CookTriangleMesh(physicsSystem, meshDesc);
         
         if (!m_TriangleMesh)
         {
@@ -442,9 +465,9 @@ namespace VansEngine
         return physics->createShape(triGeom, *m_Material);
     }
 
-    PxShape* VansPhysicsNode::CreateConvexMeshShape()
+    PxShape* VansPhysicsNode::CreateConvexMeshShape(const Vans::VansTriangleMeshData* collisionMesh)
     {
-        if (!m_Mesh || !m_Properties.useMeshCollider)
+        if (!collisionMesh || !m_Properties.useMeshCollider)
         {
             VANS_LOG_ERROR("Convex mesh collider requested but no mesh available, falling back to box");
             return CreateBoxShape();
@@ -453,19 +476,18 @@ namespace VansEngine
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
         PxPhysics* physics = VansPhysicsNativeAccess::Physics(physicsSystem);
 
-        std::vector<PxVec3> vertices;
-        std::vector<PxU32> indices;
-        if (!BuildTriangleCollisionData(m_Mesh, vertices, indices, m_Name))
+        std::string error;
+        if (!collisionMesh->Validate((std::numeric_limits<std::uint64_t>::max)(), error))
         {
-            VANS_LOG_ERROR("[PhysX] Convex mesh collider requested but CPU mesh data is invalid, falling back to box");
+            VANS_LOG_ERROR("[PhysX] Convex mesh collider CPU data is invalid: " << error << "; falling back to box");
             return CreateBoxShape();
         }
 
-        // Build convex mesh from VansMesh
+        // Cooking copies the input into the native mesh before Initialize returns.
         PxConvexMeshDesc convexDesc;
-        convexDesc.points.count = static_cast<PxU32>(vertices.size());
-        convexDesc.points.stride = sizeof(PxVec3);
-        convexDesc.points.data = vertices.data();
+        convexDesc.points.count = static_cast<PxU32>(collisionMesh->VertexCount());
+        convexDesc.points.stride = 3 * sizeof(float);
+        convexDesc.points.data = collisionMesh->positions.data();
         convexDesc.flags = PxConvexFlag::eCOMPUTE_CONVEX;
         convexDesc.vertexLimit = 255;
 
@@ -498,30 +520,24 @@ namespace VansEngine
             return;
 
         bool updated = true;
+        const auto dimensions=ResolvePhysicsShapeDimensions(m_Properties,scale,VansPhysicsShapeScalePhase::Update);
         switch (m_Properties.colliderType)
         {
         case PhysicsColliderType::Box:
         {
-            glm::vec3 scaledExtents = glm::abs(m_Properties.boxExtents * scale);
-            scaledExtents = glm::max(scaledExtents, glm::vec3(1e-4f));
+            const auto scaledExtents=dimensions.boxExtents;
             m_Shape->setGeometry(PxBoxGeometry(scaledExtents.x, scaledExtents.y, scaledExtents.z));
             break;
         }
         case PhysicsColliderType::Sphere:
         {
-            const glm::vec3 absScale = glm::abs(scale);
-            const float avgScale = std::max((absScale.x + absScale.y + absScale.z) / 3.0f, 1e-4f);
-            m_Shape->setGeometry(PxSphereGeometry(std::max(m_Properties.sphereRadius * avgScale, 1e-4f)));
+            m_Shape->setGeometry(PxSphereGeometry(dimensions.sphereRadius));
             break;
         }
         case PhysicsColliderType::Capsule:
         {
-            const glm::vec3 absScale = glm::abs(scale);
-            const float avgRadiusScale = std::max((absScale.x + absScale.z) / 2.0f, 1e-4f);
-            const float heightScale = std::max(absScale.y, 1e-4f);
             m_Shape->setGeometry(PxCapsuleGeometry(
-                std::max(m_Properties.capsuleRadius * avgRadiusScale, 1e-4f),
-                std::max(m_Properties.capsuleHalfHeight * heightScale, 1e-4f)));
+                dimensions.capsuleRadius,dimensions.capsuleHalfHeight));
             break;
         }
         case PhysicsColliderType::Mesh:
@@ -651,7 +667,8 @@ namespace VansEngine
         if (!m_Actor)
         {
             // Actor 尚未创建（例如 Initialize 时 enabled=false），按需创建
-            CreatePhysicsActor();
+            CreatePhysicsActor(m_UncookedGeometry.get());
+            m_UncookedGeometry.reset();
             if (!m_Actor || !m_Shape)
             {
                 VANS_LOG_ERROR("[PhysX] Deferred physics activation failed: " << m_Name);

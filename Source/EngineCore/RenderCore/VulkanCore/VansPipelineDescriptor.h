@@ -59,7 +59,10 @@ namespace VansGraphics
 		bool enableAdditiveBlend = false;
 		uint32_t additiveBlendAttachmentMask = 0;
 		bool enablePremultipliedAlphaBlend = false;
+		// Explicit per-output operations; empty preserves the existing blend policy.
+		std::vector<std::string> colorAttachmentBlends;
 	};
+	bool ValidateGraphicsAttachmentBlends(const VansGraphicsPipelineStateDesc& state, std::string& error);
 
 	struct VansPipelineProgramDesc
 	{

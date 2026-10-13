@@ -8,6 +8,7 @@
 #include "VulkanCore/VansVKCommandBuffer.h"
 #include "VulkanCore/VansVKDrawInstanceArena.h"
 #include "../Util/VansLog.h"
+#include "../Util/VansProfiler.h"
 #include "../RuntimeCore/VansFramePhase.h"
 
 #include <algorithm>
@@ -153,11 +154,7 @@ bool VansGraphics::VansDrawSubmission::BuildPacket(
 			return false;
 	}
 
-	globalState.vertexInputAttributeDescriptions = &drawMesh->m_VertexInputAttributeDescriptions;
-	globalState.vertexInputBindingDescriptions = &drawMesh->m_VertexInputBindingDescriptions;
-	VansVKGraphicsPipeline* pipeline = shader.GetGraphicsPipeline(device, globalState, descriptorSetLayouts);
-	if (pipeline == nullptr || pipeline->GetNativePipeline() == VK_NULL_HANDLE ||
-		pipeline->GetNativePipelineLayout() == VK_NULL_HANDLE)
+	if (!BuildGeometryPacket(device, *drawMesh, shader, descriptorSetLayouts, descriptorSets, globalState, packet))
 		return false;
 
 	const int materialIndex = node.m_Material->GetGlobalMaterialIndex();
@@ -168,29 +165,35 @@ bool VansGraphics::VansDrawSubmission::BuildPacket(
 		return false;
 	}
 
-	const VertexBufferParameters vertex = drawMesh->GetVertexBufferParameter();
-	const IndexBufferParameters index = drawMesh->GetIndexBufferParameter();
-
-	packet = {};
-	packet.pipeline = pipeline->GetNativePipeline();
-	packet.pipelineLayout = pipeline->GetNativePipelineLayout();
-	packet.descriptorSets = descriptorSets;
-	packet.geometry.vertexBuffer = vertex.Buffer;
-	packet.geometry.vertexOffset = vertex.MemoryOffset;
-	packet.geometry.indexBuffer = index.Buffer;
-	packet.geometry.indexOffset = index.MemoryOffset;
-	packet.geometry.indexType = index.IndexType;
-	packet.geometry.indexCount = drawMesh->GetIndexCount();
 	packet.instanceData.transformIndex = node.m_TransfromIndex;
 	packet.instanceData.materialIndex = materialIndex;
 	packet.instanceData.vertexFeatureMask = node.BuildVertexFeatureMask();
 	packet.instanceData.passUser0 = passUser0;
-	packet.pipelineHash = pipeline->GetDescriptorKey().hash;
-	packet.descriptorHash = BuildDescriptorHash(descriptorSets);
 	packet.orderGroup = orderGroup;
 	packet.stableOrder = stableOrder;
 	packet.cameraDepth = std::isfinite(cameraDepth) ? cameraDepth : 0.0f;
 	return true;
+}
+
+bool VansGraphics::VansDrawSubmission::BuildGeometryPacket(VkDevice& device, VansMesh& mesh, VansGraphicsShader& shader,
+    const std::vector<VkDescriptorSetLayout>& layouts, const std::vector<VkDescriptorSet>& sets,
+    GlobalStateData globalState, VansDrawPacket& packet)
+{
+    VANS_ASSERT_FRAME_PHASE(VansFramePhase::GPURecord);
+    if (shader.GetPushConstantSize() != 0 || layouts.empty() || layouts.size() != sets.size()) return false;
+    for (std::size_t i = 0; i < sets.size(); ++i) if (!sets[i] || !layouts[i]) return false;
+    globalState.vertexInputAttributeDescriptions = &mesh.m_VertexInputAttributeDescriptions;
+    globalState.vertexInputBindingDescriptions = &mesh.m_VertexInputBindingDescriptions;
+    auto* pipeline = shader.GetGraphicsPipeline(device, globalState, layouts);
+    if (!pipeline || !pipeline->GetNativePipeline() || !pipeline->GetNativePipelineLayout()) return false;
+    const auto vertex = mesh.GetVertexBufferParameter();
+    const auto index = mesh.GetIndexBufferParameter();
+    packet = {};
+    packet.pipeline = pipeline->GetNativePipeline(); packet.pipelineLayout = pipeline->GetNativePipelineLayout();
+    packet.descriptorSets = sets;
+    packet.geometry = {vertex.Buffer,vertex.MemoryOffset,index.Buffer,index.MemoryOffset,index.IndexType,mesh.GetIndexCount(),0,0};
+    packet.pipelineHash = pipeline->GetDescriptorKey().hash; packet.descriptorHash = BuildDescriptorHash(sets);
+    return true;
 }
 
 bool VansGraphics::VansDrawSubmission::AreBatchCompatible(
@@ -220,6 +223,7 @@ bool VansGraphics::VansDrawSubmission::Finalize(
 
 	if (sortPolicy != VansDrawSortPolicy::PreserveOrder)
 	{
+		VANS_PROFILE_SCOPE("DrawSubmission::Sort", Vans::ProfileCategory::CommandRecord);
 		const bool compareDepth = sortPolicy == VansDrawSortPolicy::StateThenFrontToBack;
 		std::sort(submission.packets.begin(), submission.packets.end(),
 			[compareDepth](const VansDrawPacket& lhs, const VansDrawPacket& rhs)
@@ -248,7 +252,11 @@ bool VansGraphics::VansDrawSubmission::Finalize(
 		previous = &packet;
 	}
 
-	const std::uint32_t gpuBase = uploadArena.Upload(submission.instanceData);
+	std::uint32_t gpuBase;
+	{
+		VANS_PROFILE_SCOPE("DrawSubmission::UploadInstances", Vans::ProfileCategory::CommandRecord);
+		gpuBase = uploadArena.Upload(submission.instanceData);
+	}
 	if (gpuBase == VansVKDrawInstanceArena::InvalidRecordOffset)
 	{
 		submission.batches.clear();

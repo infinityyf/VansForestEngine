@@ -30,6 +30,7 @@ struct VansSceneGameplayContributorContext
 	VansDecalSceneBackend decalBackend;
 	VansCombatSceneBackend combatBackend;
     VansVFXSceneBackend vfxBackend;
+    VansGAFPerformanceBudget performance;
 };
 
 // Scene code supplies stable engine facilities only. Domain modules own their

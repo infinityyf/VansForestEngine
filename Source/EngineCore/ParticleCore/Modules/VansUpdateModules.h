@@ -28,6 +28,7 @@ namespace VansGraphics
     {
     public:
         VansColorGradient m_Gradient;
+        bool m_ScaleInitialAlpha = false;
 
         VansUpdateColorOverLifetime()
         {
@@ -41,8 +42,36 @@ namespace VansGraphics
         void Execute(VansParticlePool& pool, float deltaTime,
                      const glm::mat4& localToWorld) const override;
 
-        void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) const override {}
+        void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
+                         uint32_t endIndex, const glm::mat4&) const override;
 
+    };
+
+    enum class VansParticleFadeTimeDomain { Lifetime, Seconds };
+    enum class VansParticleFadeEasing { Linear, SmoothStep };
+
+    struct VansParticleAlphaFade
+    {
+        bool enabled = false;
+        float durationMin = 0.25f, durationMax = 0.25f;
+        float randomExponent = 1.f;
+        VansParticleFadeTimeDomain timeDomain = VansParticleFadeTimeDomain::Lifetime;
+        VansParticleFadeEasing easing = VansParticleFadeEasing::SmoothStep;
+    };
+
+    // 仅在淡入/淡出区间从初始化 alpha 重算；其他区间保留当前值，RGB 不变。
+    // 时长在出生时缓存，与每帧按稳定 ID 重算等价；不声称复现外部 RNG 表。
+    class VansUpdateAlphaFadeModule : public VansParticleModule
+    {
+    public:
+        VansParticleAlphaFade m_FadeIn, m_FadeOut;
+        // 使用淡入的时间域；默认零延迟保持已有算子的写入区间。
+        float m_FadeInDelay = 0.f;
+        bool m_FadeInFirst = true;
+        void Execute(VansParticlePool& pool, float deltaTime,
+                     const glm::mat4& localToWorld) const override;
+        void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
+                         uint32_t endIndex, const glm::mat4& localToWorld) const override;
     };
 
     // ── UpdateSizeOverLifetime — 大小随生命周期变化 ────────────────────────

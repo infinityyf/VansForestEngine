@@ -21,6 +21,7 @@
 #include "../AssetCore/Storage/VansFileStorage.h"
 #include "../AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
 #include "../AssetCore/Storage/VansShaderAuthoringAssetStorage.h"
+#include "../AssetCore/Storage/VansRenderPassAssetStorage.h"
 #include "../AssetCore/Storage/VansSkinProfileStorage.h"
 #include "../AssetCore/VansAssetObjectRepository.h"
 #include "../AssetCore/VansAssetBytes.h"
@@ -32,7 +33,7 @@
 #include "../AudioCore/Storage/VansAudioDuckingRulesAssetStorage.h"
 #include "../AudioCore/Storage/VansAudioReverbPresetAssetStorage.h"
 #include "../GameplayActionSchema/VansGameplayAssetStorage.h"
-#include "../NavigationCore/VansNavigationMesh.h"
+#include "../NavigationCore/Storage/VansNavigationMeshStorage.h"
 #include "../ParticleCore/Serialization/VansParticleAssetJsonCodec.h"
 #include "../ParticleCore/Storage/VansParticleAssetStorage.h"
 #include "../PhysicsCore/Serialization/VansRagdollProfileJsonCodec.h"
@@ -184,8 +185,10 @@ namespace
                         for (const char* field : { "profile", "source_model", "source_animator" })
                             AppendReferenceDependency(FindObjectField(*retarget, field), owner, dependencies);
                 }
-                else if (type == "NavigationAgent")
+                else if (type == "NavigationSurface")
                     AppendReferenceDependency(FindObjectField(*data, "navigationMesh"), owner, dependencies);
+                else if(type=="NavigationSource")
+                    AppendReferenceDependency(FindObjectField(*data,"cpuMesh"),owner,dependencies);
                 else if (type == "AIAgent")
                     AppendReferenceDependency(FindObjectField(*data, "behavior"), owner, dependencies);
                 else if (type == "Script")
@@ -337,6 +340,8 @@ namespace
             dependencies = PrefabDependencies(*object, record.guid);
         else if constexpr (std::is_same_v<Asset,VansMaterialAuthoringAsset>)
             dependencies = MaterialDependencies(*object, record.guid);
+        else if constexpr (std::is_same_v<Asset,VansRenderPassAsset>)
+            dependencies = CollectRenderPassAssetDependencies(*object);
         else if constexpr (std::is_same_v<Asset,VansGraphics::VansParticleAsset>)
             dependencies = object->TextureDependencies();
         else if constexpr (std::is_same_v<Asset,VansGraphics::VansAnimationRigAsset>)
@@ -453,6 +458,13 @@ bool VansAssetObjectBootstrapper::PublishSerialized(
 		auto asset = std::make_shared<VansShaderAuthoringAsset>();
 		return ReadShaderAuthoringAsset(sourceRoot, *asset, error) &&
 			PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
+	}
+	if (record.type == VansAssetType::RenderPass)
+	{
+		auto asset = std::make_shared<VansRenderPassAsset>();
+		if (!ReadRenderPassAsset(sourceRoot, *asset, error)) return false;
+		dependencies = CollectRenderPassAssetDependencies(*asset);
+		return PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
 	}
 	if (record.type == VansAssetType::SkinProfile)
 	{
@@ -716,6 +728,11 @@ VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 				[&](VansShaderAuthoringAsset& asset, std::string& loadError)
 				{ return VansShaderAuthoringAssetStorage::Load(record.authoringPath, asset, loadError); },
 				{}, published, error);
+		else if (record.type == VansAssetType::RenderPass)
+			success = EnsurePublished<VansRenderPassAsset>(record, repository,
+				[&](VansRenderPassAsset& asset, std::string& loadError)
+				{ return VansRenderPassAssetStorage::Load(record.authoringPath, asset, loadError); },
+				{}, published, error);
 		else if (record.type == VansAssetType::SkinProfile)
 			success = EnsurePublished<VansSkinProfile>(record, repository,
 				[&](VansSkinProfile& asset, std::string& loadError)
@@ -811,14 +828,22 @@ VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 				[&](VansAIBehaviorAsset& asset, std::string& loadError)
 				{ return VansAIBehaviorAssetStorage::Load(record.sourcePath, asset, loadError); },
 				{}, published, error);
-		else if (record.type == VansAssetType::NavigationMesh)
-			success = EnsurePublished<VansNavigationMesh>(record, repository,
-				[&](VansNavigationMesh& asset, std::string& loadError)
-				{
-					return asset.Load(record.sourcePath,
-						navigationSettings, loadError);
-				},
-				{}, published, error);
+        else if (record.type == VansAssetType::NavigationMesh)
+        {
+            VansAssetObjectSnapshotInfo info;
+            const auto contentHash = AssetObjectContentHash(record);
+            if (repository.FindInfo(record.guid, info) && info.assetType == record.type &&
+                info.contentHash == contentHash && repository.ResolveLatest<VansNavigationMeshAsset>(record.guid))
+            { success = true; published = false; }
+            else
+            {
+                std::shared_ptr<const VansNavigationMeshAsset> asset;
+                success = VansNavigationMeshStorage::Load(record.sourcePath, asset, error) &&
+                    repository.Publish<VansNavigationMeshAsset>(record.guid, record.type, contentHash,
+                        std::move(asset), {}, error).IsValid();
+                published = success;
+            }
+        }
 		else if (record.type == VansAssetType::RetargetProfile)
 			success = EnsurePublished<VansGraphics::VansRetargetProfileAsset>(record, repository,
 				[&](VansGraphics::VansRetargetProfileAsset& asset, std::string& loadError)
@@ -1016,6 +1041,7 @@ bool VansAssetObjectBootstrapper::Supports(VansAssetType type)
     case VansAssetType::Prefab:
 	case VansAssetType::Material:
 	case VansAssetType::Shader:
+	case VansAssetType::RenderPass:
 	case VansAssetType::SkinProfile:
 	case VansAssetType::PostProcessProfile:
 	case VansAssetType::VegetationConfig:

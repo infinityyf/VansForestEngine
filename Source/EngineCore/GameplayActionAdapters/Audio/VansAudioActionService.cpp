@@ -104,7 +104,17 @@ VansActionCommandResult VansAudioActionService::Execute(const VansActionCommand&
 		auto source = std::make_unique<VansEngine::VansAudioSourceBinding>();
 		if (!source->Bind(&m_Audio, sound)) return Failure("Audio loop could not bind: " + sound);
 		auto* voice = source->GetVoice();
-		voice->SetSpatial(false);
+        const auto* spatialValue=FindObjectField(command.payload,"spatial");
+        const bool spatial=spatialValue && spatialValue->kind==VansSerializedValue::Kind::Bool && spatialValue->boolValue;
+        glm::vec3 position(0);
+        if (spatial) {
+            const auto* value=FindObjectField(command.payload,"position");
+            if (!value || value->kind!=VansSerializedValue::Kind::Object) return Failure("Spatial audio loop requires a world position");
+            position={Number(*value,"x",NAN),Number(*value,"y",NAN),Number(*value,"z",NAN)};
+            if (!std::isfinite(glm::length(position))) return Failure("Spatial audio loop position is invalid");
+            voice->SetPosition(position.x,position.y,position.z);
+        }
+		voice->SetSpatial(spatial);
 		voice->SetLoop(true);
 		voice->SetVolume(asset->GetVolume() * volume);
 		voice->SetPitch(asset->GetPitch() * pitch);
@@ -126,7 +136,7 @@ VansActionCommandResult VansAudioActionService::Execute(const VansActionCommand&
 		else
 		{
 			const float fade = Number(command.payload, "fadeOut", 0.0f);
-			if (fade <= 0.0f) { std::string error; Release(handle, error); }
+            if (fade <= 0.0f) { std::string error; if (!Release(handle, error)) return Failure(error); }
 			else
 			{
 				// Stop 已归还 GAF 资源；渐隐尾部移交内部实例，由 Tick 回收。

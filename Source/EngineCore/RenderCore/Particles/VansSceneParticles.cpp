@@ -7,6 +7,7 @@
 #include "../../AssetCore/VansAssetObjectRepository.h"
 #include "../../Util/VansLog.h"
 #include <algorithm>
+#include <cmath>
 
 namespace VansGraphics
 {
@@ -70,6 +71,7 @@ Vans::VansVFXSceneBackend VansScene::MakeVFXSceneBackend()
         RetireCompletedParticlePulses();
         ParticleSourceBinding binding;
         binding.owner = request.owner; binding.effect = request.effect; binding.source = request.source;
+        binding.emissionGroup=request.emissionGroup;
         binding.autoRelease = pulse;
         binding.sourceEntity = m_RuntimeWorld->Entities().FindByGuid(request.source.entityGuid.ToString());
         if (binding.source.IsAnchor())
@@ -90,8 +92,22 @@ Vans::VansVFXSceneBackend VansScene::MakeVFXSceneBackend()
             binding.detached=true;
         }
         else if (!ResolveParticleSource(binding,world)) { error = "VFX source cannot resolve its current pose"; return {}; }
+        if (request.worldDirection)
+        {
+            const glm::dvec3 direction(*request.worldDirection);
+            const double length=glm::length(direction);
+            if (!request.worldPosition || !std::isfinite(length) || length==0)
+            { error="VFX world direction requires a finite nonzero direction and detached world position"; return {}; }
+            const auto forward=direction/length;
+            const double horizontal=glm::length(glm::dvec2(forward.x,forward.z));
+            const glm::dvec3 side=horizontal>0 ? glm::dvec3(-forward.z,0,forward.x)/horizontal : glm::dvec3(0,0,1);
+            world[0]=glm::vec4(glm::vec3(forward),0);
+            world[1]=glm::vec4(glm::vec3(glm::cross(side,forward)),0);
+            world[2]=glm::vec4(glm::vec3(side),0);
+        }
         const auto sameSource = [&](const auto& active) {
             return active.owner == binding.owner && active.effect == binding.effect && active.detached == binding.detached && active.sourceEntity == binding.sourceEntity
+                && active.emissionGroup==binding.emissionGroup
                 && active.source.kind == binding.source.kind && active.source.anchorGuid == binding.source.anchorGuid
                 && active.source.animationComponentGuid == binding.source.animationComponentGuid
                 && active.anchor.instanceId == binding.anchor.instanceId && active.anchor.instanceGeneration == binding.anchor.instanceGeneration;
@@ -116,6 +132,7 @@ Vans::VansVFXSceneBackend VansScene::MakeVFXSceneBackend()
         const auto asset = Vans::VansProjectManager::Get().GetAssetObjectRepository().ResolveLatest<VansParticleAsset>(request.effect);
         if (!asset) { error = "VFX particle asset is not loaded in memory"; return {}; }
         if (pulse && asset->m_Loop) { error = "VFX.Pulse requires a finite non-looping effect"; return {}; }
+        if (request.emissionPoints && asset->m_Loop) { error="VFX.SurfaceField requires a finite non-looping effect"; return {}; }
         binding.instance = m_ParticleManager.Create(asset);
         if (!binding.instance.IsValid()) { error = "Particle scene capacity exhausted"; return {}; }
         binding.lastSourcePosition = glm::vec3(world[3]);
@@ -124,6 +141,11 @@ Vans::VansVFXSceneBackend VansScene::MakeVFXSceneBackend()
             m_ParticleManager.Destroy(binding.instance);
             error = "Particle source transform could not be initialized";
             return {};
+        }
+        if (request.emissionPoints && !m_ParticleManager.SetEmissionPoints(binding.instance,*request.emissionPoints))
+        {
+            m_ParticleManager.Destroy(binding.instance);
+            error="Particle emission points could not be initialized"; return {};
         }
         m_ParticleManager.Queue(binding.instance,VansParticleControl::Play);
         if (request.worldPosition) m_ParticleManager.Queue(binding.instance,VansParticleControl::EmitInitialFrame);
@@ -146,6 +168,15 @@ Vans::VansVFXSceneBackend VansScene::MakeVFXSceneBackend()
         m_ParticleSources.erase(std::remove_if(m_ParticleSources.begin(),m_ParticleSources.end(),[&](const auto& binding) { return binding.instance == instance; }),m_ParticleSources.end());
         return !m_ParticleManager.Resolve(instance) || m_ParticleManager.Destroy(instance);
     };
+    backend.setEmissionPoints = [this](auto instance,const auto& points) { return m_ParticleManager.SetEmissionPoints(instance,points); };
+    backend.sampleExtinction = [this](auto instance,const auto& positions,auto& values) {
+        const auto* runtime=m_ParticleManager.Resolve(instance);
+        if (!runtime || !runtime->HasVolumetricInjectionEnabled() || positions.size()>256
+            || runtime->GetVolumetricRenderBuffer().size()>VansParticleMaxEmissionPoints) return false;
+        values.clear(); values.reserve(positions.size());
+        for (const auto& position : positions) values.push_back(runtime->SampleVolumetricExtinction(position));
+        return true;
+    };
     return backend;
 }
 VansSceneParticleDiagnostics VansScene::CaptureParticleDiagnostics(bool includePoints) const
@@ -167,6 +198,8 @@ VansSceneParticleDiagnostics VansScene::CaptureParticleDiagnostics(bool includeP
         VansParticleEffectDiagnostics effect;
         effect.instance = binding.instance; effect.effectGuid = binding.effect.ToString(); effect.sourceGuid = binding.source.entityGuid.ToString();
         effect.sourcePosition = binding.lastSourcePosition; effect.detached = binding.detached;
+        effect.sourceForward = glm::vec3(runtime->OwnerWorldTransform()[0]);
+        effect.emissionGroup = binding.emissionGroup;
         effect.playTime = runtime->GetPlayTime(); effect.alivePoints = runtime->AliveInstanceCount(); effect.substepOverruns = runtime->SubstepOverruns();
         static const char* states[] = {"Stopped", "Delayed", "Emitting", "Draining", "Finished"};
         effect.state = runtime->IsPaused() ? "Paused" : states[static_cast<unsigned>(runtime->GetState())];
@@ -200,6 +233,10 @@ std::shared_ptr<const VansParticleRenderAsset> VansScene::PrepareParticleRenderA
             binding->textures[i].negativeAxes = texture(config.m_SixWayLighting.m_NegativeAxesTextureGuid);
         }
         else binding->textures[i].color = texture(config.m_TextureGuid);
+        if (config.m_LightingMode == VansParticleLightingMode::SpriteCard && !config.m_Card.lookupTextureGuid.empty())
+            binding->textures[i].lookup = texture(config.m_Card.lookupTextureGuid);
+        if (config.m_LightingMode == VansParticleLightingMode::SpriteCard && config.m_Card.breakup != VansParticleCardBreakup::None)
+            binding->textures[i].breakup = texture(config.m_Card.breakupTextureGuid);
     }
     for (auto iterator=m_ParticleRenderAssets.begin(); iterator!=m_ParticleRenderAssets.end();)
         if (iterator->second.expired()) iterator = m_ParticleRenderAssets.erase(iterator); else ++iterator;

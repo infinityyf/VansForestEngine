@@ -1,5 +1,6 @@
 #pragma once
 #include "VansBaseWindowComponent.h"
+#include "../../EngineAPILayer/Public/ITerrainEditorAPI.h"
 
 #include <string>
 
@@ -18,6 +19,8 @@ namespace VansGraphics
         void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
 
 		Vans::EditorAPI::TerrainSettingsSnapshot m_SettingsDraft;
+		Vans::VansTerrainInteraction m_InteractionDraft;
+		bool m_InteractionDraftDirty = false;
 		std::string m_SettingsAssetGuid;
 		std::string m_BrushStateAssetGuid;
 		std::string m_StatusMessage;

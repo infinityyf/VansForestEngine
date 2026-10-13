@@ -58,6 +58,7 @@ struct Fixture
     VansRayTracingShader* trace{};
     VansComputeShader *prepare{}, *reproject{}, *worldShader{};
     VansVKBuffer *bias{}, *current{},*history{},*work{},*states{},*previous{},*info{},*layout{},*anchors{},*world{},*claims{};
+    VansVKBuffer* instanceMaterials{};
     static constexpr uint32_t Width=512,Height=512,CacheWidth=128,CacheHeight=128,Count=CacheWidth*CacheHeight;
     static constexpr VkDeviceSize CacheBytes=16+Count*sizeof(Record);
     struct State { glm::vec4 next{},published{};glm::uvec4 metadata{1,0,256,0}; };
@@ -296,20 +297,25 @@ void Fixture::Initialize()
     triangle.vertexData.deviceAddress=Address(vertex);triangle.indexType=VK_INDEX_TYPE_UINT32;triangle.indexData.deviceAddress=Address(index);
     auto blas=Build(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,geometry,uint32_t(indices.size()/3));
     VkAccelerationStructureDeviceAddressInfoKHR addressInfo{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};addressInfo.accelerationStructure=blas;
-    const std::array<GIInstanceMaterialGPU,6> materials={
+    const std::array<GIInstanceMaterialGPU,9> materials={
         GIInstanceMaterialGPU::Resolve(0xffffffffu,false,.5f),
         GIInstanceMaterialGPU::Resolve(0,true,.5f),
         GIInstanceMaterialGPU::Resolve(1,true,.25f),
         GIInstanceMaterialGPU::Resolve(1,true,.75f),
         GIInstanceMaterialGPU::Resolve(0,false,.75f),
-        GIInstanceMaterialGPU::Resolve(1,true,.5f)};
+        GIInstanceMaterialGPU::Resolve(1,true,.5f),
+        GIInstanceMaterialGPU::ResolveCloth(0,false,.5f,true,{.2f,.3f,.4f},.6f),
+        GIInstanceMaterialGPU::ResolveCloth(0,true,.75f,true,{1,1,1},1),
+        GIInstanceMaterialGPU::ResolveCloth(0,false,.5f,false,{1,1,1},1)};
     Check(materials[0].InstanceFlags()==VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR &&
         materials[1].InstanceFlags()==VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR,
         "opaque and alpha-tested instances must select different traversal paths");
     Check(GIInstanceMaterialGPU::Resolve(0,true,0).InstanceFlags()==VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR,
         "zero alpha cutoff must retain opaque fast path");
-    VkAccelerationStructureInstanceKHR instances[6]{};
-    for(uint32_t i=0;i<6;++i)
+    Check(materials[6].InstanceFlags()==VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR,
+        "editable opaque Cloth must permit later mask/sidedness changes without TLAS rebuild");
+    VkAccelerationStructureInstanceKHR instances[materials.size()]{};
+    for(uint32_t i=0;i<materials.size();++i)
     {
         instances[i].transform.matrix[0][0]=instances[i].transform.matrix[1][1]=instances[i].transform.matrix[2][2]=1;
         instances[i].transform.matrix[0][3]=float(i)*5;instances[i].mask=255;
@@ -320,15 +326,16 @@ void Fixture::Initialize()
     geometry={VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};geometry.geometryType=VK_GEOMETRY_TYPE_INSTANCES_KHR;
     geometry.geometry.instances.sType=VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
     geometry.geometry.instances.data.deviceAddress=Address(instanceBuffer);
-    auto tlas=Build(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,geometry,6);
+    auto tlas=Build(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,geometry,uint32_t(materials.size()));
     End(); // 纹理上传拥有自己的 immediate command 提交，先完成 AS 构建。
     std::cout << "[GIReceiverVisibilityGPU] AS ready" << std::endl;
     auto* transparent=Texture(1,1,{glm::vec4(0)});
     auto* halfCoverage=Texture(1,1,{glm::vec4(.5f)});
+    auto* clothCoverage=Texture(1,1,{glm::vec4(.5f,0,0,0)}); // R 与 A 故意不同。
     std::vector<uint16_t> hitVertices(vertices.size()*14,0); // any-hit 只使用 UV，所有 UV 均为零。
     auto* hitVertex=Buffer(hitVertices.size()*2,hitVertices.data());
-    uint32_t modelIds[6]={0,0,0,0,0,0};
-    auto* model=Buffer(sizeof(modelIds),modelIds);auto* instanceMaterials=Buffer(sizeof(materials),materials.data());
+    uint32_t modelIds[materials.size()]{};
+    auto* model=Buffer(sizeof(modelIds),modelIds);instanceMaterials=Buffer(sizeof(materials),materials.data());
     bias=Buffer(16+Count*32);
     current=Buffer(CacheBytes);history=Buffer(CacheBytes);work=Buffer(VansGIReceiverVisibility::WorkBytes);
     anchors=Buffer(Count*4);world=Buffer(VansGIReceiverVisibility::WorldBytes);
@@ -341,7 +348,7 @@ void Fixture::Initialize()
         {3,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,ah,nullptr},{4,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,ah,nullptr},
         {5,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,ah,nullptr},{7,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,ah,nullptr},
         {14,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,ah,nullptr},
-        {50,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,2,ah,nullptr}},rootLayout,rootSets),"root descriptors");
+        {50,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,3,ah,nullptr}},rootLayout,rootSets),"root descriptors");
     const VkShaderStageFlags stages=VK_SHADER_STAGE_COMPUTE_BIT|VK_SHADER_STAGE_RAYGEN_BIT_KHR;
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     for(uint32_t i=0;i<4;++i) bindings.push_back({i,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,stages,nullptr});
@@ -355,7 +362,8 @@ void Fixture::Initialize()
     BindBuffer(rootSets[0],3,hitVertex);BindBuffer(rootSets[0],4,index);BindBuffer(rootSets[0],5,model);BindBuffer(rootSets[0],7,instanceMaterials);
     descriptors->WriteImageDescriptor(rootSets[0],50,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         {{transparent->GetImage().GetSampler(),transparent->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-         {halfCoverage->GetImage().GetSampler(),halfCoverage->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+         {halfCoverage->GetImage().GetSampler(),halfCoverage->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+         {clothCoverage->GetImage().GetSampler(),clothCoverage->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
     BindBuffer(passSets[0],4,info,1,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);BindBuffer(passSets[0],6,layout);BindBuffer(passSets[0],7,states,8);
     BindBuffer(passSets[0],8,previous,8);BindBuffer(passSets[0],9,history);BindBuffer(passSets[0],10,current);BindBuffer(passSets[0],11,work);
     glm::uvec4 biasMeshLayout[2]={glm::uvec4(12,0,~0u,~0u),glm::uvec4(1,0,0,0)};
@@ -587,7 +595,13 @@ bool TestGIReceiverVisibilityGpuContract()
             {{14,0,0},{-1,0,0},{16,0,0},true}, // 同 BLAS、同纹理，cutoff .75
             {{19,0,0},{-1,0,0},{21,0,0},false}, // 透明纹理但未启用裁剪：实体阻挡
             {{24,0,0},{-1,0,0},{26,0,0},false}, // alpha 等于 cutoff 时保留
-            {{6,0,0},{1,0,0},{4,0,0},true}}; // 反面同样执行透明裁剪
+            {{6,0,0},{1,0,0},{4,0,0},true}, // 反面同样执行透明裁剪
+            {{29,0,0},{-1,0,0},{31,0,0},false}, // Cloth opacity R == cutoff；A=0 不参与
+            {{31,0,0},{1,0,0},{29,0,0},false}, // 双面 Cloth
+            {{34,0,0},{-1,0,0},{36,0,0},true}, // Cloth opacity R < cutoff
+            {{36,0,0},{1,0,0},{34,0,0},true},
+            {{39,0,0},{-1,0,0},{41,0,0},true}, // 单面 Cloth：背面射线穿过
+            {{41,0,0},{1,0,0},{39,0,0},false}};
         gpu.params.regions[0].volumeMin=glm::vec4(-.5f,-.5f,-.5f,0);
         gpu.params.regions[0].volumeSizeAndBias=glm::vec4(float(cases.size()),1,1,0);
         gpu.params.regions[0].gridDimensionsAndPriority=glm::vec4(float(cases.size()),1,1,0);
@@ -608,7 +622,34 @@ bool TestGIReceiverVisibilityGpuContract()
             if(records[i].metadata.z!=1u || ((records[i].metadata.w&1u)!=0u)!=cases[i].visible)
                 throw std::runtime_error("HW occlusion mismatch at finite-geometry case "+std::to_string(i));
         }
-        std::cout<<"[GIReceiverVisibilityGPU] 18 opaque-BLAS wall/floor/stair, both-face, endpoint, self-hit, shared-mesh alpha-cutoff cases passed\n";
+        std::cout<<"[GIReceiverVisibilityGPU] 24 opaque-BLAS and Cloth coverage/sidedness cases passed\n";
+        // 不重建 BLAS/TLAS，仅通过与生产相同的 transfer -> any-hit 顺序改写布料 payload。
+        for (uint32_t edit = 0; edit < 2; ++edit)
+        {
+            const std::array<GIInstanceMaterialGPU, 3> edited{
+                GIInstanceMaterialGPU::ResolveCloth(0,true,edit == 0 ? .5f : .75f,true,{1,1,1},1),
+                GIInstanceMaterialGPU::ResolveCloth(0,false,.5f,edit == 0,{1,1,1},1),
+                GIInstanceMaterialGPU::ResolveCloth(0,edit != 0,.75f,true,{1,1,1},1)};
+            const std::array<bool, 6> expected = edit == 0
+                ? std::array<bool, 6>{false,false,false,false,false,false}
+                : std::array<bool, 6>{true,true,true,false,true,true};
+            for (uint32_t i = 0; i < cases.size(); ++i) records[i].metadata = glm::uvec4(0);
+            gpu.Begin();
+            gpu.Barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_SHADER_READ_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+            gpu.Command().UpdateBuffer(gpu.instanceMaterials->GetNativeBuffer(),6 * sizeof(GIInstanceMaterialGPU),
+                sizeof(edited),edited.data());
+            gpu.Barrier(VK_PIPELINE_STAGE_TRANSFER_BIT|VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                VK_ACCESS_TRANSFER_WRITE_BIT|VK_ACCESS_HOST_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT);
+            gpu.Trace();
+            gpu.Barrier(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,VK_PIPELINE_STAGE_HOST_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_HOST_READ_BIT);gpu.End();
+            for (uint32_t i = 0; i < cases.size(); ++i)
+                Check(records[i].metadata.z == 1u && ((records[i].metadata.w & 1u) != 0u) ==
+                    (i < 18 ? cases[i].visible : expected[i - 18]),
+                    "live Cloth coverage/sidedness update or non-Cloth preservation failed");
+        }
+        std::cout<<"[GIReceiverVisibilityGPU] 48 live-edit cases without AS rebuild passed\n";
         gpu.params.screenSize=glm::vec4(Fixture::Width,Fixture::Height,1.f/Fixture::Width,1.f/Fixture::Height);
         gpu.params.regionInfo=glm::vec4(1,0,0,0);gpu.params.regions[0].volumeMin=glm::vec4(-2,-2,-2,0);
         gpu.params.regions[0].volumeSizeAndBias=glm::vec4(4,4,4,0);gpu.params.regions[0].gridDimensionsAndPriority=glm::vec4(2,2,2,0);

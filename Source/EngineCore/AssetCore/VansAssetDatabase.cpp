@@ -22,6 +22,7 @@ constexpr VansAssetTypeDescriptor AssetTypes[] =
 	{ VansAssetType::IESProfile, "iesProfile", ".ies", "IESProfileImporter" },
 	{ VansAssetType::Material, "material", ".mat", "MaterialImporter" },
 	{ VansAssetType::Shader, "shader", ".vshader", "ShaderImporter" },
+	{ VansAssetType::RenderPass, "renderPass", ".vrenderpass", "RenderPassImporter" },
 	{ VansAssetType::Audio, "audio", ".wav", "AudioImporter" },
 	{ VansAssetType::Video, "video", ".mp4", "VideoImporter" },
 	{ VansAssetType::Scene, "scene", ".vscene", "SceneImporter" },
@@ -255,9 +256,9 @@ bool VansAssetDatabase::RegisterOrRefresh(
         error = "Asset importer does not match source extension: " + normalized.string();
         return false;
     }
-	std::uint32_t maxResidentDimension = 0;
+	VansTextureAssetImportSettings textureImport;
 	if (type == VansAssetType::Texture &&
-		!ReadTextureMaxResidentDimension(meta, maxResidentDimension, error))
+		!ReadTextureImportSettings(meta, textureImport, error))
 		return false;
 
     VansFileFingerprint sourceFingerprint;
@@ -323,7 +324,7 @@ bool VansAssetDatabase::RegisterOrRefresh(
     record.type = type;
     record.sourcePath = normalized;
     record.metaPath = metaPath;
-	record.authoringPath = type == VansAssetType::Material || type == VansAssetType::Shader ||
+	record.authoringPath = type == VansAssetType::Material || type == VansAssetType::Shader || type == VansAssetType::RenderPass ||
 		type == VansAssetType::Timeline || type == VansAssetType::ActionDefinition ||
 		type == VansAssetType::AIBehavior || type == VansAssetType::Prefab ||
 		type == VansAssetType::ActionSet || type == VansAssetType::GameplayEffect ||
@@ -345,31 +346,37 @@ bool VansAssetDatabase::RegisterOrRefresh(
             return subAsset.first.rfind("bone:", 0) == 0;
         });
 	record.memoryOnly = false;
-	if (type == VansAssetType::Texture)
-	{
-		std::string colorSpace = meta.ReadStringSetting("colorSpace");
-		std::transform(colorSpace.begin(), colorSpace.end(), colorSpace.begin(),
-			[](unsigned char value) { return static_cast<char>(std::tolower(value)); });
-		record.textureImport.available = true;
-		record.textureImport.linear = colorSpace.empty()
-			? !meta.ReadBoolSetting("sRGB", true)
-			: colorSpace == "linear";
-		record.textureImport.compressed = meta.ReadBoolSetting("useCompress", true);
-		record.textureImport.mipmapped = meta.ReadBoolSetting("needMip", true);
-		record.textureImport.channelCount = meta.ReadIntSetting("importChannel", 4);
-		record.textureImport.precision = meta.ReadStringSetting("precision", "low8");
-		record.textureImport.maxResidentDimension = maxResidentDimension;
-	}
-	else
-	{
-		record.textureImport = {};
-	}
+	record.textureImport = textureImport;
     record.state = record.artifactPath.empty()
         ? VansAssetState::Discovered
         : VansAssetState::CpuReady;
     ++record.generation;
     record.error = textureCookError;
     m_ByPath[key] = meta.guid;
+    return true;
+}
+
+bool VansAssetDatabase::ReadTextureImportSettings(const VansAssetMeta& meta,
+    VansTextureAssetImportSettings& settings, std::string& error)
+{
+    error.clear();
+    VansTextureAssetImportSettings parsed;
+    if (!ReadTextureMaxResidentDimension(meta, parsed.maxResidentDimension, error)) return false;
+    std::string colorSpace = meta.ReadStringSetting("colorSpace");
+    std::transform(colorSpace.begin(), colorSpace.end(), colorSpace.begin(),
+        [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    if (!colorSpace.empty() && colorSpace != "linear" && colorSpace != "srgb")
+    {
+        error = "Texture colorSpace must be linear or sRGB";
+        return false;
+    }
+    parsed.available = true;
+    parsed.linear = colorSpace.empty() ? !meta.ReadBoolSetting("sRGB", true) : colorSpace == "linear";
+    parsed.compressed = meta.ReadBoolSetting("useCompress", true);
+    parsed.mipmapped = meta.ReadBoolSetting("needMip", true);
+    parsed.channelCount = meta.ReadIntSetting("importChannel", 4);
+    parsed.precision = meta.ReadStringSetting("precision", "low8");
+    settings = std::move(parsed);
     return true;
 }
 

@@ -1,9 +1,11 @@
 #pragma once
 
 #include "VansAtmosphereTypes.h"
+#include "../VansRenderRuntimeConfig.h"
 #include "../VulkanCore/VansVKBuffer.h"
 #include "../VulkanCore/VansVKImage.h"
 
+#include <array>
 #include <cstdint>
 #include <vulkan/vulkan.h>
 
@@ -37,19 +39,43 @@ namespace VansGraphics
 
 		void BindGlobalDescriptors(
 			VkDescriptorSet globalSet,
+			std::uint32_t slot,
 			const VkDescriptorImageInfo& cloudShadow,
 			const VkDescriptorImageInfo& cloudResult,
 			const VkDescriptorImageInfo& localScattering,
 			const VkDescriptorImageInfo& localOpticalDepth);
+		bool SelectFrameGlobalDescriptorSet(VkDescriptorSet globalSet,
+			std::uint32_t frameSlot, std::uint32_t gbufferTargetSlot);
 
-		void RecordStaticLutUpdates(
+		bool RecordStaticLutUpdates(
 			VansVKCommandBuffer& commandBuffer,
 			std::uint64_t frameIndex);
+		void CommitStaticLutUpdate() { m_StaticLutsDirty = false; }
+		void DiscardRecordedFrame();
 		void RecordViewLutUpdates(VansVKCommandBuffer& commandBuffer);
 		void RecordComposite(VansVKCommandBuffer& commandBuffer);
-		void InvalidateStaticLuts() { m_StaticLutsDirty = true; }
+		void RefreshRawOpaqueSceneColorDescriptors();
 
 		bool IsInitialized() const { return m_Initialized; }
+		struct ResourceImages
+		{
+			VkImage transmittance = VK_NULL_HANDLE;
+			VkImage multiScattering = VK_NULL_HANDLE;
+			VkImage skyView = VK_NULL_HANDLE;
+			VkImage aerialScattering = VK_NULL_HANDLE;
+			VkImage aerialClearScattering = VK_NULL_HANDLE;
+			VkImage aerialOpticalDepth = VK_NULL_HANDLE;
+		};
+		ResourceImages GetResourceImages()
+		{
+			if (!m_Initialized)
+				return {};
+			return {
+				m_TransmittanceLut.GetImage(), m_MultiScatteringLut.GetImage(),
+				m_SkyViewLut.GetImage(), m_AerialScattering.GetImage(),
+				m_AerialClearScattering.GetImage(), m_AerialOpticalDepth.GetImage()
+			};
+		}
 		VkDescriptorImageInfo GetNeutralCloudShadowDescriptor();
 		VkDescriptorImageInfo GetNeutralCloudResultDescriptor();
 		VkDescriptorImageInfo GetNeutralLocalMediaDescriptor();
@@ -81,10 +107,13 @@ namespace VansGraphics
 		std::uint32_t m_AerialWidth = 0;
 		std::uint32_t m_AerialHeight = 0;
 
-		VansVKBuffer m_StaticParamsBuffer;
-		VansVKBuffer m_FrameParamsBuffer;
-		bool m_StaticParamsBufferCreated = false;
-		bool m_FrameParamsBufferCreated = false;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_StaticParamsBuffers;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_FrameParamsBuffers;
+		std::array<bool, VansCommandRecordingConfig::MaximumFramesInFlight> m_StaticParamsBufferCreated{};
+		std::array<bool, VansCommandRecordingConfig::MaximumFramesInFlight> m_FrameParamsBufferCreated{};
+		std::array<bool, VansCommandRecordingConfig::MaximumFramesInFlight> m_StaticParamsSlotUploaded{};
+		std::array<std::uint64_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_StaticParamsSlotGeneration{};
+		std::uint32_t m_FrameResourceSlot = 0;
 
 		VansVKImage m_TransmittanceLut;
 		VansVKImage m_MultiScatteringLut;
@@ -97,7 +126,9 @@ namespace VansGraphics
 		VansVKImage m_NeutralLocalMedia;
 
 		VkDescriptorSetLayout m_PassLayout = VK_NULL_HANDLE;
-		VkDescriptorSet m_PassSet = VK_NULL_HANDLE;
+		std::array<VkDescriptorSet, VansCommandRecordingConfig::MaximumFramesInFlight> m_PassSets{};
+		std::array<std::uint32_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_SceneDepthTargetSlots{};
+		std::array<std::uint64_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_SceneDepthTargetGenerations{};
 		VkDescriptorSet m_GlobalSet = VK_NULL_HANDLE;
 		VansComputeShader* m_TransmittanceShader = nullptr;
 		VansComputeShader* m_MultiScatteringShader = nullptr;

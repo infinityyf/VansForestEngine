@@ -6,6 +6,7 @@
 #include "../../SceneCore/VansSceneLocalVolumetricFogComponentConfig.h"
 #include "../../ParticleCore/VansParticleInstanceData.h"
 
+#include <array>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <string>
@@ -51,14 +52,14 @@ namespace VansGraphics
 		std::uint32_t RegisterVector2(
 			const Vans::VansLocalFogVector2TextureSourceConfig& source,
 			const Vans::VansLocalFogTextureMapping2DConfig& mapping);
-		bool EndBuild();
+		bool EndBuild(std::uint32_t slot);
 		void Shutdown();
 
 		const std::vector<VkDescriptorImageInfo>& GetDescriptorInfos() const
 		{
 			return m_DescriptorInfos;
 		}
-		VkDescriptorBufferInfo GetMetadataDescriptor() const;
+		VkDescriptorBufferInfo GetMetadataDescriptor(std::uint32_t slot) const;
 
 	private:
 		struct DescriptorEntry final
@@ -95,8 +96,8 @@ namespace VansGraphics
 		VansVKDevice* m_Device = nullptr;
 		VansScene* m_Scene = nullptr;
 		VansTexture* m_NeutralTexture = nullptr;
-		VansVKBuffer m_MetadataBuffer;
-		bool m_MetadataBufferCreated = false;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_MetadataBuffers;
+		std::array<bool, VansCommandRecordingConfig::MaximumFramesInFlight> m_MetadataBufferCreated{};
 		VkSampler m_RepeatSampler = VK_NULL_HANDLE;
 		VkSampler m_ClampToEdgeSampler = VK_NULL_HANDLE;
 		VkSampler m_ClampToBorderZeroSampler = VK_NULL_HANDLE;
@@ -105,8 +106,8 @@ namespace VansGraphics
 		std::vector<VansLocalFogFieldSampleMetadataGPU> m_BuildMetadata;
 		std::vector<VkDescriptorImageInfo> m_DescriptorInfos;
 		std::unordered_set<std::string> m_ReportedInvalidSources;
-		std::uint64_t m_Signature = 0u;
-		bool m_HasSignature = false;
+		std::array<std::uint64_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_Signatures{};
+		std::array<bool, VansCommandRecordingConfig::MaximumFramesInFlight> m_HasSignature{};
 	};
 
 	struct alignas(16) VansNearMediaParamsGPU final
@@ -164,13 +165,40 @@ namespace VansGraphics
 			bool featureRequested,
 			const std::vector<VansVolumetricParticleInstanceData>& instances);
 		void InvalidateHistory() { m_HistoryValid = false; }
-		void BindGlobalDescriptor(VkDescriptorSet globalSet);
+		void DiscardRecordedFrame();
+		void BindGlobalDescriptor(VkDescriptorSet globalSet, std::uint32_t slot);
 		void Shutdown();
 
 		VkDescriptorImageInfo GetScatteringDescriptor();
 		VkDescriptorImageInfo GetOpticalDepthDescriptor();
 		VkDescriptorImageInfo GetCurrentInjectionDescriptor();
 		const VansNearMediaQualityConfig& GetQuality() const { return m_Quality; }
+		struct ResourceImages
+		{
+			VkImage rawInjection = VK_NULL_HANDLE;
+			VkImage materialScatteringExtinction = VK_NULL_HANDLE;
+			VkImage materialLightingPhaseCloud = VK_NULL_HANDLE;
+			VkImage materialEmissiveWeight = VK_NULL_HANDLE;
+			std::array<VkImage, 2> volumetricParticleActivity{};
+			std::array<VkImage, 2> injection{};
+			VkImage scattering = VK_NULL_HANDLE;
+			VkImage opticalDepth = VK_NULL_HANDLE;
+		};
+		ResourceImages GetResourceImages()
+		{
+			if (!m_Initialized)
+				return {};
+			return {
+				m_RawInjection.GetImage(),
+				m_MaterialScatteringExtinction.GetImage(),
+				m_MaterialLightingPhaseCloud.GetImage(),
+				m_MaterialEmissiveWeight.GetImage(),
+				{ m_VolumetricParticleActivity[0].GetImage(),
+					m_VolumetricParticleActivity[1].GetImage() },
+				{ m_Injection[0].GetImage(), m_Injection[1].GetImage() },
+				m_Scattering.GetImage(), m_OpticalDepth.GetImage()
+			};
+		}
 
 	private:
 		static constexpr std::uint32_t MaxLocalFogVolumes = 64;
@@ -189,17 +217,18 @@ namespace VansGraphics
 		bool CreateVolumetricParticleResources();
 		bool CreateVolumetricParticleDescriptors();
 		bool ValidateLocalFogFieldDescriptorSupport() const;
-		void UpdateLocalFogFieldDescriptors();
+		void UpdateLocalFogFieldDescriptors(std::uint32_t slot);
 		void DestroyResources();
 		void DestroyDescriptors();
 		void DestroyVolumetricParticleResources();
 		void DestroyVolumetricParticleDescriptors();
-		void UploadParameters();
+		void UploadParameters(std::uint32_t slot);
 		void RefreshLocalFogRegistry();
 		void CollectLocalFogVolumes(
 			std::vector<VansLocalFogVolumeGPU>& outVolumes,
 			std::vector<glm::uvec2>& outTileHeaders,
-			std::vector<std::uint32_t>& outTileIndices);
+			std::vector<std::uint32_t>& outTileIndices,
+			std::uint32_t slot);
 		void TransitionForWrite(VansVKCommandBuffer& commandBuffer,
 			VansVKImage& image, bool initialized);
 		void BarrierForSampling(VansVKCommandBuffer& commandBuffer, VansVKImage& image);
@@ -212,24 +241,28 @@ namespace VansGraphics
 		std::uint32_t m_GridWidth = 0;
 		std::uint32_t m_GridHeight = 0;
 		float m_PreviousEffectiveFarDistanceMeters = 0.0f;
-		VansVKBuffer m_ParamsBuffer;
-		VansVKBuffer m_LocalFogVolumesBuffer;
-		VansVKBuffer m_LocalFogTileHeadersBuffer;
-		VansVKBuffer m_LocalFogTileIndicesBuffer;
-		VansVKBuffer m_VolumetricParticlesBuffer;
-		VansVKBuffer m_VolumetricParticleTileHeadersBuffer;
-		VansVKBuffer m_VolumetricParticleTileIndicesBuffer;
-		VansVKBuffer m_VolumetricParticleParamsBuffer;
+		struct FrameBuffers final
+		{
+			VansVKBuffer params;
+			VansVKBuffer localFogVolumes;
+			VansVKBuffer localFogTileHeaders;
+			VansVKBuffer localFogTileIndices;
+			VansVKBuffer volumetricParticles;
+			VansVKBuffer volumetricParticleTileHeaders;
+			VansVKBuffer volumetricParticleTileIndices;
+			VansVKBuffer volumetricParticleParams;
+			bool paramsCreated = false;
+			bool localFogVolumesCreated = false;
+			bool localFogTileHeadersCreated = false;
+			bool localFogTileIndicesCreated = false;
+			bool volumetricParticlesCreated = false;
+			bool volumetricParticleTileHeadersCreated = false;
+			bool volumetricParticleTileIndicesCreated = false;
+			bool volumetricParticleParamsCreated = false;
+		};
+		std::array<FrameBuffers, VansCommandRecordingConfig::MaximumFramesInFlight> m_FrameBuffers;
 		VansLocalFogFieldResourceTable m_LocalFogFieldResources;
-		bool m_ParamsBufferCreated = false;
-		bool m_LocalFogVolumesBufferCreated = false;
-		bool m_LocalFogTileHeadersBufferCreated = false;
-		bool m_LocalFogTileIndicesBufferCreated = false;
-		bool m_VolumetricParticlesBufferCreated = false;
-		bool m_VolumetricParticleTileHeadersBufferCreated = false;
-		bool m_VolumetricParticleTileIndicesBufferCreated = false;
-		bool m_VolumetricParticleParamsBufferCreated = false;
-		bool m_LocalFogFieldDescriptorsDirty = false;
+		std::array<bool, VansCommandRecordingConfig::MaximumFramesInFlight> m_LocalFogFieldDescriptorsDirty{};
 		std::uint64_t m_LocalFogRegistryGeneration = UINT64_MAX;
 		std::vector<LocalFogRegistryEntry> m_LocalFogRegistry;
 		// 每帧重写内容但复用容量，避免候选表造成瞬时分配。
@@ -249,9 +282,9 @@ namespace VansGraphics
 		VansVKImage m_Scattering;
 		VansVKImage m_OpticalDepth;
 		VkDescriptorSetLayout m_PassLayout = VK_NULL_HANDLE;
-		VkDescriptorSet m_PassSets[2]{ VK_NULL_HANDLE, VK_NULL_HANDLE };
+		std::array<std::array<VkDescriptorSet, 2>, VansCommandRecordingConfig::MaximumFramesInFlight> m_PassSets{};
 		VkDescriptorSetLayout m_VolumetricParticlePassLayout = VK_NULL_HANDLE;
-		VkDescriptorSet m_VolumetricParticlePassSets[2]{ VK_NULL_HANDLE, VK_NULL_HANDLE };
+		std::array<std::array<VkDescriptorSet, 2>, VansCommandRecordingConfig::MaximumFramesInFlight> m_VolumetricParticlePassSets{};
 		VansComputeShader* m_InjectionShader = nullptr;
 		VansComputeShader* m_LightingShader = nullptr;
 		VansComputeShader* m_TemporalResolveShader = nullptr;

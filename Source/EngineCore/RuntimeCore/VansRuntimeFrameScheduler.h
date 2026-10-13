@@ -24,6 +24,8 @@ class IVansRuntimeFramePort
 	virtual void UpdateNonCameraScripts(const VansRuntimeFrameContext& context) = 0;
 	virtual void AdvanceCameraRuntime(const VansRuntimeFrameContext& context) = 0;
 	virtual void UpdateActionsEarly(const VansRuntimeFrameContext& context) = 0;
+	virtual void PrepareNavigation(const VansRuntimeFrameContext& context) = 0;
+	virtual void UpdateNavigation(const VansRuntimeFrameContext& context) = 0;
 	virtual void UpdateAI(const VansRuntimeFrameContext& context) = 0;
 	virtual void PrepareCharacterLocomotion(const VansRuntimeFrameContext& context) = 0;
 	virtual void FlushCharacterControllerTransforms(const VansRuntimeFrameContext& context) = 0;

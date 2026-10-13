@@ -33,6 +33,31 @@ bool sphereInsideFrustum(vec3 center, float radius)
     return true;
 }
 
+// The light-space test uses the same clip planes as the shadow draw. A small
+// world-space margin keeps rounding at a cascade edge from dropping casters.
+bool sphereIntersectsClipFrustum(mat4 worldToClip, vec3 center, float radius)
+{
+    float conservativeRadius = radius * 1.01 + 0.01;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        for (int side = 0; side < 2; ++side)
+        {
+            float signValue = side == 0 ? 1.0 : -1.0;
+            vec4 plane = vec4(
+                worldToClip[0][3] + signValue * worldToClip[0][axis],
+                worldToClip[1][3] + signValue * worldToClip[1][axis],
+                worldToClip[2][3] + signValue * worldToClip[2][axis],
+                worldToClip[3][3] + signValue * worldToClip[3][axis]);
+            float lengthNormal = length(plane.xyz);
+            if (lengthNormal <= 1e-8)
+                continue;
+            if (dot(plane.xyz, center) + plane.w + conservativeRadius * lengthNormal < 0.0)
+                return false;
+        }
+    }
+    return true;
+}
+
 float sampleHiZCell(ivec2 cell, int mipLevel, int mipMaxIndex)
 {
     int   lod      = clamp(mipLevel, 0, mipMaxIndex);

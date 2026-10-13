@@ -1,12 +1,13 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-layout(early_fragment_tests) in;
+// Mask 在深度写入前裁剪；不强制 early_fragment_tests。
 #include "../../Common/CameraData.glsl"
 #include "../../Common/VansDrawSubmission.glsl"
 #include "../../Common/MotionVector.glsl"
 #include "../../Common/Common.glsl"
 #include "../../BRDF/BRDFData.glsl"
 #include "../../BRDF/ClothData.glsl"
+#include "../ClothSurface.glsl"
 
 layout( location = 0 ) in vec2 frag_uv;
 layout( location = 1 ) in vec3 normal_ws;
@@ -16,16 +17,10 @@ layout( location = 4 ) in vec3 position_world;
 layout( location = 5 ) in vec4 motion_current_clip;
 layout( location = 6 ) in vec4 motion_previous_clip;
 
-// Set 4 — per-node cloth textures (albedo + normal + roughness + ao)
-layout( set = 4, binding = 0 ) uniform sampler2D clothAlbedo;
-layout( set = 4, binding = 1 ) uniform sampler2D clothNormal;
-layout( set = 4, binding = 2 ) uniform sampler2D clothRoughness;
-layout( set = 4, binding = 3 ) uniform sampler2D clothAO;
-
 // G-Buffer MRT outputs
 layout (location = 0) out vec4 outNormal;   // .xyz = world normal, .w = tangent angle / PI
 layout (location = 1) out vec4 outGBuffer0; // .rgb = albedo, .w = effective roughness
-layout (location = 2) out vec4 outGBuffer1; // .x = fallback sheen weight, .y = ao, .z = material ID, .w = materialIndex
+layout (location = 2) out vec4 outGBuffer1; // .x = effective sheen weight, .y = ao, .z = material ID, .w = materialIndex
 layout (location = 3) out vec4 outGBuffer2; // .xyz = world pos,     .w = linear depth
 layout (location = 4) out vec2 outMotionVector;
 
@@ -34,33 +29,17 @@ void main()
     VansDrawData drawData = VansGetDrawData();
     int mi = max(drawData.materialIndex, 0);
     MaterialPayload mat = materialDataBuffer.materials[mi];
-
-    vec3  albedo         = max(mat.albedo.rgb, vec3(0.0)) * texture(clothAlbedo, frag_uv, MaterialMipBias).rgb;
-    float sheenRoughness = clamp(mat.roughness * texture(clothRoughness, frag_uv, MaterialMipBias).r, 0.045, 1.0);
-    float ao             = clamp(mat.ao * texture(clothAO, frag_uv, MaterialMipBias).r, 0.0, 1.0);
-    float sheenStrength  = clamp(mat.padding, 0.0, 1.0);
-
-    // Two-sided, orthonormal TBN. Keep the original tangent direction so silk
-    // anisotropy remains stable when the geometric normal is flipped.
-    vec3 geometricNormal = normalize(normal_ws);
-    if (!gl_FrontFacing)
-        geometricNormal = -geometricNormal;
-    vec3 tangent = normalize(tangent_ws - geometricNormal * dot(geometricNormal, tangent_ws));
-    float handedness = dot(cross(normalize(normal_ws), normalize(tangent_ws)), normalize(bitangent_ws)) < 0.0
-        ? -1.0 : 1.0;
-    vec3 bitangent = normalize(cross(geometricNormal, tangent)) * handedness;
-
-    vec3 normal_sample = texture(clothNormal, frag_uv, MaterialMipBias).rgb;
-    normal_sample = normal_sample * 2.0 - 1.0;
-    mat3 TBN           = mat3(tangent, bitangent, geometricNormal);
-    vec3 normal        = normalize(TBN * normal_sample);
-    float tangentAngle = EncodeClothTangentAngle(normal, tangent);
+    ClothMaterialPayload cloth = GetClothMaterialPayload(mi);
+    ClothSampledSurface surface = SampleClothSurface(mat.albedo, mat.roughness, mat.ao,
+        cloth, frag_uv, MaterialMipBias, normal_ws, tangent_ws, bitangent_ws,
+        gl_FrontFacing, vec3(0.0));
+    float tangentAngle = EncodeClothTangentAngle(surface.shading.normal, surface.tangent);
 
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
 
-    outNormal   = vec4(normal, tangentAngle);
-    outGBuffer0 = vec4(albedo, sheenRoughness);
-    outGBuffer1 = vec4(sheenStrength, ao, float(MATERIAL_ID_CLOTH), float(mi));
+    outNormal   = vec4(surface.shading.normal, tangentAngle);
+    outGBuffer0 = vec4(surface.shading.albedo, surface.shading.roughness);
+    outGBuffer1 = vec4(cloth.sheenColorWeight.a, surface.ao, float(MATERIAL_ID_CLOTH), float(mi));
     outGBuffer2 = vec4(position_world, -linearDepth);
     outMotionVector = VansMotionVectorFromClip(motion_current_clip, motion_previous_clip);
 }

@@ -250,6 +250,15 @@ void VansPcgWindow::ShowConfiguration(Vans::EditorAPI::IPcgEditorAPI& api,
                     ImGui::DragFloat3("Model offset",variant.offset.data(),.01f);
                     ImGui::DragFloat3("Model scale",variant.scale.data(),.01f);
                     ImGui::DragFloat4("Model rotation XYZW",variant.rotation.data(),.01f);
+                    bool collisionEnabled=variant.collision.has_value();
+                    if(ImGui::Checkbox("Static collision prototype",&collisionEnabled)) {
+                        if(collisionEnabled) variant.collision.emplace(); else variant.collision.reset();
+                    }
+                    if(variant.collision) {
+                        AssetField(assetAPI,"Collision model",variant.collision->mesh,AssetType::Model);
+                        TextField("Collision layer",variant.collision->layer);
+                        ImGui::TextUnformatted("Collision model uses point-local coordinates. Applied on scene load.");
+                    }
                     if (ImGui::Button("Add material part")) variant.parts.emplace_back();
                     for (size_t partIndex=0;partIndex<variant.parts.size();) {
                         ImGui::PushID(static_cast<int>(partIndex));auto& part=variant.parts[partIndex];

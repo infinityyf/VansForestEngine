@@ -432,18 +432,25 @@ void VansTransformGraph::RebuildTopologicalOrder()
 	}
 }
 
+bool TryResolveWorldTransform(const glm::mat4& worldTransform, VansTransform& output)
+{
+	VansLocalTransform decomposed;
+	if (!VansLocalTransform::TryFromMatrix(worldTransform, decomposed)) return false;
+	VansTransform candidate;
+	candidate.m_Position = decomposed.position;
+	candidate.m_Rotation = glm::degrees(glm::eulerAngles(decomposed.rotation));
+	candidate.m_Scale = decomposed.scale;
+	output = candidate;
+	return true;
+}
+
 bool VansTransformGraph::WriteResolvedWorld(
 	std::uint32_t transformId,
 	const glm::mat4& worldTransform)
 {
-	VansLocalTransform decomposed;
-	if (!VansLocalTransform::TryFromMatrix(worldTransform, decomposed))
-		return false;
 	Vans::VansTransform transform =
 		Vans::VansTransformStore::Read(transformId);
-	transform.m_Position = decomposed.position;
-	transform.m_Rotation = glm::degrees(glm::eulerAngles(decomposed.rotation));
-	transform.m_Scale = decomposed.scale;
+	if (!TryResolveWorldTransform(worldTransform, transform)) return false;
 	Vans::VansTransformStore::Write(transformId, transform);
 	Vans::VansTransformStore::MarkDirty(transformId);
 	return true;

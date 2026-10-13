@@ -61,7 +61,8 @@ enum class VansAssetType
 	PcgMask,
 	PcgSpline,
 	DamageProfile,
-        Prefab
+        Prefab,
+        RenderPass
 };
 
 struct VansAssetTypeDescriptor
@@ -199,6 +200,8 @@ public:
     std::vector<VansAssetRecord> All() const;
     const std::filesystem::path& AssetsRoot() const { return m_AssetsRoot; }
     const std::filesystem::path& ArtifactRoot() const { return m_ArtifactRoot; }
+	static bool ReadTextureImportSettings(const VansAssetMeta& meta,
+		VansTextureAssetImportSettings& settings, std::string& error);
 
     static VansAssetType Classify(const std::filesystem::path& sourcePath);
     static const VansAssetTypeDescriptor* Describe(VansAssetType type) noexcept;

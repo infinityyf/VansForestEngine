@@ -11,6 +11,7 @@
 #include "../../SceneRuntime/VansComponentStorage.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../../Util/VansLog.h"
+#include "../../Util/VansProfiler.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -156,6 +157,7 @@ VansEditorSceneQuery::~VansEditorSceneQuery() = default;
 EditorScenePickResult VansEditorSceneQuery::Pick(VansRuntimeWorld& runtimeWorld, const EditorScenePickRequest& request,
     IVansRenderThreadTransactionExecutor* renderer)
 {
+    VANS_PROFILE_SCOPE("Editor::ScenePicking", Vans::ProfileCategory::Editor);
     EditorScenePickResult result;
     auto* world = &runtimeWorld;
     const glm::vec3 origin = Vector(request.ray.origin), direction = Vector(request.ray.direction);

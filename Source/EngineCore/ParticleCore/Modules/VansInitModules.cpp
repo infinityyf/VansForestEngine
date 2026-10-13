@@ -21,6 +21,16 @@ namespace VansGraphics
 			uint32_t& seed = pool.m_SeedRandom[i];
             float r         = RandFloat(seed);
             float lifetime  = m_Lifetime.Evaluate(0.f, r);
+            if (m_CollectionAgeOperation != VansParticleLifetimeAgeOperation::None)
+            {
+                float time = pool.m_InitializationCollectionAge;
+                if (m_CollectionAgeLoopPeriod > 0) time = std::fmod(time, m_CollectionAgeLoopPeriod);
+                const bool random = m_CollectionAgeCurve.m_Mode == FloatCurveMode::RandomBetween
+                    || m_CollectionAgeCurve.m_Mode == FloatCurveMode::RandomBetweenCurves;
+                const float value = m_CollectionAgeCurve.Evaluate(time, random ? RandFloat(seed) : 0.f);
+                lifetime = m_CollectionAgeOperation == VansParticleLifetimeAgeOperation::Replace
+                    ? value : lifetime * value;
+            }
             if (lifetime < 0.01f) lifetime = 0.01f;  // 防止生命周期为零
             pool.m_LifeTime[i]   = lifetime;
             pool.m_Age[i]        = 0.f;
@@ -73,6 +83,12 @@ namespace VansGraphics
                     velocity    = q * localDir * m_Speed;
                 }
             }
+            else if (m_VelocityMode == VansInitVelocityMode::Box)
+            {
+                glm::vec3 random;
+                for (int axis=0;axis<3;++axis) random[axis]=RandFloat(seed);
+                velocity=glm::vec3(localToWorld*glm::vec4(glm::mix(m_MinVelocity,m_MaxVelocity,random),0));
+            }
             else // Random 全向
             {
                 float theta = RandFloat(seed) * 2.f * glm::pi<float>();
@@ -118,7 +134,16 @@ namespace VansGraphics
                                           const glm::mat4&) const
     {
         for (uint32_t i = startIndex; i < endIndex; ++i)
+        {
             pool.m_Color[i] = m_Color;
+            for (const auto& scale : m_AlphaScales)
+            {
+                const bool random = scale.m_Mode == FloatCurveMode::RandomBetween
+                    || scale.m_Mode == FloatCurveMode::RandomBetweenCurves;
+                const float value = scale.Evaluate(0.f, random ? RandFloat(pool.m_SeedRandom[i]) : 0.f);
+                pool.m_Color[i].a *= value;
+            }
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -197,6 +222,18 @@ namespace VansGraphics
 
             // 将局部位置变换到世界空间
             pool.m_Position[i] = glm::vec3(localToWorld * glm::vec4(localPos, 1.f));
+        }
+    }
+
+    void VansInitPositionOffsetModule::ExecuteInit(VansParticlePool& pool,
+        uint32_t startIndex,uint32_t endIndex,const glm::mat4& localToWorld) const
+    {
+        for (uint32_t i=startIndex;i<endIndex;++i) {
+            auto& seed=pool.m_SeedRandom[i];
+            glm::vec3 sample;
+            for (int axis=0;axis<3;++axis) sample[axis]=RandFloat(seed);
+            const auto offset=glm::mix(m_MinOffset,m_MaxOffset,sample);
+            pool.m_Position[i]+=m_LocalCoordinates ? glm::vec3(localToWorld*glm::vec4(offset,0)) : offset;
         }
     }
 

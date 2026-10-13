@@ -46,7 +46,9 @@ namespace VansGraphics
 	private:
 		bool ValidateFrameInput(const VansRenderSceneFrameSnapshot& snapshot) const;
 		void UpdateCasterState(const std::vector<VansRenderPunctualShadowCasterInput>& casters);
-		void BuildCasterLists(std::vector<VansPunctualShadowRenderJob>& jobs) const;
+		void BuildCasterLists(
+			const std::vector<VansRenderPunctualShadowCasterInput>& casters,
+			std::vector<VansPunctualShadowRenderJob>& jobs) const;
 		void ResolveLightMetaIndices(
 			const std::vector<VansPunctualShadowLightInput>& inputs,
 			VansRenderLightFrameData& lightFrame) const;

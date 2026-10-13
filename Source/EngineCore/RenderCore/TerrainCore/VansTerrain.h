@@ -9,6 +9,7 @@
 #include "../VulkanCore/VansVKCommandBuffer.h"
 #include "../VulkanCore/VansDescriptorSetLayouts.h"
 #include "../../TerrainCore/VansTerrainAsset.h"
+#include "../../TerrainCore/VansTerrainInteraction.h"
 
 #include <array>
 #include <cstddef>
@@ -69,6 +70,16 @@ namespace VansGraphics
         glm::vec2 morphRange = glm::vec2(0.0f);
     };
 
+    struct alignas(16) TerrainInteractionParamsGPU
+    {
+        glm::vec4 worldRect{0.0f};
+        glm::uvec4 channels{0u};
+        glm::vec4 response{0.0f}; // albedo/normal strength, 位移上限(米), 边缘渐隐(米)
+        glm::vec4 heightWeights{0.0f};
+        glm::vec4 heightFade{0.0f}; // 世界距离 start/end
+    };
+    static_assert(sizeof(TerrainInteractionParamsGPU)==80, "Terrain interaction std140 ABI");
+
     struct TerrainPatchVertex
     {
         uint16_t position[3];
@@ -84,6 +95,8 @@ namespace VansGraphics
 
         void Init(VansVKDevice* device, const TerrainConfig& config);
         void Update(const glm::vec3& cameraPosition, const glm::mat4& viewProjection);
+        void UpdateInteraction(const Vans::VansTerrainInteraction& input);
+        const std::vector<VansSubmitResourceAccess>& InteractionReadResources() const { return m_InteractionReads; }
 
         void Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalState,
             std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets);
@@ -163,6 +176,10 @@ namespace VansGraphics
         VansVKBuffer m_ParamsUBO;
         VansVKBuffer m_TessParamsUBO;
         VansVKBuffer m_HeightDetailUBO;
+        std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_InteractionUBOs;
+        std::vector<VansSubmitResourceAccess> m_InteractionReads;
+        float m_InteractionHeightPadding = 0.0f;
+        std::string m_InteractionError;
 
         VansMesh* m_BasePatchMesh = nullptr;
         std::vector<VkVertexInputAttributeDescription> m_TerrainInstanceInputAttributeDescriptions;

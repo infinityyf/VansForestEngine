@@ -24,9 +24,10 @@ namespace VansGraphics
 		constexpr std::array<char, 8> kCacheMagic = { 'F', 'E', 'P', 'C', 'C', '0', '1', '\0' };
 		constexpr uint32_t kCacheSchemaVersion = 1;
 		constexpr uint32_t kPipelineAbiVersion = 1;
-		constexpr uint64_t kMaxPayloadSize = 128ull * 1024ull * 1024ull;
+		constexpr uint64_t kMaxPayloadSize = 256ull * 1024ull * 1024ull;
 		constexpr uint64_t kFlushCreateThreshold = 8;
 		constexpr auto kFlushDebounce = std::chrono::seconds(2);
+		constexpr auto kFailedFlushRetryDelay = std::chrono::seconds(30);
 
 		struct CacheFileHeader
 		{
@@ -127,6 +128,7 @@ namespace VansGraphics
 
 		m_PhysicalDevice = physicalDevice;
 		m_Device = device;
+		m_NextPeriodicFlushAttempt = {};
 
 		VkPhysicalDeviceProperties properties{};
 		VansGraphics::vkGetPhysicalDeviceProperties(physicalDevice, &properties);
@@ -258,8 +260,9 @@ namespace VansGraphics
 			if (m_Initialized && m_Dirty)
 			{
 				const auto now = std::chrono::steady_clock::now();
-				shouldFlush = m_CreatesSinceFlush >= kFlushCreateThreshold ||
-					(now - m_LastMutation) >= kFlushDebounce;
+				shouldFlush = now >= m_NextPeriodicFlushAttempt &&
+					(m_CreatesSinceFlush >= kFlushCreateThreshold ||
+						(now - m_LastMutation) >= kFlushDebounce);
 			}
 		}
 		if (shouldFlush)
@@ -269,7 +272,12 @@ namespace VansGraphics
 	bool VansPipelineCacheService::Flush(VansPipelineCacheFlushReason reason)
 	{
 		std::lock_guard<std::mutex> lock(m_Mutex);
-		return FlushLocked(reason);
+		const bool succeeded = FlushLocked(reason);
+		if (succeeded)
+			m_NextPeriodicFlushAttempt = {};
+		else if (reason == VansPipelineCacheFlushReason::Periodic)
+			m_NextPeriodicFlushAttempt = std::chrono::steady_clock::now() + kFailedFlushRetryDelay;
+		return succeeded;
 	}
 
 	void VansPipelineCacheService::RefreshPersistencePath()
@@ -291,6 +299,7 @@ namespace VansGraphics
 
 		m_CacheFilePath = nextPath;
 		m_LastDiskPayloadHash = 0;
+		m_NextPeriodicFlushAttempt = {};
 		m_WriteEnabled = true;
 
 		std::error_code ec;
@@ -319,18 +328,30 @@ namespace VansGraphics
 		return VansGraphics::vkCreatePipelineCache(m_Device, &createInfo, nullptr, &outCache) == VK_SUCCESS;
 	}
 
-	bool VansPipelineCacheService::ReadCacheDataLocked(VkPipelineCache cache, std::vector<uint8_t>& outData) const
+	bool VansPipelineCacheService::ReadCacheDataLocked(VkPipelineCache cache,
+		std::vector<uint8_t>& outData, std::string* failure) const
 	{
 		outData.clear();
 		if (cache == VK_NULL_HANDLE || m_Device == VK_NULL_HANDLE)
+		{
+			if (failure) *failure = "cache or device is unavailable";
 			return false;
+		}
 
+		VkResult lastResult = VK_SUCCESS;
+		size_t lastSize = 0;
 		for (uint32_t attempt = 0; attempt < 3; ++attempt)
 		{
 			size_t dataSize = 0;
 			VkResult result = VansGraphics::vkGetPipelineCacheData(m_Device, cache, &dataSize, nullptr);
 			if (result != VK_SUCCESS || dataSize == 0 || dataSize > kMaxPayloadSize)
+			{
+				if (failure)
+					*failure = "size query result=" + std::to_string(result) +
+						" bytes=" + std::to_string(dataSize) +
+						" limit=" + std::to_string(kMaxPayloadSize);
 				return false;
+			}
 
 			outData.resize(dataSize);
 			result = VansGraphics::vkGetPipelineCacheData(m_Device, cache, &dataSize, outData.data());
@@ -339,10 +360,15 @@ namespace VansGraphics
 				outData.resize(dataSize);
 				return true;
 			}
+			lastResult = result;
+			lastSize = dataSize;
 			if (result != VK_INCOMPLETE)
 				break;
 		}
 		outData.clear();
+		if (failure)
+			*failure = "data query result=" + std::to_string(lastResult) +
+				" bytes=" + std::to_string(lastSize);
 		return false;
 	}
 
@@ -515,9 +541,16 @@ namespace VansGraphics
 			VANS_LOG_WARN("[PipelineCache] Failed to merge a newer on-disk cache; saving local data");
 
 		std::vector<uint8_t> payload;
-		if (!ReadCacheDataLocked(m_Cache, payload) || !ValidateVulkanPayload(payload))
+		std::string readFailure;
+		if (!ReadCacheDataLocked(m_Cache, payload, &readFailure))
 		{
-			VANS_LOG_WARN("[PipelineCache] Driver returned invalid/empty cache data");
+			VANS_LOG_WARN("[PipelineCache] Cannot persist driver cache: " << readFailure);
+			return false;
+		}
+		if (!ValidateVulkanPayload(payload))
+		{
+			VANS_LOG_WARN("[PipelineCache] Cannot persist driver cache: Vulkan payload header validation failed (bytes="
+				<< payload.size() << ")");
 			return false;
 		}
 

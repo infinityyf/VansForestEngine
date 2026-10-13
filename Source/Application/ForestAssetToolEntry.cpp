@@ -1,3 +1,5 @@
+#include "../EngineCore/AuthoringCore/Navigation/VansNavigationBakePublication.h"
+#include "../EngineCore/NavigationCore/Storage/VansNavigationSettingsStorage.h"
 #include "../EngineCore/AuthoringCore/Pcg/VansPlantLodOrchestrator.h"
 #include "../EngineCore/PcgCore/Storage/VansPlantTypeAssetStorage.h"
 #include "../EngineCore/AnimationCore/VansAnimatorIO.h"
@@ -8,19 +10,32 @@
 #include "../EngineCore/AnimationCore/Storage/VansRetargetProfileStorage.h"
 #include "../EngineCore/AnimationCore/Serialization/VansRetargetProfileJsonCodec.h"
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
+#include "../EngineCore/AssetCore/VansAssetObjectRepository.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../EngineCore/AssetCore/Importers/VansModelImporter.h"
 #include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
+#include "../EngineCore/AssetCore/Storage/VansStagedFileTransaction.h"
 #include "../EngineCore/AssetCore/Storage/VansJsonFileStorage.h"
-#include "../EngineCore/NavigationCore/VansNavigationMesh.h"
+#include "../EngineCore/NavigationCore/VansNavigationBuilder.h"
+#include "../EngineCore/NavigationCore/Storage/VansNavigationMeshStorage.h"
 #include "../EngineCore/NavigationCore/VansNavigationSource.h"
-#include "../EngineCore/NavigationCore/VansSceneNavigationGeometry.h"
+#include "../EngineCore/SceneCore/VansSceneNavigationGeometry.h"
+#include "../EngineCore/NavigationCore/VansNavigationSourceCollector.h"
+#include "../EngineCore/PhysicsCore/VansPhysics.h"
+#include "../EngineCore/PhysicsCore/VansCollisionLayerManager.h"
+#include "../EngineCore/RuntimeCore/VansRuntimePhaseGuard.h"
+#include "../EngineCore/SceneCore/VansSceneEnvironmentNodeConfigReader.h"
+#include "../EngineCore/TerrainCore/Storage/VansTerrainAssetStorage.h"
+#include "../EngineCore/PcgCore/Storage/VansPcgSplineAssetStorage.h"
+#include "../EngineCore/PcgCore/VansPcgSplineField.h"
 #include "../EngineCore/ProjectSystem/Storage/VansProjectSettingsStorage.h"
 #include "../EngineCore/ProjectSystem/VansEnginePaths.h"
 #include "../EngineCore/ProjectSystem/VansProjectConfig.h"
 #include "../EngineCore/ProjectSystem/VansProjectManager.h"
 #include "../EngineCore/SceneCore/VansSceneContentBuildPlan.h"
 #include "../EngineCore/SceneCore/VansSceneDocumentLoader.h"
+#include "../EngineCore/SceneCore/VansAssetObjectBootstrapper.h"
+#include "../EngineCore/SceneCore/Prefab/VansPrefabAsset.h"
 #include "../EngineCore/SceneCore/VansSceneRuntimeProjection.h"
 #include "../EngineCore/ScriptCore/VansLuaScriptInspectorService.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansMesh.h"
@@ -86,6 +101,7 @@ namespace
 		fs::path destinationRoot;
 		fs::path outputPath;
 		fs::path navigationSettingsPath;
+        std::string navigationMapId;
 		std::vector<fs::path> sourceRoots;
 		fs::path scriptPath;
 		std::string entryName;
@@ -115,7 +131,7 @@ namespace
 			<< "  ForestAssetTool validate-lua-script --project <path> --script <project-relative-lua>"
 				" --entry <table-name>\n"
 			<< "  ForestAssetTool bake-navigation --project <path> --source <project-relative-scene>"
-				" --output <asset-relative-vnavmesh> [--settings <project-relative-json>]"
+				" --map <map-id> --output <asset-relative-vnavmesh> [--settings <project-relative-json>]"
 				" [--engine-root <path>] --write\n";
 	}
 
@@ -210,6 +226,11 @@ namespace
 				}
 				options.outputPath = argv[index];
 			}
+            else if (argument == "--map")
+            {
+                if (++index >= argc) { error = "Missing value for --map."; return false; }
+                options.navigationMapId = argv[index];
+            }
 			else if (argument == "--settings")
 			{
 				if (++index >= argc)
@@ -315,13 +336,13 @@ namespace
         { error = "LOD build requires --source and exactly one of --dry-run or --write."; return false; }
 		if (options.command == Command::BakeNavigation
 			&& (modeCount != 1 || !options.write || options.sourcePath.empty()
-				|| options.outputPath.empty()))
+				|| options.outputPath.empty() || options.navigationMapId.empty()))
 		{
-			error = "Navigation bake requires --source, --output, and --write.";
+			error = "Navigation bake requires --source, --map, --output, and --write.";
 			return false;
 		}
 		if (options.command != Command::BakeNavigation &&
-			!options.navigationSettingsPath.empty())
+			(!options.navigationSettingsPath.empty() || !options.navigationMapId.empty()))
 		{
 			error = "--settings is only valid for bake-navigation.";
 			return false;
@@ -535,17 +556,32 @@ namespace
 		}
 		Vans::VansNavigationSettings navigationSettings;
 		std::string error;
-		if (!Vans::VansProjectSettingsStorage::LoadNavigationSettings(
+		if (!Vans::VansNavigationSettingsStorage::Load(
 			settingsPath.string(), navigationSettings, error))
 		{
 			std::cerr << "Could not load navigation settings: " << error << '\n';
 			return 1;
 		}
 
-		Vans::SceneDocumentLoadResult loaded = Vans::VansSceneDocumentLoader::Load(scenePath);
+		const auto sourceRecords = database.All();
+		std::vector<Vans::VansAssetRecord> prefabRecords;
+		for (const auto& record : sourceRecords)
+			if (record.type == Vans::VansAssetType::Prefab) prefabRecords.push_back(record);
+		auto& sourceRepository = Vans::VansProjectManager::Get().GetAssetObjectRepository();
+		const auto prefabPublication = Vans::VansAssetObjectBootstrapper::Publish(
+			prefabRecords, sourceRepository, sourceRecords);
+		if (!prefabPublication)
+		{
+			for (const auto& prefabError : prefabPublication.errors) std::cerr << prefabError << '\n';
+			return 1;
+		}
+		Vans::SceneDocumentLoadResult loaded = Vans::VansSceneDocumentLoader::Load(
+			scenePath, Vans::VansPrefabResolver::FromRepository(sourceRepository));
 		if (!loaded)
 		{
 			std::cerr << "Could not load Scene document: " << scenePath << '\n';
+			for (const auto& diagnostic : loaded.diagnostics)
+				std::cerr << diagnostic.propertyPointer << ": " << diagnostic.message << '\n';
 			return 1;
 		}
 		const Vans::VansSerializedValue sceneRoot =
@@ -566,6 +602,37 @@ namespace
 			std::cerr << "Could not project Scene for navigation: " << error << '\n';
 			return 1;
 		}
+        const auto* sceneSettings=Vans::FindObjectField(sceneRoot,"settings");
+        const auto* terrainValue=sceneSettings?Vans::FindObjectField(*sceneSettings,"terrain"):nullptr;
+        if(terrainValue)
+        {
+            auto terrain=Vans::VansSceneEnvironmentNodeConfigReader::ReadTerrain(*terrainValue);
+            Vans::VansAssetGuid guid;
+            const auto record=Vans::VansAssetGuid::TryParse(terrain.assetGuid,guid)?database.Find(guid):std::nullopt;
+            auto asset=std::make_shared<Vans::VansTerrainAsset>();
+            if(!terrain.valid || !record || record->type!=Vans::VansAssetType::Terrain ||
+                !Vans::VansTerrainAssetStorage::Load(record->sourcePath,[&](Vans::VansAssetGuid texture)->std::optional<fs::path>
+                { const auto source=database.Find(texture); return source?std::optional<fs::path>(source->sourcePath):std::nullopt; },*asset,error))
+            { std::cerr<<"Could not resolve navigation Terrain collision: "<<error<<'\n'; return 1; }
+            const auto* splines=Vans::FindObjectField(*sceneSettings,"pcgSplines");
+            if(splines)
+            {
+                const auto* id=Vans::FindObjectField(*splines,"guid");
+                Vans::VansAssetGuid splineGuid;
+                const auto source=id && id->kind==Vans::VansSerializedValue::Kind::String && Vans::VansAssetGuid::TryParse(id->stringValue,splineGuid)?database.Find(splineGuid):std::nullopt;
+                Vans::VansPcgSplineAsset spline;
+                if(!source || source->type!=Vans::VansAssetType::PcgSpline || !Vans::VansPcgSplineAssetStorage::Load(source->sourcePath,spline,error))
+                { std::cerr<<"Could not resolve navigation spline Terrain input: "<<error<<'\n'; return 1; }
+                const auto field=Vans::VansPcgSplineFieldBuilder::Build(spline,asset,{},error);
+                if(!field) { std::cerr<<"Could not resolve effective navigation Terrain: "<<error<<'\n'; return 1; }
+                terrain.asset=field->effectiveTerrain;
+            }
+            else terrain.asset=std::move(asset);
+            contentPlan.terrain=std::move(terrain);
+        }
+        auto& physics=VansEngine::VansPhysicsSystem::GetInstance();
+        if(!physics.Initialize()) { std::cerr<<"Could not initialize CPU collision cooking for navigation\n"; return 1; }
+        Vans::VansRuntimePhaseGuard physicsCleanup([&](){physics.Shutdown();});
 		std::unordered_map<std::string, std::unique_ptr<VansGraphics::VansMesh>> meshes;
 		const Vans::VansNavigationMeshResolver resolveMesh =
 			[&](const std::string& guidText,
@@ -616,47 +683,35 @@ namespace
 			meshes.emplace(guidText, std::move(mesh));
 			return true;
 		};
-		Vans::VansNavigationGeometry geometry;
-		if (!Vans::VansSceneNavigationGeometry::BuildEnvironmentGeometry(
-			contentPlan.objects, navigationSettings.areas, resolveMesh, geometry, error))
-		{
-			std::cerr << "Could not build Scene navigation geometry: " << error << '\n';
-			return 1;
-		}
-		if (geometry.Empty())
-		{
-			std::cerr << "Scene contains no enabled Environment navigation collider geometry.\n";
-			return 1;
-		}
-		Vans::VansNavigationSource source;
-		source.scene = fs::relative(scenePath, projectRoot).generic_string();
-		if (!Vans::ComputeNavigationGeometryHash(geometry, source.geometryHash, error))
-		{
-			std::cerr << "Could not fingerprint navigation geometry: " << error << '\n';
-			return 1;
-		}
-		source.bakeSettingsHash = Vans::HashNavigationBakeSettings(navigationSettings.bake);
+        std::vector<std::string> collisionLayers;
+        const auto& layers=VansEngine::VansCollisionLayerManager::Get();
+        for(int i=0;i<layers.GetLayerCount();++i) collisionLayers.push_back(layers.GetLayerName(i));
+        Vans::VansNavigationSourceSnapshot snapshot;
+        Vans::VansNavigationBuildInput input;
+        if(!Vans::VansSceneNavigationGeometry::CaptureSnapshot(contentPlan,Vans::VansProjectManager::Get().GetAssetObjectRepository(),navigationSettings,collisionLayers,resolveMesh,snapshot,error) ||
+            !Vans::VansNavigationSourceCollector::Collect(snapshot,navigationSettings,options.navigationMapId,input,error))
+        { std::cerr<<"Could not collect Scene navigation sources: "<<error<<'\n'; return 1; }
+        for(const auto& excluded:snapshot.exclusions)
+            std::cout<<"Excluded PCG source '"<<excluded.id<<"': "<<excluded.reason<<"; instances="<<excluded.instanceCount<<'\n';
+        const std::string sourceScene=fs::relative(scenePath,projectRoot).generic_string();
+        std::shared_ptr<const Vans::VansNavigationMeshAsset> navigationMesh;
+        if(!Vans::VansNavigationBuilder::Build(input,navigationSettings,sourceScene,nullptr,navigationMesh,error))
+        { std::cerr<<"Navigation bake failed: "<<error<<'\n'; return 1; }
+        const auto& geometry=*input.profiles.front().geometry;
 
-		Vans::VansNavigationMesh navigationMesh;
-		if (!navigationMesh.Build(geometry, navigationSettings, error) ||
-			!navigationMesh.Save(outputPath, source, error))
-		{
-			std::cerr << "Navigation bake failed: " << error << '\n';
-			return 1;
-		}
-
-		if (!database.RegisterOrRefresh(
-			outputPath, Vans::VansAssetOperationPolicy::Authoring(), error))
-		{
-			std::cerr << "Navigation asset registration failed: " << error << '\n';
-			return 1;
-		}
-		const auto record = database.Find(outputPath);
+        auto publication=Vans::VansNavigationBakePublication::Prepare(database,
+            Vans::VansProjectManager::Get().GetAssetObjectRepository(),navigationMesh,outputPath,error);
+        if(!publication || !publication->Commit(error))
+        { std::cerr<<"Navigation publication failed: "<<error<<'\n'; return 1; }
+        const auto record=publication->Record();
 		std::cout << "Navigation bake complete: vertices=" << geometry.VertexCount()
 			<< " triangles=" << geometry.TriangleCount()
+			<< " skippedZeroAreaTriangles=" << input.profiles.front().skippedZeroAreaTriangles
+			<< " tiles=" << navigationMesh->GetTileCount()
+			<< " payloadBytes=" << navigationMesh->GetPayloadBytes()
 			<< " settings=" << fs::relative(settingsPath, projectRoot).generic_string()
 			<< " output=" << fs::relative(outputPath, projectRoot).generic_string();
-		if (record) std::cout << " guid=" << record->guid.ToString();
+		std::cout << " guid=" << record.guid.ToString();
 		std::cout << '\n';
 		return 0;
 	}
@@ -1314,7 +1369,8 @@ namespace
 			openRequest.m_Options.m_UpdateLastOpenedAt = false;
 			openRequest.m_Options.m_UpdateRecentProjects = false;
 			openRequest.m_Options.m_LoadProjectSettings = true;
-			openRequest.m_Options.m_ScanAssets = true;
+			// 烘焙只要求作者设置和源资产目录；失效导航资产不能成为修复自身的前置依赖。
+			openRequest.m_Options.m_AssetLoadMode = Vans::VansProjectAssetLoadMode::Catalog;
 			openRequest.m_Options.m_AssetPolicy =
 				Vans::VansAssetOperationPolicy::ReadOnly();
 			const Vans::VansProjectOpenResult openResult =
@@ -1326,15 +1382,15 @@ namespace
 				return 1;
 			}
 
-			Vans::VansAssetDatabase* database = projectManager.GetAssetDatabase();
-			if (database == nullptr)
+			auto* sourceDatabase = projectManager.GetAssetDatabase();
+			if (!sourceDatabase)
 			{
-				std::cerr << "Navigation projection opened without a project asset database.\n";
+				std::cerr << "Navigation project asset catalog is unavailable.\n";
 				projectManager.CloseProject();
 				return 1;
 			}
 			const int result = BakeNavigation(
-				projectRoot, fs::weakly_canonical(assetsRoot), *database, options);
+				projectRoot, fs::weakly_canonical(assetsRoot), *sourceDatabase, options);
 			projectManager.CloseProject();
 			return result;
 		}

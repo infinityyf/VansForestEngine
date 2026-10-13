@@ -347,7 +347,7 @@ namespace
                 Vans::VansPcgPoint point;point.id=x<16?1:2;point.position={x,0,0};point.scale={1,1,1};point.rotation={0,0,0,1};batch->points.push_back(point);
                 update.batches.emplace(batch->key,batch);
             }
-            std::string error;Check(scene.GetVegetationCollection()->Apply(scene,device.GetLogicDevice(),update,&device,error),error);
+            std::string error;Check(scene.GetVegetationCollection()->Apply(scene,device,update,error),error);
         };
         apply({0,40});
         Check(gi.CreateRayTracingResource(&device,&command,&scene,settings),gi.GetResourceError());

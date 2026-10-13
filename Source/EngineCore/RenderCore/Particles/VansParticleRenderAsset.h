@@ -9,6 +9,8 @@ class VansTexture;
 struct VansParticleTextureBindings
 {
     VansTexture* color = nullptr;
+    VansTexture* lookup = nullptr;
+    VansTexture* breakup = nullptr;
     VansTexture* positiveAxes = nullptr;
     VansTexture* negativeAxes = nullptr;
 };

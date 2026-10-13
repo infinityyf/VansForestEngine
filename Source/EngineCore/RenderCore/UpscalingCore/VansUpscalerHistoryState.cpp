@@ -40,8 +40,13 @@ namespace VansGraphics
 		m_HasObservedFrame = true;
 	}
 
-	void VansUpscalerHistoryState::OnTemporalDispatchSucceeded()
+	void VansUpscalerHistoryState::OnTemporalDispatchSubmission(bool submitted)
 	{
+		if (!submitted)
+		{
+			RequestReset(VansUpscalerResetReason::DispatchFault);
+			return;
+		}
 		m_LastConsumedResetReasons = m_PendingReasons;
 		m_PendingReasons = VansUpscalerResetReason::None;
 	}

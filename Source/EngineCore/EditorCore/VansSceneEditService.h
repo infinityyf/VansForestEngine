@@ -5,6 +5,7 @@
 #include "../EngineAPILayer/Public/EngineDTOs.h"
 #include "../SceneCore/VansSceneParentReference.h"
 #include "../AuthoringCore/VansEditorObjectReference.h"
+#include "../AuthoringCore/IVansSceneAuthoringHost.h"
 
 #include <cstdint>
 #include <functional>
@@ -56,6 +57,8 @@ public:
     SceneEditResult ApplyPrefab(std::shared_ptr<VansOpenAssetDocument> asset, VansSerializedValue source, VansSerializedValue authoring);
     SceneEditResult ReplaceRoot(VansSerializedValue root, SceneEditLifecycleHooks hooks = {});
     SceneEditResult Set(const DocumentPropertyPath& path, VansSerializedValue value);
+    SceneEditResult CommitValues(std::vector<VansSceneAuthoringValue> values,
+        std::uint64_t expectedState,const VansSceneAuthoringCommit& commit);
     SceneEditResult SetAndAssignObjectReference(
         const DocumentPropertyPath& path,
         VansSerializedValue value,
@@ -87,7 +90,8 @@ private:
 		VansHistorySequence sequence = 0;
 	};
 	void DiscardStaleRedo() const;
-    SceneEditResult Execute(std::unique_ptr<VansSceneEditCommand> command);
+    SceneEditResult Execute(std::unique_ptr<VansSceneEditCommand> command,
+        const VansSceneAuthoringCommit& commit={});
     SceneEditResult Set(const std::string& propertyPointer, VansSerializedValue value);
     SceneEditResult Remove(const std::string& propertyPointer, SceneEditLifecycleHooks hooks = {});
 

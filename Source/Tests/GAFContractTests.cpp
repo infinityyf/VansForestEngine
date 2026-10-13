@@ -1,4 +1,7 @@
+#include "../EngineCore/NavigationCore/VansNavigationQueryContext.h"
+#include "../EngineCore/NavigationCore/Storage/VansNavigationSettingsStorage.h"
 #include "GAFContractTests.h"
+#include "NavigationAIContractTests.h"
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <fstream>
@@ -6,6 +9,9 @@
 #include "../EngineCore/SceneRuntime/Transform/VansTransformGraph.h"
 #include "../EngineCore/AnimationCore/Runtime/VansSkeletonAnchorRegistry.h"
 #include "../EngineCore/SceneCore/VansScenePhysicsComponentReader.h"
+#include "../EngineCore/SceneCore/VansSceneRuntimeProjection.h"
+#include "../EngineCore/SceneCore/VansSceneAuthoringEntityProjection.h"
+#include "../EngineCore/SceneCore/VansSceneContentBuildPlan.h"
 
 #include "../EngineCore/GameplayActionCore/VansActionDefinition.h"
 #include "../EngineCore/GameplayActionCore/VansActionHost.h"
@@ -38,6 +44,7 @@
 #include "../EngineCore/GameplayActionAdapters/Projectile/VansProjectileActionCapability.h"
 #include "../EngineCore/GameplayActionAdapters/UI/VansUIActionCapability.h"
 #include "../EngineCore/GameplayActionAdapters/VFX/VansVFXActionCapability.h"
+#include "../EngineCore/GameplayActionAdapters/VFX/VansVFXActionService.h"
 #include "../EngineCore/GameplayActionExecution/VansActionTask.h"
 #include "../EngineCore/GameplayActionExecution/VansActionExecutionGraph.h"
 #include "../EngineCore/GameplayActionTimeline/VansGameplayActionTimelineIntegration.h"
@@ -79,7 +86,8 @@
 #include "../EngineCore/EventCore/VansEventBus.h"
 #include "../EngineCore/RenderCore/VansAnimationPreviewRenderer.h"
 #include "../EngineCore/RenderCore/GeometryCore/VansSceneSurfaceQuery.h"
-#include "../EngineCore/NavigationCore/VansNavigationMesh.h"
+#include "../EngineCore/NavigationCore/VansNavigationMap.h"
+#include "../EngineCore/NavigationCore/Storage/VansNavigationMeshStorage.h"
 #include "../EngineCore/ProjectSystem/Storage/VansProjectSettingsStorage.h"
 #include "../EngineCore/PhysicsCore/VansCharacterControllerNode.h"
 #include "../EngineCore/PhysicsCore/VansPhysics.h"
@@ -4771,6 +4779,517 @@ bool TestGAFSampleLibraryContract()
 	return true;
 }
 
+bool TestGAFDemoHallVehicleContract()
+{
+    namespace fs = std::filesystem;
+    fs::path workspace = fs::current_path();
+    while (!fs::is_directory(workspace / "DemoHallProject")) {
+        if (workspace == workspace.root_path()) return ExpectGAF(false, "Vehicle project is unavailable");
+        workspace = workspace.parent_path();
+    }
+    const auto project = workspace / "DemoHallProject";
+    std::string error;
+    Vans::VansGAFProjectConfiguration config;
+    if (!Vans::VansGAFProjectConfiguration::LoadForProject(project,
+        workspace / "ForestEngine/ForestEngine", config, error)) return ExpectGAF(false,error.c_str());
+    const auto temporary = fs::temp_directory_path() /
+        ("ForestGAFVehicle." + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct Cleanup { fs::path path; ~Cleanup(){ std::error_code ec; fs::remove_all(path,ec); } } cleanup{temporary};
+    fs::create_directories(temporary / "Assets");
+    fs::copy(project / "Assets/GAF/Vehicle",temporary / "Assets/Vehicle",fs::copy_options::recursive);
+    for (const char* name : {"DemoHallTags.vtagtree","DemoHallTags.vtagtree.meta"})
+        fs::copy_file(project / "Assets/GAF/WindowBreak" / name, temporary / "Assets" / name);
+    Vans::VansAssetDatabase db(temporary / "Assets",temporary / "Library");
+    if (!ExpectGAF(static_cast<bool>(db.Scan(Vans::VansAssetOperationPolicy::Authoring())),
+        "Vehicle assets did not scan")) return false;
+    for (const auto& record : db.All()) {
+        Vans::VansSerializedValue source;
+        if (!Vans::VansGameplayAssetStorage::LoadSource(record.sourcePath,source,error))
+            return ExpectGAF(false,error.c_str());
+        const auto cooked=Vans::VansGameplayAssetStorage::Cook(record.type,source,
+            Vans::VansGameplayAssetSchemaRegistry::BuiltIns(),&config);
+        if (!cooked) {
+            for (const auto& diagnostic : cooked.diagnostics)
+                std::cerr << record.sourcePath.string() << " " << diagnostic.fieldPath
+                          << ": " << diagnostic.message << '\n';
+            return ExpectGAF(false,cooked.error.c_str());
+        }
+    }
+    Vans::VansAssetObjectRepository objects;
+    if (!BootstrapGameplayMemory(db.All(),objects,error)) return ExpectGAF(false,error.c_str());
+    Vans::VansGameplayRuntimeDependencies deps;
+    deps.contributors.push_back(Vans::VansMakeGameplayPrimitivesGAFContributor());
+    deps.contributors.push_back(MakeProjectSchemaContributor(config));
+    deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.Animation",
+        {std::make_shared<Vans::VansFakeActionService>(Vans::VansAnimationActionCapability())}));
+    deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.AnimationEvents",
+        {std::make_shared<Vans::VansFakeActionService>(Vans::VansAnimationEventActionCapability())}));
+    Vans::VansGameplayRuntime runtime;
+    if (!runtime.Initialize(db.All(),objects,config.settings,deps,error)) return ExpectGAF(false,error.c_str());
+    Vans::VansGameplayActionHostSetup setup;
+    setup.actionSets={"62a9c7f6-8529-53bb-825a-976f5088f879"};
+    AddHostTagInitializer(setup,"Target.Character.Player");
+    const Vans::VansEntityHandle owner{951,1};
+    auto host=runtime.CreateHost(owner,setup,error);
+    const auto enter=runtime.Assets().ResolveAction("Gameplay.DemoHall.Vehicle.Enter");
+    const auto exit=runtime.Assets().ResolveAction("Gameplay.DemoHall.Vehicle.Exit");
+    if (!ExpectGAF(host && enter && exit && host->GrantedActions().size()==2,
+        "Vehicle actions were not granted")) return false;
+    Vans::VansActionContext context;
+    context.SetEntity(Vans::VansActionContextSlots::Owner,owner);
+    const auto vehicleTag=Vans::VansMakeStableId<Vans::VansGameplayTagIdTag>("State.Action.Vehicle");
+    auto signal=[&](Vans::VansActionHandle action,const char* name) {
+        Vans::VansActionEvent event;event.stableName=name;
+        event.type=Vans::VansMakeStableId<Vans::VansActionFieldIdTag>(name);
+        return host->EnqueueEvent(action,std::move(event),error);
+    };
+    // GAF 的阶段顺序和取消清理独立验证，不能用播放秒数当完成条件。
+    for (const auto& definition : {enter,exit}) {
+        auto started=host->ActivateAction(definition->id,context);
+        if (!ExpectGAF(started && host->Tags().Has(vehicleTag)
+            && !host->ActivateAction(enter->id,context) && !host->ActivateAction(exit->id,context),
+            "Vehicle concurrency was not enforced")) return false;
+        runtime.TickEarly(1.0);
+        if (!ExpectGAF(host->ActiveActions().size()==1,"Vehicle completed without clip markers")) return false;
+        const char* midpoint=definition==enter ? "Vehicle.Seated" : "Vehicle.FeetGrounded";
+        for (const char* name : {"Vehicle.DoorOpen","Vehicle.DoorOpened",midpoint,
+             "Vehicle.DoorClose","Vehicle.DoorClosed"}) {
+            if (!signal(started.action,name)) return ExpectGAF(false,error.c_str());
+            runtime.TickEarly(.01);
+            if (!ExpectGAF(host->ActiveActions().size()==1,"Vehicle finished before final marker")) return false;
+        }
+        if (!signal(started.action,"Vehicle.Finished")) return ExpectGAF(false,error.c_str());
+        runtime.TickEarly(.01);
+        if (!ExpectGAF(host->ActiveActions().empty() && !host->Tags().Has(vehicleTag),
+            "Vehicle completion leaked action state")) return false;
+    }
+    auto cancelled=host->ActivateAction(enter->id,context);
+    if (!ExpectGAF(cancelled && host->Cancel(cancelled.action,Vans::VansActionCancelReason::User,error)
+        && host->ActiveActions().empty() && !host->Tags().Has(vehicleTag),
+        "Vehicle cancellation leaked ownership")) return false;
+    auto timeout=host->ActivateAction(enter->id,context);
+    runtime.TickEarly(9.0);
+    if (!ExpectGAF(timeout && host->ActiveActions().empty() && !host->Tags().Has(vehicleTag),
+        "Vehicle missing-marker timeout did not clean up")) return false;
+    VansGraphics::Skeleton reference;
+    VansGraphics::VansAnimationClip referenceClip;
+    if (!VansGraphics::VansAnimationClipIO::Load(
+        (project/"Assets/Animations/Combat/Pistol/Pistol_Idle.vclip").string(),referenceClip,reference))
+        return ExpectGAF(false,"Reference skeleton clip is unavailable");
+    for (const char* name : {"SUV_Enter_Right","SUV_Exit_Right","SUV_Driving_Idle"}) {
+        VansGraphics::VansAnimationClip clip;VansGraphics::Skeleton skeleton;
+        if (!VansGraphics::VansAnimationClipIO::Load(
+            (project/"Assets/Animations/Vehicle"/(std::string(name)+".vclip")).string(),clip,skeleton)
+            || !skeleton.MatchesAnimationLayout(reference,&error))
+            return ExpectGAF(false,"Vehicle bake changed the existing character skeleton layout");
+        if (std::string(name)=="SUV_Driving_Idle") {
+            if (!ExpectGAF(std::abs(clip.duration-5.f)<1e-4f && !clip.rootMotion.enabled,
+                    "Supplied five-second Driving source was replaced by a frozen pose or root motion")) return false;
+            for (const char* bone : {"pelvis","spine_05","head","hand_l","hand_r","foot_l","foot_r"}) {
+                const auto& frames=clip.boneKeyframes[skeleton.FindBoneIndex(bone)];
+                if (!ExpectGAF(frames.size()>100 && glm::length(frames.front().position-frames.back().position)<.002f
+                    && std::abs(glm::dot(frames.front().rotation,frames.back().rotation))>.99999f,
+                    "Driving source cycle is missing samples or has a discontinuous loop")) return false;
+            }
+            continue;
+        }
+        VansGraphics::VansAnimationSampleRequest request;
+        request.previousTime=0;request.currentTime=clip.duration;request.endTime=clip.duration;
+        VansGraphics::VansPosePayload payload;
+        VansGraphics::VansAnimationSampler::Sample(clip,skeleton,request,payload);
+        if (!ExpectGAF(payload.events.size()==6 && payload.events.back().name=="Vehicle.Finished",
+            "Coarse vehicle animation sampling skipped markers")) return false;
+        request.previousTime=request.currentTime;
+        VansGraphics::VansAnimationSampler::Sample(clip,skeleton,request,payload);
+        if (!ExpectGAF(payload.events.empty(),"Paused vehicle clip repeated markers")) return false;
+    }
+    // 实际动画节点、根运动和通知适配器联合运行，补足伪服务无法验证的播放链。
+    VansGraphics::AnimatorAssetData animator;
+    if (!VansGraphics::VansAnimatorIO::Load(
+        (project/"Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator").string(),animator))
+        return ExpectGAF(false,"Vehicle Animator did not load");
+    // 保留正式全部 GraphSet 与过渡；独立 Vehicle 图不能验证真实控制交接。
+    nlohmann::ordered_json importReport;
+    if (!Vans::VansJsonFileStorage::Read(project/"Tools/VehicleImport/ResourceReview/mixamo_import.json",importReport,error))
+        return ExpectGAF(false,error.c_str());
+    const auto vectorFromJson=[](const auto& value){return glm::vec3(value[0].template get<float>(),value[1].template get<float>(),value[2].template get<float>());};
+    const auto& entrySamples=importReport["clips"]["SUV_Enter_Right"]["samples"];
+    const auto& exitSamples=importReport["clips"]["SUV_Exit_Right"]["samples"];
+    VansGraphics::VansAnimatorRuntimeCompileOptions options;
+    options.enableRootMotion=true;
+    options.enableTargetPostProcess=true;
+    options.queryProfileResolver=[](const std::string&,std::uint32_t& mask,std::string&){mask=0xFFFFFFFFu;return true;};
+    options.rigResolver=[&](const std::string&,std::string& issue){
+        return LoadRigForContract(project/"Assets/AnimationRigs/UEFN.vanimrig",issue);
+    };
+    auto controller=VansGraphics::VansAnimatorRuntimeCompiler::Compile(animator,reference,
+        [&](const auto& ref,std::shared_ptr<const VansGraphics::VansAnimationClipAsset>& clip,std::string& issue){
+            return LoadAnimationClipAssetForContract(project/ref.pathHint,clip,issue);
+        },ProjectMaskResolverForContract(project),options,error);
+    if (!ExpectGAF(controller!=nullptr,error.c_str())) return false;
+    controller->SetFloat("VehicleAuthoredPose",1.0f);
+    VansGraphics::VansAnimationNode node("DemoHall Vehicle Contract");
+    node.SetSkeleton(reference);
+    if (!ExpectGAF(node.SetController(std::move(controller)),"Vehicle controller did not bind")) return false;
+    const auto transformId=Vans::VansTransformStore::Allocate();
+    struct TransformCleanup {std::uint32_t id;~TransformCleanup(){Vans::VansTransformStore::Release(id);}} transformCleanup{transformId};
+    node.SetTransformID(transformId);
+    Vans::VansRuntimeWorld world;
+    world.RegisterStorage<Vans::VansRuntimeAnimationComponent>(Vans::VansRuntimeComponentType_Animation);
+    const auto character=world.CreateEntity({"vehicle-test-driver","Vehicle Test Driver",{}});
+    world.AddComponent(character,Vans::VansRuntimeComponentType_Animation,
+        Vans::VansRuntimeAnimationComponent{&node},"vehicle-test-animation");
+    Vans::VansGameplayRuntime realRuntime;
+    auto animationService=Vans::VansAnimationActionService::Create(world,error);
+    auto eventService=std::make_shared<Vans::VansAnimationEventActionService>(world,realRuntime);
+    Vans::VansGameplayRuntimeDependencies realDependencies;
+    realDependencies.contributors.push_back(Vans::VansMakeGameplayPrimitivesGAFContributor());
+    realDependencies.contributors.push_back(MakeProjectSchemaContributor(config));
+    realDependencies.contributors.push_back(MakeTestRuntimeContributor("Gameplay.Animation",{animationService}));
+    realDependencies.contributors.push_back(MakeTestRuntimeContributor("Gameplay.AnimationEvents",{eventService}));
+    if (!realRuntime.Initialize(db.All(),objects,config.settings,realDependencies,error)) return ExpectGAF(false,error.c_str());
+    const auto realHost=realRuntime.CreateHost(character,setup,error);
+    if (!ExpectGAF(realHost!=nullptr,error.c_str())) return false;
+    Vans::VansActionContext realContext;realContext.SetEntity(Vans::VansActionContextSlots::Owner,character);
+    const int pelvisIndex=reference.FindBoneIndex("pelvis");
+    VansGraphics::Skeleton survival;
+    VansGraphics::VansAnimationRigAsset survivalRig;
+    VansGraphics::VansCompiledAnimationRig compiledSurvivalRig;
+    VansGraphics::VansRetargetProfileAsset profile;
+    if (!LoadContractSkeletonFromModel(project/"Assets/Characters/Survival/Models/survival_character.fbx",survival,error)
+        || !VansGraphics::VansAnimationRigStorage::Load(project/"Assets/AnimationRigs/Survival.vanimrig",survivalRig,error)
+        || !VansGraphics::VansAnimationRigCompiler::Compile(survivalRig,survival,compiledSurvivalRig,error)
+        || !VansGraphics::VansRetargetProfileStorage::Load(project/"Assets/Retarget/RTG_UEFN_To_Survival.vretarget",profile,error))
+        return ExpectGAF(false,error.c_str());
+    VansGraphics::VansRetargetRuntimeDesc retargetDesc;
+    retargetDesc.translationScaleMode=profile.translationScaleMode;
+    retargetDesc.translationScale=profile.explicitTranslationScale;
+    retargetDesc.rootAlignment=profile.rootAlignment;
+    retargetDesc.targetModelSpaceAlignment=profile.targetModelSpaceAlignment;
+    retargetDesc.limbChains=profile.limbChains;retargetDesc.controlBones=profile.controlBones;
+    VansGraphics::VansRetargetProcessor retarget;
+    if (!ExpectGAF(retarget.Build(reference,survival,compiledSurvivalRig,retargetDesc),"Vehicle Survival retarget did not build")) return false;
+    for (const int fps : {30,60,144}) {
+        node.SwitchGraphSet("graph-set-default");
+        node.Update({VansGraphics::VansAnimationEvaluationPurpose::Gameplay,.2f});
+        Vans::VansTransform start=Vans::VansTransformStore::Read(transformId);
+        start.m_Position=vectorFromJson(entrySamples.front()["root"]);
+        start.m_Rotation={-90.0f,entrySamples.front()["yawDegrees"].get<float>(),0.0f};start.m_Scale=glm::vec3(.01f);
+        Vans::VansTransformStore::Write(transformId,start);
+        node.SwitchGraphSet("graph-set-vehicle");
+        if (!ExpectGAF(node.GetActiveGraphSetId()=="graph-set-vehicle","Full Animator could not enter Vehicle GraphSet")) return false;
+        node.Play("SUV_Driving_Idle",VansGraphics::VansAnimationEvaluationPurpose::Gameplay);
+        for (const char* direction : {"Enter","Exit"}) {
+            const auto action=realHost->ActivateAction(Vans::VansMakeStableId<Vans::VansActionIdTag>(
+                std::string("Gameplay.DemoHall.Vehicle.")+direction),realContext);
+            if (!ExpectGAF(static_cast<bool>(action),"Production Vehicle GAF activation was rejected")) return false;
+            for (int frame=0;frame<fps*6 && !realHost->ActiveActions().empty();++frame) {
+                node.Update({VansGraphics::VansAnimationEvaluationPurpose::Gameplay,1.0f/fps});
+                eventService->PublishEvaluatedEvents();
+                realRuntime.TickEarly(1.0f/fps);
+            }
+            if (!ExpectGAF(realHost->ActiveActions().empty() && !realHost->Tags().Has(vehicleTag),
+                "Production Vehicle clip markers did not complete GAF")) return false;
+            const auto final=Vans::VansTransformStore::Read(transformId);
+            const bool entering=std::string(direction)=="Enter";
+            const auto& endSample=entering?entrySamples.back():exitSamples.back();
+            const glm::vec3 expected=vectorFromJson(endSample["root"]);
+            const float rootError=glm::length(final.m_Position-expected);
+            std::cout<<"Vehicle production fps="<<fps<<" phase="<<direction<<" root="
+                <<final.m_Position.x<<","<<final.m_Position.y<<","<<final.m_Position.z
+                <<" yaw="<<final.m_Rotation.y<<" rootError="<<rootError<<'\n';
+            if (!ExpectGAF(rootError<.025f && std::abs(final.m_Rotation.y-endSample["yawDegrees"].get<float>())<1.0f,
+                "Vehicle animation root trajectory did not reach its authored anchor")) return false;
+            if (entering) {
+                const auto pose=node.GetFinalPoseView();
+                const glm::vec3 hip=glm::vec3(final.GetModelMatrix()*(*pose.modelTransforms)[pelvisIndex][3]);
+                std::cout<<"Vehicle pelvis="<<hip.x<<","<<hip.y<<","<<hip.z<<'\n';
+                const glm::vec3 seat=vectorFromJson(endSample["pelvis"]);
+                if (!ExpectGAF(glm::length(hip-seat)<.025f,
+                    "Vehicle seated pelvis missed its seat anchor")) return false;
+                std::vector<glm::mat4> targetModels;
+                if (!retarget.Process(*pose.modelTransforms,reference,survival,targetModels))
+                    return ExpectGAF(false,"Vehicle seated Survival retarget failed");
+                const auto targetHip=glm::vec3(final.GetModelMatrix()*targetModels[survival.FindBoneIndex("pelvis")][3]);
+                const auto seatError=glm::length(targetHip-seat);
+                std::cout<<"Vehicle Survival pelvis error="<<seatError<<'\n';
+                if (!ExpectGAF(seatError<.15f,"Survival seat registration exceeds the bounded correction")) return false;
+                node.Play("SUV_Driving_Idle",VansGraphics::VansAnimationEvaluationPurpose::Gameplay);
+                const auto seatedRoot=Vans::VansTransformStore::Read(transformId);
+                for (int idleFrame=0;idleFrame<fps*10;++idleFrame)
+                    node.Update({VansGraphics::VansAnimationEvaluationPurpose::Gameplay,1.0f/fps});
+                const auto idlePose=node.GetFinalPoseView();
+                const auto idleRoot=Vans::VansTransformStore::Read(transformId);
+                const glm::vec3 idleHip=glm::vec3(idleRoot.GetModelMatrix()*(*idlePose.modelTransforms)[pelvisIndex][3]);
+                if (!ExpectGAF(node.GetActiveGraphSetId()=="graph-set-vehicle" && node.GetCurrentStateName()=="SUV_Driving_Idle"
+                    && glm::length(idleRoot.m_Position-seatedRoot.m_Position)<.001f && glm::length(idleHip-seat)<.025f,
+                    "Driving pose or root returned to standing during ten seconds after entry")) return false;
+            }
+        }
+    }
+    auto coarse=realHost->ActivateAction(Vans::VansMakeStableId<Vans::VansActionIdTag>("Gameplay.DemoHall.Vehicle.Enter"),realContext);
+    if (!ExpectGAF(static_cast<bool>(coarse),"Coarse Vehicle action did not activate")) return false;
+    node.Update({VansGraphics::VansAnimationEvaluationPurpose::Gameplay,5.45f});
+    eventService->PublishEvaluatedEvents();realRuntime.TickEarly(5.45f);
+    if (!ExpectGAF(realHost->ActiveActions().empty(),"A coarse production frame lost ordered vehicle markers")) return false;
+    // 用 Scene 相同的 Source/External Target 所有权验证正式 Survival 角色。
+    auto sourceOptions=options;
+    sourceOptions.enableTargetPostProcess=false;
+    auto sourceController=VansGraphics::VansAnimatorRuntimeCompiler::Compile(animator,reference,
+        [&](const auto& ref,std::shared_ptr<const VansGraphics::VansAnimationClipAsset>& clip,std::string& issue){
+            return LoadAnimationClipAssetForContract(project/ref.pathHint,clip,issue);
+        },ProjectMaskResolverForContract(project),sourceOptions,error);
+    auto targetOptions=options;
+    targetOptions.mode=VansGraphics::VansAnimatorRuntimeCompileMode::ExternalPoseTarget;
+    targetOptions.rigResolver=[&](const std::string&,std::string& issue){
+        return LoadRigForContract(project/"Assets/AnimationRigs/Survival.vanimrig",issue);
+    };
+    auto targetController=VansGraphics::VansAnimatorRuntimeCompiler::Compile(animator,survival,{},{},targetOptions,error);
+    VansGraphics::VansAnimationNode survivalNode("DemoHall Survival Vehicle Contract");
+    survivalNode.SetSkeleton(survival);
+    if (!ExpectGAF(sourceController && targetController && survivalNode.SetController(std::move(targetController))
+        && survivalNode.ConfigureRetargetSource(reference,std::move(sourceController),retargetDesc,error),error.c_str())) return false;
+    survivalNode.SetTransformID(transformId);
+    world.FindStorage<Vans::VansRuntimeAnimationComponent>(Vans::VansRuntimeComponentType_Animation)
+        ->Get(world.FindComponentOwnedBy(character,Vans::VansRuntimeComponentType_Animation))->animationNode=&survivalNode;
+    auto* target=survivalNode.GetController();
+    target->SetFloat("VehicleAuthoredPose",1);
+    survivalNode.SwitchGraphSet("graph-set-vehicle");
+    Vans::VansTransform survivalStart=Vans::VansTransformStore::Read(transformId);
+    survivalStart.m_Position=vectorFromJson(entrySamples.front()["root"]);
+    survivalStart.m_Rotation={-90.f,entrySamples.front()["yawDegrees"].get<float>(),0.f};
+    Vans::VansTransformStore::Write(transformId,survivalStart);
+    survivalNode.Play("SUV_Driving_Idle",VansGraphics::VansAnimationEvaluationPurpose::Gameplay);
+    const auto survivalAction=realHost->ActivateAction(Vans::VansMakeStableId<Vans::VansActionIdTag>("Gameplay.DemoHall.Vehicle.Enter"),realContext);
+    if (!ExpectGAF(static_cast<bool>(survivalAction),"Survival production vehicle entry did not activate")) return false;
+    for (int frame=0;frame<360 && !realHost->ActiveActions().empty();++frame) {
+        survivalNode.Update({VansGraphics::VansAnimationEvaluationPurpose::Gameplay,1.f/60});
+        eventService->PublishEvaluatedEvents();realRuntime.TickEarly(1.f/60);
+    }
+    if (!ExpectGAF(realHost->ActiveActions().empty(),"Survival production vehicle entry did not finish")) return false;
+    const auto seat=vectorFromJson(entrySamples.back()["pelvis"]);
+    target->SetVector3("VehicleSeatPosition",seat);target->SetFloat("VehicleSeatedFit",1);
+    survivalNode.Play("SUV_Driving_Idle",VansGraphics::VansAnimationEvaluationPurpose::Gameplay);
+    survivalNode.EnableRootMotion(false);
+    auto seatedRoot=Vans::VansTransformStore::Read(transformId);
+    const int survivalPelvis=survival.FindBoneIndex("pelvis");
+    const auto beforePose=survivalNode.GetFinalPoseView();
+    const auto authoredModels=*beforePose.modelTransforms;
+    const auto beforeHip=glm::vec3(seatedRoot.GetModelMatrix()*(*beforePose.modelTransforms)[survivalPelvis][3]);
+    const glm::vec3 correction=seat-beforeHip;
+    if (!ExpectGAF(glm::length(correction)<.025f,"Actual Survival seated pose missed its anchor")) return false;
+    target->SetFloat("VehicleSteeringGrip",1);
+    target->SetFloat("VehiclePedalGrip",1);
+    target->SetFloat("VehicleSeatedFit",1);
+    nlohmann::ordered_json vehicleLayout;
+    if (!Vans::VansJsonFileStorage::Read(project/"Tools/VehicleImport/suv_door_layout.json",vehicleLayout,error)) return ExpectGAF(false,error.c_str());
+    const std::vector<std::pair<std::string,glm::vec3>> vehicleTargets{
+        {"vehicleSteeringLeft",vectorFromJson(vehicleLayout["steeringHandLeftPosition"])},
+        {"vehicleSteeringRight",vectorFromJson(vehicleLayout["steeringHandRightPosition"])},
+        {"vehicleFootLeft",vectorFromJson(vehicleLayout["driverFootLeftPosition"])},
+        {"vehicleFootRight",vectorFromJson(vehicleLayout["driverFootRightPosition"])}};
+    const auto driverDoor=std::find_if(vehicleLayout["doors"].begin(),vehicleLayout["doors"].end(),
+        [&](const auto& door){return door["id"]==vehicleLayout["driverDoor"];});
+    if (!ExpectGAF(driverDoor!=vehicleLayout["doors"].end(),"Vehicle driver door layout is missing")) return false;
+    auto setSteeringTargets=[&](const glm::mat4& body,float doorFraction=0){
+        target->SetVector3("VehicleSeatPosition",glm::vec3(body*glm::vec4(seat,1)));
+        auto input=target->GetAnimationExternalInput();input.targets.clear();
+        for (const auto& item:vehicleTargets) {
+            VansGraphics::VansResolvedAnimationTarget binding;binding.id=item.first;binding.valid=true;
+            binding.positionWorld=glm::vec3(body*glm::vec4(item.second,1));binding.rotationWeight=0;
+            if (item.first=="vehicleFootLeft" || item.first=="vehicleFootRight") {
+                const auto& rotation=vehicleLayout[item.first=="vehicleFootLeft"?"driverFootLeftRotation":"driverFootRightRotation"];
+                binding.rotationWorld=glm::quat_cast(glm::mat3(body))*glm::normalize(glm::quat(
+                    rotation[3].get<float>(),rotation[0].get<float>(),rotation[1].get<float>(),rotation[2].get<float>()));
+                binding.rotationWeight=1;
+            }
+            input.targets.push_back(binding);
+        }
+        const auto hinge=vectorFromJson((*driverDoor)["hingePosition"]);
+        const auto doorRotation=glm::angleAxis(glm::radians((*driverDoor)["openAngleDegrees"].get<float>()*doorFraction),glm::vec3(0,1,0));
+        for (const auto& contact:std::vector<std::pair<std::string,std::string>>{
+            {"vehicleExterior","exteriorHandlePosition"},{"vehicleInterior","interiorHandlePosition"}}) {
+            VansGraphics::VansResolvedAnimationTarget binding;binding.id=contact.first;binding.valid=true;binding.rotationWeight=0;
+            binding.positionWorld=glm::vec3(body*glm::vec4(hinge+doorRotation*(vectorFromJson((*driverDoor)[contact.second])-hinge),1));
+            input.targets.push_back(binding);
+        }
+        target->SetAnimationExternalInput(std::move(input));
+    };
+    setSteeringTargets(glm::mat4(1));
+    survivalNode.Update({VansGraphics::VansAnimationEvaluationPurpose::Gameplay,0});
+    const auto drivingPose=survivalNode.GetFinalPoseView();
+    const auto drivingWorld=Vans::VansTransformStore::Read(transformId).GetModelMatrix();
+    for (const auto& hand:std::vector<std::pair<std::string,glm::vec3>>{
+        {"hand_l",vehicleTargets[0].second},{"hand_r",vehicleTargets[1].second},
+        {"foot_l",vehicleTargets[2].second},{"foot_r",vehicleTargets[3].second}}) {
+        const auto actual=glm::vec3(drivingWorld*(*drivingPose.modelTransforms)[survival.FindBoneIndex(hand.first)][3]);
+        std::cout<<"Survival driving "<<hand.first<<" error="<<glm::length(actual-hand.second)<<'\n';
+        if (!ExpectGAF(glm::length(actual-hand.second)<.025f,"Actual Survival vehicle contact missed its target")) return false;
+    }
+    // 四肢贴合不能牵动脊柱和头；对照未施加接触 IK 的正式重定向姿态。
+    for (const char* bone : {"pelvis","spine_01","spine_02","spine_03","spine_04","spine_05",
+            "neck_01","neck_02","head"}) {
+        const int index=survival.FindBoneIndex(bone);
+        for (int column=0;column<4;++column)
+            if (!ExpectGAF(glm::length((*drivingPose.modelTransforms)[index][column]-authoredModels[index][column])<.002f,
+                    "Driving contact IK changed the authored body pose")) return false;
+    }
+    for (const char* side: {"l","r"}) {
+        const auto hip=glm::vec3((*drivingPose.modelTransforms)[survival.FindBoneIndex(std::string("thigh_")+side)][3]);
+        const auto knee=glm::vec3((*drivingPose.modelTransforms)[survival.FindBoneIndex(std::string("calf_")+side)][3]);
+        const auto ankle=glm::vec3((*drivingPose.modelTransforms)[survival.FindBoneIndex(std::string("foot_")+side)][3]);
+        if (!ExpectGAF(glm::dot(glm::normalize(knee-hip),glm::normalize(ankle-knee))<.95f,
+            "Driving pedal IK hyperextended or collapsed a knee")) return false;
+    }
+    nlohmann::ordered_json poseEvidence;
+    poseEvidence["actorWorld"]=nlohmann::ordered_json::array();
+    for (int row=0;row<4;++row) poseEvidence["actorWorld"].push_back({drivingWorld[0][row],drivingWorld[1][row],drivingWorld[2][row],drivingWorld[3][row]});
+    for (std::size_t index=0;index<survival.bones.size();++index) {
+        const auto& matrix=(*drivingPose.modelTransforms)[index];
+        auto& value=poseEvidence["bones"][survival.bones[index].name];value=nlohmann::ordered_json::array();
+        for (int row=0;row<4;++row) value.push_back({matrix[0][row],matrix[1][row],matrix[2][row],matrix[3][row]});
+    }
+    std::ofstream(project/"Tools/VehicleImport/ResourceReview/native_survival_driving_pose.json")<<poseEvidence.dump(2);
+    const auto bodyId=Vans::VansTransformStore::Allocate();
+    TransformCleanup bodyCleanup{bodyId};
+    Vans::VansTransform bodyTransform;
+    bodyTransform.m_Position=glm::vec3(0);bodyTransform.m_Rotation=glm::vec3(0);bodyTransform.m_Scale=glm::vec3(1);
+    Vans::VansTransformStore::Write(bodyId,bodyTransform);
+    Vans::VansTransformGraph attachment;
+    if (!ExpectGAF(attachment.SetParent(transformId,bodyId,Vans::VansTransformReparentMode::KeepWorld),"Survival could not attach to vehicle body")) return false;
+    if (!ExpectGAF(attachment.Resolve(),attachment.GetLastError().c_str())) return false;
+    bodyTransform.m_Position={4.f,2.f,-3.f};bodyTransform.m_Rotation={7.f,32.f,9.f};
+    Vans::VansTransformStore::Write(bodyId,bodyTransform);attachment.MarkWorldDirty(bodyId);
+    if (!ExpectGAF(attachment.Resolve(),attachment.GetLastError().c_str())) return false;
+    setSteeringTargets(bodyTransform.GetModelMatrix());
+    for (int frame=0;frame<600;++frame) {
+        survivalNode.Update({VansGraphics::VansAnimationEvaluationPurpose::Gameplay,1.f/60});
+        attachment.Resolve();
+        const auto pose=survivalNode.GetFinalPoseView();
+        const auto ownerMatrix=Vans::VansTransformStore::Read(transformId).GetModelMatrix();
+        const auto bodyMatrix=bodyTransform.GetModelMatrix();
+        for (int index=0;index<4;++index) {
+            const int bone=survival.FindBoneIndex(index==0?"hand_l":index==1?"hand_r":index==2?"foot_l":"foot_r");
+            const auto actual=glm::vec3(ownerMatrix*(*pose.modelTransforms)[bone][3]);
+            const auto expected=glm::vec3(bodyMatrix*glm::vec4(vehicleTargets[index].second,1));
+            if (!ExpectGAF(glm::length(actual-expected)<.025f,"Driving cycle lost a steering or pedal contact")) return false;
+        }
+        for (const auto& hand:std::vector<std::pair<std::string,std::string>>{{"l","Left"},{"r","Right"}}) {
+            const auto index=glm::vec3(ownerMatrix*(*pose.modelTransforms)[survival.FindBoneIndex("index_01_"+hand.first)][3]);
+            const auto pinky=glm::vec3(ownerMatrix*(*pose.modelTransforms)[survival.FindBoneIndex("pinky_01_"+hand.first)][3]);
+            const auto contact=glm::vec3(bodyMatrix*glm::vec4(vectorFromJson(vehicleLayout["steeringContact"+hand.second+"Position"]),1));
+            if (!ExpectGAF(glm::length((index+pinky)*.5f-contact)<.025f,"Driving palm drifted from the wheel rim")) return false;
+        }
+    }
+    const auto carriedRoot=Vans::VansTransformStore::Read(transformId);
+    const auto carriedPose=survivalNode.GetFinalPoseView();
+    const auto carriedHip=glm::vec3(carriedRoot.GetModelMatrix()*(*carriedPose.modelTransforms)[survivalPelvis][3]);
+    const auto carriedSeat=glm::vec3(bodyTransform.GetModelMatrix()*glm::vec4(seat,1));
+    if (!ExpectGAF(survivalNode.GetCurrentStateName()=="SUV_Driving_Idle" && attachment.HasParent(transformId)
+        && glm::length(carriedHip-carriedSeat)<.025f,"Actual Survival did not remain seated through vehicle translation and rotation")) return false;
+    std::cout<<"Survival actual retarget: seat error="<<glm::length(correction)<<" moving vehicle hip error="<<glm::length(carriedHip-carriedSeat)<<"; ten second driving persistence passed\n";
+    if (!ExpectGAF(attachment.ClearParent(transformId,Vans::VansTransformReparentMode::KeepWorld)
+        && attachment.Resolve(),"Tilted driver could not detach KeepWorld")) return false;
+    auto detached=Vans::VansTransformStore::Read(transformId);
+    const auto beforeExitPosition=detached.m_Position;
+    const auto beforeExitScale=detached.m_Scale;
+    const auto forward=glm::vec3(detached.GetModelMatrix()*glm::vec4(0,-1,0,0));
+    const auto projectedHeading=glm::normalize(glm::vec3(forward.x,0,forward.z));
+    detached.m_Rotation={-90.f,glm::degrees(std::atan2(forward.x,forward.z)),0.f};
+    Vans::VansTransformStore::Write(transformId,detached);attachment.MarkWorldDirty(transformId);
+    if (!ExpectGAF(attachment.Resolve(),attachment.GetLastError().c_str())) return false;
+    const auto restored=Vans::VansTransformStore::Read(transformId);
+    const auto restoredUp=glm::normalize(glm::vec3(restored.GetModelMatrix()*glm::vec4(0,0,1,0)));
+    const auto restoredForward=glm::normalize(glm::vec3(restored.GetModelMatrix()*glm::vec4(0,-1,0,0)));
+    if (!ExpectGAF(glm::length(restoredUp-glm::vec3(0,1,0))<1e-5f
+        && glm::length(restoredForward-projectedHeading)<1e-5f
+        && glm::length(restored.m_Position-beforeExitPosition)<1e-6f
+        && glm::length(restored.m_Scale-beforeExitScale)<1e-6f,
+        "Tilted exit lost upright model basis, landing heading, position or scale")) return false;
+    std::cout<<"Tilted vehicle KeepWorld exit: world up, projected heading, position and scale passed\n";
+    attachment.Clear();
+    // 真实 Source 曲线逐帧更新 Target 参数和旋转车门目标，导出整个上下车的阶段姿态。
+    auto capturePose=[&](const std::string& phase,float time,float fraction){
+        nlohmann::ordered_json evidence;evidence["phase"]=phase;evidence["time"]=time;evidence["doorFraction"]=fraction;
+        const auto owner=Vans::VansTransformStore::Read(transformId).GetModelMatrix();
+        const auto pose=survivalNode.GetFinalPoseView();evidence["actorWorld"]=nlohmann::ordered_json::array();
+        for (int row=0;row<4;++row) evidence["actorWorld"].push_back({owner[0][row],owner[1][row],owner[2][row],owner[3][row]});
+        for (std::size_t index=0;index<survival.bones.size();++index) {
+            const auto& matrix=(*pose.modelTransforms)[index];auto& value=evidence["bones"][survival.bones[index].name];
+            value=nlohmann::ordered_json::array();
+            for (int row=0;row<4;++row) value.push_back({matrix[0][row],matrix[1][row],matrix[2][row],matrix[3][row]});
+        }
+        return evidence;
+    };
+    auto sampledCurve=[&](const std::string& name){
+        for (const auto& curve:survivalNode.GetCharacterMotionController()->GetSampledCurves())
+            if (curve.present && curve.name==name) return curve.value;
+        return 0.f;
+    };
+    nlohmann::ordered_json sequence=nlohmann::ordered_json::array();
+    survivalStart.m_Position=vectorFromJson(entrySamples.front()["root"]);
+    survivalStart.m_Rotation={-90.f,entrySamples.front()["yawDegrees"].get<float>(),0.f};
+    Vans::VansTransformStore::Write(transformId,survivalStart);
+    survivalNode.EnableRootMotion(true);
+    target->SetFloat("VehicleExteriorGrip",0);target->SetFloat("VehicleInteriorGrip",0);
+    target->SetFloat("VehicleSteeringGrip",0);target->SetFloat("VehicleSeatedFit",0);
+    for (const auto& phase:std::vector<std::string>{"Enter","Exit"}) {
+        if (phase=="Exit") {
+            survivalNode.Play("SUV_Driving_Idle",VansGraphics::VansAnimationEvaluationPurpose::Gameplay);
+        }
+        const auto handle=realHost->ActivateAction(Vans::VansMakeStableId<Vans::VansActionIdTag>("Gameplay.DemoHall.Vehicle."+phase),realContext);
+        if (!ExpectGAF(static_cast<bool>(handle),"Survival complete cycle action did not activate")) return false;
+        const std::vector<int> sampleFrames=phase=="Enter"?std::vector<int>{57,96,156,189,231,282,324}:std::vector<int>{39,96,168,204,234,279};
+        for (int frame=1;frame<=360 && !realHost->ActiveActions().empty();++frame) {
+            for (const auto& parameter:std::vector<std::pair<std::string,std::string>>{
+                {"VehicleExteriorGrip","Vehicle.ExteriorGrip"},{"VehicleInteriorGrip","Vehicle.InteriorGrip"},
+                {"VehicleSteeringGrip","Vehicle.SteeringGrip"},{"VehiclePedalGrip","Vehicle.PedalGrip"},
+                {"VehicleSeatedFit","Vehicle.SeatedFit"}})
+                target->SetFloat(parameter.first,sampledCurve(parameter.second));
+            const float fraction=sampledCurve("Vehicle.DoorFraction");
+            setSteeringTargets(glm::mat4(1),fraction);
+            survivalNode.Update({VansGraphics::VansAnimationEvaluationPurpose::Gameplay,1.f/60});
+            if (std::find(sampleFrames.begin(),sampleFrames.end(),frame)!=sampleFrames.end()) sequence.push_back(capturePose(phase,frame/60.f,fraction));
+            eventService->PublishEvaluatedEvents();realRuntime.TickEarly(1.f/60);
+        }
+        if (!ExpectGAF(realHost->ActiveActions().empty(),"Survival complete cycle lost a marker")) return false;
+    }
+    std::ofstream(project/"Tools/VehicleImport/ResourceReview/native_survival_sequence.json")<<sequence.dump(2);
+    // 完整驾驶循环供网格检查；手脚 IK 之外的身体动作必须仍有源动画变化。
+    Vans::VansTransformStore::Write(transformId,seatedRoot);
+    survivalNode.EnableRootMotion(false);
+    target->SetFloat("VehicleAuthoredPose",1);target->SetFloat("VehicleSeatedFit",1);
+    target->SetFloat("VehicleSteeringGrip",1);target->SetFloat("VehiclePedalGrip",1);
+    target->SetFloat("VehicleExteriorGrip",0);target->SetFloat("VehicleInteriorGrip",0);
+    setSteeringTargets(glm::mat4(1));
+    survivalNode.Play("SUV_Driving_Idle",VansGraphics::VansAnimationEvaluationPurpose::Gameplay);
+    nlohmann::ordered_json drivingSequence=nlohmann::ordered_json::array({capturePose("Driving",0,0)});
+    for (int frame=1;frame<=300;++frame) {
+        survivalNode.Update({VansGraphics::VansAnimationEvaluationPurpose::Gameplay,1.f/60});
+        if (frame%30==0) drivingSequence.push_back(capturePose("Driving",frame/60.f,0));
+    }
+    std::ofstream(project/"Tools/VehicleImport/ResourceReview/native_survival_driving_sequence.json")<<drivingSequence.dump(2);
+    Vans::VansTransform sourceSeated=Vans::VansTransformStore::Read(transformId);
+    sourceSeated.m_Position=vectorFromJson(entrySamples.back()["root"]);sourceSeated.m_Rotation={-90.f,0.f,0.f};
+    Vans::VansTransformStore::Write(transformId,sourceSeated);
+    auto* sourceTarget=node.GetController();sourceTarget->SetFloat("VehicleAuthoredPose",1);
+    sourceTarget->SetFloat("VehicleSteeringGrip",1);sourceTarget->SetFloat("VehiclePedalGrip",1);
+    sourceTarget->SetFloat("VehicleSeatedFit",1);sourceTarget->SetVector3("VehicleSeatPosition",seat);
+    auto sourceInput=sourceTarget->GetAnimationExternalInput();sourceInput.targets=target->GetAnimationExternalInput().targets;
+    sourceTarget->SetAnimationExternalInput(std::move(sourceInput));node.EnableRootMotion(false);
+    node.Play("SUV_Driving_Idle",VansGraphics::VansAnimationEvaluationPurpose::Gameplay);
+    const auto sourceFinal=node.GetFinalPoseView();const auto sourceOwner=Vans::VansTransformStore::Read(transformId).GetModelMatrix();
+    for (const auto& contact:std::vector<std::pair<std::string,glm::vec3>>{
+        {"pelvis",seat},{"hand_l",vehicleTargets[0].second},{"hand_r",vehicleTargets[1].second},
+        {"foot_l",vehicleTargets[2].second},{"foot_r",vehicleTargets[3].second}}) {
+        const auto actual=glm::vec3(sourceOwner*(*sourceFinal.modelTransforms)[reference.FindBoneIndex(contact.first)][3]);
+        if (!ExpectGAF(glm::length(actual-contact.second)<.025f,"UEFN vehicle contact missed its target")) return false;
+    }
+    std::cout<<"UEFN source avatar: seat, steering and pedal contacts passed; authored Survival spine/head preserved\n";
+    realRuntime.Shutdown();world.Clear();
+    std::cout<<"Vehicle GAF: cook, marker order, exclusion, cancellation, timeout, skeleton and production root/event chain passed\n";
+    return true;
+}
 bool TestGAFDemoHallWindowBreakContract()
 {
 	namespace fs = std::filesystem;
@@ -5888,6 +6407,295 @@ bool TestDemoHallHurtBodiesContract()
 	return true;
 }
 
+static bool TestRadialEventRuntime(const Vans::VansGameplayAssetLibrary& assets)
+{
+    using namespace Vans;using V=VansSerializedValue;
+    VansRuntimeWorld world;
+    struct Runtime final : IVansGameplayServiceRuntime {
+        VansEntityHandle target;std::vector<VansActionEvent> events;
+        bool HasHost(VansEntityHandle owner) const override { return owner==target; }
+        bool IsActionActive(VansEntityHandle,VansActionHandle) const override { return true; }
+        bool HasTag(VansEntityHandle,VansGameplayTagId) const override { return false; }
+        bool EnqueueActionEvent(VansEntityHandle,VansActionHandle,VansActionEvent,std::string&) override { return true; }
+        bool PublishGameplayEvent(VansEntityHandle,VansActionEvent event) override { events.push_back(std::move(event));return true; }
+        bool ReadAttribute(VansEntityHandle owner,VansAttributeId,double& value) const override { value=100;return HasHost(owner); }
+        bool ApplyBaseAttribute(VansEntityHandle,VansAttributeId,VansAttributeBaseOperation,double,double&) override { return false; }
+        VansActionResult ActivateAction(VansEntityHandle,VansActionId,VansActionContext,VansTargetData) override { return {}; }
+        bool ForgetCompletedWorldResource(VansActionServiceId,VansGenerationHandle) override { return false; }
+    } runtime;
+    std::vector<std::uint32_t> transforms;
+    std::vector<std::unique_ptr<VansEngine::VansPhysicsNode>> bodies;
+    struct Cleanup {
+        VansRuntimeWorld& world;decltype(bodies)& bodies;decltype(transforms)& transforms;
+        ~Cleanup() { world.Clear();bodies.clear();for(auto id:transforms)VansTransformStore::Release(id); }
+    } cleanup{world,bodies,transforms};
+    const auto addTransform=[&](VansEntityHandle entity,glm::vec3 position,const std::string& key) {
+        auto id=VansTransformStore::Allocate();transforms.push_back(id);
+        auto t=VansTransformStore::Read(id);t.m_Position=position;t.m_Scale=glm::vec3(1);VansTransformStore::Write(id,t);
+        world.AddComponent(entity,VansRuntimeComponentType_Transform,VansRuntimeTransformComponent{id},key);return id;
+    };
+    const auto source=world.CreateEntity({"radial-source","Radial Source"});addTransform(source,{0,10,0},"radial-source-transform");
+    runtime.target=world.CreateEntity({"radial-target","Radial Target"});addTransform(runtime.target,{4,0,0},"radial-target-transform");
+    unsigned eyeQueries=0;
+    VansCombatSceneBackend backend;
+    backend.viewPoint=[&](VansEntityHandle owner,const std::string& name,glm::vec3& point) {
+        ++eyeQueries;point={4,10,0};return owner==runtime.target && name=="test-eye";
+    };
+    std::string error;auto combat=VansCombatActionService::Create(world,runtime,assets,error,backend);
+    if(!ExpectGAF(bool(combat),"Radial fixture Combat service failed"))return false;
+    VansActionCommand command;command.stableName="Combat.EmitRadialEvent";
+    command.context.SetEntity(VansActionContextSlots::Source,source);
+    command.payload=V::Object({{"origin",V::Object({{"x",V::Float(0)},{"y",V::Float(10)},{"z",V::Float(0)}})},
+        {"event",V::String("Combat.FlashReceived")},{"blockingLayers",V::Array({V::String("Default")})},
+        {"radius",V::Float(20)},{"duration",V::Float(5)},{"eyeHeight",V::Float(0)},{"eyeBone",V::String("test-eye")}});
+    const auto probes=V::Array({V::Object({{"left",V::Float(0)},{"up",V::Float(1.27)},{"weight",V::Float(.167)}}),
+        V::Object({{"left",V::Float(-1.905)},{"up",V::Float(.254)},{"weight",V::Float(.167)}}),
+        V::Object({{"left",V::Float(1.905)},{"up",V::Float(.254)},{"weight",V::Float(.167)}})});
+    SetSerializedObjectField(command.payload,"visibilityProbes",probes);
+    for(int count=0;count<=3;++count) {
+        const glm::vec3 extent=count==0 ? glm::vec3(.02f,10,10) : count==1 ? glm::vec3(.02f,.2f,10)
+            : count==2 ? glm::vec3(.02f,10,.4f) : glm::vec3(.02f,.05f,.05f);
+        auto wall=world.CreateEntity({"radial-wall-"+std::to_string(count),"Radial Wall"});
+        const auto id=addTransform(wall,{2,10,0},"radial-wall-transform-"+std::to_string(count));
+        auto body=std::make_unique<VansEngine::VansPhysicsNode>();VansEngine::PhysicsNodeProperties props;
+        props.enabled=true;props.bodyType=VansEngine::PhysicsBodyType::Static;props.layerName="Default";props.boxExtents=extent;
+        body->Initialize(props,id);bodies.push_back(std::move(body));runtime.events.clear();
+        if(!ExpectGAF(bool(combat->Execute(command)),"Radial event command rejected"))return false;
+        if(!ExpectGAF(runtime.events.size()==(count ? 1 : 0),"Radial event blocked/partial routing failed"))return false;
+        if(count) {
+            const auto& event=runtime.events.front();
+            const auto* visibility=FindObjectField(event.payload,"visibility");const auto* duration=FindObjectField(event.payload,"duration");
+            if(!ExpectGAF(visibility && duration && std::abs(ReadSerializedNumber(*visibility,-1)-.167*count)<1.e-6 &&
+                std::abs(ReadSerializedNumber(*duration,-1)-4*.167*count)<1.e-5,
+                "Radial partial visibility must attenuate distance duration exactly once"))return false;
+        }
+        bodies.back()->SetEnabled(false);
+    }
+    runtime.events.clear();SetSerializedObjectField(command.payload,"visibilityProbes",V::Array({}));
+    if(!ExpectGAF(bool(combat->Execute(command)) && runtime.events.size()==1 &&
+        !FindObjectField(runtime.events.front().payload,"visibility"),"Default radial event payload must retain previous schema"))return false;
+    SetSerializedObjectField(command.payload,"visibilityProbes",V::Array({V::Object({{"left",V::Float(0)},{"up",V::Float(0)},{"weight",V::Float(2)}})}));
+    if(!ExpectGAF(!combat->Execute(command) && eyeQueries==5,"Invalid probes must reject before target queries"))return false;
+    std::cout<<"[GAF Radial] PASS PhysX partialScores=0,.167,.334,.501 viewpoint=1 defaultPayload=1 invalidProbe=1\n";
+    return true;
+}
+
+static bool TestSurfaceDamageRuntime(const Vans::VansGameplayAssetLibrary& assets)
+{
+    if(!TestRadialEventRuntime(assets))return false;
+    using namespace Vans;
+    using V=VansSerializedValue;
+    VansRuntimeWorld world;
+    struct Runtime final : IVansGameplayServiceRuntime {
+        std::unordered_map<std::uint32_t,double> health,armor;
+        unsigned received=0,deaths=0,fieldStopped=0;
+        std::string fieldStopReason;
+        std::function<void()> callback;
+        bool HasHost(VansEntityHandle owner) const override { return health.find(owner.index)!=health.end(); }
+        bool IsActionActive(VansEntityHandle,VansActionHandle) const override { return true; }
+        bool HasTag(VansEntityHandle,VansGameplayTagId) const override { return false; }
+        bool EnqueueActionEvent(VansEntityHandle,VansActionHandle,VansActionEvent event,std::string&) override {
+            if (event.stableName=="VFX.SurfaceFieldStopped") {
+                ++fieldStopped; fieldStopReason=ReadSerializedStringField(event.payload,"reason");
+            } return true;
+        }
+        bool PublishGameplayEvent(VansEntityHandle,VansActionEvent event) override {
+            if (event.stableName=="Combat.DamageReceived") ++received;
+            if (event.stableName=="Combat.Died") ++deaths;
+            if (callback) { auto invoke=std::move(callback); invoke(); }
+            return true;
+        }
+        bool ReadAttribute(VansEntityHandle owner,VansAttributeId attribute,double& value) const override {
+            if (attribute==VansMakeStableId<VansAttributeIdTag>("Armor")) {
+                auto found=armor.find(owner.index); value=found==armor.end() ? 0 : found->second; return HasHost(owner);
+            }
+            auto found=health.find(owner.index); if (found==health.end()) return false;
+            value=found->second; return true;
+        }
+        bool ApplyBaseAttribute(VansEntityHandle owner,VansAttributeId attribute,VansAttributeBaseOperation operation,double amount,double& value) override {
+            if (!HasHost(owner) || operation!=VansAttributeBaseOperation::Add) return false;
+            auto& base=attribute==VansMakeStableId<VansAttributeIdTag>("Armor") ? armor[owner.index] : health[owner.index];
+            value=base=std::max(0.,base+amount); return true;
+        }
+        VansActionResult ActivateAction(VansEntityHandle,VansActionId,VansActionContext,VansTargetData) override { return {}; }
+        bool ForgetCompletedWorldResource(VansActionServiceId,VansGenerationHandle) override { return false; }
+    } runtime;
+    std::vector<std::uint32_t> transforms;
+    std::vector<std::unique_ptr<VansEngine::VansPhysicsNode>> bodies;
+    struct Cleanup {
+        VansRuntimeWorld& world; decltype(bodies)& bodies; decltype(transforms)& transforms;
+        ~Cleanup() { world.Clear(); bodies.clear(); for (auto id : transforms) VansTransformStore::Release(id); }
+    } cleanup{world,bodies,transforms};
+    const auto addTransform=[&](VansEntityHandle entity,glm::vec3 position,const std::string& id) {
+        const auto tid=VansTransformStore::Allocate(); transforms.push_back(tid);
+        auto pose=VansTransformStore::Read(tid); pose.m_Position=position; pose.m_Scale=glm::vec3(1); VansTransformStore::Write(tid,pose);
+        world.AddComponent(entity,VansRuntimeComponentType_Transform,VansRuntimeTransformComponent{tid},id); return tid;
+    };
+    const auto addBody=[&](VansEntityHandle entity,glm::vec3 position,const std::string& id,bool wall=false,glm::vec3 extent=glm::vec3(0)) {
+        const auto tid=addTransform(entity,position,id+"-transform");
+        auto body=std::make_unique<VansEngine::VansPhysicsNode>();
+        VansEngine::PhysicsNodeProperties props; props.enabled=true;
+        props.bodyType=wall ? VansEngine::PhysicsBodyType::Static : VansEngine::PhysicsBodyType::Kinematic;
+        props.isTrigger=!wall; props.layerName="Default"; props.boxExtents=wall ? glm::vec3(.03f,1,.4f) : glm::vec3(.15f);
+        if (glm::length(extent)>0) props.boxExtents=extent;
+        body->Initialize(props,tid); world.AddComponent(entity,VansRuntimeComponentType_Physics,VansRuntimePhysicsComponent{body.get()},id);
+        bodies.push_back(std::move(body));
+    };
+    const auto source=world.CreateEntity({"surface-source","Surface Source"}); runtime.health[source.index]=0;
+    const auto target=world.CreateEntity({"surface-victim","Surface Victim"}); runtime.health[target.index]=100;
+    const auto targetTransform=addTransform(target,{0,10,0},"surface-victim-transform");
+    for (int i=0;i<19;++i) {
+        auto id="surface-part-"+std::to_string(i); auto child=world.CreateEntity({id,id,target}); addBody(child,{0,10+.03f*i,0},id);
+    }
+    const auto elevated=world.CreateEntity({"surface-elevated","Elevated Victim"}); runtime.health[elevated.index]=100;
+    addBody(elevated,{0,12.3f,0},"surface-elevated-body");
+    const auto outside=world.CreateEntity({"surface-outside","Outside Victim"}); runtime.health[outside.index]=100;
+    addBody(outside,{4,10,0},"surface-outside-body");
+    const auto covered=world.CreateEntity({"surface-covered","Covered Victim"}); runtime.health[covered.index]=100;
+    addBody(covered,{.7f,10,0},"surface-covered-body");
+    addBody(world.CreateEntity({"surface-wall","Surface Wall"}),{.5f,10,0},"surface-wall-body",true);
+    auto fields=std::make_shared<VansSurfaceFieldRegistry>();
+    VansSurfaceFieldSnapshot field; field.owner=source; field.origin={0,10,0}; field.radius=3; field.duration=5.5; field.active=true;
+    field.cellCount=2; field.cells[0]={{0,10,0},{0,1,0},0}; field.cells[1]={{.2f,10,0},{0,1,0},0};
+    const VansGenerationHandle reference{0,1}; fields->Publish(reference,field);
+    VansCombatSceneBackend backend; backend.surfaceFields=fields;
+    std::string error;
+    auto combat=VansCombatActionService::Create(world,runtime,assets,error,backend);
+    VansActionCommand command; command.stableName="Combat.SurfaceDamageField";
+    command.context.SetEntity(VansActionContextSlots::Owner,source);
+    command.payload=V::Object({{"field",V::Object({{"index",V::Int(0)},{"generation",V::Int(1)}})},
+        {"blockingLayers",V::Array({V::String("Default")})},{"healthAttribute",V::String("Health")},
+        {"damageType",V::String("Burn")},{"period",V::Float(.2)},{"damagePerTick",V::Float(8)},
+        {"rampSeconds",V::Float(2)},{"cellRadius",V::Float(.8)},
+        {"characterHeightOffset",V::Float(.762)},{"broadphaseHalfHeight",V::Float(.8128)}});
+    const auto started=combat->Execute(command);
+    if (!ExpectGAF(bool(started) && !combat->Execute(command),"Surface damage field create or duplicate rejection failed")) return false;
+    for (int i=1;i<=10;++i) { field.age=i*.2; fields->Publish(reference,field); combat->Tick(.2); }
+    if (!ExpectGAF(std::abs(runtime.health[target.index]-56)<1.e-4 && runtime.received==10
+        && runtime.health[elevated.index]==100 && runtime.health[outside.index]==100 && runtime.health[covered.index]==100,
+        "Surface damage cadence, nineteen-part/cell deduplication, ramp, height, range or wall rejection failed")) return false;
+    auto pose=VansTransformStore::Read(targetTransform); pose.m_Position.x=3; VansTransformStore::Write(targetTransform,pose);
+    for (int i=0;i<19;++i) bodies[i]->SetEnabled(false);
+    field.age=2.2; fields->Publish(reference,field); combat->Tick(.2);
+    if (!ExpectGAF(std::abs(runtime.health[target.index]-56)<1.e-4 && runtime.received==10,"Leaving the visible cells did not stop burn damage")) return false;
+    pose.m_Position.x=0; VansTransformStore::Write(targetTransform,pose);
+    for (int i=0;i<19;++i) bodies[i]->SetEnabled(true);
+    for (int i=12;i<=19;++i) { field.age=i*.2; fields->Publish(reference,field); combat->Tick(.2); }
+    if (!ExpectGAF(runtime.health[target.index]==0 && runtime.deaths==1 && runtime.received==17,"Burn lethality or dead-target suppression failed")) return false;
+    field.active=false; fields->Publish(reference,field); combat->Tick(.2);
+    if (!ExpectGAF(combat->Release(started.resource,error) && !combat->Execute(command),"Inactive field cleanup or start rejection failed")) return false;
+    fields->Remove(reference); field.active=true; field.age=0; fields->Publish({0,2},field);
+    if (!ExpectGAF(!combat->Execute(command),"Surface field generation reuse accepted a stale reference")) return false;
+    command.payload.objectFields[0].second=V::Object({{"index",V::Int(0)},{"generation",V::Int(2)}});
+    auto second=combat->Execute(command); runtime.health[target.index]=100;
+    runtime.callback=[&] { std::string releaseError; if (!combat->Release(second.resource,releaseError)) throw std::runtime_error(releaseError); };
+    field.age=.2; fields->Publish({0,2},field); combat->Tick(.2);
+    if (!ExpectGAF(bool(second) && runtime.health[target.index]<100,"Receiver resource release invalidated the active damage iteration")) return false;
+    field.age=0; fields->Publish({0,2},field); runtime.health[target.index]=100; runtime.armor[target.index]=100;
+    for (const auto& entry : V::Object({{"armorAttribute",V::String("Armor")},{"armorRatio",V::Float(.5)},
+        {"armorScale",V::Float(.5)},{"armorMultiplier",V::Float(20)},{"minimumArmorConsumption",V::Float(1)},
+        {"integralArmor",V::Bool(true)}}).objectFields) command.payload.objectFields.push_back(entry);
+    const auto protectedField=combat->Execute(command);
+    field.age=.2; fields->Publish({0,2},field); combat->Tick(.2);
+    if (!ExpectGAF(protectedField && std::abs(runtime.health[target.index]-99.6)<1.e-4 && runtime.armor[target.index]==96,
+        "Burn protection or twenty-fold integer armor consumption failed")) return false;
+    runtime.armor[target.index]=1; field.age=.4; fields->Publish({0,2},field); combat->Tick(.2);
+    if (!ExpectGAF(std::abs(runtime.health[target.index]-99.6)<1.e-4 && runtime.armor[target.index]==0,
+        "Burn armor exhaustion branch or nonnegative health damage failed")) return false;
+    field.age=.6; fields->Publish({0,2},field); combat->Tick(.2);
+    if (!ExpectGAF(std::abs(runtime.health[target.index]-97.2)<1.e-4 && combat->Release(protectedField.resource,error),
+        "Burn damage did not resume after armor depletion")) return false;
+    bodies.back()->SetEnabled(false);
+    addBody(world.CreateEntity({"surface-floor","Surface Floor"}),{0,9.8f,0},"surface-floor-body",true,{4,.1f,4});
+    unsigned instance=0,drains=0,feedback=0,secondCloudInstance=0;
+    std::vector<VansVFXSpawnRequest> extinguishRequests;
+    float extinction=.03f; bool allCells=false,splitClouds=false;
+    VansVFXSceneBackend effects;
+    effects.surfaceFields=std::make_shared<VansSurfaceFieldRegistry>();
+    effects.spawn=[&](const auto&,std::string&) { return VansGenerationHandle{++instance,1}; };
+    effects.stop=[&](auto,auto) { ++drains; return true; };
+    effects.destroy=[](auto) { return true; }; effects.finished=[](auto) { return false; };
+    effects.setEmissionPoints=[](auto,const auto&) { return true; };
+    effects.pulse=[&](const auto& request,std::string&) {
+        if (!request.worldPosition) return false;
+        extinguishRequests.push_back(request); ++feedback; return true;
+    };
+    effects.sampleExtinction=[&](auto cloudInstance,const auto& positions,auto& values) {
+        values.resize(positions.size());
+        for (std::size_t i=0;i<values.size();++i) values[i]=(splitClouds
+            ? i/5==(cloudInstance.index==secondCloudInstance ? 1u : 0u)
+            : allCells || i<5) ? extinction : 0;
+        return true;
+    };
+    auto registry=effects.surfaceFields;
+    VansVFXActionService vfx(runtime,std::move(effects));
+    VansActionCommand create; create.stableName="VFX.SurfaceField"; create.context.SetEntity(VansActionContextSlots::Owner,source);
+    const auto vector=[](glm::vec3 p) { return V::Object({{"x",V::Float(p.x)},{"y",V::Float(p.y)},{"z",V::Float(p.z)}}); };
+    create.payload=V::Object({{"effect",V::String("a32d8f68-cd19-59e0-8edd-93983add9025")},{"position",vector({0,10,0})},
+        {"surfaceLayers",V::Array({V::String("Default")})},{"radius",V::Float(2)},{"spacing",V::Float(1)},
+        {"duration",V::Float(5.5)},{"spreadDuration",V::Float(3)},{"spawnInterval",V::Float(.1)},{"maxSurfaces",V::Int(3)}});
+    auto supported=vfx.Execute(create);
+    for (int i=0;i<4;++i) vfx.Tick(.11);
+    VansSurfaceFieldSnapshot supportedSnapshot;
+    if (!ExpectGAF(supported && registry->Read(supported.resource,supportedSnapshot) && supportedSnapshot.cellCount==3,
+        "Supported VFX cells were not published to the shared gameplay snapshot")) return false;
+    VansActionCommand smoke; smoke.stableName="VFX.ExtinguishingVolume"; smoke.context=create.context;
+    smoke.payload=V::Object({{"effect",V::String("90be03fb-4c7e-5d5a-af19-b559c345cf36")},{"position",vector(supportedSnapshot.cells[0].position)},
+        {"extinguishEffect",V::String("36dc83be-9195-5727-95df-2cfe4cc1c36a")},{"extinctionThreshold",V::Float(.03)},
+        {"zeroDistanceDirection",vector({0,-1,0})},
+        {"minimumCells",V::Int(3)},{"fullExtinguishFraction",V::Float(1./3)},{"samplePeriod",V::Float(.1)},
+        {"sampleOffsets",V::Array({vector({0,.508f,0}),vector({.508f,.508f,0}),vector({-.508f,.508f,0}),
+            vector({0,.508f,.508f}),vector({0,.508f,-.508f})})}});
+    const auto cloud=vfx.Execute(smoke); vfx.Tick(.11);
+    registry->Read(supported.resource,supportedSnapshot);
+    if (!ExpectGAF(cloud && supportedSnapshot.cells[0].active && drains==0,"Extinction threshold must use strict greater-than")) return false;
+    extinction=.031f; vfx.Tick(.11); registry->Read(supported.resource,supportedSnapshot);
+    if (!ExpectGAF(!supportedSnapshot.cells[0].active && supportedSnapshot.active && drains==0 && feedback==1
+        && glm::length(*extinguishRequests.back().worldPosition-supportedSnapshot.cells[0].position)<1.e-5f
+        && extinguishRequests.back().worldDirection && *extinguishRequests.back().worldDirection==glm::vec3(0,-1,0),
+        "Exactly one-third should extinguish the touched cell without stopping the whole inferno")) return false;
+    if (!ExpectGAF(vfx.Release(supported.resource,error) && !registry->Read(supported.resource,supportedSnapshot),"VFX field release retained a stale gameplay snapshot")) return false;
+    extinction=0; supported=vfx.Execute(create); for (int i=0;i<4;++i) vfx.Tick(.11);
+    allCells=true; extinction=.031f; vfx.Tick(.11); registry->Read(supported.resource,supportedSnapshot);
+    if (!ExpectGAF(!supportedSnapshot.active && drains==1 && feedback==4
+        && runtime.fieldStopped==1 && runtime.fieldStopReason=="Extinguished"
+        && vfx.Release(supported.resource,error) && vfx.Release(cloud.resource,error),
+        "Smoke did not stop the covered inferno, notify its action once or release resources")) return false;
+    for (std::size_t i=0;i<supportedSnapshot.cellCount;++i)
+        if (!ExpectGAF(glm::length(*extinguishRequests[i+1].worldPosition-supportedSnapshot.cells[i].position)<1.e-5f
+            && extinguishRequests[i+1].worldDirection,"Covered cells lost their individual root position or direction")) return false;
+    supported=vfx.Execute(create); for (int i=0;i<4;++i) vfx.Tick(.11);
+    splitClouds=true; allCells=false;
+    *FindObjectField(smoke.payload,"position")=vector({-2,10,0});
+    const auto firstCloud=vfx.Execute(smoke);
+    secondCloudInstance=instance+1;
+    *FindObjectField(smoke.payload,"position")=vector({2,10,0});
+    const auto secondCloud=vfx.Execute(smoke);
+    vfx.Tick(.11); registry->Read(supported.resource,supportedSnapshot);
+    if (!ExpectGAF(firstCloud && secondCloud && !supportedSnapshot.active && drains==2 && feedback==7 && runtime.fieldStopped==2
+        && vfx.Release(supported.resource,error) && vfx.Release(firstCloud.resource,error) && vfx.Release(secondCloud.resource,error),
+        "Two smoke volumes must aggregate disjoint coverage against the initial inferno cell count")) return false;
+    if (!ExpectGAF(extinguishRequests[4].emissionGroup==supported.resource
+        && extinguishRequests[4].emissionGroup!=extinguishRequests[0].emissionGroup
+        && extinguishRequests[4].worldDirection && extinguishRequests[5].worldDirection
+        && glm::length(*extinguishRequests[4].worldDirection-glm::normalize(supportedSnapshot.cells[0].position-glm::vec3(-2,10,0)))<1.e-5f
+        && glm::length(*extinguishRequests[5].worldDirection-glm::normalize(supportedSnapshot.cells[1].position-glm::vec3(2,10,0)))<1.e-5f
+        && !extinguishRequests[6].worldDirection
+        && glm::length(*extinguishRequests[6].worldPosition-supportedSnapshot.cells[2].position)<1.e-5f,
+        "Local roots must use their covering smoke origin; remaining full-clear roots must keep identity orientation")) return false;
+    *FindObjectField(create.payload,"maxSurfaces")=V::Int(2);
+    extinction=0; splitClouds=false; supported=vfx.Execute(create); for (int i=0;i<4;++i) vfx.Tick(.11);
+    const auto smallCloud=vfx.Execute(smoke); allCells=true; extinction=.031f;
+    vfx.Tick(.11); registry->Read(supported.resource,supportedSnapshot);
+    if (!ExpectGAF(smallCloud && !supportedSnapshot.active && feedback==9 && drains==3
+        && runtime.fieldStopped==3 && runtime.fieldStopReason=="Empty"
+        && vfx.Release(supported.resource,error) && vfx.Release(smallCloud.resource,error),
+        "A locally emptied field below minimumCells must not report the full-extinguish sound branch")) return false;
+    std::cout << "[SurfaceDamage] realPhysics=1 parts=19 cadence=.2 ramp=2 wall=1 elevation=1 exit=1 lethal=1 stale=1 callbackRelease=1 armor=1\n";
+    std::cout << "[SmokeExtinguish] publishedCells=3 densityThresholdStrict=1 exactOneThirdPartial=1 full=1 combinedVolumes=1 perCellRoots=1 localDirections=1 coincidentDirection=1 fullIdentity=1 fieldGroups=1 smallFieldNoFullSound=1 notifiedOnce=1 staleCleanup=1\n";
+    return true;
+}
+
 static bool TestDemoHallCombatHitRuntime(bool hitscan, bool damageTest = false)
 {
 	namespace fs = std::filesystem;
@@ -6230,6 +7038,7 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan, bool damageTest = false)
 	whisperSetup.actionSets.push_back("269218a3-6809-48f6-b055-97891161c303");
 	AddHostTagInitializer(whisperSetup, "Target.Character.Enemy");
 	const auto whisperHost = gameplayRuntime.CreateHost(whisper, whisperSetup, error);
+    if (damageTest && !TestSurfaceDamageRuntime(gameplayRuntime.Assets())) return false;
 
 	if (hitscan)
 	{
@@ -6594,6 +7403,117 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan, bool damageTest = false)
 bool TestGAFDemoHallMeleeHitRuntimeContract() { return TestDemoHallCombatHitRuntime(false); }
 bool TestGAFDemoHallPistolHitRuntimeContract() { return TestDemoHallCombatHitRuntime(true); }
 bool TestGAFDamageRuntimeContract() { return TestDemoHallCombatHitRuntime(true, true); }
+
+bool TestDemoHallCharacterFacingContract()
+{
+    using namespace VansGraphics;
+    auto workspace=std::filesystem::current_path();
+    for(int depth=0;depth<6 && !std::filesystem::is_regular_file(workspace/"DemoHallProject/ForestProject.json");++depth)
+        workspace=workspace.parent_path();
+    for(const auto& projectName:{std::string("DemoHallProject"),std::string("DemoHall2Project")})
+    {
+    const auto project=workspace/projectName;
+    std::string error;nlohmann::ordered_json scene;
+    const auto scenePath=project/"Scenes"/(projectName=="DemoHallProject"?"DemoHall.json":"DemoHall2.json");
+    if(!Vans::VansJsonFileStorage::Read(scenePath,scene,error))return ExpectGAF(false,error.c_str());
+    Vans::VansAssetDatabase authoringAssets(project/"Assets",project/"Library/Artifacts");
+    const auto scan=authoringAssets.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
+    if(!ExpectGAF(static_cast<bool>(scan),scan.errors.empty()?"Facing asset index failed":scan.errors.front().c_str()))return false;
+    Skeleton source,target;
+    if(!LoadContractSkeletonFromModel(project/"Assets/Models/SKM_UEFN_Mannequin.fbx",source,error) ||
+        !LoadContractSkeletonFromModel(project/"Assets/Characters/Survival/Models/survival_character.fbx",target,error))
+        return ExpectGAF(false,error.c_str());
+    AnimatorAssetData asset;
+    if(!VansAnimatorIO::Load((project/"Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator").string(),asset))
+        return ExpectGAF(false,"Cannot load the actual movement Animator");
+    VansAnimationRigAsset rig;VansCompiledAnimationRig compiled;VansRetargetProfileAsset profile;
+    if(!VansAnimationRigStorage::Load(project/"Assets/AnimationRigs/Survival.vanimrig",rig,error) ||
+        !VansAnimationRigCompiler::Compile(rig,target,compiled,error) ||
+        !VansRetargetProfileStorage::Load(project/"Assets/Retarget/RTG_UEFN_To_Survival.vretarget",profile,error))
+        return ExpectGAF(false,error.c_str());
+    VansRetargetRuntimeDesc desc;desc.translationScaleMode=profile.translationScaleMode;
+    desc.translationScale=profile.explicitTranslationScale;desc.rootAlignment=profile.rootAlignment;
+    desc.targetModelSpaceAlignment=profile.targetModelSpaceAlignment;desc.limbChains=profile.limbChains;
+    VansRetargetProcessor processor;
+    if(!processor.Build(source,target,compiled,desc))return ExpectGAF(false,"Actual Survival retarget could not build");
+    const auto toeForward=[](const Skeleton& skeleton,const std::vector<glm::mat4>& globals)
+    {
+        glm::vec3 forward(0);
+        for(const auto& side:{std::string("l"),std::string("r")})
+        {
+            const int foot=skeleton.FindBoneIndex("foot_"+side),toe=skeleton.FindBoneIndex("ball_"+side);
+            if(foot<0 || toe<0)return glm::vec3(0);
+            forward+=glm::vec3(globals[toe][3])-glm::vec3(globals[foot][3]);
+        }
+        return forward;
+    };
+    for(const auto& clipName:{std::string("Idle_Stand"),std::string("Walk_F")})
+    {
+        const auto ref=std::find_if(asset.clipRefs.begin(),asset.clipRefs.end(),[&](const auto& candidate){return candidate.name==clipName;});
+        if(ref==asset.clipRefs.end())return ExpectGAF(false,"Actual facing clip is missing");
+        VansAnimationClip clip;Skeleton clipSkeleton;
+        if(!VansAnimationClipIO::Load((project/ref->pathHint).string(),clip,clipSkeleton))return ExpectGAF(false,"Cannot load actual facing clip");
+        VansAnimationSampleRequest request;request.currentTime=.5f;request.endTime=clip.duration;request.loop=true;
+        VansPosePayload payload;
+        if(!VansAnimationSampler::Sample(clip,source,request,payload))return ExpectGAF(false,"Cannot sample actual facing pose");
+        std::vector<glm::mat4> globals(source.bones.size(),glm::mat4(1));
+        for(int bone:source.topologicalOrder)
+        {
+            const int parent=source.bones[bone].parentIndex;
+            globals[bone]=(parent>=0?globals[parent]:glm::mat4(1))*VansPoseMath::Compose(payload.localPose[bone]);
+        }
+        std::vector<glm::mat4> targetGlobals;
+        if(!processor.Process(globals,source,target,targetGlobals))return ExpectGAF(false,"Actual facing retarget failed");
+        for(const auto& entity:scene.at("entities"))
+        {
+            const std::string name=entity.at("name");
+            if(name!="SurvivalCharacter" && name!="AnimatedCharacter")continue;
+            const auto& components=entity.at("components");
+            const auto transform=std::find_if(components.begin(),components.end(),[](const auto& c){return c.at("type")=="Transform";});
+            const auto script=std::find_if(components.begin(),components.end(),[](const auto& c){return c.at("type")=="Script" && c.at("data").value("entry",std::string{})=="CharacterMove";});
+            if(transform==components.end() || script==components.end())return ExpectGAF(false,"Facing owner configuration is missing");
+            const auto& rotation=transform->at("data").at("rotation");
+            Vans::VansSceneAuthoringEntityProjection projection;
+            if(!Vans::VansSceneRuntimeProjection::ProjectAuthoringEntity(Vans::DecodeSerializedValueJson(entity),projection) ||
+                !projection.transform || !projection.transform->rotationDegrees)
+                return ExpectGAF(false,"Actual scene character rotation did not project");
+            const auto degrees=*projection.transform->rotationDegrees;
+            Vans::VansSceneContentBuildPlan runtimePlan;
+            if(!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+                Vans::VansSerializedValue::Array({Vans::DecodeSerializedValueJson(entity)}),project.string(),
+                [&](Vans::VansAssetGuid guid){return authoringAssets.Find(guid);},runtimePlan,error) || runtimePlan.objects.objects.size()!=1)
+                return ExpectGAF(false,error.empty()?"Actual runtime character did not project":error.c_str());
+            if(!runtimePlan.objects.objects.front().transform)return ExpectGAF(false,"Runtime character transform is missing");
+            const auto runtimeDegrees=runtimePlan.objects.objects.front().transform->rotation;
+            for(int axis=0;axis<3;++axis)
+                if(!ExpectGAF(std::abs(runtimeDegrees[axis]-degrees[axis])<1.e-5f,
+                    "Editor and runtime character heading projection differ"))return false;
+            Vans::VansTransform initial;initial.m_Position=glm::vec3(0);initial.m_Scale=glm::vec3(1);
+            initial.m_Rotation={degrees[0],degrees[1],degrees[2]};
+            const auto authored=glm::mat4_cast(glm::normalize(glm::quat(rotation[3].get<float>(),rotation[0].get<float>(),rotation[1].get<float>(),rotation[2].get<float>())));
+            const auto projected=initial.GetModelMatrix();
+            for(int column=0;column<4;++column)for(int row=0;row<4;++row)
+                if(!ExpectGAF(std::abs(authored[column][row]-projected[column][row])<1.e-5f,
+                    "Character heading projection changed its authored initial pose"))return false;
+            for(const float cameraHeading:{180.f,135.f,225.f})
+            {
+                Vans::VansTransform owner;owner.m_Position=glm::vec3(0);owner.m_Scale=glm::vec3(1);
+                owner.m_Rotation={degrees[0],cameraHeading+script->at("data").at("fields").value("rotationOffset",0.f),degrees[2]};
+                glm::vec3 forward=glm::mat3(owner.GetModelMatrix())*(name=="SurvivalCharacter"?toeForward(target,targetGlobals):toeForward(source,globals));
+                forward.y=0;
+                if(glm::length(forward)<1.e-5f)return ExpectGAF(false,"Actual toe-facing oracle is degenerate");
+                forward=glm::normalize(forward);
+                const glm::vec3 viewForward(std::sin(glm::radians(cameraHeading)),0,std::cos(glm::radians(cameraHeading)));
+                const float alignment=glm::dot(forward,viewForward);
+                std::cout<<"[DemoHallCharacterFacing] project="<<projectName<<" owner="<<name<<" clip="<<clipName<<" cameraHeading="<<cameraHeading
+                    <<" renderedForward="<<forward.x<<','<<forward.z<<" dot="<<alignment<<'\n';
+                if(!ExpectGAF(alignment>.9f,"Actual rendered character faces opposite its camera-derived motion heading"))return false;
+            }
+        }
+    }
+    }
+    return true;
+}
 
 bool TestDemoHallCrouchLocomotionContract()
 {
@@ -7176,13 +8096,10 @@ bool TestDemoHallPlayerVaultContract()
 		"DemoHall vault is not wired through input, Graph Set, root motion, and CCT ownership");
 }
 
-bool TestDemoHallWhisperAIContract()
+static bool RunDemoHallWhisperAIContractForProject(const std::filesystem::path& projectRoot)
 {
 	namespace fs = std::filesystem;
-	fs::path workspace = fs::current_path();
-	for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
-		workspace = workspace.parent_path();
-	const fs::path projectRoot = workspace / "DemoHallProject";
+	const auto workspace = projectRoot.parent_path();
 	const fs::path whisperRoot = projectRoot / "Assets/Characters/Whisper";
 	std::string error;
 
@@ -7469,7 +8386,8 @@ bool TestDemoHallWhisperAIContract()
 	whisperController->Update(0.0f, modelSkeleton);
 	const bool demoHallEnteredSitToIdle =
 		whisperController->GetCurrentStateName() == "SitToIdle";
-	whisperController->Update(1.5f, modelSkeleton);
+	for (int frame = 0; frame < 90; ++frame)
+		whisperController->Update(1.0f / 60.0f, modelSkeleton);
 	if (!deformationPreview.RasterizeFrame(
 		whisperController->GetBoneMatricesSSBO(), {}, glm::vec3(0.0f), {}, error))
 		return ExpectGAF(false, error.c_str());
@@ -7479,13 +8397,29 @@ bool TestDemoHallWhisperAIContract()
 		<< sitToIdlePreviewStats.renderedTriangleCount
 		<< " invalidDeformed=" << sitToIdlePreviewStats.invalidDeformedVertexCount
 		<< " radiusRatio=" << sitToIdlePreviewStats.deformedRadiusRatio << '\n';
-	whisperController->Update(1.501f, modelSkeleton);
+	// 按正常帧推进等待非循环片段和过渡完成，避免把片段结束时刻等同于状态切换完成。
+	for (int frame = 0; frame < 120 && whisperController->GetCurrentStateName() != "Idle1"; ++frame)
+		whisperController->Update(1.0f / 60.0f, modelSkeleton);
 	const bool demoHallEnteredIdle = whisperController->GetCurrentStateName() == "Idle1";
 	whisperController->Update(0.5f, modelSkeleton);
 	if (!deformationPreview.RasterizeFrame(
 		whisperController->GetBoneMatricesSSBO(), {}, glm::vec3(0.0f), {}, error))
 		return ExpectGAF(false, error.c_str());
 	const auto& controllerStats = deformationPreview.GetStats();
+	// Idle 的进入包含混合时间；独立采样必须使用运行时同一片段相位。
+	sampleRequest.currentTime = whisperController->GetNormalizedTime() * deformationClip.duration;
+	if (!VansGraphics::VansAnimationSampler::Sample(deformationClip, modelSkeleton, sampleRequest, sampledPose))
+		return ExpectGAF(false, "Whisper current Idle phase could not be independently sampled");
+	for (std::size_t bone = 0; bone < deformationGlobals.size(); ++bone)
+		deformationGlobals[bone] = VansGraphics::VansPoseMath::Compose(sampledPose.localPose[bone]);
+	for (int bone : modelSkeleton.topologicalOrder)
+	{
+		const int parent = modelSkeleton.bones[static_cast<std::size_t>(bone)].parentIndex;
+		if (parent >= 0) deformationGlobals[static_cast<std::size_t>(bone)] =
+			deformationGlobals[static_cast<std::size_t>(parent)] * deformationGlobals[static_cast<std::size_t>(bone)];
+	}
+	for (std::size_t bone = 0; bone < modelSkeleton.bones.size(); ++bone)
+		deformationMatrices.boneMatrices[bone] = deformationGlobals[bone] * modelSkeleton.bones[bone].offsetMatrix;
 	float maxControllerMatrixDiff = 0.0f;
 	for (std::size_t bone = 0; bone < modelSkeleton.bones.size(); ++bone)
 		for (int column = 0; column < 4; ++column)
@@ -7493,6 +8427,11 @@ bool TestDemoHallWhisperAIContract()
 				maxControllerMatrixDiff = std::max(maxControllerMatrixDiff,
 					std::abs(whisperController->GetBoneMatricesSSBO().boneMatrices[bone][column][row]
 						- deformationMatrices.boneMatrices[bone][column][row]));
+	std::cout << "[GAF] Whisper runtime flags: wake=" << demoHallHasWakeTrigger << " beganDead=" << demoHallBeganDead
+		<< " loopedDead=" << demoHallLoopedDead << " enteredSitToIdle=" << demoHallEnteredSitToIdle
+		<< " enteredIdle=" << demoHallEnteredIdle << " current=" << whisperController->GetCurrentStateName()
+		<< " idleRadiusRatio=" << controllerStats.deformedRadiusRatio << " invalid=" << controllerStats.invalidDeformedVertexCount
+		<< " maxMatrixDiff=" << maxControllerMatrixDiff << '\n';
 	if (!ExpectGAF(demoHallHasWakeTrigger && demoHallBeganDead && demoHallLoopedDead &&
 		deadPreviewStats.renderedTriangleCount > 0 &&
 		deadPreviewStats.invalidDeformedVertexCount == 0 &&
@@ -7587,8 +8526,9 @@ bool TestDemoHallWhisperAIContract()
 		fs::is_regular_file(whisperRoot / "Textures/Whisper_Body_Roughness.png"),
 		"DemoHall Whisper PBR material or imported textures are incomplete")) return false;
 
-	nlohmann::ordered_json scene;
-	if (!Vans::VansJsonFileStorage::Read(projectRoot / "Scenes/DemoHall.json", scene, error))
+	nlohmann::ordered_json projectConfig, scene;
+	if (!Vans::VansJsonFileStorage::Read(projectRoot / "ForestProject.json", projectConfig, error) ||
+		!Vans::VansJsonFileStorage::Read(projectRoot / projectConfig.at("defaultScene").get<std::string>(), scene, error))
 		return ExpectGAF(false, error.c_str());
 	bool foundWhisper = false;
 	glm::vec3 whisperPosition(0.0f);
@@ -7656,12 +8596,10 @@ bool TestDemoHallWhisperAIContract()
 					std::abs(data.value("radius", 0.0f) - 0.35f) < 0.001f;
 			else if (type == "NavigationAgent")
 				hasNavigationAgent = component.value("enabled", false) &&
-					data.value("navigationMesh", nlohmann::ordered_json::object())
-						.value("guid", std::string{}) ==
-						"fcb8f186-b52d-48fc-bd57-8315d4b0fcad" &&
+                    data.value("mapId",std::string{})=="World" && data.value("profileId",std::string{})=="Humanoid" &&
+                    data.value("queryFilter",std::string{})=="Default" && !data.contains("navigationMesh") && !data.contains("stoppingDistance") &&
 					std::abs(data.value("maxSpeed", 0.0f) - 1.5f) < 0.001f &&
 					std::abs(data.value("acceleration", 0.0f) - 6.0f) < 0.001f &&
-					std::abs(data.value("stoppingDistance", 0.0f) - 1.6f) < 0.001f &&
 					std::abs(data.value("repathInterval", 0.0f) - 0.25f) < 0.001f &&
 					std::abs(data.value("targetMoveThreshold", 0.0f) - 0.75f) < 0.001f &&
 					std::abs(data.value("forceRepathDistance", 0.0f) - 6.0f) < 0.001f;
@@ -7684,6 +8622,7 @@ bool TestDemoHallWhisperAIContract()
 					std::abs(sight.value("range", 0.0f) - 14.0f) < 0.001f &&
 					std::abs(sight.value("horizontalFovDegrees", 0.0f) - 240.0f) < 0.001f &&
 					sight.value("occlusionLayer", std::string{}) == "Environment" &&
+                    std::abs(sight.value("loseTargetGraceSeconds",0.f)-15.f)<.001f &&
 					std::abs(timing.value("perceptionInterval", 0.0f) - 0.1f) < 0.001f &&
 					std::abs(timing.value("decisionInterval", 0.0f) - 0.1f) < 0.001f &&
 					std::abs(timing.value("maximumDeltaSeconds", 0.0f) - 0.25f) < 0.001f;
@@ -7718,23 +8657,27 @@ bool TestDemoHallWhisperAIContract()
 		!patrolState->transitions.empty() &&
 		patrolState->transitions.front().condition.key == "HasVisualTarget" &&
 		chaseState->task == Vans::VansAITaskKind::MoveToTarget &&
+        std::abs(chaseState->moveToTarget.arrivalRadius-1.6f)<.001f &&
 		!chaseState->transitions.empty() &&
 		chaseState->transitions.front().condition.key == "HasVisualTarget" &&
 		!chaseState->transitions.front().condition.expectedBool;
 	Vans::VansNavigationSettings demoHallNavigationSettings;
-	if (!Vans::VansProjectSettingsStorage::LoadNavigationSettings(
+	if (!Vans::VansNavigationSettingsStorage::Load(
 		(projectRoot / "ProjectSettings/NavigationSettings.json").string(),
 		demoHallNavigationSettings, error))
 		return ExpectGAF(false, error.c_str());
-	Vans::VansNavigationMesh demoHallNavigation;
-	if (!demoHallNavigation.Load(
-		projectRoot / "Assets/Navigation/DemoHall.vnavmesh",
-		demoHallNavigationSettings, error))
+    std::shared_ptr<const Vans::VansNavigationMeshAsset> demoHallAsset;
+    auto demoHallNavigation = std::make_shared<Vans::VansNavigationMap>();
+    if (!Vans::VansNavigationMeshStorage::Load(projectRoot / "Assets/Navigation/DemoHall.vnavmesh", demoHallAsset, error) ||
+        !demoHallNavigation->Initialize(demoHallAsset, demoHallNavigationSettings, "Humanoid", error))
+        return ExpectGAF(false, error.c_str());
+	Vans::VansNavigationQueryContext demoHallQuery;
+	if (!demoHallQuery.Initialize(demoHallNavigation, demoHallNavigationSettings.query, "Default", error))
 		return ExpectGAF(false, error.c_str());
 	bool allPlayerSpawnsReachable = playerPositions.size() == 2u;
 	for (const glm::vec3& playerPosition : playerPositions)
 		allPlayerSpawnsReachable = allPlayerSpawnsReachable &&
-			demoHallNavigation.FindPath(whisperPosition, playerPosition).status ==
+			demoHallQuery.FindPath(whisperPosition, playerPosition).status ==
 			Vans::VansNavigationPathStatus::Complete;
 	std::string script;
 	if (!Vans::VansFileStorage::ReadAllBytes(
@@ -8208,6 +9151,48 @@ bool TestDemoHallWhisperAIContract()
 		pickupGameplayRelease > pickupActivation &&
 		pickupScript.find("set_trigger(\"WakeUp\")") == std::string::npos;
 
+	if (!ExpectGAF(foundWhisper && behaviorIsPickupGatedChase && allPlayerSpawnsReachable &&
+		pickupGafAssetsCompile && pickupTimelineCompiles && pickupRuntimeLinksResolve &&
+		pickupWaitsForExternalCompletion && pickupActionUsesGAF && pickupSetGrantsAction &&
+		pickupInspectionIsMousePreviewWithEscapeExit &&
+		timelineBindsFrameStand && timelineBindsWhisperAnimation &&
+		timelineFiresWakeTrigger && timelineCompletesPickupAction && pickupPreviewDoesNotWake &&
+		timelineCompletionTick == 77999 && timelineWakeTick == 1 &&
+		frameStandPickupConfigured && frameStandTimelineConfigured &&
+		frameStandWakeTimelineConfigured &&
+		registeredWhisperActionTag && registeredWhisperTargetTag &&
+		pickupUsesExistingGafInventoryFlow &&
+		fs::is_regular_file(whisperRoot /
+			"Animations/Anim_WhisperDead_Unreal_Take.vclip") &&
+		fs::is_regular_file(whisperRoot /
+			"Animations/anima_whisper_sittoidle_Unreal_Take.vclip"),
+		"Frame_Stand_4 pickup is not wired through Whisper wake, AI chase, navigation, CCT, and locomotion")) return false;
+	VansGraphics::VansAnimationNode whisperRuntimeAnimation("Whisper");
+	if (!whisperRuntimeAnimation.SetController(std::move(whisperController)))
+		return ExpectGAF(false, "Whisper runtime Animator could not bind its skeleton");
+	return RunDemoHallNavigationContractTests(projectRoot, &whisperRuntimeAnimation);
+}
+
+bool TestDemoHallWhisperAIContract()
+{
+    auto workspace=std::filesystem::current_path();
+    for(int depth=0;depth<6 && !std::filesystem::is_regular_file(workspace/"DemoHallProject/ForestProject.json");++depth)
+        workspace=workspace.parent_path();
+    for(const auto& name:{"DemoHallProject","DemoHall2Project"})
+    {
+        std::cout<<"[DemoHallWhisperAI] project="<<name<<'\n';
+        if(!RunDemoHallWhisperAIContractForProject(workspace/name))return false;
+    }
+    return true;
+}
+
+bool TestAnimationV2WhisperPreviewContract()
+{
+	namespace fs = std::filesystem;
+	fs::path workspace = fs::current_path();
+	for (int depth = 0; depth < 6 && !fs::exists(workspace / "AnimationV2Project"); ++depth)
+		workspace = workspace.parent_path();
+	std::string error;
 	const fs::path animationV2Root = workspace / "AnimationV2Project";
 	nlohmann::ordered_json animationV2Scene;
 	if (!Vans::VansJsonFileStorage::Read(
@@ -8356,6 +9341,11 @@ bool TestDemoHallWhisperAIContract()
 	animationV2Controller->SetInt("PreviewState", 0);
 	animationV2Controller->Update(0.13f, animationV2Skeleton);
 	const bool returnedToIdle1 = animationV2Controller->GetCurrentStateName() == "Idle1";
+	Vans::VansAssetMeta previewMeta;
+	VansGraphics::VansAnimationPreviewRenderer deformationPreview;
+	if (!Vans::VansAssetMetaStorage::Load(animationV2WhisperRoot / "Models/SK_Whisper.glb.meta", previewMeta, error) ||
+		!deformationPreview.PrepareCpu(animationV2WhisperRoot / "Models/SK_Whisper.glb", 1.0f,
+			Vans::ReadSkeletalMeshImportSettings(previewMeta), error)) return ExpectGAF(false, error.c_str());
 	if (!deformationPreview.RasterizeFrame(
 		animationV2Controller->GetBoneMatricesSSBO(), {}, glm::vec3(0.0f), {}, error))
 		return ExpectGAF(false, error.c_str());
@@ -8368,22 +9358,7 @@ bool TestDemoHallWhisperAIContract()
 		startupStats.deformedRadiusRatio < 1.25f,
 		"AnimationV2 Whisper wake gate or post-wake 16-clip preview routing is invalid")) return false;
 
-	return ExpectGAF(foundWhisper && behaviorIsPickupGatedChase && allPlayerSpawnsReachable &&
-		pickupGafAssetsCompile && pickupTimelineCompiles && pickupRuntimeLinksResolve &&
-		pickupWaitsForExternalCompletion && pickupActionUsesGAF && pickupSetGrantsAction &&
-		pickupInspectionIsMousePreviewWithEscapeExit &&
-		timelineBindsFrameStand && timelineBindsWhisperAnimation &&
-		timelineFiresWakeTrigger && timelineCompletesPickupAction && pickupPreviewDoesNotWake &&
-		timelineCompletionTick == 77999 && timelineWakeTick == 1 &&
-		frameStandPickupConfigured && frameStandTimelineConfigured &&
-		frameStandWakeTimelineConfigured &&
-		registeredWhisperActionTag && registeredWhisperTargetTag &&
-		pickupUsesExistingGafInventoryFlow &&
-		fs::is_regular_file(whisperRoot /
-			"Animations/Anim_WhisperDead_Unreal_Take.vclip") &&
-		fs::is_regular_file(whisperRoot /
-			"Animations/anima_whisper_sittoidle_Unreal_Take.vclip") &&
-		foundAnimationV2Preview && foundAnimationV2Camera && animationV2GIDisabled &&
+	return ExpectGAF(foundAnimationV2Preview && foundAnimationV2Camera && animationV2GIDisabled &&
 		animationV2PreviewWakeConfigured &&
 		animationV2Script.find("M.WhisperAnimationPreview") != std::string::npos &&
 		animationV2Script.find("set_trigger(\"WakeUp\")") != std::string::npos &&
@@ -8392,7 +9367,7 @@ bool TestDemoHallWhisperAIContract()
 		fs::is_regular_file(animationV2WhisperRoot / "Models/SK_Whisper.glb") &&
 		fs::is_regular_file(animationV2WhisperRoot / "Animation/Whisper.vanimator") &&
 		fs::is_regular_file(animationV2WhisperRoot / "Animation/Whisper.vanimrig"),
-		"Frame_Stand_4 pickup is not wired through Whisper wake, AI chase, navigation, CCT, and locomotion");
+		"AnimationV2 Whisper preview configuration is invalid");
 }
 
 bool TestGAFPistolAudioRuntimeContract()
@@ -8526,6 +9501,16 @@ bool TestGAFPistolAudioRuntimeContract()
 			"Stopped handle remained usable or fade ended early")) return false;
 		service->Tick(.06);
 		if (!ExpectGAF(system.GetActiveSourceLeaseCount() == baseLeases, "Audio fade did not release its voice")) return false;
+        auto spatialPayload=VansSerializedValue::Object({{"sound",VansSerializedValue::String(sound)},
+            {"spatial",VansSerializedValue::Bool(true)}});
+        if (!ExpectGAF(!invoke("Audio.Loop",spatialPayload) && system.GetActiveSourceLeaseCount()==baseLeases,
+            "Spatial loop without a position must reject without leasing a source")) return false;
+        SetSerializedObjectField(spatialPayload,"position",VansSerializedValue::Object({
+            {"x",VansSerializedValue::Float(2)},{"y",VansSerializedValue::Float(1)},{"z",VansSerializedValue::Float(-3)}}));
+        const auto spatialLoop=invoke("Audio.Loop",spatialPayload);
+        if (!ExpectGAF(spatialLoop && system.GetActiveSourceLeaseCount()==baseLeases+1
+            && service->Release(spatialLoop.resource,error) && system.GetActiveSourceLeaseCount()==baseLeases,
+            "Spatial world-position loop failed to play or release its independent source")) return false;
 		const auto owned = invoke("Audio.Loop", VansSerializedValue::Object({{"sound", VansSerializedValue::String(sound)}}));
 		if (!ExpectGAF(owned && service->Release(owned.resource, error) && !service->Release(owned.resource, error)
 			&& system.GetActiveSourceLeaseCount() == baseLeases, "Audio action resource cleanup or stale-handle rejection failed")) return false;

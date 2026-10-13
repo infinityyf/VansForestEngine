@@ -622,6 +622,11 @@ namespace VansEngine
         return true;
     }
 
+    bool VansCharacterControllerNode::IsCrouched() const
+    {
+        return m_Native->crouched;
+    }
+
     glm::vec3 VansCharacterControllerNode::GetPosition() const
     {
         if (!m_Native->controller) return glm::vec3(0.0f);

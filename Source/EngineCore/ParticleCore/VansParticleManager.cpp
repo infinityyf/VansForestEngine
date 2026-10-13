@@ -104,6 +104,15 @@ bool VansParticleManager::Queue(Vans::VansGenerationHandle handle, VansParticleC
     m_Commands.push_back(command);
     return true;
 }
+bool VansParticleManager::SetEmissionPoints(Vans::VansGenerationHandle handle, std::vector<VansParticleEmissionPoint> points)
+{
+    if (!CanAccessMainState()) return false;
+    VansParticleCommand command{handle,VansParticleControl::SetEmissionPoints};
+    command.emissionPoints = std::move(points);
+    if (!CanQueue(command)) return false;
+    m_Commands.push_back(std::move(command));
+    return true;
+}
 bool VansParticleManager::QueueBatch(const std::vector<VansParticleCommand>& commands)
 {
     if (!CanAccessMainState()) return false;
@@ -120,6 +129,21 @@ bool VansParticleManager::CanQueue(const VansParticleCommand& command) const
     const auto* ownedRuntime = m_Runtimes.Resolve(command.instance);
     const VansParticleRuntime* runtime = ownedRuntime ? ownedRuntime->get() : nullptr;
     if (!runtime || !std::isfinite(command.value)) return false;
+    if (command.control == VansParticleControl::SetEmissionPoints)
+    {
+        if (runtime->HasRibbon()) return false;
+        if (!command.emissionPoints || command.emissionPoints->size() > VansParticleMaxEmissionPoints) return false;
+        const auto& points = *command.emissionPoints;
+        for (size_t i=0;i<points.size();++i)
+        {
+            const auto& point = points[i];
+            if (!std::isfinite(glm::length(point.position)) || !std::isfinite(glm::length(point.normal))
+                || glm::length(point.normal) < 0.001f || !std::isfinite(point.scale) || point.scale <= 0 || point.scale > 100
+                || !std::isfinite(point.bornTime) || point.bornTime < 0 || point.bornTime > 3600) return false;
+            for (size_t j=0;j<i;++j) if (points[j].id == point.id) return false;
+        }
+        return true;
+    }
     if (command.control == VansParticleControl::SetOwnerWorldTransform)
     {
         if (!command.hasOwnerWorld) return false;
@@ -162,6 +186,7 @@ void VansParticleManager::ApplyCommands(const std::vector<VansParticleCommand>& 
         case VansParticleControl::EmitInitialFrame: runtime->EmitInitialFrame(); break;
         case VansParticleControl::SetOwnerWorldTransform: runtime->SetOwnerWorldTransform(command.ownerWorld); break;
         case VansParticleControl::SetEmitterPositionLocal: runtime->SetEmitterPositionLocal(command.emitterPositionLocal); break;
+        case VansParticleControl::SetEmissionPoints: runtime->SetEmissionPoints(*command.emissionPoints); break;
         }
     }
 }

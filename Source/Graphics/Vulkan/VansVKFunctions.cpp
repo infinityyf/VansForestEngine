@@ -95,6 +95,7 @@ namespace VansGraphics
 	bool LoadVulkanInstanceLevelFunctionFromExtension(VkInstance instance, std::vector<char const*>& enabled_extensions)
 	{
 #define INSTANCE_LEVEL_VULKAN_FUNCTION_FROM_EXTENSION( name, extension ) \
+		name = nullptr; \
 		for (auto& enabled_extension : enabled_extensions) \
 		{\
 			if (std::string(enabled_extension) == std::string(extension))\

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <cstdint>
 #include <vector>
 #if defined _WIN32
@@ -113,15 +113,15 @@ namespace VansGraphics
 		ShaderType m_ShaderType = ShaderType::Normal;
 
 	protected:
-		VkDevice m_LogicDevice;
+		VkDevice m_LogicDevice = VK_NULL_HANDLE;
 
 		void DestroyShaderMoulde();
 
-		bool m_SupportMRTOutput;
+		bool m_SupportMRTOutput = false;
 
-		int m_PushConstantSize;
+		int m_PushConstantSize = 0;
 
-		void* m_PushConstantData;
+		void* m_PushConstantData = nullptr;
 
 		VansPipelineProgramDesc m_PipelineProgramDesc;
 	};
@@ -197,6 +197,7 @@ namespace VansGraphics
 		void SetColorAttachmentCount(int count) { m_ColorAttachmentCount = count; SyncPipelineGraphicsStateDesc(); }
 
 		void TriggerReCreateGraphicsPipeline();
+		void RetireRenderPassPipelineVariants(VkRenderPass renderPass);
 
 		VansGraphicsShader()
 		{
@@ -210,6 +211,7 @@ namespace VansGraphics
 
 		// 显式颜色附件数量（-1 = 自动推断），用于非主 GBuffer 的 MRT pass
 		int m_ColorAttachmentCount = -1;
+		std::vector<std::string> m_ColorAttachmentBlends;
 
 	private:
 		struct GraphicsPipelineVariantEntry

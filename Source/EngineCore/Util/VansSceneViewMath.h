@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glm/glm.hpp>
+#include <array>
 
 namespace Vans
 {
@@ -21,6 +22,8 @@ class VansSceneViewMath final
 		const glm::vec3& minimum,
 		const glm::vec3& maximum,
 		float limit);
+	static bool IntersectTriangle(const glm::vec3& origin,const glm::vec3& direction,
+        const std::array<glm::vec3,3>& triangle,float limit,float& distance);
 
 	static bool CalculateFramePosition(
 		bool boundsAvailable,

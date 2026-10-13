@@ -155,7 +155,12 @@ target_link_libraries(ForestThirdParty
         ForestExternalLua
         RecastNavigation::Recast
         RecastNavigation::Detour
+        RecastNavigation::DetourTileCache
+        RecastNavigation::DetourCrowd
 )
+
+# 区域 allow 表由独占查询 filter 实现；库及其全部消费者必须采用同一虚接口 ABI。
+target_compile_definitions(Detour PUBLIC DT_VIRTUAL_QUERYFILTER=1)
 
 add_library(ForestExternalNoesisVk STATIC
     "${FOREST_EXTERNAL_DIR}/NoesisGUI/Src/Packages/Render/VKRenderDevice/Src/Render.VKRenderDevice.cpp"

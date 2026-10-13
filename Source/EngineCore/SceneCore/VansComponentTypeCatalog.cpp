@@ -1,8 +1,10 @@
+#include "../NavigationCore/VansNavigationRuntimeComponents.h"
 #include "VansComponentTypeCatalog.h"
 
 #include "../AssetCore/Serialization/VansSerializedValue.h"
 #include "../GameplayActionSchema/VansGameplayActionHostAuthoring.h"
 #include "VansSceneEntityFactory.h"
+#include "VansSceneNavigationComponentReader.h"
 #include "VansSceneLocalVolumetricFogComponentConfig.h"
 
 #include <utility>
@@ -79,6 +81,7 @@ Value DefaultModelRenderer()
 		{ "materialOverrides", Value::Object({}) },
 		{ "orphanOverrides", Value::Object({}) },
 		{ "renderType", Value::String("opaque") }
+		,{ "renderLayer", Value::String("Default") }
 	});
 }
 
@@ -299,6 +302,60 @@ Value DefaultActionHost()
 	return VansGameplayActionHostAuthoring::CreateDefaultData();
 }
 
+Value DefaultNavigationAgent()
+{
+    const VansRuntimeNavigationAgentComponent defaults;
+    return Value::Object({
+        { "mapId", Value::String(defaults.mapId) },
+        { "profileId", Value::String(defaults.profileId) }, { "queryFilter", Value::String(defaults.queryFilter) },
+        { "maxSpeed", Value::Float(defaults.maxSpeed) }, { "acceleration", Value::Float(defaults.acceleration) }, { "avoidance", Value::Bool(defaults.avoidance) },
+        { "repathInterval", Value::Float(defaults.repathInterval) },
+        { "targetMoveThreshold", Value::Float(defaults.targetMoveThreshold) }, { "forceRepathDistance", Value::Float(defaults.forceRepathDistance) }
+    });
+}
+
+Value NavigationVector(const glm::vec3& value)
+{
+    return Value::Array({Value::Float(value.x),Value::Float(value.y),Value::Float(value.z)});
+}
+Value DefaultNavigationSurface()
+{
+    const VansRuntimeNavigationSurfaceComponent defaults;
+    return Value::Object({{"mapId",Value::String(defaults.mapId)},{"profiles",Value::Array({Value::String(defaults.profiles.front())})},
+        {"bounds",Value::Object({{"centerMeters",NavigationVector(defaults.boundsCenterMeters)},{"halfExtentsMeters",NavigationVector(defaults.boundsHalfExtentsMeters)}})},
+        {"collection",Value::String("All")},{"sources",Value::Array({})},{"collisionLayers",Value::Array({})},
+        {"geometryMode",Value::String("Collision")},{"navigationMesh",GuidReference()}});
+}
+Value DefaultNavigationSource()
+{
+    return Value::Object({{"mode",Value::String("Include")},{"area",Value::String("")},{"cpuMesh",GuidReference()}});
+}
+Value DefaultNavigationModifier()
+{
+    const VansRuntimeNavigationModifierComponent defaults;
+    return Value::Object({{"mapId",Value::String(defaults.mapId)},{"profiles",Value::Array({Value::String(defaults.profiles.front())})},
+        {"shape",Value::String("Box")},{"centerMeters",NavigationVector(defaults.centerMeters)},{"halfExtentsMeters",NavigationVector(defaults.halfExtentsMeters)},
+        {"convexVerticesMeters",Value::Array({})},{"minimumHeightMeters",Value::Float(defaults.minimumHeightMeters)},
+        {"maximumHeightMeters",Value::Float(defaults.maximumHeightMeters)},{"area",Value::String(defaults.area)},
+        {"exclude",Value::Bool(defaults.exclude)},{"priority",Value::Int(defaults.priority)}});
+}
+
+Value DefaultNavigationLink()
+{
+    const VansRuntimeNavigationLinkComponent defaults;
+    return Value::Object({{"mapId",Value::String(defaults.mapId)},{"profiles",Value::Array({Value::String(defaults.profiles.front())})},
+        {"startMeters",NavigationVector(defaults.startMeters)},{"endMeters",NavigationVector(defaults.endMeters)},
+        {"radiusMeters",Value::Float(defaults.radiusMeters)},{"area",Value::String(defaults.area)},{"bidirectional",Value::Bool(defaults.bidirectional)}});
+}
+Value DefaultNavigationObstacle()
+{
+    const VansRuntimeNavigationObstacleComponent defaults;
+    auto result=Value::Object({{"mapId",Value::String(defaults.mapId)},{"profiles",Value::Array({Value::String(defaults.profiles.front())})},
+        {"mode",Value::String(std::string(NavigationObstacleModeName(defaults.mode)))}});
+    auto shape=VansSceneNavigationComponentReader::CreateObstacleShapeData("Cylinder");
+    for(auto& field:shape.objectFields) result.objectFields.push_back(std::move(field));
+    return result;
+}
 Value DefaultScript()
 {
 	return Value::Object({
@@ -310,11 +367,11 @@ Value DefaultScript()
 }
 }
 
-const std::array<VansComponentTypeDescriptor, 27>& VansComponentTypeCatalog::All()
+const std::array<VansComponentTypeDescriptor, 32>& VansComponentTypeCatalog::All()
 {
-	static const std::array<VansComponentTypeDescriptor, 27> descriptors = []
+	static const std::array<VansComponentTypeDescriptor, 32> descriptors = []
 	{
-		std::array<VansComponentTypeDescriptor, 27> result{{
+		std::array<VansComponentTypeDescriptor, 32> result{{
 		{ "Transform", "transform", VansRuntimeComponentType_Transform },
 		{ "ModelRenderer", "render", VansRuntimeComponentType_Render,
 			VansComponentTypeTrait::None, true, true, true, &DefaultModelRenderer, { "render" } },
@@ -361,7 +418,18 @@ const std::array<VansComponentTypeDescriptor, 27>& VansComponentTypeCatalog::All
 		{ "MultiMeshRoot", "multimeshroot", VansInvalidComponentTypeId,
 			VansComponentTypeTrait::MultiMeshRoot },
 		{ "Timeline", "timeline", VansRuntimeComponentType_Timeline },
-		{ "NavigationAgent", "navigation_agent", VansRuntimeComponentType_NavigationAgent },
+		{ "NavigationAgent", "navigation_agent", VansRuntimeComponentType_NavigationAgent,
+            VansComponentTypeTrait::None, true, true, true, &DefaultNavigationAgent },
+        { "NavigationSurface", "navigation_surface", VansRuntimeComponentType_NavigationSurface,
+            VansComponentTypeTrait::None, true, true, true, &DefaultNavigationSurface },
+        { "NavigationSource", "navigation_source", VansRuntimeComponentType_NavigationSource,
+            VansComponentTypeTrait::None, true, true, true, &DefaultNavigationSource },
+        { "NavigationModifier", "navigation_modifier", VansRuntimeComponentType_NavigationModifier,
+            VansComponentTypeTrait::None, true, true, true, &DefaultNavigationModifier },
+        { "NavigationObstacle", "navigation_obstacle", VansRuntimeComponentType_NavigationObstacle,
+            VansComponentTypeTrait::None, true, true, true, &DefaultNavigationObstacle },
+        { "NavigationLink", "navigation_link", VansRuntimeComponentType_NavigationLink,
+            VansComponentTypeTrait::None, true, true, true, &DefaultNavigationLink },
 		{ "AIAgent", "ai_agent", VansRuntimeComponentType_AIAgent },
 		{ "UIController", "ui", VansRuntimeComponentType_UI,
 			VansComponentTypeTrait::None, true, false, false, nullptr,
@@ -423,6 +491,9 @@ const std::array<VansComponentTypeDescriptor, 27>& VansComponentTypeCatalog::All
 			{ "actionsets", "", "ActionSet", Storage::GuidObject },
 			{ "autoactivate", "", "ActionDefinition", Storage::GuidObject },
 			{ "", "action", "ActionDefinition", Storage::GuidObject } });
+        setAssetRules("AIAgent",{{"data","behavior","AIBehavior",VansComponentAssetReferenceStorage::GuidObject}});
+        setAssetRules("NavigationSurface",{{"data","navigationmesh","NavigationMesh",VansComponentAssetReferenceStorage::GuidObject}});
+        setAssetRules("NavigationSource",{{"data","cpumesh","Model",VansComponentAssetReferenceStorage::GuidObject}});
 		return result;
 	}();
 	return descriptors;

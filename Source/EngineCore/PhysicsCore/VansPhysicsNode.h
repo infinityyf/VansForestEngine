@@ -2,8 +2,10 @@
 
 #include <string>
 #include <memory>
+#include <vector>
 #include <glm/glm.hpp>
 #include "../VansNode.h"
+#include "../AssetCore/VansTriangleMeshData.h"
 
 namespace physx
 {
@@ -17,7 +19,6 @@ namespace physx
 // Forward declaration from VansGraphics namespace
 namespace VansGraphics
 {
-    class VansMesh;
     class VansScene;
 }
 
@@ -86,6 +87,15 @@ namespace VansEngine
         std::string hitRegion;              // 人体分区标识；空值表示普通碰撞体
     };
 
+    class VansPhysicsNode;
+    struct VansStaticMeshPhysicsInput
+    {
+        VansPhysicsNode* node = nullptr;
+        PhysicsNodeProperties properties;
+        uint32_t transformID = 0;
+        std::shared_ptr<const Vans::VansTriangleMeshData> geometry;
+    };
+
     // Physics Node - manages physics actor and integrates with scene
     class VansPhysicsNode : public VansGraphics::VansNode
     {
@@ -94,8 +104,13 @@ namespace VansEngine
         ~VansPhysicsNode();
 
         // Lifecycle
-        void Initialize(const PhysicsNodeProperties& properties, uint32_t transformID, VansGraphics::VansMesh* mesh = nullptr);
+        // Disabled nodes share immutable CPU data until first cooking; cooked actors retain no source pointer.
+        void Initialize(const PhysicsNodeProperties& properties, uint32_t transformID,
+            std::shared_ptr<const Vans::VansTriangleMeshData> collisionMesh = {});
         void Shutdown();
+        // Publishes fresh static mesh actors under one simulation lease; failure releases the whole batch.
+        // Existing resources are rejected and retained. A missing mesh never becomes a fallback collider.
+        static bool InitializeStaticMeshBatch(const std::vector<VansStaticMeshPhysicsInput>& input, std::string& error);
 
         // Synchronize an authored transform through the node-owned lock.
         void SyncActorFromTransform();
@@ -129,31 +144,34 @@ namespace VansEngine
 
     private:
         friend class VansGraphics::VansScene;
+        friend class VansPhysicsCollisionGeometry;
 
         // Scene batches already hold VansPhysicsSystem::GetSimulationMutex().
         // These methods make that precondition explicit and avoid recursive locking.
-        void InitializeLocked(const PhysicsNodeProperties& properties, uint32_t transformID, VansGraphics::VansMesh* mesh);
+        void InitializeLocked(const PhysicsNodeProperties& properties, uint32_t transformID,
+            std::shared_ptr<const Vans::VansTriangleMeshData> collisionMesh,
+            physx::PxTriangleMesh* cookedPrototype = nullptr);
         void ShutdownLocked();
         void SyncActorFromTransformLocked();
         bool SyncTransformFromActorLocked();
 
         // Helper methods
-        void CreatePhysicsActor();
-        void CreateCollisionShape();
+        void CreatePhysicsActor(const Vans::VansTriangleMeshData* collisionMesh);
+        void CreateCollisionShape(const Vans::VansTriangleMeshData* collisionMesh);
         bool ApplyFilterData();
         void UpdateShapeGeometryFromTransformScale();
         physx::PxShape* CreateBoxShape();
         physx::PxShape* CreateSphereShape();
         physx::PxShape* CreateCapsuleShape();
-        physx::PxShape* CreateMeshShape();
-        physx::PxShape* CreateConvexMeshShape();
+        physx::PxShape* CreateMeshShape(const Vans::VansTriangleMeshData* collisionMesh);
+        physx::PxShape* CreateConvexMeshShape(const Vans::VansTriangleMeshData* collisionMesh);
         physx::PxMaterial* CreatePhysicsMaterial();
 
         // Data
         std::string m_Name;
         PhysicsNodeProperties m_Properties;
         uint32_t m_TransformID = 0;
-        VansGraphics::VansMesh* m_Mesh = nullptr;
+        std::shared_ptr<const Vans::VansTriangleMeshData> m_UncookedGeometry;
         // PhysX objects
         physx::PxRigidActor* m_Actor = nullptr;
         physx::PxMaterial* m_Material = nullptr;

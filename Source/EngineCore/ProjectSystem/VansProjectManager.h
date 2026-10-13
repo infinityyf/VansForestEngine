@@ -37,12 +37,19 @@ namespace Vans
 
 class VansAssetDatabase;
 
+enum class VansProjectAssetLoadMode
+{
+	None,
+	Catalog,
+	Objects
+};
+
 struct VansProjectOpenOptions
 {
 	bool m_UpdateLastOpenedAt = false;
 	bool m_UpdateRecentProjects = true;
 	bool m_LoadProjectSettings = true;
-	bool m_ScanAssets = true;
+	VansProjectAssetLoadMode m_AssetLoadMode = VansProjectAssetLoadMode::Objects;
 	VansAssetOperationPolicy m_AssetPolicy = VansAssetOperationPolicy::ReadOnly();
 };
 
@@ -59,6 +66,7 @@ enum class VansProjectOpenFailure
 	ConfigRead,
 	ConfigValidation,
 	ProjectSettingsRead,
+	AssetCatalog,
 	BuiltInAssets,
 	AssetObjects,
 };
@@ -182,8 +190,10 @@ class VansProjectManager
 									   const VansProjectRenderOutputSettings& outputSettings, std::string& error) const;
 	bool SetProjectRenderSettings(const VansProjectUpscalerSettings& upscalerSettings,
 								  const VansProjectRenderOutputSettings& outputSettings, std::string& error);
-	void SetProjectCommandRecordingSettings(bool parallelEnabled, bool frameContextRingEnabled,
+	bool SetProjectCommandRecordingSettings(bool parallelEnabled,
 											std::uint32_t framesInFlight, bool asyncComputeEnabled);
+	bool SetProjectRenderPasses(const std::vector<VansAssetGuid>& passes, std::string& error);
+	bool SetNavigationSettings(const VansNavigationSettings& settings, std::string& error);
 	VansProjectConfigDiagnostics GetProjectConfigDiagnostics() const;
 	bool SetProjectDefaultScene(const std::string& sceneRelativePath, std::string& error);
 	bool SetProjectPathField(VansProjectConfigPathField field, const std::string& relativePath, std::string& error);

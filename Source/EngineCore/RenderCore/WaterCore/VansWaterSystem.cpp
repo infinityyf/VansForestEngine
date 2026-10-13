@@ -21,6 +21,27 @@
 namespace VansGraphics
 {
 
+VansWaterSystem::ResourceImages VansWaterSystem::GetResourceImages()
+{
+    if (!m_Initialized)
+        return {};
+    const bool fftReady = m_WaterMaterial != nullptr &&
+        m_WaterMaterial->m_Config.m_Spectrum.m_Mode == VansWaveMode::FFT &&
+        m_WaterFFT != nullptr && m_WaterFFT->IsReady();
+    return {
+        m_WaveDisplacementImage.GetImage(), m_WaveDerivativeImage.GetImage(),
+        m_FlowMapImage.GetImage(),
+        fftReady ? m_WaterFFT->GetH0SpectrumImage().GetImage() : VK_NULL_HANDLE,
+        fftReady ? m_WaterFFT->GetPingPongImage(0).GetImage() : VK_NULL_HANDLE,
+        fftReady ? m_WaterFFT->GetPingPongImage(1).GetImage() : VK_NULL_HANDLE,
+        m_WaterReflectionImage.GetImage(),
+        m_WaterRefractionImage.GetImage(), m_WaterThicknessImage.GetImage(),
+        m_WaterVolumeRawColorImage.GetImage(), m_WaterVolumeRawTransmittanceImage.GetImage(),
+        m_WaterVolumeRawDepthImage.GetImage(), m_WaterVolumeColorImage.GetImage(),
+        m_WaterVolumeTransmittanceImage.GetImage(), m_WaterVolumeDepthImage.GetImage()
+    };
+}
+
 namespace
 {
     float ComputeMaxMipLevel(std::uint32_t width, std::uint32_t height)
@@ -494,10 +515,15 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     m_WaveSimShader = shaderManager.FindComputeShader("WaterWave");
     m_WaveParticleShader = shaderManager.FindComputeShader("WaterWaveParticle");
     m_RiverWaves.Clear();
-    CreateWaterBuffer(m_RiverWaveBuffer,m_RiverWaveBufferCreated,
-        VansRiverWaveSimulation::MaxGpuVectors*sizeof(glm::vec4),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    if(m_RiverWaveBufferCreated)m_RiverWaveBuffer.SetBufferData(m_RiverWaves.GpuData().data(),0,
-        m_RiverWaves.GpuData().size()*sizeof(glm::vec4));
+    for (FrameResources& frame : m_FrameResources)
+    {
+        CreateWaterBuffer(frame.riverWaveBuffer, frame.riverWaveCreated,
+            VansRiverWaveSimulation::MaxGpuVectors * sizeof(glm::vec4),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        if (frame.riverWaveCreated)
+            frame.riverWaveBuffer.SetBufferData(m_RiverWaves.GpuData().data(), 0,
+                m_RiverWaves.GpuData().size() * sizeof(glm::vec4));
+    }
     m_FlowMapShader = shaderManager.FindComputeShader("WaterFlowMap");
     m_WaterSSRShader = shaderManager.FindComputeShader("WaterSSR");
     m_WaterRefractionShader = shaderManager.FindComputeShader("WaterRefraction");
@@ -514,9 +540,9 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         VANS_LOG_ERROR("[VansWaterSystem] One or more managed water shaders are unavailable");
     }
 
-    CreateWaterBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated,
-        sizeof(WaterGBufferParamsGPU),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    for (FrameResources& frame : m_FrameResources)
+        CreateWaterBuffer(frame.gbufParamsBuffer, frame.gbufParamsCreated,
+            sizeof(WaterGBufferParamsGPU), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
     VansWaterConfig initialConfig;
     if (m_WaterMaterial)
@@ -615,8 +641,9 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     gbufParams.absorptionCoeff = glm::vec4(initialConfig.m_Medium.m_AbsorptionCoeff, 1.0f);
     PopulateDetailNormalParams(gbufParams, initialConfig, 0.0f);
     m_GBufParamsCache = gbufParams;
-    if (m_GBufParamsBufferCreated)
-        m_GBufParamsBuffer.SetBufferData(&m_GBufParamsCache, 0, sizeof(WaterGBufferParamsGPU));
+    for (FrameResources& frame : m_FrameResources)
+        if (frame.gbufParamsCreated)
+            frame.gbufParamsBuffer.SetBufferData(&m_GBufParamsCache, 0, sizeof(WaterGBufferParamsGPU));
 
     // Macro displacement and derivative cascade arrays.
     m_WaveDisplacementImage.CreateVulkanImage(
@@ -770,9 +797,9 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     }
 
     // PBRWater shared optics/composite UBO.
-    CreateWaterBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated,
-        sizeof(PBRWaterParamsGPU),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    for (FrameResources& frame : m_FrameResources)
+        CreateWaterBuffer(frame.compParamsBuffer, frame.compParamsCreated,
+            sizeof(PBRWaterParamsGPU), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
     PBRWaterParamsGPU compParams = BuildPBRWaterParams(
         initialConfig,
@@ -782,21 +809,23 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         glm::vec3(0.35f, 1.0f, 0.25f),
         glm::vec3(1.0f),
         ComputeMaxMipLevel(m_RenderWidth, m_RenderHeight));
-    if (m_CompParamsBufferCreated)
-        m_CompParamsBuffer.SetBufferData(&compParams, 0, sizeof(PBRWaterParamsGPU));
+    for (FrameResources& frame : m_FrameResources)
+        if (frame.compParamsCreated)
+            frame.compParamsBuffer.SetBufferData(&compParams, 0, sizeof(PBRWaterParamsGPU));
 
-    CreateWaterBuffer(m_SSRParamsBuffer, m_SSRParamsBufferCreated,
-        sizeof(WaterSSRParamsGPU),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    for (FrameResources& frame : m_FrameResources)
+        CreateWaterBuffer(frame.ssrParamsBuffer, frame.ssrParamsCreated,
+            sizeof(WaterSSRParamsGPU), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
 
     {
-        CreateWaterBuffer(m_ThicknessParamsBuffer, m_ThicknessParamsBufferCreated,
-            sizeof(ThicknessParamsGPU),
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        for (FrameResources& frame : m_FrameResources)
+            CreateWaterBuffer(frame.thicknessParamsBuffer, frame.thicknessParamsCreated,
+                sizeof(ThicknessParamsGPU), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
         ThicknessParamsGPU tp = { 15.0f, 0.8f, 0.0f, 0.0f };
-        if (m_ThicknessParamsBufferCreated)
-            m_ThicknessParamsBuffer.SetBufferData(&tp, 0, sizeof(ThicknessParamsGPU));
+        for (FrameResources& frame : m_FrameResources)
+            if (frame.thicknessParamsCreated)
+                frame.thicknessParamsBuffer.SetBufferData(&tp, 0, sizeof(ThicknessParamsGPU));
     }
     {
         VkDeviceSize ssboSize = MAX_WAVE_COUNT * sizeof(GerstnerWaveGPU);
@@ -859,6 +888,54 @@ void VansWaterSystem::SetGlobalDescriptorSet(
     VANS_LOG("[VansWaterSystem] Global descriptor set updated (SetGlobalDescriptorSet).");
 }
 
+bool VansWaterSystem::SelectFrameDescriptorSets(
+    VkDescriptorSet globalSet, std::uint32_t frameSlot,
+    std::uint32_t gbufferTargetSlot)
+{
+    auto* renderPasses = VansRenderPassManager::GetInstance();
+    if (globalSet == VK_NULL_HANDLE || frameSlot >= m_FrameResources.size() ||
+        renderPasses == nullptr ||
+        gbufferTargetSlot >= renderPasses->GetGBufferFrameTargetCount())
+        return false;
+
+    FrameResources& frame = m_FrameResources[frameSlot];
+    const std::uint64_t targetGeneration = renderPasses->GetGBufferFrameTargetGeneration();
+    if (m_DescriptorsReady &&
+        (frame.boundGBufferTargetSlot != gbufferTargetSlot ||
+            frame.boundGBufferTargetGeneration != targetGeneration))
+    {
+        auto* descriptors = VansVKDescriptorManager::GetInstance();
+        if (descriptors == nullptr)
+            return false;
+        VansVKImage& gbuffer2 = renderPasses->GetGbuffer2(gbufferTargetSlot);
+        const VkDescriptorImageInfo image = {
+            gbuffer2.GetSampler(), gbuffer2.GetImageView(),
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        descriptors->BeginDescriptorUpdate();
+        descriptors->WriteImageDescriptor(frame.compPassSet,
+            WATER_COMP_BINDING_SCENE_GBUF2,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, { image });
+        descriptors->WriteImageDescriptor(frame.refractionSet,
+            WATER_REFRACTION_BINDING_SCENE_GBUF2,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, { image });
+        descriptors->WriteImageDescriptor(frame.thicknessSet,
+            WATER_THICKNESS_BINDING_SCENE_GBUF2,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, { image });
+        descriptors->WriteImageDescriptor(frame.volumeSet,
+            WATER_VOLUME_BINDING_SCENE_GBUF2,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, { image });
+        if (frame.ssrSet != VK_NULL_HANDLE)
+            descriptors->WriteImageDescriptor(frame.ssrSet,
+                WATER_SSR_BINDING_SCENE_GBUF2,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, { image });
+        descriptors->CommitDescriptorUpdates();
+        frame.boundGBufferTargetSlot = gbufferTargetSlot;
+        frame.boundGBufferTargetGeneration = targetGeneration;
+    }
+    m_GlobalSet = globalSet;
+    return true;
+}
+
 // ============================================================
 // SetupDescriptors
 // ============================================================
@@ -877,24 +954,72 @@ void VansWaterSystem::SetupDescriptors(
     m_GlobalLayout = globalLayout;
     m_GlobalSet    = globalSet;
     auto* descMgr  = VansVKDescriptorManager::GetInstance();
+    VansTexture* sampledDetailNormal = m_DetailNormalTexture != nullptr
+        ? m_DetailNormalTexture : m_NeutralNormalTexture;
+    if (descMgr == nullptr || renderPassManager == nullptr ||
+        renderPassManager->GetGBufferFrameTargetCount() == 0 ||
+        sampledDetailNormal == nullptr)
+    {
+        VANS_LOG_ERROR("[VansWaterSystem] Water descriptors require render passes and a detail-normal fallback");
+        Shutdown();
+        return;
+    }
+    for (const FrameResources& frame : m_FrameResources)
+    {
+        if (frame.gbufParamsCreated && frame.compParamsCreated &&
+            frame.ssrParamsCreated && frame.thicknessParamsCreated &&
+            frame.riverWaveCreated)
+            continue;
+        VANS_LOG_ERROR("[VansWaterSystem] Frame-local water buffer allocation failed");
+        Shutdown();
+        return;
+    }
+    if (!m_WaveSSBOCreated || !m_WaveParticleSSBOCreated)
+    {
+        VANS_LOG_ERROR("[VansWaterSystem] Shared water spectrum buffer allocation failed");
+        Shutdown();
+        return;
+    }
+    for (FrameResources& frame : m_FrameResources)
+    {
+        frame.boundGBufferTargetSlot = 0;
+        frame.boundGBufferTargetGeneration = renderPassManager->GetGBufferFrameTargetGeneration();
+    }
+    const std::uint32_t frameCount = static_cast<std::uint32_t>(m_FrameResources.size());
+    const auto setsReady = [this, descMgr, frameCount](
+        VkDescriptorSetLayout& layout, std::vector<VkDescriptorSet>& sets)
+    {
+        const bool complete = layout != VK_NULL_HANDLE && sets.size() == frameCount &&
+            std::all_of(sets.begin(), sets.end(), [](VkDescriptorSet set) { return set != VK_NULL_HANDLE; });
+        if (complete)
+            return true;
+        descMgr->DestroyDescriptorSet(sets);
+        descMgr->ReleaseDescriptorSetLayout(layout);
+        Shutdown();
+        return false;
+    };
 
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterGBuffer(
-            m_GBufPassLayout, sets, 1);
-        m_GBufPassSet = sets[0];
+            m_GBufPassLayout, sets, frameCount);
+        if (!setsReady(m_GBufPassLayout, sets)) return;
+        for (std::uint32_t slot = 0; slot < frameCount; ++slot)
+        {
+        FrameResources& frame = m_FrameResources[slot];
+        frame.gbufPassSet = sets[slot];
         descMgr->BeginDescriptorUpdate();
-        descMgr->WriteBufferDescriptor(m_GBufPassSet,WATER_GBUF_BINDING_RIVER_PARTICLES,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            {{GetNativeBuffer(m_RiverWaveBuffer,m_RiverWaveBufferCreated),0,VansRiverWaveSimulation::MaxGpuVectors*sizeof(glm::vec4)}});
+        descMgr->WriteBufferDescriptor(frame.gbufPassSet,WATER_GBUF_BINDING_RIVER_PARTICLES,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {{GetNativeBuffer(frame.riverWaveBuffer,frame.riverWaveCreated),0,VansRiverWaveSimulation::MaxGpuVectors*sizeof(glm::vec4)}});
 
         descMgr->WriteBufferDescriptor(
-            m_GBufPassSet,
+            frame.gbufPassSet,
             WATER_GBUF_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated), 0, sizeof(WaterGBufferParamsGPU) } });
+            { { GetNativeBuffer(frame.gbufParamsBuffer, frame.gbufParamsCreated), 0, sizeof(WaterGBufferParamsGPU) } });
 
         descMgr->WriteImageDescriptor(
-            m_GBufPassSet,
+            frame.gbufPassSet,
             WATER_GBUF_BINDING_DISPLACEMENT,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { {
@@ -904,7 +1029,7 @@ void VansWaterSystem::SetupDescriptors(
             } });
 
         descMgr->WriteImageDescriptor(
-            m_GBufPassSet,
+            frame.gbufPassSet,
             WATER_GBUF_BINDING_DERIVATIVE,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { {
@@ -914,7 +1039,7 @@ void VansWaterSystem::SetupDescriptors(
             } });
 
         descMgr->WriteImageDescriptor(
-            m_GBufPassSet,
+            frame.gbufPassSet,
             WATER_GBUF_BINDING_FLOW_MAP,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { {
@@ -923,17 +1048,9 @@ void VansWaterSystem::SetupDescriptors(
                 VK_IMAGE_LAYOUT_GENERAL
             } });
 
-        VansTexture* sampledDetailNormal = m_DetailNormalTexture != nullptr
-            ? m_DetailNormalTexture
-            : m_NeutralNormalTexture;
-        if (sampledDetailNormal == nullptr)
-        {
-            VANS_LOG_ERROR("[VansWaterSystem] Cannot create Water GBuffer descriptors without a detail-normal fallback");
-            return;
-        }
         VansVKImage& detailNormalImage = sampledDetailNormal->GetImage();
         descMgr->WriteImageDescriptor(
-            m_GBufPassSet,
+            frame.gbufPassSet,
             WATER_GBUF_BINDING_DETAIL_NORMAL,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { {
@@ -945,22 +1062,27 @@ void VansWaterSystem::SetupDescriptors(
             } });
 
         descMgr->CommitDescriptorUpdates();
+        }
     }
 
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterWaveCompute(
-            m_WaveSimLayout, sets, 1);
-        m_WaveSimSet = sets[0];
+            m_WaveSimLayout, sets, frameCount);
+        if (!setsReady(m_WaveSimLayout, sets)) return;
+        for (std::uint32_t slot = 0; slot < frameCount; ++slot)
+        {
+        FrameResources& frame = m_FrameResources[slot];
+        frame.waveSimSet = sets[slot];
         descMgr->BeginDescriptorUpdate();
 
         descMgr->WriteBufferDescriptor(
-            m_WaveSimSet,
+            frame.waveSimSet,
             WATER_WAVE_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated), 0, sizeof(WaterGBufferParamsGPU) } });
+            { { GetNativeBuffer(frame.gbufParamsBuffer, frame.gbufParamsCreated), 0, sizeof(WaterGBufferParamsGPU) } });
         descMgr->WriteImageDescriptor(
-            m_WaveSimSet,
+            frame.waveSimSet,
             WATER_WAVE_BINDING_DISPLACEMENT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { {
@@ -969,33 +1091,38 @@ void VansWaterSystem::SetupDescriptors(
                 VK_IMAGE_LAYOUT_GENERAL
             } });
         descMgr->WriteBufferDescriptor(
-            m_WaveSimSet,
+            frame.waveSimSet,
             WATER_WAVE_BINDING_WAVE_SSBO,
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             { { GetNativeBuffer(m_WaveSSBO, m_WaveSSBOCreated), 0, MAX_WAVE_COUNT * sizeof(GerstnerWaveGPU) } });
         descMgr->WriteImageDescriptor(
-            m_WaveSimSet,
+            frame.waveSimSet,
             WATER_WAVE_BINDING_DERIVATIVE,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaveDerivativeImage.GetSampler(), m_WaveDerivativeImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 
         descMgr->CommitDescriptorUpdates();
+        }
     }
 
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterWaveCompute(
-            m_WaveParticleLayout, sets, 1);
-        m_WaveParticleSet = sets[0];
+            m_WaveParticleLayout, sets, frameCount);
+        if (!setsReady(m_WaveParticleLayout, sets)) return;
+        for (std::uint32_t slot = 0; slot < frameCount; ++slot)
+        {
+        FrameResources& frame = m_FrameResources[slot];
+        frame.waveParticleSet = sets[slot];
         descMgr->BeginDescriptorUpdate();
 
         descMgr->WriteBufferDescriptor(
-            m_WaveParticleSet,
+            frame.waveParticleSet,
             WATER_WAVE_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated), 0, sizeof(WaterGBufferParamsGPU) } });
+            { { GetNativeBuffer(frame.gbufParamsBuffer, frame.gbufParamsCreated), 0, sizeof(WaterGBufferParamsGPU) } });
         descMgr->WriteImageDescriptor(
-            m_WaveParticleSet,
+            frame.waveParticleSet,
             WATER_WAVE_BINDING_DISPLACEMENT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { {
@@ -1004,229 +1131,260 @@ void VansWaterSystem::SetupDescriptors(
                 VK_IMAGE_LAYOUT_GENERAL
             } });
         descMgr->WriteBufferDescriptor(
-            m_WaveParticleSet,
+            frame.waveParticleSet,
             WATER_WAVE_BINDING_WAVE_SSBO,
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             { { GetNativeBuffer(m_WaveParticleSSBO, m_WaveParticleSSBOCreated), 0,
                 VansWaterConfig::MAX_WAVE_PARTICLE_COUNT * sizeof(WaveParticleGPU) } });
         descMgr->WriteImageDescriptor(
-            m_WaveParticleSet,
+            frame.waveParticleSet,
             WATER_WAVE_BINDING_DERIVATIVE,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaveDerivativeImage.GetSampler(), m_WaveDerivativeImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 
         descMgr->CommitDescriptorUpdates();
+        }
     }
 
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterFlowMapCompute(
-            m_FlowMapLayout, sets, 1);
-        m_FlowMapSet = sets[0];
+            m_FlowMapLayout, sets, frameCount);
+        if (!setsReady(m_FlowMapLayout, sets)) return;
+        for (std::uint32_t slot = 0; slot < frameCount; ++slot)
+        {
+        FrameResources& frame = m_FrameResources[slot];
+        frame.flowMapSet = sets[slot];
         descMgr->BeginDescriptorUpdate();
 
         descMgr->WriteBufferDescriptor(
-            m_FlowMapSet,
+            frame.flowMapSet,
             WATER_FLOW_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated), 0, sizeof(WaterGBufferParamsGPU) } });
+            { { GetNativeBuffer(frame.gbufParamsBuffer, frame.gbufParamsCreated), 0, sizeof(WaterGBufferParamsGPU) } });
         descMgr->WriteImageDescriptor(
-            m_FlowMapSet,
+            frame.flowMapSet,
             WATER_FLOW_BINDING_OUTPUT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_FlowMapImage.GetSampler(), m_FlowMapImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 
         descMgr->CommitDescriptorUpdates();
+        }
     }
 
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterComposite(
-            m_CompPassLayout, sets, 1);
-        m_CompPassSet = sets[0];
+            m_CompPassLayout, sets, frameCount);
+        if (!setsReady(m_CompPassLayout, sets)) return;
+        for (std::uint32_t slot = 0; slot < frameCount; ++slot)
+        {
+        FrameResources& frame = m_FrameResources[slot];
+        frame.compPassSet = sets[slot];
         descMgr->BeginDescriptorUpdate();
 
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_GBUF_NORMAL,
+            frame.compPassSet, WATER_COMP_BINDING_GBUF_NORMAL,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufNormal().GetSampler(), renderPassManager->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_GBUF_DEPTH,
+            frame.compPassSet, WATER_COMP_BINDING_GBUF_DEPTH,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteBufferDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_PARAMS,
+            frame.compPassSet, WATER_COMP_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated), 0, sizeof(PBRWaterParamsGPU) } });
+            { { GetNativeBuffer(frame.compParamsBuffer, frame.compParamsCreated), 0, sizeof(PBRWaterParamsGPU) } });
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_SCENE_GBUF2,
+            frame.compPassSet, WATER_COMP_BINDING_SCENE_GBUF2,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+            { { renderPassManager->GetGbuffer2(frame.boundGBufferTargetSlot).GetSampler(), renderPassManager->GetGbuffer2(frame.boundGBufferTargetSlot).GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_REFLECTION,
+            frame.compPassSet, WATER_COMP_BINDING_REFLECTION,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_REFRACTION_DATA,
+            frame.compPassSet, WATER_COMP_BINDING_REFRACTION_DATA,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_GBUF_SCATTER,
+            frame.compPassSet, WATER_COMP_BINDING_GBUF_SCATTER,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufScatter().GetSampler(), renderPassManager->GetWaterGBufScatter().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_GBUF_ABSORPTION,
+            frame.compPassSet, WATER_COMP_BINDING_GBUF_ABSORPTION,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufAbsorption().GetSampler(), renderPassManager->GetWaterGBufAbsorption().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_VOLUME_COLOR,
+            frame.compPassSet, WATER_COMP_BINDING_VOLUME_COLOR,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterVolumeColorImage.GetSampler(), m_WaterVolumeColorImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_VOLUME_TRANSMITTANCE,
+            frame.compPassSet, WATER_COMP_BINDING_VOLUME_TRANSMITTANCE,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterVolumeTransmittanceImage.GetSampler(), m_WaterVolumeTransmittanceImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_VOLUME_DEPTH,
+            frame.compPassSet, WATER_COMP_BINDING_VOLUME_DEPTH,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterVolumeDepthImage.GetSampler(), m_WaterVolumeDepthImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_SCENE_COLOR,
+            frame.compPassSet, WATER_COMP_BINDING_SCENE_COLOR,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterBackgroundPyramid().GetSampler(), renderPassManager->GetWaterBackgroundPyramid().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_CASCADE_SHADOW,
+            frame.compPassSet, WATER_COMP_BINDING_CASCADE_SHADOW,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetCascadeShadowCompareSampler(), renderPassManager->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
         descMgr->CommitDescriptorUpdates();
+        }
     }
 
 
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterRefractionCompute(
-            m_RefractionLayout, sets, 1);
-        m_RefractionSet = sets[0];
+            m_RefractionLayout, sets, frameCount);
+        if (!setsReady(m_RefractionLayout, sets)) return;
+        for (std::uint32_t slot = 0; slot < frameCount; ++slot)
+        {
+        FrameResources& frame = m_FrameResources[slot];
+        frame.refractionSet = sets[slot];
         descMgr->BeginDescriptorUpdate();
 
         descMgr->WriteImageDescriptor(
-            m_RefractionSet, WATER_REFRACTION_BINDING_GBUF_NORMAL,
+            frame.refractionSet, WATER_REFRACTION_BINDING_GBUF_NORMAL,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufNormal().GetSampler(), renderPassManager->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteImageDescriptor(
-            m_RefractionSet, WATER_REFRACTION_BINDING_GBUF_DEPTH,
+            frame.refractionSet, WATER_REFRACTION_BINDING_GBUF_DEPTH,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteImageDescriptor(
-            m_RefractionSet, WATER_REFRACTION_BINDING_SCENE_GBUF2,
+            frame.refractionSet, WATER_REFRACTION_BINDING_SCENE_GBUF2,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+            { { renderPassManager->GetGbuffer2(frame.boundGBufferTargetSlot).GetSampler(), renderPassManager->GetGbuffer2(frame.boundGBufferTargetSlot).GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteImageDescriptor(
-            m_RefractionSet, WATER_REFRACTION_BINDING_THICKNESS,
+            frame.refractionSet, WATER_REFRACTION_BINDING_THICKNESS,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterThicknessImage.GetSampler(), m_WaterThicknessImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
         descMgr->WriteBufferDescriptor(
-            m_RefractionSet, WATER_REFRACTION_BINDING_PARAMS,
+            frame.refractionSet, WATER_REFRACTION_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated), 0, sizeof(PBRWaterParamsGPU) } });
+            { { GetNativeBuffer(frame.compParamsBuffer, frame.compParamsCreated), 0, sizeof(PBRWaterParamsGPU) } });
         descMgr->WriteImageDescriptor(
-            m_RefractionSet, WATER_REFRACTION_BINDING_REFRACTION_DATA_OUT,
+            frame.refractionSet, WATER_REFRACTION_BINDING_REFRACTION_DATA_OUT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 
         descMgr->CommitDescriptorUpdates();
+        }
     }
 
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterThicknessCompute(
-            m_ThicknessLayout, sets, 1);
-        m_ThicknessSet = sets[0];
+            m_ThicknessLayout, sets, frameCount);
+        if (!setsReady(m_ThicknessLayout, sets)) return;
+        for (std::uint32_t slot = 0; slot < frameCount; ++slot)
+        {
+        FrameResources& frame = m_FrameResources[slot];
+        frame.thicknessSet = sets[slot];
         descMgr->BeginDescriptorUpdate();
 
         descMgr->WriteImageDescriptor(
-            m_ThicknessSet, WATER_THICKNESS_BINDING_GBUF_DEPTH,
+            frame.thicknessSet, WATER_THICKNESS_BINDING_GBUF_DEPTH,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(),
                 renderPassManager->GetWaterGBufLinearDepth().GetImageView(),
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteImageDescriptor(
-            m_ThicknessSet, WATER_THICKNESS_BINDING_SCENE_GBUF2,
+            frame.thicknessSet, WATER_THICKNESS_BINDING_SCENE_GBUF2,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer2().GetSampler(),
-                renderPassManager->GetGbuffer2().GetImageView(),
+            { { renderPassManager->GetGbuffer2(frame.boundGBufferTargetSlot).GetSampler(),
+                renderPassManager->GetGbuffer2(frame.boundGBufferTargetSlot).GetImageView(),
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
         descMgr->WriteBufferDescriptor(
-            m_ThicknessSet, WATER_THICKNESS_BINDING_PARAMS,
+            frame.thicknessSet, WATER_THICKNESS_BINDING_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_ThicknessParamsBuffer, m_ThicknessParamsBufferCreated), 0, sizeof(float) * 4 } });
+            { { GetNativeBuffer(frame.thicknessParamsBuffer, frame.thicknessParamsCreated), 0, sizeof(float) * 4 } });
         descMgr->WriteImageDescriptor(
-            m_ThicknessSet, WATER_THICKNESS_BINDING_THICKNESS_OUT,
+            frame.thicknessSet, WATER_THICKNESS_BINDING_THICKNESS_OUT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaterThicknessImage.GetSampler(),
                 m_WaterThicknessImage.GetImageView(),
                 VK_IMAGE_LAYOUT_GENERAL } });
 
         descMgr->CommitDescriptorUpdates();
+        }
     }
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterVolumeCompute(
-            m_VolumeLayout, sets, 1);
-        m_VolumeSet = sets[0];
+            m_VolumeLayout, sets, frameCount);
+        if (!setsReady(m_VolumeLayout, sets)) return;
+        for (std::uint32_t slot = 0; slot < frameCount; ++slot)
+        {
+        FrameResources& frame = m_FrameResources[slot];
+        frame.volumeSet = sets[slot];
         descMgr->BeginDescriptorUpdate();
-        descMgr->WriteImageDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_GBUF_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descMgr->WriteImageDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_GBUF_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufNormal().GetSampler(), renderPassManager->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_GBUF_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descMgr->WriteImageDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_GBUF_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_GBUF_SCATTER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descMgr->WriteImageDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_GBUF_SCATTER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufScatter().GetSampler(), renderPassManager->GetWaterGBufScatter().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_GBUF_ABSORPTION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descMgr->WriteImageDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_GBUF_ABSORPTION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufAbsorption().GetSampler(), renderPassManager->GetWaterGBufAbsorption().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_THICKNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descMgr->WriteImageDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_THICKNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterThicknessImage.GetSampler(), m_WaterThicknessImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_SCENE_GBUF2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_REFRACTION_DATA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descMgr->WriteImageDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_SCENE_GBUF2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { renderPassManager->GetGbuffer2(frame.boundGBufferTargetSlot).GetSampler(), renderPassManager->GetGbuffer2(frame.boundGBufferTargetSlot).GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_REFRACTION_DATA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteBufferDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated), 0, sizeof(PBRWaterParamsGPU) } });
-        descMgr->WriteImageDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_COLOR_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        descMgr->WriteBufferDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            { { GetNativeBuffer(frame.compParamsBuffer, frame.compParamsCreated), 0, sizeof(PBRWaterParamsGPU) } });
+        descMgr->WriteImageDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_COLOR_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaterVolumeRawColorImage.GetSampler(), m_WaterVolumeRawColorImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_TRANSMITTANCE_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        descMgr->WriteImageDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_TRANSMITTANCE_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaterVolumeRawTransmittanceImage.GetSampler(), m_WaterVolumeRawTransmittanceImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_DEPTH_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        descMgr->WriteImageDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_DEPTH_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaterVolumeRawDepthImage.GetSampler(), m_WaterVolumeRawDepthImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_BACKGROUND_PYRAMID, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descMgr->WriteImageDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_BACKGROUND_PYRAMID, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterBackgroundPyramid().GetSampler(), renderPassManager->GetWaterBackgroundPyramid().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(m_VolumeSet, WATER_VOLUME_BINDING_CASCADE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descMgr->WriteImageDescriptor(frame.volumeSet, WATER_VOLUME_BINDING_CASCADE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetCascadeShadowCompareSampler(), renderPassManager->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
         descMgr->CommitDescriptorUpdates();
+        }
     }
 
     {
         std::vector<VkDescriptorSet> sets;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterVolumeFilterCompute(
-            m_VolumeFilterLayout, sets, 1);
-        m_VolumeFilterSet = sets[0];
+            m_VolumeFilterLayout, sets, frameCount);
+        if (!setsReady(m_VolumeFilterLayout, sets)) return;
+        for (std::uint32_t slot = 0; slot < frameCount; ++slot)
+        {
+        FrameResources& frame = m_FrameResources[slot];
+        frame.volumeFilterSet = sets[slot];
         descMgr->BeginDescriptorUpdate();
-        descMgr->WriteImageDescriptor(m_VolumeFilterSet, WATER_VOLUME_FILTER_BINDING_GBUF_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descMgr->WriteImageDescriptor(frame.volumeFilterSet, WATER_VOLUME_FILTER_BINDING_GBUF_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(m_VolumeFilterSet, WATER_VOLUME_FILTER_BINDING_RAW_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descMgr->WriteImageDescriptor(frame.volumeFilterSet, WATER_VOLUME_FILTER_BINDING_RAW_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterVolumeRawColorImage.GetSampler(), m_WaterVolumeRawColorImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(m_VolumeFilterSet, WATER_VOLUME_FILTER_BINDING_RAW_TRANSMITTANCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descMgr->WriteImageDescriptor(frame.volumeFilterSet, WATER_VOLUME_FILTER_BINDING_RAW_TRANSMITTANCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterVolumeRawTransmittanceImage.GetSampler(), m_WaterVolumeRawTransmittanceImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(m_VolumeFilterSet, WATER_VOLUME_FILTER_BINDING_RAW_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descMgr->WriteImageDescriptor(frame.volumeFilterSet, WATER_VOLUME_FILTER_BINDING_RAW_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterVolumeRawDepthImage.GetSampler(), m_WaterVolumeRawDepthImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteBufferDescriptor(m_VolumeFilterSet, WATER_VOLUME_FILTER_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated), 0, sizeof(PBRWaterParamsGPU) } });
-        descMgr->WriteImageDescriptor(m_VolumeFilterSet, WATER_VOLUME_FILTER_BINDING_COLOR_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        descMgr->WriteBufferDescriptor(frame.volumeFilterSet, WATER_VOLUME_FILTER_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            { { GetNativeBuffer(frame.compParamsBuffer, frame.compParamsCreated), 0, sizeof(PBRWaterParamsGPU) } });
+        descMgr->WriteImageDescriptor(frame.volumeFilterSet, WATER_VOLUME_FILTER_BINDING_COLOR_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaterVolumeColorImage.GetSampler(), m_WaterVolumeColorImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(m_VolumeFilterSet, WATER_VOLUME_FILTER_BINDING_TRANSMITTANCE_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        descMgr->WriteImageDescriptor(frame.volumeFilterSet, WATER_VOLUME_FILTER_BINDING_TRANSMITTANCE_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaterVolumeTransmittanceImage.GetSampler(), m_WaterVolumeTransmittanceImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(m_VolumeFilterSet, WATER_VOLUME_FILTER_BINDING_DEPTH_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        descMgr->WriteImageDescriptor(frame.volumeFilterSet, WATER_VOLUME_FILTER_BINDING_DEPTH_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaterVolumeDepthImage.GetSampler(), m_WaterVolumeDepthImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
         descMgr->CommitDescriptorUpdates();
+        }
     }
     m_DescriptorsReady = true;
     if (sceneHZBImage != nullptr)
@@ -1258,8 +1416,10 @@ void VansWaterSystem::ReinitializeResolutionResources(
     SetDetailNormalTextures(detailNormal, neutralNormal);
     Initialize(device, renderWidth, renderHeight);
     m_RiverWaves=std::move(preservedRiverWaves);
-    if(m_RiverWaveBufferCreated)m_RiverWaveBuffer.SetBufferData(m_RiverWaves.GpuData().data(),0,
-        m_RiverWaves.GpuData().size()*sizeof(glm::vec4));
+    for (FrameResources& frame : m_FrameResources)
+        if (frame.riverWaveCreated)
+            frame.riverWaveBuffer.SetBufferData(m_RiverWaves.GpuData().data(), 0,
+                m_RiverWaves.GpuData().size() * sizeof(glm::vec4));
     SetupDescriptors(
         renderPassManager, globalLayout, globalSet, sceneHZBImage);
 }
@@ -1296,16 +1456,19 @@ void VansWaterSystem::Shutdown()
         descMgr->DestroyDescriptorSet(sets);
         descriptorSet = VK_NULL_HANDLE;
     };
-    destroySet(m_GBufPassSet);
-    destroySet(m_CompPassSet);
-    destroySet(m_WaveSimSet);
-    destroySet(m_WaveParticleSet);
-    destroySet(m_FlowMapSet);
-    destroySet(m_SSRSet);
-    destroySet(m_RefractionSet);
-    destroySet(m_ThicknessSet);
-    destroySet(m_VolumeSet);
-    destroySet(m_VolumeFilterSet);
+    for (FrameResources& frame : m_FrameResources)
+    {
+        destroySet(frame.gbufPassSet);
+        destroySet(frame.compPassSet);
+        destroySet(frame.waveSimSet);
+        destroySet(frame.waveParticleSet);
+        destroySet(frame.flowMapSet);
+        destroySet(frame.ssrSet);
+        destroySet(frame.refractionSet);
+        destroySet(frame.thicknessSet);
+        destroySet(frame.volumeSet);
+        destroySet(frame.volumeFilterSet);
+    }
 
     // Geometry clipmap owns immutable patch mesh buffers.
     if (m_GeometryClipmap)
@@ -1335,13 +1498,16 @@ void VansWaterSystem::Shutdown()
     VansVKSampler::DestroySampler(dev, m_DetailNormalSampler);
     m_DetailNormalAnisotropy = 1.0f;
 
-    DestroyWaterBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated, dev);
-    DestroyWaterBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated, dev);
-    DestroyWaterBuffer(m_SSRParamsBuffer, m_SSRParamsBufferCreated, dev);
-    DestroyWaterBuffer(m_ThicknessParamsBuffer, m_ThicknessParamsBufferCreated, dev);
+    for (FrameResources& frame : m_FrameResources)
+    {
+        DestroyWaterBuffer(frame.gbufParamsBuffer, frame.gbufParamsCreated, dev);
+        DestroyWaterBuffer(frame.compParamsBuffer, frame.compParamsCreated, dev);
+        DestroyWaterBuffer(frame.ssrParamsBuffer, frame.ssrParamsCreated, dev);
+        DestroyWaterBuffer(frame.thicknessParamsBuffer, frame.thicknessParamsCreated, dev);
+        DestroyWaterBuffer(frame.riverWaveBuffer, frame.riverWaveCreated, dev);
+    }
     DestroyWaterBuffer(m_WaveSSBO, m_WaveSSBOCreated, dev);
     m_RiverWaves.Clear();
-    DestroyWaterBuffer(m_RiverWaveBuffer,m_RiverWaveBufferCreated,dev);
     DestroyWaterBuffer(m_WaveParticleSSBO, m_WaveParticleSSBOCreated, dev);
     m_GBufParamsCache = {};
 
@@ -1444,11 +1610,14 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     const auto& spectrum = config.m_Spectrum;
     const auto& particle = config.m_WaveParticle;
     const auto& flowMap = config.m_FlowMap;
+    FrameResources* frame = m_Device != nullptr
+        ? &m_FrameResources[m_Device->GetFrameResourceSlot()] : nullptr;
     m_WaterLevel = config.m_WaterLevel;
     m_RiverWaves.Update(deltaTime,m_SplineFields?m_SplineFields->Snapshot():nullptr,
         glm::vec2(cameraPos.x,cameraPos.z),config.m_River.m_Wavelength,config.m_River.m_Lifetime);
-    if(m_RiverWaveBufferCreated)m_RiverWaveBuffer.SetBufferData(m_RiverWaves.GpuData().data(),0,
-        m_RiverWaves.GpuData().size()*sizeof(glm::vec4));
+    if (frame != nullptr && frame->riverWaveCreated)
+        frame->riverWaveBuffer.SetBufferData(m_RiverWaves.GpuData().data(), 0,
+            m_RiverWaves.GpuData().size() * sizeof(glm::vec4));
 
     const float windLength = spectrum.m_WindSpeed * spectrum.m_WindSpeed / 9.81f;
     const float spectralFourSigma = 5.5f * windLength
@@ -1541,18 +1710,18 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     }
 
     m_GBufParamsCache = gbufParams;
-    if (m_Device != nullptr && m_GBufParamsBufferCreated)
-        m_GBufParamsBuffer.SetBufferData(&m_GBufParamsCache, 0, sizeof(WaterGBufferParamsGPU));
+    if (frame != nullptr && frame->gbufParamsCreated)
+        frame->gbufParamsBuffer.SetBufferData(&m_GBufParamsCache, 0, sizeof(WaterGBufferParamsGPU));
 
-    if (m_Device != nullptr && m_CompParamsBufferCreated)
+    if (frame != nullptr && frame->compParamsCreated)
     {
         PBRWaterParamsGPU compParams = BuildPBRWaterParams(
             config, cameraPos, viewMatrix, vpMatrix, mainLightDir, mainLightColor,
             ComputeMaxMipLevel(m_RenderWidth, m_RenderHeight));
-        m_CompParamsBuffer.SetBufferData(&compParams, 0, sizeof(PBRWaterParamsGPU));
+        frame->compParamsBuffer.SetBufferData(&compParams, 0, sizeof(PBRWaterParamsGPU));
     }
 
-    if (m_Device != nullptr && m_SSRParamsBufferCreated)
+    if (frame != nullptr && frame->ssrParamsCreated)
     {
         WaterSSRParamsGPU ssrParams = {};
         ssrParams.cameraPosition = glm::vec4(cameraPos, 1.0f);
@@ -1579,16 +1748,16 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
             0.0f,
             0.0f);
 
-        m_SSRParamsBuffer.SetBufferData(&ssrParams, 0, sizeof(WaterSSRParamsGPU));
+        frame->ssrParamsBuffer.SetBufferData(&ssrParams, 0, sizeof(WaterSSRParamsGPU));
     }
 
 
-    if (m_Device != nullptr && m_ThicknessParamsBufferCreated)
+    if (frame != nullptr && frame->thicknessParamsCreated)
     {
         ThicknessParamsGPU tp = {};
         tp.maxThickness = config.m_SSS.m_MaxThicknessDistance;
         tp.deepFallback = config.m_SSS.m_DeepWaterThicknessFallback;
-        m_ThicknessParamsBuffer.SetBufferData(&tp, 0, sizeof(ThicknessParamsGPU));
+        frame->thicknessParamsBuffer.SetBufferData(&tp, 0, sizeof(ThicknessParamsGPU));
     }
 
 }
@@ -1599,6 +1768,7 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
 {
     if (!m_Initialized || !m_DescriptorsReady)
         return;
+    const FrameResources& frame = m_FrameResources[m_Device->GetFrameResourceSlot()];
 
     VansWaterConfig config;
     if (m_WaterMaterial)
@@ -1609,7 +1779,7 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
 
     auto runFlowMap = [&]()
     {
-        if (m_FlowMapShader == nullptr || m_FlowMapSet == VK_NULL_HANDLE)
+        if (m_FlowMapShader == nullptr || frame.flowMapSet == VK_NULL_HANDLE)
             return;
 
         VkImageMemoryBarrier beforeCompute = {};
@@ -1631,7 +1801,7 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
 
         cmd.EnsureComputeShader(*m_FlowMapShader, { m_FlowMapLayout });
         const uint32_t groups = (VansWaterConfig::FLOW_MAP_TEXTURE_SIZE + 7u) / 8u;
-        cmd.DispatchCompute(*m_FlowMapShader, groups, groups, 1, { m_FlowMapSet });
+        cmd.DispatchCompute(*m_FlowMapShader, groups, groups, 1, { frame.flowMapSet });
 
         VkImageMemoryBarrier afterCompute = {};
         afterCompute.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1712,12 +1882,12 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
 
     auto runGerstner = [&]()
     {
-        runSurfaceCompute(m_WaveSimShader, m_WaveSimLayout, m_WaveSimSet);
+        runSurfaceCompute(m_WaveSimShader, m_WaveSimLayout, frame.waveSimSet);
     };
 
     auto runWaveParticle = [&]()
     {
-        runSurfaceCompute(m_WaveParticleShader, m_WaveParticleLayout, m_WaveParticleSet);
+        runSurfaceCompute(m_WaveParticleShader, m_WaveParticleLayout, frame.waveParticleSet);
     };
 
     runFlowMap();
@@ -1745,7 +1915,7 @@ void VansWaterSystem::UpdateWaveSimulation(VansVKCommandBuffer& cmd, float /*del
         runGerstner();
     else if (mode == VansWaveMode::WaveParticle)
     {
-        if (m_WaveParticleShader && m_WaveParticleSet != VK_NULL_HANDLE)
+        if (m_WaveParticleShader && frame.waveParticleSet != VK_NULL_HANDLE)
             runWaveParticle();
         else
         {
@@ -1773,6 +1943,7 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
             VANS_LOG_WARN("[WaterGBuffer] EARLY RETURN: init/descReady/patches not ready");
         return;
     }
+    const FrameResources& frame = m_FrameResources[m_Device->GetFrameResourceSlot()];
     if (m_WaterGBufferShader == nullptr || m_GeometryClipmap->GetVertexBuffer() == VK_NULL_HANDLE)
     {
         if (dbgLog)
@@ -1793,7 +1964,7 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
     globalState.vertexInputAttributeDescriptions = &m_GeometryClipmap->GetVertexAttributes();
 
     std::vector<VkDescriptorSetLayout> layouts = { m_GlobalLayout, m_GBufPassLayout };
-    std::vector<VkDescriptorSet>       sets    = { m_GlobalSet,    m_GBufPassSet    };
+    std::vector<VkDescriptorSet>       sets    = { m_GlobalSet,    frame.gbufPassSet    };
     if(m_SplineFields){layouts.push_back(m_SplineFields->Layout());sets.push_back(m_SplineFields->DescriptorSet());}
 
     cmd.EnsureGraphicsShader(*m_WaterGBufferShader, globalState, layouts);
@@ -1841,7 +2012,8 @@ void VansWaterSystem::DispatchWaterSSR(VansVKCommandBuffer& cmd)
     if (m_WaterMaterial && !m_WaterMaterial->m_Config.m_SSR.m_Enabled)
         return;
 
-    if (m_WaterSSRShader != nullptr && m_SSRSet != VK_NULL_HANDLE)
+    const FrameResources& frame = m_FrameResources[m_Device->GetFrameResourceSlot()];
+    if (m_WaterSSRShader != nullptr && frame.ssrSet != VK_NULL_HANDLE)
     {
         VkImageMemoryBarrier beforeSSR = {};
         beforeSSR.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1862,7 +2034,7 @@ void VansWaterSystem::DispatchWaterSSR(VansVKCommandBuffer& cmd)
         cmd.DispatchCompute(*m_WaterSSRShader,
             (m_RenderWidth + 7u) / 8u,
             (m_RenderHeight + 7u) / 8u,
-            1, { m_SSRSet });
+            1, { frame.ssrSet });
 
         VkImageMemoryBarrier afterSSR = {};
         afterSSR.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1885,11 +2057,13 @@ void VansWaterSystem::DispatchWaterSSR(VansVKCommandBuffer& cmd)
 // ============================================================
 void VansWaterSystem::EnsureSSRDescriptorSet(VansVKImage* hzbImage)
 {
-    if (m_SSRSet != VK_NULL_HANDLE) return;  // already created
+    if (m_FrameResources[0].ssrSet != VK_NULL_HANDLE) return;
     if (hzbImage == nullptr) return;
     if (!m_Initialized || !m_DescriptorsReady) return;
-    if (m_WaterSSRShader == nullptr || m_SSRParamsBufferCreated == false)
+    if (m_WaterSSRShader == nullptr)
         return;
+    for (const FrameResources& frame : m_FrameResources)
+        if (!frame.ssrParamsCreated) return;
 
     auto* descMgr = VansVKDescriptorManager::GetInstance();
     auto* rp = VansRenderPassManager::GetInstance();
@@ -1898,58 +2072,79 @@ void VansWaterSystem::EnsureSSRDescriptorSet(VansVKImage* hzbImage)
     // Create layout + allocate set
     std::vector<VkDescriptorSet> sets;
     VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterSSRCompute(
-        m_SSRLayout, sets, 1);
-    if (m_SSRLayout == VK_NULL_HANDLE || sets.empty() || sets[0] == VK_NULL_HANDLE)
+        m_SSRLayout, sets, static_cast<std::uint32_t>(m_FrameResources.size()));
+    bool complete = m_SSRLayout != VK_NULL_HANDLE && sets.size() == m_FrameResources.size();
+    for (VkDescriptorSet set : sets)
+        complete = complete && set != VK_NULL_HANDLE;
+    if (!complete)
     {
+        std::vector<VkDescriptorSet> allocated;
+        for (VkDescriptorSet set : sets)
+            if (set != VK_NULL_HANDLE) allocated.push_back(set);
+        if (!allocated.empty()) descMgr->DestroyDescriptorSet(allocated);
+        if (m_SSRLayout != VK_NULL_HANDLE)
+        {
+            descMgr->ReleaseDescriptorSetLayout(m_SSRLayout);
+            m_SSRLayout = VK_NULL_HANDLE;
+        }
         VANS_LOG_WARN("[VansWaterSystem] Water SSR descriptor set allocation skipped because layout/set is not ready.");
         return;
     }
-    m_SSRSet = sets[0];
+    for (std::uint32_t slot = 0; slot < m_FrameResources.size(); ++slot)
+        m_FrameResources[slot].ssrSet = sets[slot];
 
     descMgr->BeginDescriptorUpdate();
-    descMgr->WriteImageDescriptor(
-        m_SSRSet, WATER_SSR_BINDING_GBUF_NORMAL,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        { { rp->GetWaterGBufNormal().GetSampler(), rp->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-    descMgr->WriteImageDescriptor(
-        m_SSRSet, WATER_SSR_BINDING_GBUF_DEPTH,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        { { rp->GetWaterGBufLinearDepth().GetSampler(), rp->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-    descMgr->WriteImageDescriptor(
-        m_SSRSet, WATER_SSR_BINDING_SCENE_HZB,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        { { hzbImage->GetSampler(), hzbImage->GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-    descMgr->WriteImageDescriptor(
-        m_SSRSet, WATER_SSR_BINDING_SCENE_GBUF2,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        { { rp->GetGbuffer2().GetSampler(), rp->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-    descMgr->WriteImageDescriptor(
-        m_SSRSet, WATER_SSR_BINDING_SCENE_COLOR,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        { { rp->GetWaterBackgroundPyramid().GetSampler(), rp->GetWaterBackgroundPyramid().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-    descMgr->WriteBufferDescriptor(
-        m_SSRSet, WATER_SSR_BINDING_PARAMS,
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        { { GetNativeBuffer(m_SSRParamsBuffer, m_SSRParamsBufferCreated), 0, sizeof(WaterSSRParamsGPU) } });
-    descMgr->WriteImageDescriptor(
-        m_SSRSet, WATER_SSR_BINDING_REFLECTION_OUT,
-        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+    for (std::uint32_t slot = 0; slot < m_FrameResources.size(); ++slot)
+    {
+        const FrameResources& frame = m_FrameResources[slot];
+        const VkDescriptorSet set = frame.ssrSet;
+        descMgr->WriteImageDescriptor(
+            set, WATER_SSR_BINDING_GBUF_NORMAL,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { rp->GetWaterGBufNormal().GetSampler(), rp->GetWaterGBufNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            set, WATER_SSR_BINDING_GBUF_DEPTH,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { rp->GetWaterGBufLinearDepth().GetSampler(), rp->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            set, WATER_SSR_BINDING_SCENE_HZB,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { hzbImage->GetSampler(), hzbImage->GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+        descMgr->WriteImageDescriptor(
+            set, WATER_SSR_BINDING_SCENE_GBUF2,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { rp->GetGbuffer2(frame.boundGBufferTargetSlot).GetSampler(),
+                rp->GetGbuffer2(frame.boundGBufferTargetSlot).GetImageView(),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteImageDescriptor(
+            set, WATER_SSR_BINDING_SCENE_COLOR,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            { { rp->GetWaterBackgroundPyramid().GetSampler(), rp->GetWaterBackgroundPyramid().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+        descMgr->WriteBufferDescriptor(
+            set, WATER_SSR_BINDING_PARAMS,
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            { { GetNativeBuffer(frame.ssrParamsBuffer, frame.ssrParamsCreated), 0, sizeof(WaterSSRParamsGPU) } });
+        descMgr->WriteImageDescriptor(
+            set, WATER_SSR_BINDING_REFLECTION_OUT,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            { { m_WaterReflectionImage.GetSampler(), m_WaterReflectionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+    }
 
     descMgr->CommitDescriptorUpdates();
-    VANS_LOG("[VansWaterSystem] SSR descriptor set created with HZB.");
+    VANS_LOG("[VansWaterSystem] SSR descriptor sets created with HZB for " << m_FrameResources.size() << " frame slots.");
 }
 
 void VansWaterSystem::DispatchRefractionCS(VansVKCommandBuffer& cmd)
 {
     if (!m_Initialized || !m_DescriptorsReady)
         return;
+    const FrameResources& frame = m_FrameResources[m_Device->GetFrameResourceSlot()];
 
     // Inspector optimization: Refraction enable guard
     if (m_WaterMaterial && !m_WaterMaterial->m_Config.m_Refraction.m_Enabled)
         return;
 
-    if (m_WaterRefractionShader == nullptr || m_RefractionSet == VK_NULL_HANDLE)
+    if (m_WaterRefractionShader == nullptr || frame.refractionSet == VK_NULL_HANDLE)
         return;
 
     {
@@ -1977,7 +2172,7 @@ void VansWaterSystem::DispatchRefractionCS(VansVKCommandBuffer& cmd)
         (m_RenderWidth + 7u) / 8u,
         (m_RenderHeight + 7u) / 8u,
         1,
-        { m_RefractionSet });
+        { frame.refractionSet });
 
     {
         VkImageMemoryBarrier barrier = {};
@@ -2004,8 +2199,9 @@ void VansWaterSystem::DispatchWaterThicknessCS(VansVKCommandBuffer& cmd)
 {
     if (!m_Initialized || !m_DescriptorsReady)
         return;
+    const FrameResources& frame = m_FrameResources[m_Device->GetFrameResourceSlot()];
 
-    if (m_WaterThicknessShader == nullptr || m_ThicknessSet == VK_NULL_HANDLE)
+    if (m_WaterThicknessShader == nullptr || frame.thicknessSet == VK_NULL_HANDLE)
         return;
 
     {
@@ -2032,7 +2228,7 @@ void VansWaterSystem::DispatchWaterThicknessCS(VansVKCommandBuffer& cmd)
     cmd.DispatchCompute(*m_WaterThicknessShader,
         (m_RenderWidth  + 7u) / 8u,
         (m_RenderHeight + 7u) / 8u,
-        1, { m_ThicknessSet });
+        1, { frame.thicknessSet });
 
     {
         VkImageMemoryBarrier barrier = {};
@@ -2060,7 +2256,8 @@ void VansWaterSystem::DispatchWaterVolumeCS(VansVKCommandBuffer& cmd)
 {
     if (!m_Initialized || !m_DescriptorsReady)
         return;
-    if (m_WaterVolumeShader == nullptr || m_VolumeSet == VK_NULL_HANDLE ||
+    const FrameResources& frame = m_FrameResources[m_Device->GetFrameResourceSlot()];
+    if (m_WaterVolumeShader == nullptr || frame.volumeSet == VK_NULL_HANDLE ||
         m_GlobalLayout == VK_NULL_HANDLE || m_GlobalSet == VK_NULL_HANDLE)
         return;
 
@@ -2092,7 +2289,7 @@ void VansWaterSystem::DispatchWaterVolumeCS(VansVKCommandBuffer& cmd)
     cmd.DispatchCompute(*m_WaterVolumeShader,
         (m_VolumeWidth + 7u) / 8u,
         (m_VolumeHeight + 7u) / 8u,
-        1, { m_GlobalSet, m_VolumeSet });
+        1, { m_GlobalSet, frame.volumeSet });
 
     std::vector<VkImageMemoryBarrier> after;
     auto addAfter = [&](VansVKImage& image)
@@ -2122,7 +2319,8 @@ void VansWaterSystem::DispatchWaterVolumeFilterCS(VansVKCommandBuffer& cmd)
 {
     if (!m_Initialized || !m_DescriptorsReady)
         return;
-    if (m_WaterVolumeFilterShader == nullptr || m_VolumeFilterSet == VK_NULL_HANDLE)
+    const FrameResources& frame = m_FrameResources[m_Device->GetFrameResourceSlot()];
+    if (m_WaterVolumeFilterShader == nullptr || frame.volumeFilterSet == VK_NULL_HANDLE)
         return;
 
     std::vector<VkImageMemoryBarrier> before;
@@ -2153,7 +2351,7 @@ void VansWaterSystem::DispatchWaterVolumeFilterCS(VansVKCommandBuffer& cmd)
     cmd.DispatchCompute(*m_WaterVolumeFilterShader,
         (m_VolumeWidth + 7u) / 8u,
         (m_VolumeHeight + 7u) / 8u,
-        1, { m_VolumeFilterSet });
+        1, { frame.volumeFilterSet });
 
     std::vector<VkImageMemoryBarrier> after;
     auto addAfter = [&](VansVKImage& image)
@@ -2184,6 +2382,7 @@ void VansWaterSystem::RenderWaterComposite(VansVKCommandBuffer& cmd, GlobalState
 {
     if (!m_Initialized || !m_DescriptorsReady)
         return;
+    const FrameResources& frame = m_FrameResources[m_Device->GetFrameResourceSlot()];
     if (m_WaterCompositeShader == nullptr)
         return;
 
@@ -2191,7 +2390,7 @@ void VansWaterSystem::RenderWaterComposite(VansVKCommandBuffer& cmd, GlobalState
     globalState.vertexInputAttributeDescriptions = nullptr;
 
     std::vector<VkDescriptorSetLayout> layouts = { m_GlobalLayout, m_CompPassLayout };
-    std::vector<VkDescriptorSet>       sets    = { m_GlobalSet,    m_CompPassSet    };
+    std::vector<VkDescriptorSet>       sets    = { m_GlobalSet,    frame.compPassSet    };
 
     cmd.EnsureGraphicsShader(*m_WaterCompositeShader, globalState, layouts);
     cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS,

@@ -5,8 +5,12 @@
 #include "../VulkanCore/VansShader.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
 #include "../VulkanCore/VansDescriptorSetLayouts.h"
+#include "../VansRenderBounds.h"
+#include "../VansRenderRuntimeConfig.h"
+#include "VansGrassWorkset.h"
 #include "../../AssetCore/VansModelLod.h"
 #include <glm/glm.hpp>
+#include <array>
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -14,11 +18,14 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <memory>
+#include <list>
 #include <optional>
 #include <stdexcept>
 
 namespace VansGraphics
 {
+	class VansVKDevice;
 	// ========================================================================
 	// GPU-driven vegetation rendering system.
 	//
@@ -51,6 +58,43 @@ namespace VansGraphics
 		glm::vec4 restOffset;   // rest-pose offset from parent
 	};
 
+	struct GrassPageUploadRegion
+	{
+		GrassStateBuffer buffer;
+		VkDeviceSize sourceOffset, destinationOffset, byteCount;
+	};
+	struct GrassPageUploadLayout
+	{
+		VkDeviceSize instanceOffset, boneOffset, matrixOffset, lodOffset, byteCount;
+		std::vector<GrassPageUploadRegion> regions;
+	};
+	// Staging data is dense; the destination retains each page's bone-plane stride
+	// and the whole pool's current/history matrix bases.
+	inline GrassPageUploadLayout BuildGrassPageUploadLayout(uint32_t poolCapacity,
+		uint32_t boneCount, const GrassInstanceRange& destination)
+	{
+		const auto count = destination.instanceCount;
+		const auto copies = BuildGrassStateCopyRegions(count, poolCapacity, boneCount,
+			{0, count, count}, destination);
+		GrassPageUploadLayout result{};
+		result.boneOffset = VkDeviceSize(count) * sizeof(GrassInstance);
+		result.matrixOffset = result.boneOffset + VkDeviceSize(count) * boneCount * sizeof(GrassBone);
+		result.lodOffset = result.matrixOffset + VkDeviceSize(count) * boneCount * 2u * sizeof(glm::mat4);
+		result.byteCount = result.lodOffset + VkDeviceSize(count) * sizeof(float);
+		result.regions.push_back({GrassStateBuffer::Instances, 0,
+			VkDeviceSize(destination.baseInstance) * sizeof(GrassInstance), result.boneOffset});
+		for (const auto& copy : copies)
+		{
+			const auto stride = copy.buffer == GrassStateBuffer::Bones ? sizeof(GrassBone) :
+				copy.buffer == GrassStateBuffer::Matrices ? sizeof(glm::mat4) : sizeof(float);
+			const auto base = copy.buffer == GrassStateBuffer::Bones ? result.boneOffset :
+				copy.buffer == GrassStateBuffer::Matrices ? result.matrixOffset : result.lodOffset;
+			result.regions.push_back({copy.buffer, base + copy.sourceElement * stride,
+				copy.destinationElement * stride, copy.elementCount * stride});
+		}
+		return result;
+	}
+
 	// Push constants for bone simulation compute
 	struct GrassSimPushConstants
 	{
@@ -76,7 +120,9 @@ namespace VansGraphics
 		float grassHeight;     // blade height in world units (controls segment length)
 		uint32_t cullVisibilityEnabled; // Grass cull 已产生本帧可见性掩码时为 1
 		uint32_t boneCount;    // bones per instance — must match m_BoneCountPerInstance
+		uint32_t workgroupOffset;
 	};
+	static_assert(sizeof(GrassSimPushConstants) == 72);
 
 	// Push constants for VS-skinning draw (grass vertex shader)
 	struct GrassDrawPushConstants
@@ -114,7 +160,10 @@ namespace VansGraphics
 		float    hizSampleBias;        // 线性深度偏差，单位为米；只有超过该偏差才判为遮挡
 		int      hizMipCount;          // Hi-Z mip 层数
 		int      hizEnabled;           // 是否启用 Hi-Z 剪除
+		uint32_t shadowEnabled;       // 当前绘制需求是否包含草阴影
+		uint32_t workgroupOffset;
 	};
+	static_assert(sizeof(GrassCullPushConstants) == 40);
 
 	// 程序化草叶模板使用的轻量顶点，语义顺序与标准导入 Mesh 保持一致：
 	// vec3 position (loc 0)、vec2 uv (loc 1)、vec3 normal (loc 2)。
@@ -149,10 +198,10 @@ namespace VansGraphics
 		uint32_t speciesIndex = 0;
 		uint32_t regionIndex = 0; // visibility group index for GPU cull output
 		uint32_t randomSeed = 0;
-		uint32_t flags = 0; // GPU 保存上一帧 LOD，用于距离滞回。
+		uint32_t padding = 0; // std430 数组步长保持 16 字节对齐；LOD 历史单独存放。
 	};
 
-	static_assert(sizeof(TreeInstanceGPU)==96 && offsetof(TreeInstanceGPU,flags)==92);
+	static_assert(sizeof(TreeInstanceGPU)==96 && offsetof(TreeInstanceGPU,padding)==92);
 
 	struct TreeSpeciesCullInfo
 	{
@@ -168,7 +217,7 @@ namespace VansGraphics
         float hizSampleBias;
         int hizMipCount;
         float lodMidDistance,lodFarDistance,hysteresis;
-        uint32_t cullingEnabled,padding0=0,padding1=0;
+        uint32_t cullingEnabled,shadowCascadeCount,shadowViewValid;
     };
     static_assert(sizeof(TreeCullPushConstants)==48);
 
@@ -214,8 +263,8 @@ namespace VansGraphics
 		uint32_t      assignedInstanceCount = 0;
 
 		// Indirect draw command
-		VansVKBuffer  indirectDrawBuffer;
-		VansVKBuffer  shadowIndirectDrawBuffer;
+		VansVKBuffer indirectDrawBuffer;
+		VansVKBuffer shadowIndirectDrawBuffer;
 
 		// Descriptor set for draw pass (Set 3)
 		VkDescriptorSet drawDescSet = VK_NULL_HANDLE;
@@ -237,20 +286,22 @@ namespace VansGraphics
 		int32_t submeshIndex = -1;
 		uint32_t visibleOffset = 0;
 		uint32_t instanceCapacity = 0;
-		VansVKBuffer indirectDrawBuffer;
-		VansVKBuffer shadowIndirectDrawBuffer;
-		VkDescriptorSet drawDescSet = VK_NULL_HANDLE;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> indirectDrawBuffers;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> shadowIndirectDrawBuffers;
+		std::array<VkDescriptorSet, VansCommandRecordingConfig::MaximumFramesInFlight> drawDescSets{};
 	};
 
 	class VansVegetationSystem
 	{
 	public:
+		static constexpr uint32_t ShadowCascadeCount = 2u;
 		VansVegetationSystem() = default;
 		~VansVegetationSystem();
 
 		// 显式实例输入；零实例不会创建默认草叶或默认树。
 		void Init(VkDevice device, std::vector<GrassInstance> grass,
-			std::vector<TreeInstanceGPU> trees, uint32_t boneCountPerInstance);
+			std::vector<TreeInstanceGPU> trees, uint32_t boneCountPerInstance,
+			std::vector<GrassInstanceRange> grassRanges);
 		void SetRenderConfigs(const std::vector<GrassRenderConfig>& configs) { m_RenderConfigs = configs; }
 		void SetTreeParts(const std::vector<TreePartConfig>& parts) { m_TreeParts = parts; }
         void SetTreeLodSettings(const std::vector<float>& distances,float hysteresis)
@@ -283,13 +334,44 @@ namespace VansGraphics
 		            float softness = 0.2f,
 		            float lodFullDist = 15.0f, float lodFadeDist = 20.0f,
 		            bool useCullVisibilityMask = false,
-		            bool sameQueueGraphicsConsumer = true);
+		            bool sameQueueGraphicsConsumer = true, uint32_t frameSlot = 0u);
 
-		// ── P0: GPU frustum + distance cull — dispatch before Draw() ────
-		bool DispatchCullPass(VansVKCommandBuffer& computeCmd, float cullDistance,
-			bool sameQueueGraphicsConsumer = true);
-		void DispatchTreeCullPass(VansVKCommandBuffer& computeCmd,
-			bool sameQueueGraphicsConsumer = true);
+		// 植被批次按清零、剔除、间接命令生成三个阶段提交；阶段间同步由调用方统一执行。
+		bool PrepareGrassCull(VansVKCommandBuffer& computeCmd);
+		void DispatchGrassCull(VansVKCommandBuffer& computeCmd, float cullDistance, uint32_t frameSlot);
+		void CopyGrassCullCounts(VansVKCommandBuffer& computeCmd);
+		// 调用方须在该帧槽 fence 退役后上传；实例和绘制输出仍由物理资源依赖保护。
+		void SetGrassWorkRanges(uint32_t frameSlot, const std::vector<GrassInstanceRange>& ranges);
+		struct GrassStateTransfer
+		{
+			GrassInstanceRange source;
+			GrassInstanceRange destination;
+		};
+		void PreserveGrassState(std::shared_ptr<VansVegetationSystem> source,
+			std::vector<GrassStateTransfer> ranges);
+		struct GrassPageUpdate
+		{
+			GrassInstanceRange range;
+			std::vector<GrassInstance> instances;
+		};
+		struct GrassPageUpload
+		{
+			VansVKBuffer staging;
+			std::vector<GrassPageUploadRegion> regions;
+			bool recorded = false, accepted = false;
+		};
+		using GrassPageUploads = std::list<std::shared_ptr<GrassPageUpload>>;
+		// Preparation owns only staging resources. Commit is allocation-free and
+		// happens after the collection's complete PCG transaction is prepared.
+		GrassPageUploads PrepareGrassPageUpdates(const std::vector<GrassPageUpdate>& pages) const;
+		void CommitGrassPageUpdates(GrassPageUploads&& uploads) noexcept;
+		bool HasGrassStateTransfer() const { return !m_GrassStateSources.empty() || !m_GrassPageUploads.empty(); }
+		void RecordGrassStateTransfer(VansVKCommandBuffer& command);
+		void ResolveGrassStateTransfer(bool submitted);
+		void RetireGrassStateTransfer(VansVKDevice& device);
+		bool PrepareTreeCull(VansVKCommandBuffer& computeCmd, uint32_t frameSlot);
+		void DispatchTreeCull(VansVKCommandBuffer& computeCmd, bool shadowViewValid, uint32_t frameSlot);
+		void CopyTreeCullCounts(VansVKCommandBuffer& computeCmd, uint32_t frameSlot);
 
 		// ── Draw: issues one indirect indexed draw per render config ───
 		void Draw(VansVKCommandBuffer& graphicsCmd,
@@ -304,12 +386,12 @@ namespace VansGraphics
 		               GlobalStateData& globalState,
 		               const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
 		               const std::vector<VkDescriptorSet>& baseDescSets,
-		               int pushConstantTransformIndex);
+		               int pushConstantTransformIndex, uint32_t frameSlot);
 		void DrawTreeCascadeShadow(VansVKCommandBuffer& graphicsCmd,
 		                            GlobalStateData& globalState,
 		                            const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
 		                            const std::vector<VkDescriptorSet>& baseDescSets,
-		                            int pushConstantTransformIndex);
+		                            int pushConstantTransformIndex, uint32_t frameSlot);
 
 		// ── Cleanup ────────────────────────────────────────────────────
 		void Cleanup(VkDevice device);
@@ -389,7 +471,41 @@ namespace VansGraphics
 		// ── P0: Visibility data accessors ──────────────────────────────
 		VansVKBuffer& GetVisibilityBuffer()       { return m_VisibilityBuffer; }
 		VansVKBuffer& GetVisibleCountBuffer()     { return m_VisibleCountBuffer; }
-		VansVKBuffer& GetVisibleIndexBuffer()     { return m_VisibleIndexBuffer; }
+		VansVKBuffer& GetVisibleIndexBuffer() { return m_VisibleIndexBuffer; }
+		// 提交图按实际 VkBuffer 跟踪跨帧读写，不转移资源所有权。
+		// 计数器只在 Compute 内作为间接命令拷贝源，不由绘制节点读取。
+		enum class FrameBufferConsumer : uint8_t { ComputeOnly, Draw, ReadOnlyDraw, TransferRead, TransferWrite };
+		template <typename Visit>
+		void ForEachMutableFrameBuffer(uint32_t frameSlot, Visit&& visit) const
+		{
+			const auto emit = [&visit](const VansVKBuffer& buffer, FrameBufferConsumer consumer)
+			{
+				const VkBuffer handle = buffer.GetNativeBuffer();
+				if (handle != VK_NULL_HANDLE)
+					visit(handle, consumer);
+			};
+			emit(m_InstanceBuffer, FrameBufferConsumer::ReadOnlyDraw);
+			emit(m_BoneBuffer, FrameBufferConsumer::ComputeOnly);
+			emit(m_BoneMatrixBuffer, FrameBufferConsumer::Draw);
+			emit(m_LodFactorsBuffer, FrameBufferConsumer::Draw);
+			emit(m_VisibilityBuffer, FrameBufferConsumer::ComputeOnly);
+			emit(m_VisibleCountBuffer, FrameBufferConsumer::ComputeOnly);
+			emit(m_VisibleIndexBuffer, FrameBufferConsumer::Draw);
+			emit(m_TreeLodStateBuffer, FrameBufferConsumer::ComputeOnly);
+			emit(m_TreeFrames.at(frameSlot).visibleCounts, FrameBufferConsumer::ComputeOnly);
+			emit(m_TreeFrames.at(frameSlot).visibleIndices, FrameBufferConsumer::Draw);
+			for (const GrassRenderConfigGPU& config : m_RenderConfigsGPU)
+			{
+				emit(config.indirectDrawBuffer, FrameBufferConsumer::Draw);
+				emit(config.shadowIndirectDrawBuffer, FrameBufferConsumer::Draw);
+			}
+			for (const TreeDrawConfigGPU& config : m_TreeDrawConfigsGPU)
+			{
+				emit(config.indirectDrawBuffers.at(frameSlot), FrameBufferConsumer::Draw);
+				emit(config.shadowIndirectDrawBuffers.at(frameSlot), FrameBufferConsumer::Draw);
+			}
+			ForEachGrassTransferBuffer(visit);
+		}
 
 		// ── Cull distance (set before or after Init) ─────────────────────
 		void  SetCullDistance(float d) { m_CullDistance = d; }
@@ -419,7 +535,34 @@ namespace VansGraphics
 		void CreateTemplateMesh(VkDevice device);
 		void CreateInstanceBuffer(VkDevice device);
 		void CreateBoneBuffer(VkDevice device);
+		void InitializeGrassBones(GrassBone* bones, const GrassInstance* instances,
+			uint32_t count, uint32_t stride) const;
 		void CreateBoneMatrixBuffer(VkDevice device);
+		void CreateGrassWorkBuffers(VkDevice device);
+		template <typename Visit>
+		void ForEachGrassTransferBuffer(Visit&& visit) const
+		{
+			for (const auto& upload : m_GrassPageUploads)
+			{
+				if (upload->accepted) continue;
+				visit(upload->staging.GetNativeBuffer(), FrameBufferConsumer::TransferRead);
+				for (const auto* buffer : {&m_InstanceBuffer, &m_BoneBuffer, &m_BoneMatrixBuffer, &m_LodFactorsBuffer})
+					visit(buffer->GetNativeBuffer(), FrameBufferConsumer::TransferWrite);
+			}
+			if (m_GrassStateTransferAccepted) return;
+			for (const auto& group : m_GrassStateSources)
+			{
+				const auto& source = *group.owner;
+				for (const auto* buffer : { &source.m_BoneBuffer, &source.m_BoneMatrixBuffer,
+					&source.m_LodFactorsBuffer })
+				{
+					visit(buffer->GetNativeBuffer(), FrameBufferConsumer::TransferRead);
+					if (source.HasGrassStateTransfer() && !source.m_GrassStateTransferAccepted)
+						visit(buffer->GetNativeBuffer(), FrameBufferConsumer::TransferWrite);
+				}
+				source.ForEachGrassTransferBuffer(visit);
+			}
+		}
 		void CreateLodFactorsBuffer(VkDevice device);
 		void CreateScatterOffsetUBO(VkDevice device);
 		void CreateCullBuffers(VkDevice device);
@@ -433,7 +576,7 @@ namespace VansGraphics
 		void WriteDrawDescriptors(GrassRenderConfigGPU& cfg);
 		void CreateTreeDescriptorSets();
 		void WriteTreeCullDescriptors();
-		void WriteTreeDrawDescriptors(TreeDrawConfigGPU& cfg);
+		void WriteTreeDrawDescriptors(TreeDrawConfigGPU& cfg, uint32_t frameSlot);
 		void LoadTreeShaders(VkDevice device);
 
 		// ── Configuration ───────────────────────────────────────────────
@@ -455,6 +598,16 @@ namespace VansGraphics
 		float     m_SubBladeLodMidDist  = 0.0f;   // P1: 中距离子叶片 LOD 阈值
 		float     m_SubBladeLodFarDist  = 0.0f;   // P1: 远距离子叶片 LOD 阈值
 		std::vector<GrassInstance> m_GrassInstancesCPU;
+		std::vector<GrassInstanceRange> m_GrassStorageRanges;
+		struct GrassStateSource
+		{
+			std::shared_ptr<VansVegetationSystem> owner;
+			std::vector<GrassStateTransfer> ranges;
+		};
+		std::vector<GrassStateSource> m_GrassStateSources;
+		GrassPageUploads m_GrassPageUploads;
+		bool m_GrassStateTransferRecorded = false;
+		bool m_GrassStateTransferAccepted = false;
 
 		// ── Per-frame simulation parameters ─────────────────────────────
 		glm::vec2 m_SimWindDirection  = glm::vec2(1.0f, 0.0f);
@@ -488,8 +641,13 @@ namespace VansGraphics
 		std::vector<TreeSpeciesCullInfo> m_TreeSpeciesInfosCPU;
 		std::vector<TreeDrawConfigGPU> m_TreeDrawConfigsGPU;
 		VansVKBuffer m_TreeInstanceBuffer;
-		VansVKBuffer m_TreeVisibleCountsBuffer;
-		VansVKBuffer m_TreeVisibleIndexBuffer;
+		VansVKBuffer m_TreeLodStateBuffer;
+		struct TreeFrameBuffers
+		{
+			VansVKBuffer visibleCounts;
+			VansVKBuffer visibleIndices;
+		};
+		std::array<TreeFrameBuffers, VansCommandRecordingConfig::MaximumFramesInFlight> m_TreeFrames;
 		VansVKBuffer m_TreeSpeciesInfoBuffer;
 		VkDescriptorSetLayout m_TreeDrawLayout = VK_NULL_HANDLE;
 		VkDescriptorSetLayout m_TreeCullLayout = VK_NULL_HANDLE;
@@ -504,6 +662,10 @@ namespace VansGraphics
 		VansVKBuffer m_BoneBuffer;
 		VansVKBuffer m_BoneMatrixBuffer;
 		VansVKBuffer m_LodFactorsBuffer;
+		VansVKBuffer m_VisibleIndexBuffer;
+		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_GrassWorkBuffers;
+		std::array<uint32_t, VansCommandRecordingConfig::MaximumFramesInFlight> m_GrassWorkgroupCounts{};
+		std::array<std::vector<GrassInstanceRange>, VansCommandRecordingConfig::MaximumFramesInFlight> m_GrassWorkRanges;
 		// P6a 优化: 用共享散布偏移 UBO 替换每实例×每子叶片的 SubBladeRoots 大 SSBO
 		// 仅 m_SubBladeCount 个 vec4 (XZ 偏移)，节省 ~320 MB 显存
 		VansVKBuffer m_ScatterOffsetUBO;
@@ -518,7 +680,6 @@ namespace VansGraphics
 		// ── P0: GPU Cull Buffers ───────────────────────────────────────
 		VansVKBuffer m_VisibilityBuffer;      // uint per instance: 1=visible 0=culled
 		VansVKBuffer m_VisibleCountBuffer;    // single uint: atomic counter
-		VansVKBuffer m_VisibleIndexBuffer;    // compact list of visible instance indices
 		VkDescriptorSetLayout m_CullLayout        = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_CullDescSets;
 

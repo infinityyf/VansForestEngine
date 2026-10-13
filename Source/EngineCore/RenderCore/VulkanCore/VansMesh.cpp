@@ -1086,6 +1086,37 @@ VansGraphics::VansMesh::VansMesh(bool needCPUData, bool supportRayTracing)
 	m_SupportRayTracing = supportRayTracing;
 }
 
+bool VansGraphics::VansMesh::CaptureTriangleMeshData(std::uint64_t maximumBytes,
+	std::shared_ptr<const Vans::VansTriangleMeshData>& output,std::string& error) const
+try
+{
+	std::uint64_t hash=Vans::VANS_FNV1A64_OFFSET_BASIS,bytes=0;
+	const auto append=[&](const VansMesh& mesh)
+	{
+		hash=Vans::ContinueMemoryFnv1a64(hash,&mesh.m_VertexCount,sizeof(mesh.m_VertexCount));
+		const auto vertices=mesh.m_MeshRawPositionData.size(),indices=mesh.m_MeshTriangleIndex.size();
+		hash=Vans::ContinueMemoryFnv1a64(hash,&vertices,sizeof(vertices));
+		hash=Vans::ContinueMemoryFnv1a64(hash,&indices,sizeof(indices));
+		hash=Vans::ContinueMemoryFnv1a64(hash,mesh.m_MeshRawPositionData.data(),vertices*sizeof(float));
+		hash=Vans::ContinueMemoryFnv1a64(hash,mesh.m_MeshTriangleIndex.data(),indices*sizeof(int));
+		bytes+=vertices*sizeof(float)+indices*sizeof(std::uint32_t);
+	};
+	if(m_IsMultiMesh)
+	{
+		for(const auto* part:m_SubMeshes)
+		{ if(!part) { error="CPU snapshot contains a missing submesh"; return false; } append(*part); }
+	}
+	else append(*this);
+	if(bytes>maximumBytes) { error="CPU triangle snapshot exceeds the consumer memory budget"; return false; }
+	if(m_CpuTriangleSnapshot && m_CpuTriangleSnapshotHash==hash)
+	{ output=m_CpuTriangleSnapshot; error.clear(); return true; }
+	auto candidate=std::make_shared<Vans::VansTriangleMeshData>();
+	if(!CopyTriangleMeshData(*candidate,error)) return false;
+	m_CpuTriangleSnapshot=std::move(candidate); m_CpuTriangleSnapshotHash=hash;
+	output=m_CpuTriangleSnapshot; error.clear(); return true;
+}
+catch(const std::bad_alloc&) { error="CPU triangle snapshot allocation failed"; return false; }
+
 bool VansGraphics::VansMesh::CopyTriangleMeshData(
 	Vans::VansTriangleMeshData& output,
 	std::string& error) const

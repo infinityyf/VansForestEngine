@@ -56,11 +56,11 @@ namespace
 	}
 }
 
-const std::array<VansGraphics::VansEditorAssetMenuEntry, 18>&
+const std::array<VansGraphics::VansEditorAssetMenuEntry, 19>&
 VansGraphics::VansEditorShellMenu::AssetCreationEntries()
 {
 	using Kind = Vans::EditorAPI::ProjectAssetCreationKind;
-	static constexpr std::array<VansEditorAssetMenuEntry, 18> entries = {{
+	static constexpr std::array<VansEditorAssetMenuEntry, 19> entries = {{
 		{ "Timeline", VansEditorAssetMenuGroup::Root, Kind::Timeline },
 		{ "Action", VansEditorAssetMenuGroup::GameplayAction, Kind::ActionDefinition },
 		{ "Action Set", VansEditorAssetMenuGroup::GameplayAction, Kind::ActionSet },
@@ -74,6 +74,7 @@ VansGraphics::VansEditorShellMenu::AssetCreationEntries()
 		{ "Camera Rig", VansEditorAssetMenuGroup::GameplayAction, Kind::CameraRigProfile },
 		{ "Camera Shake", VansEditorAssetMenuGroup::GameplayAction, Kind::CameraShakeProfile },
 		{ "Skin Profile", VansEditorAssetMenuGroup::Rendering, Kind::SkinProfile },
+		{ "Cloth Material", VansEditorAssetMenuGroup::Rendering, Kind::ClothMaterial },
 		{ "Animator Controller", VansEditorAssetMenuGroup::Animation, Kind::AnimatorController },
 		{ "Bone Mask", VansEditorAssetMenuGroup::Animation, Kind::BoneMask },
 		{ "Reverb Preset", VansEditorAssetMenuGroup::Audio, Kind::AudioReverbPreset },

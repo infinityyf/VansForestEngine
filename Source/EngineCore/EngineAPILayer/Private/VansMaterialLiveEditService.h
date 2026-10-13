@@ -3,7 +3,10 @@
 #include "../Public/EngineDTOs.h"
 
 #include <filesystem>
+#include <optional>
 #include <string>
+
+namespace Vans { enum class VansClothAlphaMode; }
 
 namespace VansGraphics
 {
@@ -24,7 +27,8 @@ public:
 		VansScene* scene,
 		const std::filesystem::path& assetPath,
 		const std::vector<Vans::EditorAPI::RuntimeMaterialParameterEdit>& parameterEdits,
-		const std::vector<Vans::EditorAPI::RuntimeMaterialTextureEdit>& textureEdits);
+		const std::vector<Vans::EditorAPI::RuntimeMaterialTextureEdit>& textureEdits,
+		std::optional<Vans::VansClothAlphaMode> pendingClothAlphaMode = std::nullopt);
 	bool ApplyMaterialParameter(
 		VansScene* scene,
 		const std::string& materialName,

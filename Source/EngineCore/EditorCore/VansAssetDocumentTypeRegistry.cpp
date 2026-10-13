@@ -16,6 +16,7 @@
 #include "../AICore/Serialization/VansAIBehaviorJsonCodec.h"
 #include "../AssetCore/VansMaterialAuthoringAsset.h"
 #include "../AssetCore/VansShaderAuthoringAsset.h"
+#include "../AssetCore/VansRenderPassAsset.h"
 #include "../AssetCore/Serialization/VansClothProfileJsonCodec.h"
 #include "../AssetCore/Serialization/VansSkinProfileJsonCodec.h"
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
@@ -99,6 +100,20 @@ VansAssetDocumentTypeRegistry::VansAssetDocumentTypeRegistry()
         return ToDocumentErrors({error});
     };
     Register(VansAssetType::Prefab, std::move(prefab), ignored);
+    VansAssetDocumentTypeDescriptor renderPass;
+    renderPass.validateBeforeSave = [](const std::filesystem::path&, const VansSerializedValue& root)
+    {
+        VansRenderPassAsset asset; std::string error;
+        if (ReadRenderPassAsset(root, asset, error)) return std::vector<VansAssetDocumentDiagnostic>{};
+        return ToDocumentErrors({error});
+    };
+    renderPass.collectDependencies = [](const std::filesystem::path&, const VansSerializedValue& root)
+    {
+        VansRenderPassAsset asset; std::string error; std::vector<std::string> result;
+        if (ReadRenderPassAsset(root, asset, error)) for (const auto& guid : CollectRenderPassAssetDependencies(asset)) result.push_back(guid.ToString());
+        return result;
+    };
+    Register(VansAssetType::RenderPass, std::move(renderPass), ignored);
 
 	VansAssetDocumentTypeDescriptor animationRig;
 	animationRig.validateBeforeSave = [](

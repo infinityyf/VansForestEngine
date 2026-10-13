@@ -11,6 +11,7 @@
 #include "../VansRenderBootstrapSettings.h"
 #include "../../Util/VansLog.h"
 #include "../LTC/LTCData.h"
+#include "../BRDFData/VansClothLightingLUT.h"
 #include "../VegetationCore/GrassEnergyLUT.h"
 #include "../VansPostProcessProfile.h"
 #include <cmath>
@@ -200,8 +201,13 @@ namespace VansGraphics
 			else if (material->m_MaterialType == VansMaterialType::VAN_CLOTH)
 			{
 				VansClothMaterial* cloth = static_cast<VansClothMaterial*>(material);
+				// Binary16 represents every integer through 2048 exactly. Reject only
+				// Cloth indices outside that continuous range, before publishing them.
+				if (pbrMaterialIndex > 2048)
+					throw std::runtime_error("Cloth material '" + cloth->m_AssetName +
+						"' exceeds the exact GBuffer R16F material index range [0, 2048]");
 				cloth->m_MaterialIndex = pbrMaterialIndex++;
-				materialManager->m_GlobalPBRParamData.push_back(cloth->m_BasePBRParam);
+				materialManager->m_GlobalPBRParamData.push_back(cloth->BuildBasePBRParam());
 				materialManager->m_GlobalClothParamData.push_back(cloth->BuildGPUParam());
 				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
 				materialManager->m_GlobalSkinParamData.push_back(defaultSkinPayload);
@@ -319,13 +325,8 @@ namespace VansGraphics
 				}
 
 				VansSkinGPUParam& payload = materialManager->m_GlobalSkinParamData[payloadIndex];
-				materialManager->ResolveSkinProfileLUTForMaterial(*skin, payload, &m_VansVKCommandBuffer);
+				materialManager->ResolveSkinProfileLUTForMaterial(*skin, payload, &m_MaintenanceGraphicsCommandBuffer);
 			}
-		}
-		if (pbrMaterialIndex > 2048)
-		{
-			VANS_LOG_ERROR("[PreparePBRMaterialData] " << pbrMaterialIndex
-				<< " material payloads exceed the exact R16F Cloth materialIndex limit (2048).");
 		}
 		VANS_LOG("[PreparePBRMaterialData] assets=" << materialCount
 			<< ", pbrPayloads=" << materialManager->m_GlobalPBRParamData.size()
@@ -342,102 +343,55 @@ namespace VansGraphics
 			sizeof(VansSkinGPUParam) * materialManager->m_GlobalSkinParamData.size();
 		const VkDeviceSize customMaterialDataSize =
 			sizeof(VansCustomMaterialPayload) * materialManager->m_GlobalCustomMaterialParamData.size();
-		materialManager->m_GlobalPBRDataBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice,
-			std::max<VkDeviceSize>(materialDataSize, sizeof(VansBasePBRParam)),
-			VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-        const VkDeviceSize hairDataSize = sizeof(VansHairParamsGPU) * materialManager->m_GlobalHairParamData.size();
-        materialManager->m_GlobalHairDataBuffer.CreatVulkanBuffer(m_VansVKLogicDevice,
-            std::max<VkDeviceSize>(hairDataSize, sizeof(VansHairParamsGPU)), VK_FORMAT_R32_SFLOAT,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-        if (hairDataSize > 0)
-            materialManager->m_GlobalHairDataBuffer.SetBufferData(materialManager->m_GlobalHairParamData.data(), 0, hairDataSize);
-        materialManager->m_GlobalHairDataBuffer.PersistentMap();
-		materialManager->m_GlobalClothDataBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice,
-			std::max<VkDeviceSize>(clothMaterialDataSize, sizeof(VansClothGPUParam)),
-			VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		materialManager->m_GlobalTreeLeafDataBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice,
-			std::max<VkDeviceSize>(treeLeafMaterialDataSize, sizeof(VansTreeLeafParamsGPU)),
-			VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		materialManager->m_GlobalSkinDataBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice,
-			std::max<VkDeviceSize>(skinMaterialDataSize, sizeof(VansSkinGPUParam)),
-			VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		materialManager->m_GlobalCustomMaterialDataBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice,
-			std::max<VkDeviceSize>(customMaterialDataSize, sizeof(VansCustomMaterialPayload)),
-			VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-
-		if (materialDataSize > 0)
+		const VkDeviceSize hairDataSize =
+			sizeof(VansHairParamsGPU) * materialManager->m_GlobalHairParamData.size();
+		const auto createAndSeed = [this](VansVKBuffer& buffer, VkDeviceSize size,
+			VkBufferUsageFlags usage, const void* source, VkDeviceSize sourceSize)
 		{
-			materialManager->m_GlobalPBRDataBuffer.SetBufferData(
-				materialManager->m_GlobalPBRParamData.data(), 0, static_cast<int>(materialDataSize));
-		}
-		if (clothMaterialDataSize > 0)
-		{
-			materialManager->m_GlobalClothDataBuffer.SetBufferData(
-				materialManager->m_GlobalClothParamData.data(), 0, static_cast<int>(clothMaterialDataSize));
-		}
-		if (treeLeafMaterialDataSize > 0)
-		{
-			materialManager->m_GlobalTreeLeafDataBuffer.SetBufferData(
-				materialManager->m_GlobalTreeLeafParamData.data(), 0, static_cast<int>(treeLeafMaterialDataSize));
-		}
-		if (skinMaterialDataSize > 0)
-		{
-			materialManager->m_GlobalSkinDataBuffer.SetBufferData(
-				materialManager->m_GlobalSkinParamData.data(), 0, static_cast<int>(skinMaterialDataSize));
-		}
-		if (customMaterialDataSize > 0)
-		{
-			materialManager->m_GlobalCustomMaterialDataBuffer.SetBufferData(
-				materialManager->m_GlobalCustomMaterialParamData.data(), 0, static_cast<int>(customMaterialDataSize));
-		}
-
-		// Keep the PBR material buffer persistently mapped for fast per-frame CPU writes
-		materialManager->m_GlobalPBRDataBuffer.PersistentMap();
-		materialManager->m_GlobalClothDataBuffer.PersistentMap();
-		materialManager->m_GlobalTreeLeafDataBuffer.PersistentMap();
-		materialManager->m_GlobalSkinDataBuffer.PersistentMap();
-		materialManager->m_GlobalCustomMaterialDataBuffer.PersistentMap();
-
-		VkDescriptorSetLayoutBinding globalPBRMaterialBufferBinding =
-		{
-			PassBinding::BUFFER_0,
-			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			1,
-			VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR,
-			nullptr
+			if (!buffer.CreatVulkanBuffer(m_VansVKLogicDevice, size,
+				VK_FORMAT_R32_SFLOAT, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+				return false;
+			if (sourceSize > 0 && !buffer.SetBufferData(source, 0, sourceSize))
+				return false;
+			return buffer.PersistentMap();
 		};
-		VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
-			{ globalPBRMaterialBufferBinding },
-			materialManager->m_GlobalPBRDataSetLayout,
-			materialManager->m_GlobalPBRDataDescriptorSets);
+		const VkBufferUsageFlags materialUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
+		const VkBufferUsageFlags extensionUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+		for (auto& buffers : materialManager->m_FrameMaterialBuffers)
+		{
+			if (createAndSeed(buffers.pbr,
+				std::max<VkDeviceSize>(materialDataSize, sizeof(VansBasePBRParam)),
+				materialUsage, materialManager->m_GlobalPBRParamData.data(), materialDataSize) &&
+				createAndSeed(buffers.cloth,
+					std::max<VkDeviceSize>(clothMaterialDataSize, sizeof(VansClothGPUParam)),
+					extensionUsage, materialManager->m_GlobalClothParamData.data(), clothMaterialDataSize) &&
+				createAndSeed(buffers.hair,
+					std::max<VkDeviceSize>(hairDataSize, sizeof(VansHairParamsGPU)),
+					VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+					materialManager->m_GlobalHairParamData.data(), hairDataSize) &&
+				createAndSeed(buffers.treeLeaf,
+					std::max<VkDeviceSize>(treeLeafMaterialDataSize, sizeof(VansTreeLeafParamsGPU)),
+					extensionUsage, materialManager->m_GlobalTreeLeafParamData.data(), treeLeafMaterialDataSize) &&
+				createAndSeed(buffers.skin,
+					std::max<VkDeviceSize>(skinMaterialDataSize, sizeof(VansSkinGPUParam)),
+					extensionUsage, materialManager->m_GlobalSkinParamData.data(), skinMaterialDataSize) &&
+				createAndSeed(buffers.custom,
+					std::max<VkDeviceSize>(customMaterialDataSize, sizeof(VansCustomMaterialPayload)),
+					materialUsage, materialManager->m_GlobalCustomMaterialParamData.data(), customMaterialDataSize))
+				continue;
+			for (auto& allocated : materialManager->m_FrameMaterialBuffers)
+			{
+				for (VansVKBuffer* buffer : { &allocated.pbr, &allocated.cloth, &allocated.hair,
+					&allocated.treeLeaf, &allocated.skin, &allocated.custom })
+					if (buffer->GetNativeBuffer() != VK_NULL_HANDLE)
+						buffer->DestroyVulkanBuffer(m_VansVKLogicDevice);
+			}
+			throw std::runtime_error("Failed to create per-slot material frame buffers");
+		}
 
 		auto* descMgr = VansVKDescriptorManager::GetInstance();
-		descMgr->BeginDescriptorUpdate();
-		descMgr->WriteBufferDescriptor(
-			materialManager->m_GlobalPBRDataDescriptorSets[0],
-			PassBinding::BUFFER_0,
-			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{ {
-				materialManager->m_GlobalPBRDataBuffer.GetNativeBuffer(),
-				0,
-				materialManager->m_GlobalPBRDataBuffer.GetBufferSize()
-			} });
-		descMgr->CommitDescriptorUpdates();
 
 		VkDescriptorSetLayoutBinding bindlessTextureArrayBinding =
 		{
@@ -492,11 +446,12 @@ namespace VansGraphics
 		const uint32_t maxCapacity = static_cast<uint32_t>(m_Scene->GetTransformSlotCapacity());
 		const VkDeviceSize bufferSize = sizeof(ModelDataStruct) * static_cast<VkDeviceSize>(maxCapacity);
 
-		m_Scene->CreateInstanceTransformBuffer(
+		if (!m_Scene->CreateInstanceTransformBuffer(
 			m_VansVKLogicDevice,
 			bufferSize,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+			throw std::runtime_error("Failed to create per-slot instance-transform buffers");
 
 		for (auto* node : allRenderNodes)
 		{
@@ -506,13 +461,15 @@ namespace VansGraphics
 			node->BeforeDrawCall();
 			node->m_TransfromIndex = static_cast<int>(slot);
 
-			m_Scene->SetInstanceTransformData(node->m_ModelData, slot);
+			if (!m_Scene->SetInstanceTransformData(node->m_ModelData, slot))
+				throw std::runtime_error("Failed to initialize per-slot instance-transform data");
 		}
 
 		// ── Step 2.5: m_InstanceTransformData CPU 镜像不再写入 ────────────────
 
 		// ── Step 3: 持久映射 ─────────────────────────────────────────────────
-		m_Scene->PersistentlyMapInstanceTransformBuffer();
+		if (!m_Scene->PersistentlyMapInstanceTransformBuffer())
+			throw std::runtime_error("Failed to map per-slot instance-transform buffers");
 
 		VkDescriptorSetLayoutBinding instanceTransformBufferBinding =
 		{
@@ -530,7 +487,7 @@ namespace VansGraphics
 		const std::string& projectRoot =
 			Vans::VansProjectManager::Get().GetPathResolver().GetEngineRoot();
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		manager->m_SkyLighting.Initialize(*this, m_VansVKCommandBuffer,
+		manager->m_SkyLighting.Initialize(*this, m_MaintenanceGraphicsCommandBuffer,
             projectRoot + "EngineAssets/Textures/SkyBox");
 
 		auto loadEngineTexture = [&](VansTexture* texture,
@@ -550,14 +507,14 @@ namespace VansGraphics
 			desc.precision = precision;
 			desc.importChannel = importChannel;
 			desc.addressMode = addressMode;
-			texture->LoadTexture(m_VansVKCommandBuffer, desc);
+			texture->LoadTexture(m_MaintenanceGraphicsCommandBuffer, desc);
 		};
 
 		manager->m_BRDFIntegralLUT = new VansTexture();
 		loadEngineTexture(manager->m_BRDFIntegralLUT, projectRoot + "EngineAssets/Textures/BRDFIntegralLUT.png", false, false, false);
 
         manager->m_GrassEnergyLUT = new VansTexture();
-        manager->m_GrassEnergyLUT->LoadFromMemory(m_VansVKCommandBuffer,
+        manager->m_GrassEnergyLUT->LoadFromMemory(m_MaintenanceGraphicsCommandBuffer,
             GrassEnergyLUT::Pixels, sizeof(GrassEnergyLUT::Pixels),
             GrassEnergyLUT::Size, GrassEnergyLUT::Size, VK_FORMAT_R16G16B16A16_SFLOAT,
             VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
@@ -568,7 +525,7 @@ namespace VansGraphics
 
 		manager->m_SkinProfileLUTArray = new VansTexture();
 		manager->m_SkinProfileLUTArray->InitTextureArray(
-			m_VansVKCommandBuffer,
+			m_MaintenanceGraphicsCommandBuffer,
 			VANS_SKIN_PROFILE_LUT_SIZE,
 			VANS_SKIN_PROFILE_LUT_SIZE,
 			VANS_SKIN_PROFILE_LUT_LAYER_COUNT,
@@ -585,13 +542,13 @@ namespace VansGraphics
 				VANS_SKIN_PROFILE_LUT_SIZE,
 				generatedSkinProfileLUT);
 			const bool uploaded = generated && manager->m_SkinProfileLUTArray->UpdateArrayLayerFromPixels(
-				m_VansVKCommandBuffer,
+				m_MaintenanceGraphicsCommandBuffer,
 				generatedSkinProfileLUT.data(),
 				VANS_SKIN_PROFILE_LUT_SIZE,
 				VANS_SKIN_PROFILE_LUT_SIZE,
 				layer);
 			if (!uploaded && !manager->m_SkinProfileLUTArray->LoadTextureLayer(
-				m_VansVKCommandBuffer,
+				m_MaintenanceGraphicsCommandBuffer,
 				skinLutPath,
 				layer,
 				false,
@@ -604,6 +561,11 @@ namespace VansGraphics
 
 		manager->m_ClothBRDFLUT = new VansTexture();
 		loadEngineTexture(manager->m_ClothBRDFLUT, projectRoot + "EngineAssets/Textures/ClothBRDFLUT.png", false, false, false, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		manager->m_ClothLightingLUT = new VansTexture();
+		manager->m_ClothLightingLUT->LoadFromMemory(m_MaintenanceGraphicsCommandBuffer,
+			ClothLightingLUT::Pixels, sizeof(ClothLightingLUT::Pixels),
+			ClothLightingLUT::Width, ClothLightingLUT::Height, VK_FORMAT_R32G32B32A32_SFLOAT,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
 		// ------------------------------------------------------------
 		// LTC LUTs (area-light BRDF). 64x64 RGBA16F, uploaded from the
@@ -652,19 +614,19 @@ namespace VansGraphics
 			}
 
 			manager->m_LTC1 = new VansTexture();
-			manager->m_LTC1->LoadFromMemory(m_VansVKCommandBuffer,
+			manager->m_LTC1->LoadFromMemory(m_MaintenanceGraphicsCommandBuffer,
 				half1.data(), half1.size() * sizeof(uint16_t),
 				kSize, kSize, VK_FORMAT_R16G16B16A16_SFLOAT,
 				VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
 			manager->m_LTC2 = new VansTexture();
-			manager->m_LTC2->LoadFromMemory(m_VansVKCommandBuffer,
+			manager->m_LTC2->LoadFromMemory(m_MaintenanceGraphicsCommandBuffer,
 				half2.data(), half2.size() * sizeof(uint16_t),
 				kSize, kSize, VK_FORMAT_R16G16B16A16_SFLOAT,
 				VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
 			manager->m_RectLightEmissiveArray = new VansTexture();
-			manager->m_RectLightEmissiveArray->InitTextureArray(m_VansVKCommandBuffer,
+			manager->m_RectLightEmissiveArray->InitTextureArray(m_MaintenanceGraphicsCommandBuffer,
 				256, 256, 32, 4, /*generateMip=*/true,
 				VansGraphics::LOW_PRES_8, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 			manager->RegisterRuntimeRenderTexture(
@@ -681,7 +643,7 @@ namespace VansGraphics
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		VansTexture* ssgiResult = new VansTexture();
 		ssgiResult->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT, ssgiResult);
 
@@ -693,7 +655,7 @@ namespace VansGraphics
 			VANS_SSGI_PROBE_CACHE_TILE_SIZE;
 		VansTexture* ssgiProbeCacheRadiance = new VansTexture();
 		ssgiProbeCacheRadiance->InitTextureWithoutData(
-			m_VansVKCommandBuffer, probeCacheWidth, probeCacheHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, probeCacheWidth, probeCacheHeight, 1,
 			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true,
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(
@@ -702,7 +664,7 @@ namespace VansGraphics
 
 		VansTexture* ssgiProbeCacheSurface = new VansTexture();
 		ssgiProbeCacheSurface->InitTextureWithoutData(
-			m_VansVKCommandBuffer, probeCacheWidth, probeCacheHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, probeCacheWidth, probeCacheHeight, 1,
 			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true,
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(
@@ -711,49 +673,49 @@ namespace VansGraphics
 
 		VansTexture* ssgiFilterResult = new VansTexture();
 		ssgiFilterResult->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT, ssgiFilterResult);
 
 		VansTexture* ssgiTemporalA = new VansTexture();
 		ssgiTemporalA->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_A, ssgiTemporalA);
 
 		VansTexture* ssgiTemporalB = new VansTexture();
 		ssgiTemporalB->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_B, ssgiTemporalB);
 
 		VansTexture* ssgiMomentsA = new VansTexture();
 		ssgiMomentsA->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R16G16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_MOMENTS_A, ssgiMomentsA);
 
 		VansTexture* ssgiMomentsB = new VansTexture();
 		ssgiMomentsB->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R16G16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_MOMENTS_B, ssgiMomentsB);
 
 		VansTexture* ssgiSurfaceHistoryA = new VansTexture();
 		ssgiSurfaceHistoryA->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_SURFACE_HISTORY_A, ssgiSurfaceHistoryA);
 
 		VansTexture* ssgiSurfaceHistoryB = new VansTexture();
 		ssgiSurfaceHistoryB->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_SURFACE_HISTORY_B, ssgiSurfaceHistoryB);
 
 		VansTexture* ssgiAtrousA = new VansTexture();
 		ssgiAtrousA->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_ATROUS_A, ssgiAtrousA);
 		manager->m_SSGITemporalFrame = 0;
@@ -780,19 +742,26 @@ namespace VansGraphics
 		SSGITemporalParamsGPU temporalData{};
 		temporalData.screenSize = data.screenSize;
 		temporalData.frameParams = glm::vec4(0.0f);
-		manager->m_SSGITemporalCBBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice, sizeof(temporalData), VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		for (VansVKBuffer& buffer : manager->m_SSGITemporalCBBuffer)
+		{
+			buffer.CreatVulkanBuffer(
+				m_VansVKLogicDevice, sizeof(temporalData), VK_FORMAT_R32_SFLOAT,
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+			buffer.SetBufferData(&temporalData, 0, sizeof(temporalData));
+		}
 
-		manager->m_SSGITemporalCBBuffer.SetBufferData(&temporalData, 0, sizeof(temporalData));
-
-		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGI(manager->m_SSGITexSetLayout, manager->m_SSGIDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGI(
+			manager->m_SSGITexSetLayout, manager->m_SSGIDescriptorSets,
+			VansCommandRecordingConfig::MaximumFramesInFlight);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGIProbeCache(
 			manager->m_SSGIProbeCacheSetLayout,
-			manager->m_SSGIProbeCacheDescriptorSets);
-		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGITemporal(manager->m_SSGITemporalSetLayout, manager->m_SSGITemporalDescriptorSets, 2);
-		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGIAtrous(manager->m_SSGIAtrousSetLayout, manager->m_SSGIAtrousDescriptorSets, 2);
+			manager->m_SSGIProbeCacheDescriptorSets,
+			2u * VansCommandRecordingConfig::MaximumFramesInFlight);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGITemporal(manager->m_SSGITemporalSetLayout,
+			manager->m_SSGITemporalDescriptorSets, 2u * VansCommandRecordingConfig::MaximumFramesInFlight);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGIAtrous(manager->m_SSGIAtrousSetLayout,
+			manager->m_SSGIAtrousDescriptorSets, 2u * VansCommandRecordingConfig::MaximumFramesInFlight);
 	}
 
 	void VansVKDevice::PrepareHZBRenderData()
@@ -802,13 +771,13 @@ namespace VansGraphics
 	// HIZ stores positive linear view-space depth in meters.
 		VansTexture* hzbResult = new VansTexture();
 		hzbResult->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R32_SFLOAT, false, true, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT, hzbResult);
 
 		VansTexture* occlusionHZBResult = new VansTexture();
 		occlusionHZBResult->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R32_SFLOAT, false, true, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_HZB_OCCLUSION_RESULT, occlusionHZBResult);
 
@@ -822,9 +791,14 @@ namespace VansGraphics
 		manager->m_HIZSeedShader = VansGraphics::VansShaderManager::Get().FindComputeShader("HIZSeed");
 		manager->m_OcclusionHIZSeedShader = VansGraphics::VansShaderManager::Get().FindComputeShader("OcclusionHIZSeed");
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZSeed(
-			manager->m_HIZSeedSetLayout, manager->m_HIZSeedDescriptorSets, 1);
+			manager->m_HIZSeedSetLayout, manager->m_HIZSeedDescriptorSets,
+			VansCommandRecordingConfig::MaximumFramesInFlight);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZSeed(
-			manager->m_OcclusionHIZSeedSetLayout, manager->m_OcclusionHIZSeedDescriptorSets, 1);
+			manager->m_OcclusionHIZSeedSetLayout, manager->m_OcclusionHIZSeedDescriptorSets,
+			VansCommandRecordingConfig::MaximumFramesInFlight);
+		if (manager->m_HIZSeedDescriptorSets.size() != VansCommandRecordingConfig::MaximumFramesInFlight ||
+			manager->m_OcclusionHIZSeedDescriptorSets.size() != VansCommandRecordingConfig::MaximumFramesInFlight)
+			throw std::runtime_error("HZB seed frame descriptor allocation failed");
 		manager->m_MainCameraHiZCullShader = VansGraphics::VansShaderManager::Get().FindComputeShader("MainCameraHiZCull");
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_MainCameraHiZCull(
 			manager->m_MainCameraHiZCullSetLayout,
@@ -845,7 +819,7 @@ namespace VansGraphics
 
 		VansTexture* sssResult = new VansTexture();
 		sssResult->InitTextureWithoutData(
-			m_VansVKCommandBuffer,
+			m_MaintenanceGraphicsCommandBuffer,
 			m_RenderWidth, m_RenderHeight,
 			1, VK_FORMAT_R16_SFLOAT, false, false, true,
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
@@ -857,7 +831,7 @@ namespace VansGraphics
 			1u + uint32_t(std::floor(std::log2(float(minMaxBaseSize))));
 		VansTexture* cascadeMinMax = new VansTexture();
 		cascadeMinMax->InitTextureWithoutData(
-			m_VansVKCommandBuffer,
+			m_MaintenanceGraphicsCommandBuffer,
 			int(minMaxBaseSize * 4u), int(minMaxBaseSize),
 			1, VK_FORMAT_R32G32_SFLOAT, false, true, true,
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
@@ -879,7 +853,11 @@ namespace VansGraphics
 		manager->m_CascadeShadowMinMaxReduceShader = VansGraphics::VansShaderManager::Get().FindComputeShader("CascadeShadowMinMaxReduce");
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_ScreenSpaceShadow(
 			manager->m_ScreenSpaceShadowSetLayout,
-			manager->m_ScreenSpaceShadowDescriptorSets);
+			manager->m_ScreenSpaceShadowDescriptorSets,
+			VansCommandRecordingConfig::MaximumFramesInFlight);
+		if (manager->m_ScreenSpaceShadowDescriptorSets.size() !=
+			VansCommandRecordingConfig::MaximumFramesInFlight)
+			throw std::runtime_error("Screen-space shadow frame descriptor allocation failed");
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_CascadeShadowMinMax(
 			manager->m_CascadeShadowMinMaxSetLayout,
 			manager->m_CascadeShadowMinMaxDescriptorSets,
@@ -898,7 +876,7 @@ namespace VansGraphics
 		constexpr int kPreviewAtlasResolution = 512;
 		VansTexture* preview = new VansTexture();
 		preview->InitTextureWithoutData(
-			m_VansVKCommandBuffer,
+			m_MaintenanceGraphicsCommandBuffer,
 			kPreviewAtlasResolution * static_cast<int>(VANS_PUNCTUAL_SHADOW_ATLAS_COUNT),
 			kPreviewAtlasResolution,
 			1,
@@ -915,7 +893,11 @@ namespace VansGraphics
 			VansGraphics::VansShaderManager::Get().FindComputeShader("PunctualShadowDebug");
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_PunctualShadowDebug(
 			manager->m_PunctualShadowDebugSetLayout,
-			manager->m_PunctualShadowDebugDescriptorSets);
+			manager->m_PunctualShadowDebugDescriptorSets,
+			VansCommandRecordingConfig::MaximumFramesInFlight);
+		if (manager->m_PunctualShadowDebugDescriptorSets.size() !=
+			VansCommandRecordingConfig::MaximumFramesInFlight)
+			throw std::runtime_error("Punctual shadow debug frame descriptor allocation failed");
 	}
 
 	void VansVKDevice::PrepareSSRRenderData()
@@ -924,43 +906,42 @@ namespace VansGraphics
 
 		VansTexture* ssrHitInfo = new VansTexture();
 		ssrHitInfo->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_HIT_INFO, ssrHitInfo);
 
 		VansTexture* ssrRayPdf = new VansTexture();
 		ssrRayPdf->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_RAY_PDF, ssrRayPdf);
 
 		VansTexture* ssrResult = new VansTexture();
 		ssrResult->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_RESULT, ssrResult);
 
 		VansTexture* ssrAaResultA = new VansTexture();
 		ssrAaResultA->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT_A, ssrAaResultA);
 
 		VansTexture* ssrAaResultB = new VansTexture();
 		ssrAaResultB->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT_B, ssrAaResultB);
 
 		VansTexture* ssrAaResult = new VansTexture();
 		ssrAaResult->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			m_MaintenanceGraphicsCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT, ssrAaResult);
 
-		// SSR compacts spatially coherent 8x8 tiles, not individual pixels.
-		// Keeping one workgroup per tile preserves Hi-Z cache locality and cuts
-		// the list allocation to roughly 1/64 of the full-resolution variant.
+		// Each compact 8x8 tile stores its linear index and two 32-bit active-ray
+		// masks. The trace shader skips classified-out lanes before GBuffer reads.
 		constexpr VkDeviceSize ssrTileSize = 8;
 		const VkDeviceSize tileGridWidth =
 			(VkDeviceSize(m_RenderWidth) + ssrTileSize - 1) / ssrTileSize;
@@ -968,9 +949,10 @@ namespace VansGraphics
 			(VkDeviceSize(m_RenderHeight) + ssrTileSize - 1) / ssrTileSize;
 		const VkDeviceSize tileCapacity = (std::max)(
 			VkDeviceSize(1), tileGridWidth * tileGridHeight);
+		constexpr VkDeviceSize ssrTileRecordWords = 3u;
 		const bool rayListReady = manager->m_SSRRayListBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
-			tileCapacity * sizeof(uint32_t),
+			tileCapacity * ssrTileRecordWords * sizeof(uint32_t),
 			VK_FORMAT_R32_UINT,
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -995,9 +977,12 @@ namespace VansGraphics
 
 		manager->m_SSRTemporalAAShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSRTemporalAA");
 
-		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_Trace(manager->m_SSRTraceSetLayout, manager->m_SSRTraceDescriptorSets);
-		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_Resolve(manager->m_SSRResolveSetLayout, manager->m_SSRResolveDescriptorSets);
-		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_TemporalAA(manager->m_SSRAASetLayout, manager->m_SSRAADescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_Trace(manager->m_SSRTraceSetLayout,
+			manager->m_SSRTraceDescriptorSets, VansCommandRecordingConfig::MaximumFramesInFlight);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_Resolve(manager->m_SSRResolveSetLayout,
+			manager->m_SSRResolveDescriptorSets, VansCommandRecordingConfig::MaximumFramesInFlight);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_TemporalAA(manager->m_SSRAASetLayout,
+			manager->m_SSRAADescriptorSets, VansCommandRecordingConfig::MaximumFramesInFlight);
 	}
 
 
@@ -1075,7 +1060,7 @@ namespace VansGraphics
 	{
 		VansIESProfileManager& iesMgr = *m_Scene->GetIESProfileManager();
 		iesMgr.CreateGPUResources(m_VansVKLogicDevice);
-		iesMgr.UploadAllProfiles(this, m_VansVKCommandBuffer);
+		iesMgr.UploadAllProfiles(this, m_MaintenanceGraphicsCommandBuffer);
 	}
 
 	// ============================================================
@@ -1088,49 +1073,49 @@ namespace VansGraphics
 
 		VansTexture* exposureLum = new VansTexture();
 		exposureLum->InitTextureWithoutData(
-			m_VansVKCommandBuffer, 64, 64, 1,
+			m_MaintenanceGraphicsCommandBuffer, 64, 64, 1,
 			VK_FORMAT_R16_SFLOAT, false, false, true,
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_LUMINANCE, exposureLum);
 
 		VansTexture* exposureCurrent = new VansTexture();
 		exposureCurrent->InitTextureWithoutData(
-			m_VansVKCommandBuffer, 1, 1, 1,
+			m_MaintenanceGraphicsCommandBuffer, 1, 1, 1,
 			VK_FORMAT_R16_SFLOAT, false, false, true,
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT, exposureCurrent);
 		VansTexture* upscalerExposure = new VansTexture();
 		upscalerExposure->InitTextureWithoutData(
-			m_VansVKCommandBuffer, 1, 1, 1,
+			m_MaintenanceGraphicsCommandBuffer, 1, 1, 1,
 			VK_FORMAT_R32_SFLOAT, false, false, true,
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(
 			VansMaterialManager::RT_UPSCALER_EXPOSURE,
 			upscalerExposure);
-		if (m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		if (m_MaintenanceGraphicsCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
 			VkClearColorValue initialExposure{};
-			m_VansVKCommandBuffer.ClearColorImage(
+			m_MaintenanceGraphicsCommandBuffer.ClearColorImage(
 				exposureCurrent->GetImage(), VK_IMAGE_LAYOUT_GENERAL, initialExposure);
 			VkClearColorValue initialUpscalerExposure{};
 			initialUpscalerExposure.float32[0] = 1.0f;
-			m_VansVKCommandBuffer.ClearColorImage(
+			m_MaintenanceGraphicsCommandBuffer.ClearColorImage(
 				upscalerExposure->GetImage(), VK_IMAGE_LAYOUT_GENERAL, initialUpscalerExposure);
 			VkMemoryBarrier clearToExposure{};
 			clearToExposure.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 			clearToExposure.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 			clearToExposure.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-			m_VansVKCommandBuffer.PipelineBarrier(
+			m_MaintenanceGraphicsCommandBuffer.PipelineBarrier(
 				VK_PIPELINE_STAGE_TRANSFER_BIT,
 				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 				{ clearToExposure });
-			const bool initialized = m_VansVKCommandBuffer.EndCommandBufferRecord()
+			const bool initialized = m_MaintenanceGraphicsCommandBuffer.EndCommandBufferRecord()
 				&& VansVKCommandBuffer::SubmitCommands(
 					m_VansVKGraphicsQueue,
 					m_VansVKLogicDevice,
-					{ m_VansVKCommandBuffer.GetVKCommandBuffer() },
-					{}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence)
-				&& m_VansVKCommandBuffer.ResetCommandBuffer(false);
+					{ m_MaintenanceGraphicsCommandBuffer.GetVKCommandBuffer() },
+					{}, {}, m_MaintenanceGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence)
+				&& m_MaintenanceGraphicsCommandBuffer.ResetCommandBuffer(false);
 			if (!initialized)
 				VANS_LOG_ERROR("[PostProcess] Failed to initialize auto-exposure state texture.");
 		}
@@ -1149,7 +1134,7 @@ namespace VansGraphics
 		{
 			VansTexture* texture = new VansTexture();
 			texture->InitTextureWithoutData(
-				m_VansVKCommandBuffer, width, height, 1,
+				m_MaintenanceGraphicsCommandBuffer, width, height, 1,
 				VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true,
 				VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 			manager->RegisterRuntimeRenderTexture(name, texture);
@@ -1204,9 +1189,11 @@ namespace VansGraphics
 
 		// ---- Descriptor Set Layouts + Allocation ----
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_ExposureLuminance(
-			manager->m_ExposureLuminanceSetLayout, manager->m_ExposureLuminanceDescriptorSets);
+			manager->m_ExposureLuminanceSetLayout, manager->m_ExposureLuminanceDescriptorSets,
+			VansCommandRecordingConfig::MaximumFramesInFlight);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_ExposureAdapt(
-			manager->m_ExposureAdaptSetLayout, manager->m_ExposureAdaptDescriptorSets);
+			manager->m_ExposureAdaptSetLayout, manager->m_ExposureAdaptDescriptorSets,
+			VansCommandRecordingConfig::MaximumFramesInFlight);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomPrefilter(
 			manager->m_BloomPrefilterSetLayout, manager->m_BloomPrefilterDescriptorSets);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomDownsample(
@@ -1216,7 +1203,10 @@ namespace VansGraphics
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomShape(
 			manager->m_BloomShapeSetLayout, manager->m_BloomShapeDescriptorSets);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_DepthOfField(
-			manager->m_DepthOfFieldSetLayout, manager->m_DepthOfFieldDescriptorSets);
+			manager->m_DepthOfFieldSetLayout, manager->m_DepthOfFieldDescriptorSets,
+			VansCommandRecordingConfig::MaximumFramesInFlight);
+		m_PPDepthOfFieldDescSetGeneration.fill(0u);
+		m_DepthOfFieldGBufferViews.fill(VK_NULL_HANDLE);
 
 		// ---- UBO 创建与初始化 ----
 		VansPostProcessProfile& defaultProfile = manager->m_PostProcessProfile;
@@ -1229,18 +1219,23 @@ namespace VansGraphics
 		VansBloomShapeParamsGPU bloomShapeParams = defaultProfile.ToBloomShapeParams();
 		VansDepthOfFieldParamsGPU dofParams = defaultProfile.ToDepthOfFieldParams(m_RenderWidth, m_RenderHeight);
 
-		manager->m_PostProcessParamsCBBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice, sizeof(VansPostProcessParamsGPU), VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		manager->m_PostProcessParamsCBBuffer.SetBufferData(&ppParams, 0, sizeof(VansPostProcessParamsGPU));
+		for (VansVKBuffer& buffer : manager->m_PostProcessParamsCBBuffer)
+		{
+			buffer.CreatVulkanBuffer(
+				m_VansVKLogicDevice, sizeof(VansPostProcessParamsGPU), VK_FORMAT_R32_SFLOAT,
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+			buffer.SetBufferData(&ppParams, 0, sizeof(VansPostProcessParamsGPU));
+		}
 
-		manager->m_ExposureAdaptParamsCBBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice, sizeof(VansExposureAdaptParamsGPU), VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		manager->m_ExposureAdaptParamsCBBuffer.SetBufferData(
-			&exposureParams, 0, sizeof(VansExposureAdaptParamsGPU));
+		for (VansVKBuffer& buffer : manager->m_ExposureAdaptParamsCBBuffer)
+		{
+			buffer.CreatVulkanBuffer(
+				m_VansVKLogicDevice, sizeof(VansExposureAdaptParamsGPU), VK_FORMAT_R32_SFLOAT,
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+			buffer.SetBufferData(&exposureParams, 0, sizeof(VansExposureAdaptParamsGPU));
+		}
 
 		manager->m_BloomParamsCBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(VansBloomParamsGPU), VK_FORMAT_R32_SFLOAT,
@@ -1254,24 +1249,27 @@ namespace VansGraphics
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 		manager->m_BloomShapeParamsCBBuffer.SetBufferData(&bloomShapeParams, 0, sizeof(VansBloomShapeParamsGPU));
 
-		manager->m_DepthOfFieldParamsCBBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice, sizeof(VansDepthOfFieldParamsGPU), VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		manager->m_DepthOfFieldParamsCBBuffer.SetBufferData(&dofParams, 0, sizeof(VansDepthOfFieldParamsGPU));
+		for (VansVKBuffer& buffer : manager->m_DepthOfFieldParamsCBBuffer)
+		{
+			buffer.CreatVulkanBuffer(
+				m_VansVKLogicDevice, sizeof(VansDepthOfFieldParamsGPU), VK_FORMAT_R32_SFLOAT,
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+			buffer.SetBufferData(&dofParams, 0, sizeof(VansDepthOfFieldParamsGPU));
+		}
 	}
 
 	void VansVKDevice::PrepareRayTracingData()
 	{
-		if (!m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		if (!m_MaintenanceGraphicsCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
 			VANS_LOG_ERROR("[VansVKDevice] Failed to begin ray tracing AS build command buffer.");
 			return;
 		}
-		m_Scene->BuildRayTracingAS(this, &m_VansVKCommandBuffer);
-		if (!m_VansVKCommandBuffer.EndCommandBufferRecord()
-			|| !VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence)
-			|| !m_VansVKCommandBuffer.ResetCommandBuffer(false))
+		m_Scene->BuildRayTracingAS(this, &m_MaintenanceGraphicsCommandBuffer);
+		if (!m_MaintenanceGraphicsCommandBuffer.EndCommandBufferRecord()
+			|| !VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice, { m_MaintenanceGraphicsCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_MaintenanceGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence)
+			|| !m_MaintenanceGraphicsCommandBuffer.ResetCommandBuffer(false))
 		{
 			VANS_LOG_ERROR("[VansVKDevice] Ray tracing AS build command submit failed.");
 			m_Scene->ReleaseASTempBuffer(this);
@@ -1279,7 +1277,7 @@ namespace VansGraphics
 		}
 		m_Scene->ReleaseASTempBuffer(this);
 		const VansGISettings& sceneGISettings = m_Scene->GetGISettings();
-		if (!rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene, sceneGISettings))
+		if (!rayTracingContext.CreateRayTracingResource(this, &m_MaintenanceGraphicsCommandBuffer, m_Scene, sceneGISettings))
 			throw std::runtime_error(rayTracingContext.GetResourceError());
 		PrepareAmbientSkyCacheRenderData();
 		SetupHairLightingDescriptors(VansRenderPassManager::GetInstance());
@@ -1320,7 +1318,7 @@ namespace VansGraphics
 		auto createCache = [&](const char* name)
 		{
 			VansTexture* texture = new VansTexture();
-			if (!texture->InitTextureWithoutData(m_VansVKCommandBuffer, gridX, gridY, gridZ,
+			if (!texture->InitTextureWithoutData(m_MaintenanceGraphicsCommandBuffer, gridX, gridY, gridZ,
 				VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true,
 				VK_SAMPLER_ADDRESS_MODE_REPEAT))
 			{
@@ -1336,43 +1334,50 @@ namespace VansGraphics
 		if (cacheX == nullptr || cacheY == nullptr || cacheZ == nullptr)
 			return;
 
-		if (m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		if (m_MaintenanceGraphicsCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
 			const VkClearColorValue unknown{};
-			m_VansVKCommandBuffer.ClearColorImage(cacheX->GetImage(), VK_IMAGE_LAYOUT_GENERAL, unknown);
-			m_VansVKCommandBuffer.ClearColorImage(cacheY->GetImage(), VK_IMAGE_LAYOUT_GENERAL, unknown);
-			m_VansVKCommandBuffer.ClearColorImage(cacheZ->GetImage(), VK_IMAGE_LAYOUT_GENERAL, unknown);
-			m_VansVKCommandBuffer.EndCommandBufferRecord();
+			m_MaintenanceGraphicsCommandBuffer.ClearColorImage(cacheX->GetImage(), VK_IMAGE_LAYOUT_GENERAL, unknown);
+			m_MaintenanceGraphicsCommandBuffer.ClearColorImage(cacheY->GetImage(), VK_IMAGE_LAYOUT_GENERAL, unknown);
+			m_MaintenanceGraphicsCommandBuffer.ClearColorImage(cacheZ->GetImage(), VK_IMAGE_LAYOUT_GENERAL, unknown);
+			m_MaintenanceGraphicsCommandBuffer.EndCommandBufferRecord();
 			VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice,
-				{ m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-			m_VansVKCommandBuffer.ResetCommandBuffer(false);
+				{ m_MaintenanceGraphicsCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_MaintenanceGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
+			m_MaintenanceGraphicsCommandBuffer.ResetCommandBuffer(false);
 		}
 
 		AmbientSkyCacheInfoGPU info{};
 		info.originAndSpacing = glm::vec4(manager->m_AmbientSkyCacheOrigin, spacing);
 		info.gridAndQuery = glm::uvec4(gridX, gridY, gridZ, 0u);
 		info.ringOffset = glm::ivec4(manager->m_AmbientSkyCacheRingOffset, 0);
-		manager->m_AmbientSkyCacheInfoCBBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice, sizeof(info), VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		manager->m_AmbientSkyCacheInfoCBBuffer.SetBufferData(&info, 0, sizeof(info));
+		for (VansVKBuffer& buffer : manager->m_AmbientSkyCacheInfoCBBuffer)
+		{
+			buffer.CreatVulkanBuffer(
+				m_VansVKLogicDevice, sizeof(info), VK_FORMAT_R32_SFLOAT,
+				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+			buffer.SetBufferData(&info, 0, sizeof(info));
+		}
 
 		if (!cacheEnabled)
 			return;
 
 		manager->m_AmbientSkyCacheShader = VansGraphics::VansShaderManager::Get().FindComputeShader("AmbientSkyTransmittance");
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_AmbientSkyCache(
-			manager->m_AmbientSkyCacheSetLayout, manager->m_AmbientSkyCacheDescriptorSets, 1);
+			manager->m_AmbientSkyCacheSetLayout, manager->m_AmbientSkyCacheDescriptorSets,
+			VansCommandRecordingConfig::MaximumFramesInFlight);
 		AmbientSkyCacheParamsGPU params{};
 		params.originAndSpacing = glm::vec4(manager->m_AmbientSkyCacheOrigin, spacing);
 		params.ringOffset = glm::ivec4(manager->m_AmbientSkyCacheRingOffset, 0);
 		const uint32_t directionBudget = std::clamp(settings.queriesPerFrame, 1u, 256u);
 		const uint32_t cellQueries = std::max(1u, (directionBudget + 5u) / 6u);
 		params.gridAndQuery = glm::uvec4(gridX, gridY, gridZ, cellQueries);
-		manager->m_AmbientSkyCacheParamsCBBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice, sizeof(params), VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		manager->m_AmbientSkyCacheParamsCBBuffer.SetBufferData(&params, 0, sizeof(params));
+		for (VansVKBuffer& buffer : manager->m_AmbientSkyCacheParamsCBBuffer)
+		{
+			buffer.CreatVulkanBuffer(
+				m_VansVKLogicDevice, sizeof(params), VK_FORMAT_R32_SFLOAT,
+				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+			buffer.SetBufferData(&params, 0, sizeof(params));
+		}
 	}
 
 	void VansVKDevice::PrepareGlobalIllumiationData()
@@ -1396,13 +1401,13 @@ namespace VansGraphics
 		// Offsets/counts plus Point Top-2, Spot Top-1 and Rect Top-1
 		// atlasless screen-space fallback selections.
 		const uint32_t kHeaderStride = 10 * sizeof(uint32_t);
-		manager->m_TileLightHeaderBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice,
-			static_cast<uint32_t>(totalTiles * kHeaderStride),
-			VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-		);
+		for (auto& frame : manager->m_TileLightFrames)
+			frame.header.CreatVulkanBuffer(
+				m_VansVKLogicDevice,
+				static_cast<uint32_t>(totalTiles * kHeaderStride),
+				VK_FORMAT_R32_SFLOAT,
+				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		// --- TileLight Index SSBO: fixed-stride point + spot + rect index slots ---
 		// Point slot for tile T = T * 64; Spot slot = totalTiles*64 + T*64;
@@ -1411,13 +1416,13 @@ namespace VansGraphics
 		const uint32_t MAX_SP_PER_TILE   = 64; // matches TILE_LIGHT_MAX_SP_PER_TILE in shader
 		const uint32_t MAX_RECT_PER_TILE = 16; // matches TILE_LIGHT_MAX_RECT_PER_TILE in shader
 		const uint32_t indexBufSize      = totalTiles * (MAX_PT_PER_TILE + MAX_SP_PER_TILE + MAX_RECT_PER_TILE) * sizeof(uint32_t);
-		manager->m_TileLightIndexBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice,
-			indexBufSize,
-			VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-		);
+		for (auto& frame : manager->m_TileLightFrames)
+			frame.indices.CreatVulkanBuffer(
+				m_VansVKLogicDevice,
+				indexBufSize,
+				VK_FORMAT_R32_SFLOAT,
+				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		// --- TileLightBuildParams UBO (host-visible, written once) ---
 		struct TileLightBuildParams { uint32_t gridX; uint32_t gridY; uint32_t totalTiles; uint32_t _pad; };
@@ -1437,7 +1442,8 @@ namespace VansGraphics
 		// --- Descriptor set layout + allocation for Set 1 (write access) ---
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_TileLightBuild(
 			manager->m_TileLightBuildSetLayout,
-			manager->m_TileLightBuildDescriptorSets
+			manager->m_TileLightBuildDescriptorSets,
+			VansCommandRecordingConfig::MaximumFramesInFlight
 		);
 
 		// 初次加载时 global set 尚未创建，Scene preparation 会完成绑定；若资源

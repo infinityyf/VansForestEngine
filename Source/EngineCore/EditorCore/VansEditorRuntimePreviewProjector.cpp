@@ -1,6 +1,7 @@
 #include "VansEditorRuntimePreviewProjector.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../MaterialCore/VansClothMaterialParameters.h"
 #include "../SceneCore/VansSceneAuthoringEntityProjection.h"
 #include "../SceneCore/VansSceneRuntimeProjection.h"
 
@@ -253,6 +254,8 @@ EditorAPI::RuntimeEntityPreviewChange TranslateRuntimeEntityPreview(
 		if (component.localVolumetricFogComponent)
 			change.localVolumetricFogEdits.push_back({
 				projection.entityGuid, component.guid, *component.localVolumetricFogComponent });
+		if(component.navigationData) change.navigationEdits.push_back({
+			projection.entityGuid,component.guid,component.type,*component.navigationData});
 	}
 	if (projection.transform)
 	{
@@ -328,6 +331,42 @@ EditorAPI::RuntimeMaterialPreviewChange BuildRuntimeMaterialPreviewChange(
     EditorAPI::RuntimeMaterialPreviewChange change;
     change.assetPath = assetPath.string();
     const std::vector<std::string> tokens = SplitSerializedPointer(changedPointer);
+    if (ReadSerializedStringField(assetRoot, "materialType") == "cloth")
+    {
+        const auto* sourceParameters = FindObjectField(assetRoot, "parameters");
+        VansClothMaterialParameters parsed;
+        std::string error;
+        if (!sourceParameters || !ReadClothMaterialParameters(*sourceParameters, parsed, error))
+            return change;
+        const auto parameters = WriteClothMaterialParameters(parsed);
+        const bool complete = tokens.empty() || (tokens.size() == 1 && tokens[0] == "asset");
+        const bool parameterEdit = tokens.size() >= 2 && tokens[0] == "asset" && tokens[1] == "parameters";
+        const bool textureEdit = tokens.size() >= 2 && tokens[0] == "asset" && tokens[1] == "textures";
+        if (complete || parameterEdit)
+        {
+            if (parameterEdit && tokens.size() >= 3)
+            {
+                if (const auto* value = FindObjectField(parameters, tokens[2]))
+                    AppendMaterialPreviewParameter(change, tokens[2], *value);
+            }
+            else
+                for (const auto& [name, value] : parameters.objectFields)
+                    AppendMaterialPreviewParameter(change, name, value);
+        }
+        if (complete || textureEdit)
+        {
+            const auto* textures = FindObjectField(assetRoot, "textures");
+            for (const char* slot : VansClothTextureSlots)
+            {
+                if (textureEdit && tokens.size() >= 3 && tokens[2] != slot) continue;
+                const auto* reference = textures ? FindObjectField(*textures, slot) : nullptr;
+                // History restores a source snapshot, where an absent slot
+                // means clear. It must not retain the last preview texture.
+                change.textures.push_back({slot, reference ? ReadAssetReferenceGuid(*reference) : std::string{}});
+            }
+        }
+        return change;
+    }
     if (tokens.size() >= 3 && tokens[0] == "asset")
     {
         if (tokens[1] == "parameters")

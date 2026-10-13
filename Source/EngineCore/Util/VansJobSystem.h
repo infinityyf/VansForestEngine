@@ -18,6 +18,8 @@ namespace Vans
 
         void Done();
         void Wait();
+        // 只轮询完成状态；主线程无需等待尚未完成的工作组。
+        bool IsComplete() const { return m_Remaining.load(std::memory_order_acquire)==0; }
         void SetError(const std::string& error);
         bool HasErrors() const;
         std::string GetError() const;
@@ -41,6 +43,7 @@ namespace Vans
         // Initialize the worker threads
         void Initialize(uint32_t threadCount = 0);
         void Shutdown();
+        bool IsRunning() const { return m_Running.load(std::memory_order_acquire); }
 
         // Add a job to run on a background worker thread
         void QueueJob(Job job);

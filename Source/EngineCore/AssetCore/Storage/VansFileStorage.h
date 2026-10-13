@@ -46,6 +46,8 @@ struct VansIOEvent
 class VansIOAudit
 {
 public:
+    // Explicit diagnostic capture; ordinary runtime I/O retains no audit history.
+    // Snapshot rejects an overflowed capture instead of silently losing evidence.
     static void Reset();
     static std::vector<VansIOEvent> Snapshot();
     static VansIOContext CurrentContext();

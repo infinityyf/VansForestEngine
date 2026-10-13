@@ -72,6 +72,8 @@ namespace VansGraphics
 			HashValue(hash, state.alphaToCoverage);
 			HashValue(hash, state.alphaToOne);
 			HashValue(hash, state.colorAttachmentCount);
+			HashValue(hash, state.colorAttachmentBlends.size());
+			for (const auto& blend : state.colorAttachmentBlends) HashValue(hash, HashFNV1a64(blend));
 			HashValue(hash, state.enableAlphaBlend);
 			HashValue(hash, state.enableDecalBlend);
 			HashValue(hash, state.enableAdditiveBlend);
@@ -103,6 +105,7 @@ namespace VansGraphics
 				lhs.depthBiasClamp == rhs.depthBiasClamp && lhs.depthBiasSlopeFactor == rhs.depthBiasSlopeFactor &&
 				lhs.lineWidth == rhs.lineWidth && lhs.alphaToCoverage == rhs.alphaToCoverage &&
 				lhs.alphaToOne == rhs.alphaToOne && lhs.colorAttachmentCount == rhs.colorAttachmentCount &&
+				lhs.colorAttachmentBlends == rhs.colorAttachmentBlends &&
 				lhs.enableAlphaBlend == rhs.enableAlphaBlend && lhs.enableDecalBlend == rhs.enableDecalBlend &&
 				lhs.enableAdditiveBlend == rhs.enableAdditiveBlend &&
 				lhs.additiveBlendAttachmentMask == rhs.additiveBlendAttachmentMask &&
@@ -141,6 +144,24 @@ namespace VansGraphics
 				<< "|" << name << "WriteMask=" << state.writeMask
 				<< "|" << name << "Reference=" << state.reference;
 		}
+	}
+
+	bool ValidateGraphicsAttachmentBlends(const VansGraphicsPipelineStateDesc& state, std::string& error)
+	{
+		if (state.colorAttachmentBlends.empty()) return true;
+		if (state.colorAttachmentCount <= 0 || state.colorAttachmentBlends.size() != static_cast<size_t>(state.colorAttachmentCount) ||
+			state.enableAlphaBlend || state.enableDecalBlend || state.enableAdditiveBlend || state.enablePremultipliedAlphaBlend)
+		{
+			error = "Per-attachment blending requires an explicit matching attachment count and no global blend mode";
+			return false;
+		}
+		for (const auto& blend : state.colorAttachmentBlends)
+			if (blend != "disabled" && blend != "alpha" && blend != "max" && blend != "min")
+			{
+				error = "Unknown color attachment blend: " + blend;
+				return false;
+			}
+		return true;
 	}
 
 	std::vector<VansShaderStageFileDesc> VansPipelineDescriptorBuilder::BuildStageFiles(
@@ -245,6 +266,7 @@ namespace VansGraphics
 			<< "|premultipliedAlphaBlend=" << programDesc.graphicsState.enablePremultipliedAlphaBlend;
 
 		AppendStencilState(stream, "stencilFront", programDesc.graphicsState.stencilFront);
+		for (const auto& blend : programDesc.graphicsState.colorAttachmentBlends) stream << "|attachmentBlend=" << blend;
 		AppendStencilState(stream, "stencilBack", programDesc.graphicsState.stencilBack);
 
 		for (const auto& stage : programDesc.stages)

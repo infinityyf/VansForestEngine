@@ -7,15 +7,30 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <vector>
 
 namespace VansGraphics
 {
 	class VansGraphicsShader;
+	class VansMesh;
 	class VansRenderNode;
 	class VansVKCommandBuffer;
 	class VansVKDrawInstanceArena;
 	struct GlobalStateData;
+
+	struct VansShadowDrawCandidate
+	{
+		VansRenderNode* node = nullptr;
+		std::uint64_t stableOrder = 0;
+	};
+	using VansPunctualShadowDrawPlan =
+		std::vector<std::vector<VansShadowDrawCandidate>>;
+	struct VansCascadeShadowDrawPlan
+	{
+		std::array<std::vector<VansShadowDrawCandidate>, 4> cascades;
+		std::vector<VansShadowDrawCandidate> withoutCascade;
+	};
 
 	// CPU/GPU 共用的逐实例提交记录。字段与 Common/VansDrawSubmission.glsl 保持一致。
 	struct alignas(16) VansDrawInstanceDataGPU
@@ -95,6 +110,9 @@ namespace VansGraphics
 	class VansDrawSubmission
 	{
 	public:
+		static bool BuildGeometryPacket(VkDevice& device, VansMesh& mesh, VansGraphicsShader& shader,
+			const std::vector<VkDescriptorSetLayout>& layouts, const std::vector<VkDescriptorSet>& sets,
+			GlobalStateData globalState, VansDrawPacket& packet);
 		static bool BuildPacket(
 			VkDevice& device,
 			VansRenderNode& node,

@@ -218,6 +218,24 @@ namespace VansGraphics
 			RegisterSceneSubMesh(subMesh);
 	}
 
+    void VansSceneAssetRegistry::RemoveTexture(VansAsset* asset)
+    {
+        m_Textures.erase(std::remove(m_Textures.begin(), m_Textures.end(), asset), m_Textures.end());
+        for (auto it = m_TextureAssetsByGuid.begin(); it != m_TextureAssetsByGuid.end();)
+            if (it->second == asset) it = m_TextureAssetsByGuid.erase(it); else ++it;
+        m_TextureAssetLookup.clear();
+        for (auto* texture : m_Textures) RegisterTexture(texture);
+    }
+
+    void VansSceneAssetRegistry::RemoveMesh(VansAsset* asset)
+    {
+        m_Meshes.erase(std::remove(m_Meshes.begin(),m_Meshes.end(),asset),m_Meshes.end());
+        for(auto it=m_ProjectMeshAliases.begin();it!=m_ProjectMeshAliases.end();)
+            if(it->second==asset)it=m_ProjectMeshAliases.erase(it);else ++it;
+        m_MeshAssetLookup.clear();
+        for(auto* mesh:m_Meshes)RegisterMesh(mesh);
+    }
+
 	void VansSceneAssetRegistry::RemoveMaterial(VansAsset* asset)
 	{
 		const auto found = std::find(m_Materials.rbegin(), m_Materials.rend(), asset);

@@ -28,6 +28,17 @@ struct VansGIReceiverVisibility
     VansVKBuffer anchors;
     VansVKBuffer world;
     VansVKBuffer worldClaims;
+    template <typename Visitor>
+    void ForEachMutableBuffer(Visitor&& visit) const
+    {
+        visit("GIReceiverVisibilityBias", bias.GetNativeBuffer());
+        visit("GIReceiverVisibilityCurrent", current.GetNativeBuffer());
+        visit("GIReceiverVisibilityHistory", history.GetNativeBuffer());
+        visit("GIReceiverVisibilityWork", work.GetNativeBuffer());
+        visit("GIReceiverVisibilityAnchors", anchors.GetNativeBuffer());
+        visit("GIReceiverVisibilityWorld", world.GetNativeBuffer());
+        visit("GIReceiverVisibilityWorldClaims", worldClaims.GetNativeBuffer());
+    }
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> sets;
     VansComputeShader* prepareShader = nullptr;

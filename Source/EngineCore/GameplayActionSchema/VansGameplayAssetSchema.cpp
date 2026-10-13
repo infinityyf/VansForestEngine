@@ -300,8 +300,8 @@ void CollectConventionalReferences(const VansSerializedValue& value, std::vector
 	const auto isGuidReferenceField = [](std::string_view name)
 	{
 		return name == "guid" || name == "assetGuid" || name == "rig" || name == "shake" ||
-			name == "clip" || name == "sound" || name == "effect" ||
-			name == "damageProfile" || name == "projectile" || name == "indicator" || name == "detonationAction";
+			name == "clip" || name == "sound" || name == "effect" || name == "extinguishEffect" ||
+			name == "damageProfile" || name == "projectile" || name == "indicator" || name == "detonationAction" || name == "timeoutAction";
 	};
 	if (value.kind == VansSerializedValue::Kind::Array)
 	{

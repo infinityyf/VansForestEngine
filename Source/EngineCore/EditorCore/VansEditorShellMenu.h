@@ -72,7 +72,7 @@ namespace VansGraphics
 		using CommandHandler = std::function<void(const VansEditorShellCommand&)>;
 		using EmbeddedDraw = std::function<void()>;
 
-		static const std::array<VansEditorAssetMenuEntry, 18>& AssetCreationEntries();
+		static const std::array<VansEditorAssetMenuEntry, 19>& AssetCreationEntries();
 
 		static void Draw(
 			const VansEditorShellMenuState& state,

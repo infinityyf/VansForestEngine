@@ -227,6 +227,13 @@ namespace VansEngine
         PxVec3 pivotLocal = PxVec3(0.0f);
     };
 
+    struct VansVehicleWheelContact
+    {
+        PxVec3 position{0.0f}, normal{0.0f, 1.0f, 0.0f}, forward{0.0f, 0.0f, 1.0f};
+        float width = 0.0f, load = 0.0f, normalizedLoad = 0.0f;
+        float longitudinalSlip = 0.0f, longitudinalSpeed = 0.0f;
+    };
+
     class VansPhysicsVehicle 
         : public PxVehiclePhysXActorBeginComponent
         , public PxVehiclePhysXActorEndComponent
@@ -285,6 +292,9 @@ namespace VansEngine
 
         // Access
         PxTransform GetTransform() const;
+        // 主线程读取同一物理步的接地平面、轮姿态和轮载荷，避免脚本读取半更新状态。
+        bool GetWheelContact(uint32_t wheelIndex, VansVehicleWheelContact& contact) const;
+        float GetForwardSpeed() const;
         PxRigidActor* GetActor() const { return m_State.physxActor.rigidBody; }
         bool HasWheelRoadHit(uint32_t wheelIndex) const
         {

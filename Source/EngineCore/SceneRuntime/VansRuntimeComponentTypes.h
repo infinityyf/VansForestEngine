@@ -4,6 +4,7 @@
 #include "VansRuntimeHandle.h"
 
 #include "../AICore/VansAIRuntimeComponents.h"
+#include "../NavigationCore/VansNavigationRuntimeComponents.h"
 #include "../AssetCore/Serialization/VansSerializedObjectReference.h"
 #include "../AudioCore/VansAudioDirectionality.h"
 #include "../AudioCore/VansAudioOcclusion.h"
@@ -57,9 +58,11 @@ struct VansRuntimeRenderComponent
 	std::vector<VansGraphics::VansRenderNode*> renderNodes;
 };
 
+enum class VansRuntimePhysicsSourceKind : std::uint8_t { Scene, Pcg };
 struct VansRuntimePhysicsComponent
 {
 	VansEngine::VansPhysicsNode* physicsNode = nullptr;
+	VansRuntimePhysicsSourceKind sourceKind = VansRuntimePhysicsSourceKind::Scene;
 };
 
 struct VansRuntimeClothComponent

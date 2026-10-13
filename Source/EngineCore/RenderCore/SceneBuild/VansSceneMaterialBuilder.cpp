@@ -549,53 +549,32 @@ bool VansSceneMaterialBuilder::PopulateMaterial(
     case VansMaterialType::VAN_CLOTH:
     {
         auto* cloth = static_cast<VansClothMaterial*>(material);
+        for (const char* slot : Vans::VansClothTextureSlots)
+        {
+            const std::string field = std::string(slot) + "_texture";
+            if (Vans::FindObjectField(sceneMaterial.root, field) &&
+                !ResolveMaterialTexture(scene, sceneMaterial, field.c_str()))
+            {
+                error = "Cloth texture slot '" + std::string(slot) + "' references an unavailable texture";
+                return false;
+            }
+        }
         cloth->m_BaseColorTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
         cloth->m_NormalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
         cloth->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
         cloth->m_AoTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "ao_texture", "defaultAo");
-        cloth->m_SheenRoughness = std::clamp(ReadMaterialFloatField(sceneMaterial, "sheenRoughness", 0.5f), 0.045f, 1.0f);
-        glm::vec3 clothColor = ReadMaterialVec3Field(sceneMaterial, "color", glm::vec3(1.0f));
-        clothColor = ReadMaterialVec3Field(sceneMaterial, "basecolor", clothColor);
-        clothColor = ReadMaterialVec3Field(sceneMaterial, "baseColor", clothColor);
-        cloth->m_BasePBRParam.m_albedo = ReadMaterialVec3Field(sceneMaterial, "albedo", clothColor);
-        cloth->m_BasePBRParam.m_roughness = cloth->m_SheenRoughness;
-        cloth->m_SheenStrength = std::clamp(ReadMaterialFloatField(sceneMaterial, "sheenStrength", 0.5f), 0.0f, 1.0f);
-        cloth->m_Translucency = std::clamp(ReadMaterialFloatField(sceneMaterial, "translucency", 0.35f), 0.0f, 1.0f);
-        cloth->m_Anisotropy = std::clamp(ReadMaterialFloatField(sceneMaterial, "anisotropy", 0.0f), -0.95f, 0.95f);
-        cloth->m_Thickness = std::clamp(ReadMaterialFloatField(sceneMaterial, "thickness", 1.0f), 0.0f, 1.0f);
-        cloth->m_TransmissionColor = glm::max(
-            ReadMaterialVec3Field(sceneMaterial, "transmissionColor", glm::vec3(1.0f)), glm::vec3(0.0f));
-
-        if (HasMaterialField(sceneMaterial, "sheenColor"))
+        const auto* parameters = Vans::FindObjectField(sceneMaterial.root, "parameters");
+        if (!parameters || !Vans::ReadClothMaterialParameters(*parameters, cloth->m_Params, error))
         {
-            cloth->m_SheenColor = glm::max(
-                ReadMaterialVec3Field(sceneMaterial, "sheenColor", glm::vec3(1.0f)), glm::vec3(0.0f));
-            cloth->m_ClothFlags &= ~VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT;
+            if (!parameters) error = "Cloth runtime configuration has no parameter object";
+            return false;
         }
-        else
-        {
-            cloth->m_SheenColor = glm::vec3(1.0f);
-            cloth->m_ClothFlags |= VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT;
-        }
-
-        const std::string clothModel = ReadMaterialStringField(sceneMaterial, "clothModel", "fuzz");
-        if (clothModel == "silk" || clothModel == "satin")
-            cloth->m_ClothModel = VansClothModel::Silk;
-        else if (clothModel == "thin")
-            cloth->m_ClothModel = VansClothModel::Thin;
-        else
-        {
-            cloth->m_ClothModel = VansClothModel::Fuzz;
-            if (clothModel != "fuzz" && clothModel != "cotton" && clothModel != "wool" && clothModel != "velvet")
-            {
-                VANS_LOG_WARN("[LoadMaterials] Cloth material '" << material->m_AssetName
-                    << "': unknown clothModel '" << clothModel << "', falling back to fuzz.");
-            }
-        }
-
-        cloth->m_BasePBRParam.m_metallic = cloth->m_Translucency;
-        cloth->m_BasePBRParam.m_ao = ReadMaterialFloatField(sceneMaterial, "ao", 1.0f);
-        cloth->m_BasePBRParam.padding = cloth->m_SheenStrength;
+        cloth->m_SheenMaskTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "sheenMask_texture", "defaultAo");
+        cloth->m_FiberDirectionTexture = ResolveMaterialTexture(scene, sceneMaterial, "fiberDirection_texture");
+        cloth->m_OpacityTexture = ResolveMaterialTexture(scene, sceneMaterial, "opacity_texture");
+        if (cloth->m_Params.alphaMode == Vans::VansClothAlphaMode::Mask &&
+            !cloth->m_OpacityTexture)
+        { error = "Cloth opacity texture could not be resolved"; return false; }
         break;
     }
     case VansMaterialType::VAN_SKIN:

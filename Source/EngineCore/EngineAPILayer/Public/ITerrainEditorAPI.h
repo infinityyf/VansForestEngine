@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EngineDTOs.h"
+#include "../../TerrainCore/VansTerrainInteraction.h"
 
 namespace Vans::EditorAPI
 {
@@ -9,6 +10,8 @@ namespace Vans::EditorAPI
 	public:
 		virtual ~ITerrainEditorAPI() = default;
 		virtual TerrainSettingsSnapshot GetTerrainSettings() const = 0;
+		virtual VansTerrainInteraction GetTerrainInteraction() const = 0;
+		virtual TerrainEditorOperationResult ApplyTerrainInteraction(const VansTerrainInteraction& input) = 0;
 		virtual TerrainEditorOperationResult ApplyTerrainSettings(
 			const TerrainSettingsSnapshot& settings) = 0;
 		virtual TerrainEditorSnapshot GetTerrainEditorSnapshot() const = 0;

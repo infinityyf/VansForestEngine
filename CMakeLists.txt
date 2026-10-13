@@ -30,6 +30,8 @@ target_link_libraries(ForestRuntimeCore
     PUBLIC
         ForestThirdParty
         ForestExternalNoesisVk
+        "$<$<CONFIG:Debug>:${FOREST_EXTERNAL_DIR}/Graphics/Vulkan/1.4.321.1/Lib/spirv-cross-cored.lib>"
+        "$<$<NOT:$<CONFIG:Debug>>:${FOREST_EXTERNAL_DIR}/Graphics/Vulkan/1.4.321.1/Lib/spirv-cross-core.lib>"
 )
 
 add_library(ForestPackagingCore STATIC

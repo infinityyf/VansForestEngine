@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <string>
 #include <vector>
+#include <array>
 
 namespace Vans::EditorAPI { class IGAFEditorAPI; }
 
@@ -20,6 +21,15 @@ namespace VansGraphics
 		void SyncTemplateBuffer();
 		void SelectTemplate(std::size_t index);
 		void DrawGAFSettings(Vans::EditorAPI::IGAFEditorAPI& editorAPI);
+		void DrawNavigationSettings(Vans::EditorAPI::INavigationEditorAPI& editorAPI);
+		std::string m_NavigationProjectRoot;
+		Vans::VansSerializedValue m_NavigationOriginal, m_NavigationDraft;
+		Vans::EditorAPI::NavigationComponentValidation m_NavigationValidation;
+		std::string m_NavigationApplyMessage;
+		std::string m_NavigationPreviewMap,m_NavigationPreviewMessage;
+        std::array<char,512> m_NavigationBakeOutput{};
+        std::uint64_t m_NavigationBakePreviewId=0;
+		bool m_NavigationInitialized=false;
 
 		std::string m_GAFProjectRoot;
 		Vans::EditorAPI::GAFProjectConfigurationSnapshot m_GAFConfiguration;
@@ -31,5 +41,11 @@ namespace VansGraphics
 		Vans::EditorAPI::UpscalerSettingsSnapshot m_UpscalerEdit;
 		std::string m_UpscalerApplyMessage;
 		bool m_UpscalerApplySucceeded = false;
+		std::string m_CommandRecordingApplyMessage;
+		bool m_CommandRecordingApplySucceeded = false;
+        std::string m_ProjectPassProjectRoot;
+        std::vector<std::string> m_ProjectPassGuids;
+        std::string m_ProjectPassApplyMessage;
+        bool m_ProjectPassEditInitialized=false,m_ProjectPassApplySucceeded=false;
 	};
 }

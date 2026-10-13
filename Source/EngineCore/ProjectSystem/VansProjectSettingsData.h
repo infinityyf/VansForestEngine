@@ -12,6 +12,7 @@ namespace Vans
 		VansProjectUpscalerSettings upscalerSettings;
 		VansProjectCommandRecordingSettings commandRecordingSettings;
 		VansProjectRenderOutputSettings renderOutputSettings;
+		std::vector<VansAssetGuid> projectRenderPasses;
 		VansProjectAtmosphereQualitySettings atmosphereQualitySettings;
 		VansProjectNearMediaQualitySettings nearMediaQualitySettings;
 		VansProjectCloudShadowQualitySettings cloudShadowQualitySettings;

@@ -38,6 +38,16 @@ bool VansRuntimeComponentTypeMatches(
 	case VansRuntimeComponentType_Transform: return valueType == typeid(VansRuntimeTransformComponent);
 	case VansRuntimeComponentType_Timeline: return valueType == typeid(VansRuntimeTimelineComponent);
 	case VansRuntimeComponentType_ActionHost: return valueType == typeid(VansRuntimeActionHostComponent);
+	case VansRuntimeComponentType_NavigationSurface:
+		return valueType == typeid(VansRuntimeNavigationSurfaceComponent);
+	case VansRuntimeComponentType_NavigationSource:
+		return valueType == typeid(VansRuntimeNavigationSourceComponent);
+	case VansRuntimeComponentType_NavigationModifier:
+		return valueType == typeid(VansRuntimeNavigationModifierComponent);
+    case VansRuntimeComponentType_NavigationObstacle:
+        return valueType == typeid(VansRuntimeNavigationObstacleComponent);
+    case VansRuntimeComponentType_NavigationLink:
+        return valueType == typeid(VansRuntimeNavigationLinkComponent);
 	case VansRuntimeComponentType_NavigationAgent:
 		return valueType == typeid(VansRuntimeNavigationAgentComponent);
 	case VansRuntimeComponentType_AIAgent: return valueType == typeid(VansRuntimeAIAgentComponent);

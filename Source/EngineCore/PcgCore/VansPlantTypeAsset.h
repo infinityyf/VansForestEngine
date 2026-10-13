@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,14 @@ struct VansPlantPart
 	VansAssetGuid material;
 };
 
+// Explicit static collision geometry in the PCG point's local coordinates.
+// Render calibration and LODs do not change this independently authored prototype.
+struct VansPlantCollisionPrototype
+{
+	VansAssetGuid mesh;
+	std::string layer;
+};
+
 struct VansPlantVariant
 {
 	std::string id;
@@ -39,6 +48,7 @@ struct VansPlantVariant
 	std::vector<VansPlantPart> parts;
 	VansModelLodSettings lodSettings;
 	VansModelLodAsset lod;
+	std::optional<VansPlantCollisionPrototype> collision;
 };
 
 struct VansPlantTreeRuntimeBounds
@@ -125,7 +135,7 @@ inline const std::array<VansPcgConfigurationFieldDescriptor<VansPlantRenderSetti
 		0, 0, 3, VansPcgConfigurationFieldPersistence::TreeOnly }
 };
 
-// 植物外观是独立用户资产，不包含场景范围、分布点、Mask 或内置植物配方。
+// 植物外观及显式碰撞原型是独立资产，不包含场景范围、分布点或 Mask。
 struct VansPlantTypeAsset
 {
 	std::string name;

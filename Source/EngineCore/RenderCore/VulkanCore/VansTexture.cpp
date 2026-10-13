@@ -553,6 +553,7 @@ namespace VansGraphics
 		switch (texture_precision)
 		{
 		case HIGH_PRES_32:
+		case HDR_PRES_16:
 			bytes_per_channel = 4;
 			return stbi_loadf(texture_path.c_str(), &width, &height, &num_components, import_channel);
 		case MID_PRES_16:
@@ -986,6 +987,25 @@ namespace VansGraphics
 
 		m_TextureWidth = width;
 		m_TextureHeight = height;
+
+		// Decode/downsample HDR as floats, then encode the selected GPU format.
+		// HDR_PRES_16 must not pass through stb's clamped RGBA8 loader or average
+		// half bit patterns as uint16 values during resident-mip downsampling.
+		std::vector<std::uint16_t> halfPixels;
+		if (loadDesc.precision == HDR_PRES_16)
+		{
+			if (bytes_per_channel != 4) { stbi_image_free(pixel_data); return; }
+			const auto count=static_cast<size_t>(width)*height*num_components;
+			const auto* source=static_cast<const float*>(uploadPixels);
+			halfPixels.resize(count);
+			for (size_t i=0;i<count;++i)
+			{
+				if (!std::isfinite(source[i]))
+				{ VANS_LOG_ERROR("Non-finite HDR texture sample: " << loadDesc.path); stbi_image_free(pixel_data); return; }
+				halfPixels[i]=glm::packHalf1x16(std::clamp(source[i],-65504.0f,65504.0f));
+			}
+			uploadPixels=halfPixels.data(); bytes_per_channel=2;
+		}
 
 		// 2. 生成数据驱动上传请求：格式、压缩路径、mip 策略和数据大小集中在这里决定。
 		const TextureUploadRequest uploadRequest = BuildTextureUploadRequest(

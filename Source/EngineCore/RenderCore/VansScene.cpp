@@ -1,5 +1,8 @@
-#include "../SceneRuntime/Transform/VansTransformStore.h"
+﻿#include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "VansScene.h"
+#include "../SceneRuntime/VansPcgPhysicsInstances.h"
+#include "../PcgCore/VansPcgRuntimePolicy.h"
+#include <new>
 #include "GeometryCore/VansSceneSurfaceQuery.h"
 #include "Decal/VansImpactDecalSystem.h"
 #include <initializer_list>
@@ -15,6 +18,8 @@
 #include "SceneBuild/VansSceneRenderNodeBuilder.h"
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../AICore/VansAIWorld.h"
+#include "../SceneRuntime/VansSceneNavigationRuntime.h"
+#include "../SceneRuntime/VansRuntimeNavigationSources.h"
 #include "Timeline/VansVirtualCameraParameterStore.h"
 
 #include "../RuntimeCore/VansThreadContract.h"
@@ -67,6 +72,7 @@
 #include "../Util/VansProfiler.h"
 #include <iostream>
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <optional>
 #include <unordered_map>
@@ -423,14 +429,25 @@ bool VansGraphics::VansScene::InitializeEnvironmentRendering(VansVKDevice& devic
 		m_AtmosphereSystem.reset();
 		return false;
 	}
-	m_AtmosphereSystem->BindGlobalDescriptors(
-		m_GlobalDescriptorSet,
-		m_VolumetricCloudSystem->GetShadowDescriptor(),
-		m_VolumetricCloudSystem->GetResultDescriptor(),
-		m_NearMediaSystem->GetScatteringDescriptor(),
-		m_NearMediaSystem->GetOpticalDepthDescriptor());
-	m_NearMediaSystem->BindGlobalDescriptor(m_GlobalDescriptorSet);
-	m_VolumetricCloudSystem->BindGlobalDescriptors(m_GlobalDescriptorSet);
+	for (std::uint32_t slot = 0; slot < m_GlobalDescriptorSets.size(); ++slot)
+	{
+		const VkDescriptorSet globalSet = m_GlobalDescriptorSets[slot];
+		m_AtmosphereSystem->BindGlobalDescriptors(
+			globalSet,
+			slot,
+			m_VolumetricCloudSystem->GetShadowDescriptor(),
+			m_VolumetricCloudSystem->GetResultDescriptor(),
+			m_NearMediaSystem->GetScatteringDescriptor(),
+			m_NearMediaSystem->GetOpticalDepthDescriptor());
+		m_NearMediaSystem->BindGlobalDescriptor(globalSet, slot);
+		m_VolumetricCloudSystem->BindGlobalDescriptors(globalSet, slot);
+	}
+	if (!m_AtmosphereSystem->SelectFrameGlobalDescriptorSet(
+		m_GlobalDescriptorSet, device.GetFrameResourceSlot(), 0u))
+	{
+		ShutdownEnvironmentRendering();
+		return false;
+	}
 	m_RainRenderSystem = std::make_unique<VansRainRenderSystem>();
 	if (!m_RainRenderSystem->Initialize(*this))
 	{
@@ -494,14 +511,22 @@ bool VansGraphics::VansScene::ReinitializeEnvironmentRendering(
 	if (!m_AtmosphereSystem->ReinitializeViewResources(
 		quality, renderWidth, renderHeight))
 		return false;
-	m_AtmosphereSystem->BindGlobalDescriptors(
-		m_GlobalDescriptorSet,
-		m_VolumetricCloudSystem->GetShadowDescriptor(),
-		m_VolumetricCloudSystem->GetResultDescriptor(),
-		m_NearMediaSystem->GetScatteringDescriptor(),
-		m_NearMediaSystem->GetOpticalDepthDescriptor());
-	m_NearMediaSystem->BindGlobalDescriptor(m_GlobalDescriptorSet);
-	m_VolumetricCloudSystem->BindGlobalDescriptors(m_GlobalDescriptorSet);
+	for (std::uint32_t slot = 0; slot < m_GlobalDescriptorSets.size(); ++slot)
+	{
+		const VkDescriptorSet globalSet = m_GlobalDescriptorSets[slot];
+		m_AtmosphereSystem->BindGlobalDescriptors(
+			globalSet,
+			slot,
+			m_VolumetricCloudSystem->GetShadowDescriptor(),
+			m_VolumetricCloudSystem->GetResultDescriptor(),
+			m_NearMediaSystem->GetScatteringDescriptor(),
+			m_NearMediaSystem->GetOpticalDepthDescriptor());
+		m_NearMediaSystem->BindGlobalDescriptor(globalSet, slot);
+		m_VolumetricCloudSystem->BindGlobalDescriptors(globalSet, slot);
+	}
+	if (!m_AtmosphereSystem->SelectFrameGlobalDescriptorSet(
+		m_GlobalDescriptorSet, m_RuntimeResourceDevice->GetFrameResourceSlot(), 0u))
+		return false;
 	if (m_RainRenderSystem && !m_RainRenderSystem->RebindSceneTextures())
 		return false;
 	return true;
@@ -806,37 +831,53 @@ void VansGraphics::VansScene::CreateGlobalDescriptorSet(VkDevice device)
 
     // Create global layout + set via factory
     std::vector<VkDescriptorSet> sets;
-    VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(m_GlobalDescriptorSetLayout, sets);
-    m_GlobalDescriptorSet = sets[0];
+    VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
+        m_GlobalDescriptorSetLayout, sets, MAX_BINDLESS_TEXTURES, 2);
+    if (sets.size() != 2 || sets[0] == VK_NULL_HANDLE || sets[1] == VK_NULL_HANDLE)
+        throw std::runtime_error("Failed to allocate both frame global descriptor sets");
+    m_GlobalDescriptorSets = std::move(sets);
+    m_GlobalDescriptorSet = m_GlobalDescriptorSets[0];
 
 	VansSurfaceWeatherFrameGPU neutralWeather;
-	if (!m_SurfaceWeatherFrameBuffer.CreatVulkanBuffer(
-		device,
-		sizeof(VansSurfaceWeatherFrameGPU),
-		VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ||
-		!m_SurfaceWeatherFrameBuffer.SetBufferData(&neutralWeather, 0, sizeof(neutralWeather)))
+	for (VansVKBuffer& buffer : m_SurfaceWeatherFrameBuffers)
 	{
-		throw std::runtime_error("Failed to create the surface-weather frame uniform buffer");
+		if (!buffer.CreatVulkanBuffer(
+			device,
+			sizeof(VansSurfaceWeatherFrameGPU),
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ||
+			!buffer.SetBufferData(&neutralWeather, 0, sizeof(neutralWeather)))
+		{
+			for (VansVKBuffer& allocated : m_SurfaceWeatherFrameBuffers)
+				if (allocated.GetNativeBuffer() != VK_NULL_HANDLE)
+					allocated.DestroyVulkanBuffer(device);
+			throw std::runtime_error("Failed to create the surface-weather frame uniform buffers");
+		}
 	}
 
     // Create object layout + set (Set 2: scene transforms + draw-instance records)
-    std::vector<VkDescriptorSet> objSets;
-    VansDescriptorSetLayoutFactory::CreateAndAllocate_Object(m_ObjectDescriptorSetLayout, objSets);
-    m_ObjectDescriptorSet = objSets[0];
+    VansDescriptorSetLayoutFactory::CreateAndAllocate_Object(
+        m_ObjectDescriptorSetLayout, m_ObjectDescriptorSets,
+        VansCommandRecordingConfig::MaximumFramesInFlight);
+    if (m_ObjectDescriptorSets.size() != VansCommandRecordingConfig::MaximumFramesInFlight ||
+        std::any_of(m_ObjectDescriptorSets.begin(), m_ObjectDescriptorSets.end(),
+            [](VkDescriptorSet set) { return set == VK_NULL_HANDLE; }))
+        throw std::runtime_error("Failed to allocate per-slot object descriptor sets");
+    m_ObjectDescriptorSet = m_ObjectDescriptorSets[0];
 
     // Write Set 2: binding 0 (Transform SSBO)
     descManager->BeginDescriptorUpdate();
-    descManager->WriteBufferDescriptor(
-        m_ObjectDescriptorSet,
-        OBJECT_BINDING_TRANSFORM_SSBO,
-        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        {{
-            m_InstanceTransformDataBuffer.GetNativeBuffer(),
-            0,
-            m_InstanceTransformDataBuffer.GetBufferSize()
-        }});
+    for (std::uint32_t slot = 0; slot < m_ObjectDescriptorSets.size(); ++slot)
+        descManager->WriteBufferDescriptor(
+            m_ObjectDescriptorSets[slot],
+            OBJECT_BINDING_TRANSFORM_SSBO,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {{
+                m_InstanceTransformDataBuffers[slot].GetNativeBuffer(),
+                0,
+                m_InstanceTransformDataBuffers[slot].GetBufferSize()
+            }});
     descManager->CommitDescriptorUpdates();
 
     // Create shared dummy vertex-deformation buffers and Set 3 for static nodes.
@@ -888,16 +929,23 @@ void VansGraphics::VansScene::CreateGlobalDescriptorSet(VkDevice device)
     m_EmptyPassDescriptorSet = emptySets[0];
 
     // 所有贴花读取同一组 GBuffer，Pass 绑定归场景所有，不按弹孔重复分配。
-    std::vector<VkDescriptorSet> decalSets;
-    VansDescriptorSetLayoutFactory::CreateAndAllocate_DecalPass(m_DecalPassLayout, decalSets);
-    m_DecalPassDescriptorSet = decalSets.empty() ? VK_NULL_HANDLE : decalSets[0];
-    m_DecalPassDescriptorsDirty = true;
+    VansDescriptorSetLayoutFactory::CreateAndAllocate_DecalPass(
+        m_DecalPassLayout, m_DecalPassDescriptorSets,
+        VansCommandRecordingConfig::MaximumFramesInFlight);
+    m_DecalPassDescriptorsDirty.fill(true);
+    m_DecalPassImages = {};
 
     // Write all global resources into Set 0
     UpdateGlobalDescriptorSet();
 }
 
 void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
+{
+    for (std::uint32_t slot = 0; slot < m_GlobalDescriptorSets.size(); ++slot)
+        UpdateGlobalDescriptorSetFor(m_GlobalDescriptorSets[slot], slot);
+}
+
+void VansGraphics::VansScene::UpdateGlobalDescriptorSetFor(VkDescriptorSet globalSet, std::uint32_t slot)
 {
 	auto* vkDevice = static_cast<VansVKDevice*>(m_GraphicsDevice);
 	if (vkDevice == nullptr || !vkDevice->GetDrawInstanceArena().IsReady())
@@ -906,54 +954,55 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
 		return;
 	}
 	const VansVKBuffer& drawInstanceBuffer = vkDevice->GetDrawInstanceArena().GetBuffer();
+	const auto& materialBuffers = m_MaterialManager.m_FrameMaterialBuffers.at(slot);
     auto descManager = VansVKDescriptorManager::GetInstance();
     descManager->BeginDescriptorUpdate();
 
     // Binding 0: Camera UBO
     descManager->WriteBufferDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_CAMERA_UBO,
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         {{
-			vkDevice->GetCameraDataBuffer().GetNativeBuffer(),
+			vkDevice->GetCameraDataBuffer(slot).GetNativeBuffer(),
             0,
-			vkDevice->GetCameraDataBuffer().GetBufferSize()
+			vkDevice->GetCameraDataBuffer(slot).GetBufferSize()
         }});
 
     // Binding 1: Lights SSBO
     descManager->WriteBufferDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_LIGHTS_UBO,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		{{
-			vkDevice->GetLightDataBuffer().GetNativeBuffer(),
+			vkDevice->GetLightDataBuffer(slot).GetNativeBuffer(),
 			0,
-			vkDevice->GetLightDataBuffer().GetBufferSize()
+			vkDevice->GetLightDataBuffer(slot).GetBufferSize()
 		}});
 
     // Binding 2: Material SSBO
     descManager->WriteBufferDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_MATERIAL_SSBO,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{
-            m_MaterialManager.m_GlobalPBRDataBuffer.GetNativeBuffer(),
+            materialBuffers.pbr.GetNativeBuffer(),
             0,
-            m_MaterialManager.m_GlobalPBRDataBuffer.GetBufferSize()
+            materialBuffers.pbr.GetBufferSize()
         }});
 
     // Binding 15: Custom material payload SSBO
     descManager->WriteBufferDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_CUSTOM_MATERIAL_SSBO,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{
-            m_MaterialManager.m_GlobalCustomMaterialDataBuffer.GetNativeBuffer(),
+            materialBuffers.custom.GetNativeBuffer(),
             0,
-            m_MaterialManager.m_GlobalCustomMaterialDataBuffer.GetBufferSize()
+            materialBuffers.custom.GetBufferSize()
         }});
     descManager->WriteBufferDescriptor(
-        m_ObjectDescriptorSet,
+        m_ObjectDescriptorSets.at(slot),
         OBJECT_BINDING_DRAW_INSTANCE_SSBO,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{
@@ -964,40 +1013,40 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
 
     // Binding 16: Cloth extension payloads; indices match Binding 2 exactly.
     descManager->WriteBufferDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_CLOTH_MATERIAL_SSBO,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{
-            m_MaterialManager.m_GlobalClothDataBuffer.GetNativeBuffer(),
+            materialBuffers.cloth.GetNativeBuffer(),
             0,
-            m_MaterialManager.m_GlobalClothDataBuffer.GetBufferSize()
+            materialBuffers.cloth.GetBufferSize()
         }});
 
     // Binding 17: Tree leaf extension payloads; indices match Binding 2 exactly.
     descManager->WriteBufferDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_TREE_LEAF_MATERIAL_SSBO,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{
-            m_MaterialManager.m_GlobalTreeLeafDataBuffer.GetNativeBuffer(),
+            materialBuffers.treeLeaf.GetNativeBuffer(),
             0,
-            m_MaterialManager.m_GlobalTreeLeafDataBuffer.GetBufferSize()
+            materialBuffers.treeLeaf.GetBufferSize()
         }});
 
     // Binding 18: Skin extension payloads; indices match Binding 2 exactly.
     descManager->WriteBufferDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_SKIN_MATERIAL_SSBO,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{
-            m_MaterialManager.m_GlobalSkinDataBuffer.GetNativeBuffer(),
+            materialBuffers.skin.GetNativeBuffer(),
             0,
-            m_MaterialManager.m_GlobalSkinDataBuffer.GetBufferSize()
+            materialBuffers.skin.GetBufferSize()
         }});
 
     // Binding 3: BRDF LUT
     descManager->WriteImageDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_BRDF_LUT,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         {{
@@ -1008,7 +1057,7 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
 
     // Binding 4: 启动时由固定 SkyBox 一次性卷积得到的 diffuse IBL。
     descManager->WriteImageDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_PRECONV_DIFFUSE,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         {{
@@ -1019,7 +1068,7 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
 
     // Binding 5: 启动时由固定 SkyBox 一次性卷积得到的 specular IBL。
     descManager->WriteImageDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_PRECONV_SPECULAR,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         {{
@@ -1028,19 +1077,20 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         }});
 
-    descManager->WriteBufferDescriptor(m_GlobalDescriptorSet, GLOBAL_BINDING_SKY_LIGHTING,
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ m_MaterialManager.m_SkyLighting.Parameters().GetNativeBuffer(),
-            0, m_MaterialManager.m_SkyLighting.Parameters().GetBufferSize() }});
+    descManager->WriteBufferDescriptor(globalSet, GLOBAL_BINDING_SKY_LIGHTING,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ m_MaterialManager.m_SkyLighting.Parameters(slot).GetNativeBuffer(),
+            0, m_MaterialManager.m_SkyLighting.Parameters(slot).GetBufferSize() }});
 
-    descManager->WriteBufferDescriptor(m_GlobalDescriptorSet, GLOBAL_BINDING_LIGHT_COOKIE_DATA,
-        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{vkDevice->GetLightCookieDataBuffer().GetNativeBuffer(),
-            0, vkDevice->GetLightCookieDataBuffer().GetBufferSize()}});
+    descManager->WriteBufferDescriptor(globalSet, GLOBAL_BINDING_LIGHT_COOKIE_DATA,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{vkDevice->GetLightCookieDataBuffer(slot).GetNativeBuffer(),
+            0, vkDevice->GetLightCookieDataBuffer(slot).GetBufferSize()}});
 
 	descManager->WriteBufferDescriptor(
-		m_GlobalDescriptorSet,
+		globalSet,
 		GLOBAL_BINDING_SURFACE_WEATHER_FRAME_UBO,
 		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		{{ m_SurfaceWeatherFrameBuffer.GetNativeBuffer(), 0, m_SurfaceWeatherFrameBuffer.GetBufferSize() }});
+		{{ m_SurfaceWeatherFrameBuffers.at(slot).GetNativeBuffer(), 0,
+			m_SurfaceWeatherFrameBuffers.at(slot).GetBufferSize() }});
 	VansTexture* rainRippleSeed = static_cast<VansTexture*>(GetTextureAsset("rainRippleSeed"));
 	VansVKImage* surfaceRipple = m_RainRenderSystem
 		? m_RainRenderSystem->GetSurfaceRippleImage() : nullptr;
@@ -1049,7 +1099,7 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
 	VansVKImage& rippleImage = surfaceRipple != nullptr
 		? *surfaceRipple : rainRippleSeed->GetImage();
 	descManager->WriteImageDescriptor(
-		m_GlobalDescriptorSet,
+		globalSet,
 		GLOBAL_BINDING_SURFACE_WEATHER_RIPPLE,
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{{ rippleImage.GetSampler(), rippleImage.GetImageView(), surfaceRipple != nullptr
@@ -1057,7 +1107,7 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
 
     // Binding 6: 同一固定 SkyBox 的 SH 系数。
     descManager->WriteBufferDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_SH_COEFFICIENTS,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{
@@ -1068,7 +1118,7 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
 
     // Binding 7: Skin pre-integrated BSDF LUT
     descManager->WriteImageDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_SKIN_BSDF_LUT,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         {{
@@ -1079,7 +1129,7 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
 
     // Binding 19: Skin profile pre-integrated LUT array.
     descManager->WriteImageDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_SKIN_PROFILE_LUT_ARRAY,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         {{
@@ -1090,7 +1140,7 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
 
     // Binding 8: Cloth pre-integrated BRDF LUT
     descManager->WriteImageDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_CLOTH_BRDF_LUT,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         {{
@@ -1099,8 +1149,14 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         }});
 
+    descManager->WriteImageDescriptor(globalSet, GLOBAL_BINDING_CLOTH_LIGHTING_LUT,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{
+            m_MaterialManager.m_ClothLightingLUT->GetImage().GetSampler(),
+            m_MaterialManager.m_ClothLightingLUT->GetImage().GetImageView(),
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+
     // 草专用积分表，与共享 BRDF LUT 的数据和采样方式独立。
-    descManager->WriteImageDescriptor(m_GlobalDescriptorSet, GLOBAL_BINDING_GRASS_ENERGY_LUT,
+    descManager->WriteImageDescriptor(globalSet, GLOBAL_BINDING_GRASS_ENERGY_LUT,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{
             m_MaterialManager.m_GrassEnergyLUT->GetImage().GetSampler(),
             m_MaterialManager.m_GrassEnergyLUT->GetImage().GetImageView(),
@@ -1110,7 +1166,7 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
     if (m_MaterialManager.m_LTC1 && m_MaterialManager.m_LTC2)
     {
         descManager->WriteImageDescriptor(
-            m_GlobalDescriptorSet,
+            globalSet,
             GLOBAL_BINDING_LTC1_LUT,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             {{
@@ -1119,7 +1175,7 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             }});
         descManager->WriteImageDescriptor(
-            m_GlobalDescriptorSet,
+            globalSet,
             GLOBAL_BINDING_LTC2_LUT,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             {{
@@ -1151,43 +1207,62 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
             });
         }
         descManager->WriteImageDescriptor(
-            m_GlobalDescriptorSet,
+            globalSet,
             GLOBAL_BINDING_BINDLESS_TEXTURES,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             bindlessInfos);
     }
 
     descManager->CommitDescriptorUpdates();
+    if (!BindProjectRenderPassOutputs(globalSet))
+        throw std::runtime_error("Project RenderTexture descriptor initialization failed.");
 }
 
-// NOTE: TileLight bindings (9 and 10) are written in VansVKDevice::UpdateGlobalTileLightDesc
-//       after PrepareTileLightData allocates m_TileLightHeaderBuffer and m_TileLightIndexBuffer.
+bool VansGraphics::VansScene::BindProjectRenderPassOutputs(VkDescriptorSet globalSet)
+{
+    VANS_ASSERT_RENDER_THREAD();
+    auto* device=static_cast<VansVKDevice*>(m_GraphicsDevice);
+    auto* texture=static_cast<VansTexture*>(GetTextureAsset("defaultMetal"));
+    if (!device || !texture) return false;
+    auto& neutral=texture->GetImage();
+    return device->ProjectRenderPassRuntime().BindOutputDescriptors(device->GetLogicDevice(),globalSet,
+        {neutral.GetSampler(),neutral.GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+}
+
+// TileLight bindings are written after resolution-dependent buffers are allocated.
 
 void VansGraphics::VansScene::UpdateGlobalTileLightDescriptors()
 {
+	for (std::uint32_t slot = 0; slot < m_GlobalDescriptorSets.size(); ++slot)
+		UpdateGlobalTileLightDescriptorsFor(m_GlobalDescriptorSets[slot], slot);
+}
+
+void VansGraphics::VansScene::UpdateGlobalTileLightDescriptorsFor(VkDescriptorSet globalSet, std::uint32_t slot)
+{
+	const auto& frame = m_MaterialManager.m_TileLightFrames.at(slot);
     auto descManager = VansVKDescriptorManager::GetInstance();
     descManager->BeginDescriptorUpdate();
 
     // Binding 9: TileLight Header SSBO
     descManager->WriteBufferDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_TILE_LIGHT_GRID,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{
-            m_MaterialManager.m_TileLightHeaderBuffer.GetNativeBuffer(),
+            frame.header.GetNativeBuffer(),
             0,
-            m_MaterialManager.m_TileLightHeaderBuffer.GetBufferSize()
+            frame.header.GetBufferSize()
         }});
 
     // Binding 10: TileLight Index SSBO
     descManager->WriteBufferDescriptor(
-        m_GlobalDescriptorSet,
+        globalSet,
         GLOBAL_BINDING_TILE_LIGHT_INDICES,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{
-            m_MaterialManager.m_TileLightIndexBuffer.GetNativeBuffer(),
+            frame.indices.GetNativeBuffer(),
             0,
-            m_MaterialManager.m_TileLightIndexBuffer.GetBufferSize()
+            frame.indices.GetBufferSize()
         }});
 
     descManager->CommitDescriptorUpdates();
@@ -1200,11 +1275,13 @@ bool VansGraphics::VansScene::PrepareReflectionProbeRuntime(VansVKDevice& device
         return false;
     const auto skyFrame = BuildSkyLightingFrame(m_EnvironmentSettings.skyLighting.intensity,
         m_LightManager.GetSkyDiffuseScale());
-    m_MaterialManager.m_SkyLighting.UploadFrame(skyFrame);
+    for (std::uint32_t slot = 0; slot < VansCommandRecordingConfig::MaximumFramesInFlight; ++slot)
+        if (!m_MaterialManager.m_SkyLighting.UploadFrame(skyFrame, slot))
+            return false;
     m_ReflectionProbeSystem.SetSkyLightingSource(m_MaterialManager.m_SkyLighting.CaptureSourceKey(skyFrame.intensity));
     if (!m_ReflectionProbeSystem.CreateGPUResources(device, device.GetImmediateGraphicsCommandBuffer()))
         return false;
-    m_ReflectionProbeSystem.UpdateGlobalDescriptors(m_GlobalDescriptorSet);
+    m_ReflectionProbeSystem.UpdateGlobalDescriptors(m_GlobalDescriptorSets);
     return true;
 }
 
@@ -1218,9 +1295,48 @@ void VansGraphics::VansScene::BindWaterSystemGlobalDescriptors()
     }
 }
 
-void VansGraphics::VansScene::BindMaterialVideoDescriptorSet()
+bool VansGraphics::VansScene::BindFrameDescriptorSetsForSlot(
+	std::uint32_t slot, std::uint32_t gbufferTargetSlot)
 {
-    m_MaterialManager.m_VideoBindlessDescriptorSet = m_GlobalDescriptorSet;
+	if (m_GlobalDescriptorSets.empty()) return true;
+	if (slot >= m_GlobalDescriptorSets.size() || slot >= m_ObjectDescriptorSets.size()) return false;
+	const VkDescriptorSet globalSet = m_GlobalDescriptorSets[slot];
+	const VkDescriptorSet objectSet = m_ObjectDescriptorSets[slot];
+	if (globalSet == VK_NULL_HANDLE || objectSet == VK_NULL_HANDLE) return false;
+	if (!UpdateDecalPassDescriptorSet(slot, gbufferTargetSlot)) return false;
+	if (m_AtmosphereSystem && !m_AtmosphereSystem->SelectFrameGlobalDescriptorSet(
+		globalSet, slot, gbufferTargetSlot)) return false;
+	if (m_VolumetricCloudSystem && !m_VolumetricCloudSystem->SelectFrameSceneDepth(
+		slot, gbufferTargetSlot)) return false;
+	if (m_RainRenderSystem && !m_RainRenderSystem->SelectFrameDescriptorSets(
+		globalSet, slot, gbufferTargetSlot)) return false;
+	if (m_WaterSystem && !m_WaterSystem->SelectFrameDescriptorSets(
+		globalSet, slot, gbufferTargetSlot)) return false;
+	if (m_GlobalDescriptorSet == globalSet && m_ObjectDescriptorSet == objectSet) return true;
+	m_GlobalDescriptorSet = globalSet;
+	m_ObjectDescriptorSet = objectSet;
+	const auto bindNode = [globalSet, objectSet, slot](VansRenderNode* node)
+	{
+		if (node) node->BindFrameDescriptorSets(globalSet, objectSet, slot);
+	};
+	bindNode(m_DeferredNode);
+	bindNode(m_TerrainRenderNode);
+	bindNode(m_VegetationRenderNode);
+	bindNode(m_WaterRenderNode);
+	for (VansRenderNode* node : m_OpaqueRenderNodes) bindNode(node);
+	for (VansRenderNode* node : m_HairRenderNodes) bindNode(node);
+	for (VansRenderNode* node : m_TransParentRenderNodes) bindNode(node);
+	for (VansRenderNode* node : m_ForwardOpaquePreAtmosphereRenderNodes) bindNode(node);
+	for (VansRenderNode* node : m_PostProcessRenderNodes) bindNode(node);
+	for (VansRenderNode* node : m_DecalRenderNodes) bindNode(node);
+	if (m_VegetationCollection)
+	{
+		m_VegetationCollection->ForEach([&](VansVegetationSystem& system)
+		{
+			system.SetGlobalDescriptorSet(m_GlobalDescriptorSetLayout, globalSet);
+		});
+	}
+	return true;
 }
 
 void VansGraphics::VansScene::PlayAllSceneVideos()
@@ -1246,6 +1362,13 @@ VansGraphics::VansWaterConfig& VansGraphics::VansScene::EditWaterConfig()
 {
     static VansWaterConfig fallbackConfig;
     return m_WaterMaterial ? m_WaterMaterial->m_Config : fallbackConfig;
+}
+
+bool VansGraphics::VansScene::SetTerrainInteraction(const Vans::VansTerrainInteraction& input, std::string& error)
+{
+    VANS_ASSERT_MAIN_THREAD();
+    if (!Vans::ValidateTerrainInteraction(input,error)) return false;
+    m_TerrainInteraction=input; return true;
 }
 
 void VansGraphics::VansScene::SetTerrainPhysicsNode(VansEngine::VansTerrainPhysicsNode* terrainPhysicsNode)
@@ -1303,6 +1426,92 @@ void VansGraphics::VansScene::UpdateActionsEarly(double deltaSeconds)
 	m_GameplayRuntime->TickEarly(deltaSeconds);
 }
 
+Vans::VansNavigationWorld* VansGraphics::VansScene::GetNavigationWorld()
+{
+    return m_NavigationRuntime ? &m_NavigationRuntime->World() : nullptr;
+}
+const Vans::VansNavigationWorld* VansGraphics::VansScene::GetNavigationWorld() const
+{
+    return m_NavigationRuntime ? &m_NavigationRuntime->World() : nullptr;
+}
+void VansGraphics::VansScene::PrepareNavigation()
+{
+    VANS_PROFILE_SCOPE("Navigation::Prepare", Vans::ProfileCategory::Script);
+    if (!m_NavigationRuntime) return;
+    std::string error;
+    if (SynchronizeNavigation(error)) m_NavigationSyncError.clear();
+    else if (m_NavigationSyncError != error)
+    {
+        m_NavigationSyncError = error;
+        VANS_LOG_ERROR("[Navigation] Component synchronization failed: " << error);
+    }
+}
+bool VansGraphics::VansScene::CaptureNavigationSources(const Vans::VansNavigationSettings& settings,
+    Vans::VansNavigationSourceSnapshot& snapshot, std::uint64_t& observation, std::string& error)
+try
+{
+    m_NavigationSourceObservation.reset();
+    if(!m_RuntimeWorld) { error="Navigation scene runtime is not initialized"; return false; }
+    if(m_PcgPhysicsInstances) m_PcgPhysicsInstances->SynchronizeLifecycle();
+    if(!m_NavigationSources) m_NavigationSources=std::make_unique<Vans::VansRuntimeNavigationSources>();
+    std::vector<Vans::VansNavigationSourceRecord> environment;
+    const auto* surfaces=m_RuntimeWorld->FindStorage<Vans::VansRuntimeNavigationSurfaceComponent>(Vans::VansRuntimeComponentType_NavigationSurface);
+    const bool hasSurface=surfaces && !surfaces->Headers().empty();
+    if(hasSurface && m_TerrainPhysicsNode && m_TerrainPhysicsNode->IsEnabled())
+    {
+        if(!m_NavigationTerrain) m_NavigationTerrain=std::make_unique<VansEngine::VansPhysicsHeightfieldSnapshot>();
+        if(!m_TerrainPhysicsNode->CaptureCollisionSurface(static_cast<std::uint64_t>(settings.maximumConcurrentBuildBytes)/2,*m_NavigationTerrain,error))
+        { return false; }
+        const auto* terrainNode=dynamic_cast<const VansTerrainRenderNode*>(m_TerrainRenderNode);
+        const auto* terrain=terrainNode?terrainNode->GetTerrain():nullptr;
+        if(!terrain) { error="Navigation Terrain collision has no scene asset identity"; return false; }
+        Vans::VansNavigationSourceRecord record;
+        record.id="terrain/"+terrain->GetAssetGuid().ToString(); record.ownerId=record.id;
+        record.kind=Vans::VansNavigationGeometryKind::Terrain;
+        record.heightfield=m_NavigationTerrain->heightfield; record.worldTransform=m_NavigationTerrain->worldTransform;
+        record.boundsMinimum=m_NavigationTerrain->boundsMinimum; record.boundsMaximum=m_NavigationTerrain->boundsMaximum;
+        record.collisionLayer=m_NavigationTerrain->collisionLayer;
+        environment.push_back(std::move(record));
+    }
+    else m_NavigationTerrain.reset();
+    const auto meshes=[&](const std::string& guid,std::shared_ptr<const Vans::VansTriangleMeshData>& geometry,std::string& resolveError)
+    {
+        const auto* mesh=dynamic_cast<const VansMesh*>(FindMeshAsset(guid));
+        if(!mesh) { resolveError="Included NavigationSource CPU Model is not loaded: "+guid; return false; }
+        return mesh->CaptureTriangleMeshData(static_cast<std::uint64_t>(settings.maximumConcurrentBuildBytes)/2,geometry,resolveError);
+    };
+    if(!m_NavigationSources->Capture(*m_RuntimeWorld,settings,meshes,environment,snapshot,observation,error))
+    { return false; }
+    if(m_PcgPhysicsInstances) for(const auto& excluded:m_PcgPhysicsInstances->NoCollisionPrototype())
+        snapshot.exclusions.push_back({excluded.id,Vans::VansNavigationGeometryKind::Pcg,excluded.instanceCount,"No collision prototype"});
+    m_NavigationSourceObservation=observation;
+    return true;
+}
+catch(const std::bad_alloc&)
+{
+    error="Scene navigation source capture allocation failed"; return false;
+}
+bool VansGraphics::VansScene::SynchronizeNavigation(std::string& error)
+try
+{
+    if(!m_NavigationRuntime || !m_RuntimeWorld) { error="Navigation scene domains are not initialized"; return false; }
+    const auto& settings=Vans::VansProjectManager::Get().GetProjectSettings().GetNavigationSettings();
+    Vans::VansNavigationSourceSnapshot snapshot; std::uint64_t observation=0;
+    if(!m_NavigationRuntime->Reconfigure(settings,error) || !CaptureNavigationSources(settings,snapshot,observation,error))
+    { m_NavigationRuntime->WithdrawSources(); return false; }
+    return m_NavigationRuntime->Synchronize(std::move(snapshot),observation,error);
+}
+catch(const std::bad_alloc&)
+{
+    if(m_NavigationRuntime) m_NavigationRuntime->WithdrawSources();
+    m_NavigationSourceObservation.reset();
+    error="Scene navigation synchronization allocation failed"; return false;
+}
+void VansGraphics::VansScene::UpdateNavigation(double deltaSeconds)
+{
+    if (m_NavigationRuntime) m_NavigationRuntime->World().Update(deltaSeconds);
+}
+
 void VansGraphics::VansScene::UpdateAI(double deltaSeconds)
 {
 	if (m_AIWorld)
@@ -1322,6 +1531,8 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 	m_SceneState = VansSceneState::Unloading;
 	m_GIVoxelSourceManager.Clear();
 	++m_RenderSceneEpoch;
+	m_ProjectRenderPasses.ResetForScene();
+	m_TerrainInteraction = {};
 
 	VANS_LOG("[VansScene] UnloadScene started");
 	// Scene CPU 对象销毁前只发布稳定句柄 destroy；RT 不得接收即将悬空的 node 指针。
@@ -1335,6 +1546,8 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 	m_MainRenderProxyBindings.clear();
 	if (m_AIWorld)
 		m_AIWorld->Shutdown();
+	if (m_NavigationRuntime)
+		m_NavigationRuntime->Shutdown();
 	if (m_GameplayRuntime)
 		m_GameplayRuntime->Shutdown();
 	m_ImpactDecals.reset();
@@ -1346,16 +1559,21 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 	if (m_RuntimeWorld)
 		m_RuntimeWorld->CommitCommands(Vans::VansRuntimeCommandCommitPoint::SceneTeardown);
 	ReleaseAudioSourceBindings();
+	m_PcgPhysicsInstances.reset(); m_CommittedPcgCollisionPlan.reset();
 	if (m_RuntimeWorld)
 		m_RuntimeWorld->Clear();
 	m_GameplayRuntime.reset();
 	m_AIWorld.reset();
+	m_NavigationRuntime.reset();
+	m_NavigationSources.reset(); m_NavigationTerrain.reset(); m_NavigationSourceObservation.reset();
+	m_NavigationSyncError.clear();
 	if (m_CameraControlArbiter)
 		m_CameraControlArbiter->Clear(m_Camera);
 
 	VkDevice nativeDevice = device ? device->GetLogicDevice() : VK_NULL_HANDLE;
-	if (device && m_AtmosphereSystem)
+	if (device)
 		device->WaitForDevice();
+	if (device) { device->ProjectRenderPassRuntime().ShutdownAtIdle(); device->ClearRuntimeRenderTextureCatalogAtIdle(); }
 	ShutdownEnvironmentRendering();
 	m_AudioEnvironmentReverbWetGain = 1.0f;
 	VansEngine::VansAudioSystem::GetInstance().SetDefaultReverbWetGain(m_AudioEnvironmentReverbWetGain);
@@ -1658,8 +1876,8 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 
 	// ── 15. 清理 Instance Transform Buffer ──────────────────────────────
 	VANS_UNLOAD_STEP(15, "Clear instance-transform buffers and descriptors");
-	m_InstanceTransformDataBuffer.DestroyVulkanBuffer(nativeDevice);
-	m_InstanceTransformData.clear();
+	for (VansVKBuffer& buffer : m_InstanceTransformDataBuffers)
+		buffer.DestroyVulkanBuffer(nativeDevice);
 
 	// ── 重置 Transform Slot Allocator（必须在 DestroyVulkanBuffer 之后、下次 Prepare 之前）──
 	m_TransformSlotAllocator.Reset();
@@ -1671,18 +1889,18 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 
 	// ── 16. 清理 Global / Object / Animation / Empty Descriptor Sets ─────
     VANS_UNLOAD_STEP(16, "娓呯悊 Global/Object/Animation/Empty descriptor sets");
-	if (m_GlobalDescriptorSet != VK_NULL_HANDLE)
+	if (!m_GlobalDescriptorSets.empty())
 	{
-		std::vector<VkDescriptorSet> tmp = { m_GlobalDescriptorSet };
-		descMgr->DestroyDescriptorSet(tmp);
+		descMgr->DestroyDescriptorSet(m_GlobalDescriptorSets);
+		m_GlobalDescriptorSets.clear();
 		m_GlobalDescriptorSet = VK_NULL_HANDLE;
 	}
 	descMgr->ReleaseDescriptorSetLayout(m_GlobalDescriptorSetLayout);
 
-	if (m_ObjectDescriptorSet != VK_NULL_HANDLE)
+	if (!m_ObjectDescriptorSets.empty())
 	{
-		std::vector<VkDescriptorSet> tmp = { m_ObjectDescriptorSet };
-		descMgr->DestroyDescriptorSet(tmp);
+		descMgr->DestroyDescriptorSet(m_ObjectDescriptorSets);
+		m_ObjectDescriptorSets.clear();
 		m_ObjectDescriptorSet = VK_NULL_HANDLE;
 	}
 	descMgr->ReleaseDescriptorSetLayout(m_ObjectDescriptorSetLayout);
@@ -1703,21 +1921,19 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 	}
 	descMgr->ReleaseDescriptorSetLayout(m_EmptyPassLayout);
 
-	if (m_DecalPassDescriptorSet != VK_NULL_HANDLE)
-	{
-		std::vector<VkDescriptorSet> sets{m_DecalPassDescriptorSet};
-		descMgr->DestroyDescriptorSet(sets);
-		m_DecalPassDescriptorSet = VK_NULL_HANDLE;
-	}
+	descMgr->DestroyDescriptorSet(m_DecalPassDescriptorSets);
 	descMgr->ReleaseDescriptorSetLayout(m_DecalPassLayout);
-	m_DecalPassDescriptorsDirty = true;
+	m_DecalPassDescriptorsDirty.fill(true);
+	m_DecalPassImages = {};
 
 	// ── 17. 清理 Dummy Bone Buffer ──────────────────────────────────────
     VANS_UNLOAD_STEP(17, "娓呯悊 Dummy Bone Buffer");
 	m_DummyBoneIDBuffer.DestroyVulkanBuffer(nativeDevice);
 	m_DummyBoneBuffer.DestroyVulkanBuffer(nativeDevice);
 	m_DummyWeightBuffer.DestroyVulkanBuffer(nativeDevice);
-	m_SurfaceWeatherFrameBuffer.DestroyVulkanBuffer(nativeDevice);
+	for (VansVKBuffer& buffer : m_SurfaceWeatherFrameBuffers)
+		if (buffer.GetNativeBuffer() != VK_NULL_HANDLE)
+			buffer.DestroyVulkanBuffer(nativeDevice);
 	m_RainRuntime.Configure({});
 
 	// ── 18. 暂停视频播放（视频为项目级资源，GPU 纹理保留，切换场景 Play 时复用）────────
@@ -1735,6 +1951,7 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 void VansGraphics::VansScene::UnloadProjectResources(VansVKDevice* device)
 {
     VANS_ASSERT_MAIN_THREAD();
+    m_ProjectRenderPasses.Clear();
 	// GPU/RenderThread barrier 由上层场景切换或关闭编排统一建立。Scene 只负责
 	// 项目资源所有权释放，不能绕过 VansRenderSystem 再制造 device-wide stall。
 
@@ -2069,6 +2286,12 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
 		for (VansRenderNode* node : m_DecalRenderNodes)
 			appendCullInput(node, VansMainCameraCullClass::Decal);
 	}
+	ExtractProjectRenderPassFrame(snapshot, view.position);
+	snapshot.terrainInteraction = m_TerrainInteraction;
+	std::array<std::int64_t, 2> interactionOrigin;
+	if (!Vans::ResolveWorldTextureWindow(m_TerrainInteraction.window, view.position,
+		snapshot.terrainInteraction.window.worldRect, interactionOrigin))
+		snapshot.terrainInteraction.enabled = false;
     {
         VANS_PROFILE_SCOPE("Light::SyncTransforms", Vans::ProfileCategory::RenderPrepare);
         SyncLightTransforms();
@@ -2323,6 +2546,66 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
     return output;
 }
 
+void VansGraphics::VansScene::PrepareRenderObjectFrameData(
+    const VansRenderSceneFrameSnapshot& sceneSnapshot, const VansRenderWorld& renderWorld)
+{
+    VANS_ASSERT_FRAME_PHASE(VansFramePhase::RenderThreadConsume);
+    auto* vkDevice = static_cast<VansVKDevice*>(m_GraphicsDevice);
+    {
+        VANS_PROFILE_SCOPE("RenderData::UploadTransformSnapshot", Vans::ProfileCategory::RenderPrepare);
+		for (const VansRenderTransformFrameData& transform : sceneSnapshot.transforms)
+		{
+			const VansRenderProxyStaticData* proxy = renderWorld.Resolve(transform.proxy);
+			if (proxy == nullptr || !proxy->enabled)
+			{
+				VANS_LOG_ERROR("[VansScene] Render transform references a stale or disabled proxy handle.");
+				continue;
+			}
+			ModelDataStruct model;
+			model.ModelMatrix = transform.modelMatrix;
+			model.NormalMatrix = transform.normalMatrix;
+			model.Postion = transform.position;
+			model.Scale = transform.scale;
+			model.PrevModelMatrix = transform.previousModelMatrix;
+			UpdateMappedInstanceTransformData(model, proxy->transformSlot);
+		}
+    }
+    if (!m_MaterialManager.UploadRenderMaterialFrameData(
+            sceneSnapshot.materials, vkDevice->GetFrameResourceSlot()))
+        VANS_LOG_ERROR("[VansScene] Render-thread material frame upload was rejected.");
+    else
+    {
+        if (!vkDevice->GetRayTracingContext().PrepareClothMaterialUpdates(sceneSnapshot.materials))
+            VANS_LOG_ERROR("[VansScene] Cloth GI material snapshot was rejected.");
+        if (m_LastClothLightingRevision != sceneSnapshot.materials.clothLightingRevision)
+        {
+            m_ReflectionProbeSystem.InvalidateCapturedLighting();
+            // 覆盖/朝向属于射线可见度；旧接收者遮挡历史不得继续复用。
+            ++m_RayTracingGeometryRevision;
+            m_LastClothLightingRevision = sceneSnapshot.materials.clothLightingRevision;
+        }
+    }
+}
+
+void VansGraphics::VansScene::RefreshClothLightingTextures(const VansClothMaterial& material)
+{
+    VANS_ASSERT_RENDER_THREAD();
+    const std::array<VansTexture*, 5> textures{material.m_BaseColorTexture, material.m_NormalTexture,
+        material.m_OpacityTexture ? material.m_OpacityTexture : material.m_AoTexture,
+        material.m_RoughnessTexture, material.m_AoTexture};
+    for (const auto& instance : m_TlasInstanceMaterials)
+    {
+        if (instance.clothMaterialIndex != static_cast<uint32_t>(material.GetGlobalMaterialIndex())) continue;
+        const size_t base = instance.packedTextureIndex & GIInstanceMaterialGPU::TextureIndexMask;
+        if (base + textures.size() > m_TlasInstanceTextures.size()) continue;
+        for (size_t slot = 0; slot < textures.size(); ++slot)
+            m_TlasInstanceTextures[base + slot] = textures[slot]->GetImage();
+    }
+    static_cast<VansVKDevice*>(m_GraphicsDevice)->GetRayTracingContext().InvalidateClothTextureDescriptors();
+    ++m_RayTracingGeometryRevision;
+    m_ReflectionProbeSystem.InvalidateCapturedLighting();
+}
+
 void VansGraphics::VansScene::PrepareRenderBackendData(
     const VansRenderViewSnapshot& view,
     const VansRenderSceneFrameSnapshot& sceneSnapshot,
@@ -2361,11 +2644,12 @@ void VansGraphics::VansScene::PrepareRenderBackendData(
 	weatherFrame.groundResponse = glm::vec4(
 		weather.wetAlbedoScale, weather.wetRoughness,
 		weather.puddleRoughness, weather.puddleFresnel0);
-	if (!m_SurfaceWeatherFrameBuffer.SetBufferData(&weatherFrame, 0, sizeof(weatherFrame)))
+	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+	if (vkDevice == nullptr ||
+		!m_SurfaceWeatherFrameBuffers.at(vkDevice->GetFrameResourceSlot()).SetBufferData(
+			&weatherFrame, 0, sizeof(weatherFrame)))
 		throw std::runtime_error("Surface-weather frame UBO upload failed.");
 
-    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
 	if (vkDevice)
 	{
 		if (!m_SplineFieldResources) m_SplineFieldResources=std::make_unique<VansPcgSplineFieldResources>(*vkDevice);
@@ -2406,12 +2690,13 @@ void VansGraphics::VansScene::PrepareRenderBackendData(
 		for (const auto& update : sceneSnapshot.vegetationUpdates)
 		{
 			std::string error;
-			if (update && !m_VegetationCollection->Apply(*this, nativeDevice, *update, vkDevice, error))
+			if (update && !m_VegetationCollection->Apply(*this, *vkDevice, *update, error))
 				VANS_LOG_ERROR("[PCG] Batch update rejected; previous vegetation retained: " << error);
 		}
 		m_VegetationCollection->RetryUnavailableGIVoxelSources(*this);
 		std::string error;
-		if (!m_VegetationCollection->UpdateResidency(*this,nativeDevice,*vkDevice,view.position.x,view.position.z,error))
+		if (!m_VegetationCollection->UpdateResidency(*this,*vkDevice,
+			view.position.x,view.position.z,view.projection*view.view,vkDevice->GetFrameResourceSlot(),error))
 			VANS_LOG_ERROR("[PCG] Vegetation residency update failed: " << error);
 	}
 
@@ -2444,28 +2729,9 @@ void VansGraphics::VansScene::PrepareRenderBackendData(
         UploadAnimationRenderData(sceneSnapshot);
     }
 	{
-        VANS_PROFILE_SCOPE("RenderData::UploadTransformSnapshot", Vans::ProfileCategory::RenderPrepare);
-		for (const VansRenderTransformFrameData& transform : sceneSnapshot.transforms)
-		{
-			const VansRenderProxyStaticData* proxy = renderWorld.Resolve(transform.proxy);
-			if (proxy == nullptr || !proxy->enabled)
-			{
-				VANS_LOG_ERROR("[VansScene] Render transform references a stale or disabled proxy handle.");
-				continue;
-			}
-			ModelDataStruct model;
-			model.ModelMatrix = transform.modelMatrix;
-			model.NormalMatrix = transform.normalMatrix;
-			model.Postion = transform.position;
-			model.Scale = transform.scale;
-			model.PrevModelMatrix = transform.previousModelMatrix;
-			UpdateMappedInstanceTransformData(model, proxy->transformSlot);
-		}
-    }
-    {
         VANS_PROFILE_SCOPE("RenderData::UpdateNodesBeforeRecord", Vans::ProfileCategory::RenderPrepare);
-		if (!m_MaterialManager.UploadRenderMaterialFrameData(sceneSnapshot.materials))
-			VANS_LOG_ERROR("[VansScene] Render-thread material frame upload was rejected.");
+		if (!sceneSnapshot.projectPasses.configuration || sceneSnapshot.projectPasses.configuration->passes.empty())
+			PrepareRenderObjectFrameData(sceneSnapshot, renderWorld);
 		UpdateRenderNodesDataBeforeRecord(view, sceneSnapshot);
     }
 }
@@ -2546,6 +2812,24 @@ void VansGraphics::VansScene::CollectGIVoxelSources(std::vector<GIVoxelSource>& 
 void VansGraphics::VansScene::SetVegetationCollection(std::unique_ptr<VansVegetationCollection> collection)
 {
 	m_VegetationCollection = std::move(collection);
+}
+void VansGraphics::VansScene::SetCommittedPcgCollisionPlan(Vans::VansPcgCollisionPlan plan)
+{
+    m_CommittedPcgCollisionPlan=std::make_unique<Vans::VansPcgCollisionPlan>(std::move(plan));
+}
+bool VansGraphics::VansScene::InitializePcgPhysics(std::string& error)
+{
+    if(m_PcgPhysicsInstances || !m_CommittedPcgCollisionPlan) { error.clear(); return true; }
+    if(!m_RuntimeWorld) { error="Committed PCG Physics requires Scene runtime ownership"; return false; }
+    const auto meshes=[&](const Vans::VansAssetGuid& guid,std::shared_ptr<const Vans::VansTriangleMeshData>& data,std::string& detail)
+    {
+        const auto* mesh=dynamic_cast<const VansMesh*>(FindMeshAsset(guid.ToString()));
+        if(!mesh) { detail="Committed PCG collision CPU Model is not loaded: "+guid.ToString(); return false; }
+        return mesh->CaptureTriangleMeshData(Vans::MaximumPcgCollisionWorkingBytes/4,data,detail);
+    };
+    if(!Vans::VansPcgPhysicsInstances::Create(*m_RuntimeWorld,*m_CommittedPcgCollisionPlan,
+        meshes,m_PcgPhysicsInstances,error)) return false;
+    m_CommittedPcgCollisionPlan.reset(); return true;
 }
 
 void VansGraphics::VansScene::QueueVegetationUpdate(std::shared_ptr<const Vans::VansPcgBatchUpdate> update)
@@ -3136,6 +3420,8 @@ bool VansGraphics::VansScene::EvaluateExternalAnimationStep(
 void VansGraphics::VansScene::UploadAnimationRenderData(
 	const VansRenderSceneFrameSnapshot& snapshot)
 {
+	const auto* device = static_cast<const VansVKDevice*>(m_GraphicsDevice);
+	const std::uint32_t frameSlot = device->GetFrameResourceSlot();
 	for (const VansRenderAnimationFrameData& animation : snapshot.animations)
 	{
 		if (animation.animationNodeIndex >= m_AnimationNodes.size())
@@ -3143,7 +3429,7 @@ void VansGraphics::VansScene::UploadAnimationRenderData(
 		VansAnimationNode* animationNode = m_AnimationNodes[animation.animationNodeIndex];
 		const auto binding = m_AnimationGpuBindings.find(animationNode);
 		if (binding != m_AnimationGpuBindings.end())
-			binding->second->UploadPose(0, animation.boneMatrices);
+			binding->second->UploadPose(frameSlot, animation.boneMatrices);
 	}
 }
 
@@ -3162,7 +3448,6 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord(
         if (IsRenderNodeEnabledForCurrentFrame(node))
         {
             node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
-            node->UpdateDescriptorSets(m_MaterialManager);
         }
     };
 
@@ -3172,7 +3457,10 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord(
 		m_TerrainRenderNode->UpdateDescriptorSets(m_MaterialManager);
 		auto* terrainNode = static_cast<VansTerrainRenderNode*>(m_TerrainRenderNode);
 		if (VansTerrain* terrain = terrainNode->GetTerrain())
+		{
+			terrain->UpdateInteraction(sceneSnapshot.terrainInteraction);
 			terrain->Update(view.position, view.projection * view.view);
+		}
 	}
     updateNode(m_WaterRenderNode);
     updateNode(m_VegetationRenderNode);
@@ -3187,14 +3475,11 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord(
         updateNode(node);
     for (auto* node : m_PostProcessRenderNodes)
         updateNode(node);
-    // 贴花节点：更新 GBuffer2 descriptor 绑定
-    for (auto* node : m_DecalRenderNodes)
-        updateNode(node);
 }
 
 void VansGraphics::VansScene::MarkRenderNodeDescriptorSetsDirty()
 {
-	m_DecalPassDescriptorsDirty = true;
+	m_DecalPassDescriptorsDirty.fill(true);
 	auto markNode = [](VansRenderNode* node)
 	{
 		if (node != nullptr)
@@ -3335,6 +3620,20 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         GIInstanceMaterialGPU instanceMaterial = GIInstanceMaterialGPU::Resolve(0xffffffffu,
             alphaMaterial && alphaMaterial->m_AlphaTestEnabled,
             alphaMaterial ? alphaMaterial->m_AlphaCutoff : 0.0f);
+        const auto* clothMaterial = node->m_Material && node->m_Material->m_MaterialType == VAN_CLOTH
+            ? static_cast<const VansClothMaterial*>(node->m_Material) : nullptr;
+        if (clothMaterial)
+        {
+            const auto& parameters = clothMaterial->m_Params;
+            std::array<float, 3> reflectedDiffuse{};
+            for (size_t channel = 0; channel < reflectedDiffuse.size(); ++channel)
+                reflectedDiffuse[channel] = parameters.albedo[channel] *
+                    (1.0f - parameters.diffuseTransmittance[channel]);
+            instanceMaterial = GIInstanceMaterialGPU::ResolveCloth(0,
+                parameters.alphaMode == Vans::VansClothAlphaMode::Mask,
+                parameters.alphaCutoff, parameters.doubleSided, reflectedDiffuse, parameters.roughness);
+            instanceMaterial.clothMaterialIndex = static_cast<uint32_t>(clothMaterial->GetGlobalMaterialIndex());
+        }
         instance.flags = instanceMaterial.InstanceFlags();
         if (instanceMaterial.alphaCutoff > 0.0f) ++alphaTestInstances;
 
@@ -3353,7 +3652,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 		// material class flags in the high bits and the five-texture base index
 		// in the low bits; the closest-hit shader decodes the same contract.
 		constexpr uint32_t kInvalidGITextureIndex = 0xFFFFFFFFu;
-		constexpr uint32_t kGITextureIndexMask = 0x3FFFFFFFu;
+		constexpr uint32_t kGITextureIndexMask = GIInstanceMaterialGPU::TextureIndexMask;
 		constexpr uint32_t kGIPureEmissiveFlag = 0x40000000u;
 		constexpr uint32_t kGIPBREmissiveFlag = 0x80000000u;
 		uint32_t packedTextureIndex = kInvalidGITextureIndex;
@@ -3364,7 +3663,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 			const bool isPBR = materialType == VAN_PBR;
 			const bool isPureEmissive = materialType == VAN_EMISSIVE;
 			const bool isPBREmissive = materialType == VAN_PBR_EMISSIVE;
-			if (isPBR || isPureEmissive || isPBREmissive)
+			if (isPBR || isPureEmissive || isPBREmissive || clothMaterial)
 			{
 				const std::string materialKey = std::to_string(static_cast<uint32_t>(materialType)) + ":" +
 					node->m_Material->m_AssetName;
@@ -3373,6 +3672,8 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 				if (textureIndexIT == m_TlasInstanceMaterialToIndex.end())
 				{
 					textureIndex = static_cast<uint32_t>(m_TlasInstanceTextures.size());
+					if (clothMaterial && textureIndex + 5u > 2048u)
+						throw std::runtime_error("Cloth GI texture table exceeds its 2048 descriptor capacity");
 					m_TlasInstanceMaterialToIndex.emplace(materialKey, static_cast<int>(textureIndex));
 					if (isPBR)
 					{
@@ -3382,6 +3683,15 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 						m_TlasInstanceTextures.push_back(pbr->m_MetalTexture->GetImage());
 						m_TlasInstanceTextures.push_back(pbr->m_RoughnessTexture->GetImage());
 						m_TlasInstanceTextures.push_back(pbr->m_AoTexture->GetImage());
+					}
+					else if (clothMaterial)
+					{
+						m_TlasInstanceTextures.push_back(clothMaterial->m_BaseColorTexture->GetImage());
+						m_TlasInstanceTextures.push_back(clothMaterial->m_NormalTexture->GetImage());
+						m_TlasInstanceTextures.push_back((clothMaterial->m_OpacityTexture
+							? clothMaterial->m_OpacityTexture : clothMaterial->m_AoTexture)->GetImage());
+						m_TlasInstanceTextures.push_back(clothMaterial->m_RoughnessTexture->GetImage());
+						m_TlasInstanceTextures.push_back(clothMaterial->m_AoTexture->GetImage());
 					}
 					else
 					{
@@ -3407,6 +3717,8 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 				}
 
 				packedTextureIndex = textureIndex & kGITextureIndexMask;
+				if (clothMaterial)
+					packedTextureIndex |= instanceMaterial.packedTextureIndex & ~kGITextureIndexMask;
 				if (isPureEmissive)
 				{
 					auto* emissive = static_cast<VansEmissiveMaterial*>(node->m_Material);
@@ -3648,37 +3960,54 @@ bool VansGraphics::VansScene::CreateInstanceTransformBuffer(
     VkBufferUsageFlags usage,
     VkMemoryPropertyFlags memoryProperties)
 {
-    return m_InstanceTransformDataBuffer.CreatVulkanBuffer(
-        device,
-        std::max<VkDeviceSize>(size, sizeof(ModelDataStruct)),
-        VK_FORMAT_R32_SFLOAT,
-        usage,
-        memoryProperties);
+    for (VansVKBuffer& buffer : m_InstanceTransformDataBuffers)
+    {
+        if (buffer.CreatVulkanBuffer(device,
+            std::max<VkDeviceSize>(size, sizeof(ModelDataStruct)),
+            VK_FORMAT_R32_SFLOAT, usage, memoryProperties))
+            continue;
+        for (VansVKBuffer& allocated : m_InstanceTransformDataBuffers)
+            if (allocated.GetNativeBuffer() != VK_NULL_HANDLE)
+                allocated.DestroyVulkanBuffer(device);
+        return false;
+    }
+    return true;
 }
 
 bool VansGraphics::VansScene::SetInstanceTransformData(const ModelDataStruct& data, uint32_t slot)
 {
     const VkDeviceSize offset = static_cast<VkDeviceSize>(slot) * sizeof(ModelDataStruct);
-    return m_InstanceTransformDataBuffer.SetBufferData(&data, offset, sizeof(ModelDataStruct));
+    for (VansVKBuffer& buffer : m_InstanceTransformDataBuffers)
+        if (!buffer.SetBufferData(&data, offset, sizeof(ModelDataStruct)))
+            return false;
+    return true;
 }
 
 void VansGraphics::VansScene::UpdateMappedInstanceTransformData(const ModelDataStruct& data, uint32_t slot)
 {
     const VkDeviceSize offset = static_cast<VkDeviceSize>(slot) * sizeof(ModelDataStruct);
-    m_InstanceTransformDataBuffer.UpdateMapped(&data, offset, sizeof(ModelDataStruct));
+    auto* vkDevice = static_cast<VansVKDevice*>(m_GraphicsDevice);
+    m_InstanceTransformDataBuffers.at(vkDevice->GetFrameResourceSlot()).UpdateMapped(
+        &data, offset, sizeof(ModelDataStruct));
 }
 
 bool VansGraphics::VansScene::PersistentlyMapInstanceTransformBuffer()
 {
-    return m_InstanceTransformDataBuffer.PersistentMap();
+    for (VansVKBuffer& buffer : m_InstanceTransformDataBuffers)
+        if (!buffer.PersistentMap())
+            return false;
+    return true;
 }
 
 void VansGraphics::VansScene::CreateGlobalTransformDescriptorSet(VkDescriptorSetLayoutBinding binding)
 {
-    VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+    if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
         { binding },
         m_GlobalTransformDataSetLayout,
-        m_GlobalTransformDataDescriptorSets);
+        m_GlobalTransformDataDescriptorSets,
+        VansCommandRecordingConfig::MaximumFramesInFlight) ||
+        m_GlobalTransformDataDescriptorSets.size() != VansCommandRecordingConfig::MaximumFramesInFlight)
+        throw std::runtime_error("Failed to allocate per-slot transform descriptor sets");
     UpdateTransformDescriptorSet();
 }
 
@@ -3686,28 +4015,28 @@ void VansGraphics::VansScene::UpdateTransformDescriptorSet()
 {
     auto* descManager = VansVKDescriptorManager::GetInstance();
     descManager->BeginDescriptorUpdate();
-	if (!m_GlobalTransformDataDescriptorSets.empty())
+	for (std::uint32_t slot = 0; slot < m_GlobalTransformDataDescriptorSets.size(); ++slot)
 	{
 		descManager->WriteBufferDescriptor(
-			m_GlobalTransformDataDescriptorSets[0],
+			m_GlobalTransformDataDescriptorSets[slot],
 			PassBinding::BUFFER_0,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			{{
-				m_InstanceTransformDataBuffer.GetNativeBuffer(),
+				m_InstanceTransformDataBuffers.at(slot).GetNativeBuffer(),
 				0,
-				m_InstanceTransformDataBuffer.GetBufferSize()
+				m_InstanceTransformDataBuffers.at(slot).GetBufferSize()
 			}});
 	}
-	if (m_ObjectDescriptorSet != VK_NULL_HANDLE)
+	for (std::uint32_t slot = 0; slot < m_ObjectDescriptorSets.size(); ++slot)
 	{
 		descManager->WriteBufferDescriptor(
-			m_ObjectDescriptorSet,
+			m_ObjectDescriptorSets[slot],
 			OBJECT_BINDING_TRANSFORM_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			{{
-				m_InstanceTransformDataBuffer.GetNativeBuffer(),
+				m_InstanceTransformDataBuffers.at(slot).GetNativeBuffer(),
 				0,
-				m_InstanceTransformDataBuffer.GetBufferSize()
+				m_InstanceTransformDataBuffers.at(slot).GetBufferSize()
 			}});
 	}
     descManager->CommitDescriptorUpdates();
@@ -3715,7 +4044,7 @@ void VansGraphics::VansScene::UpdateTransformDescriptorSet()
 
 void VansGraphics::VansScene::UpdateObjectDescriptorSet()
 {
-	if (m_ObjectDescriptorSet == VK_NULL_HANDLE)
+	if (m_ObjectDescriptorSets.empty())
 		return;
 	auto* vkDevice = static_cast<VansVKDevice*>(m_GraphicsDevice);
 	if (vkDevice == nullptr || !vkDevice->GetDrawInstanceArena().IsReady())
@@ -3726,16 +4055,20 @@ void VansGraphics::VansScene::UpdateObjectDescriptorSet()
 	const VansVKBuffer& drawInstanceBuffer = vkDevice->GetDrawInstanceArena().GetBuffer();
 	auto* descManager = VansVKDescriptorManager::GetInstance();
 	descManager->BeginDescriptorUpdate();
-	descManager->WriteBufferDescriptor(
-		m_ObjectDescriptorSet,
-		OBJECT_BINDING_TRANSFORM_SSBO,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{m_InstanceTransformDataBuffer.GetNativeBuffer(), 0, m_InstanceTransformDataBuffer.GetBufferSize()}});
-	descManager->WriteBufferDescriptor(
-		m_ObjectDescriptorSet,
-		OBJECT_BINDING_DRAW_INSTANCE_SSBO,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{drawInstanceBuffer.GetNativeBuffer(), 0, drawInstanceBuffer.GetBufferSize()}});
+	for (std::uint32_t slot = 0; slot < m_ObjectDescriptorSets.size(); ++slot)
+	{
+		descManager->WriteBufferDescriptor(
+			m_ObjectDescriptorSets[slot],
+			OBJECT_BINDING_TRANSFORM_SSBO,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{m_InstanceTransformDataBuffers.at(slot).GetNativeBuffer(), 0,
+				m_InstanceTransformDataBuffers.at(slot).GetBufferSize()}});
+		descManager->WriteBufferDescriptor(
+			m_ObjectDescriptorSets[slot],
+			OBJECT_BINDING_DRAW_INSTANCE_SSBO,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{drawInstanceBuffer.GetNativeBuffer(), 0, drawInstanceBuffer.GetBufferSize()}});
+	}
 	descManager->CommitDescriptorUpdates();
 }
 
@@ -3751,45 +4084,58 @@ bool VansGraphics::VansScene::GrowTransformBuffer(VkDevice& device, uint32_t new
 
     VANS_LOG("[Scene] GrowTransformBuffer: " << oldCapacity << " -> " << newCapacity);
 
-    // ── 1. 创建新的更大 Buffer ───────────────────────────────────────────
     const VkDeviceSize newSize = sizeof(ModelDataStruct) * newCapacity;
-    VansVKBuffer newBuffer;
-    newBuffer.CreatVulkanBuffer(
-        device, newSize, VK_FORMAT_R32_SFLOAT,
-        VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-        VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-
-    // ── 2. 拷贝所有 Active Slot 到新 Buffer ──────────────────────────────
-    // slot 编号完全不变, 只是 buffer 容量变大
-    // 旧 Buffer 是 HOST_VISIBLE 持久映射的，直接从 CPU 映射内存读取
-    const uint8_t* oldMapped = static_cast<const uint8_t*>(m_InstanceTransformDataBuffer.GetMappedPtr());
-    for (uint32_t slot : m_TransformSlotAllocator.GetActiveSlots())
+    std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> newBuffers;
+    const auto releaseNewBuffers = [&]()
     {
-        VkDeviceSize offset = slot * sizeof(ModelDataStruct);
-        ModelDataStruct data;
-        if (oldMapped)
-            memcpy(&data, oldMapped + offset, sizeof(ModelDataStruct));
-        newBuffer.SetBufferData(&data, static_cast<int>(offset), sizeof(ModelDataStruct));
+        for (VansVKBuffer& buffer : newBuffers)
+            if (buffer.GetNativeBuffer() != VK_NULL_HANDLE)
+                buffer.DestroyVulkanBuffer(device);
+    };
+    for (std::uint32_t frameSlot = 0; frameSlot < newBuffers.size(); ++frameSlot)
+    {
+        VansVKBuffer& newBuffer = newBuffers[frameSlot];
+        if (!newBuffer.CreatVulkanBuffer(device, newSize, VK_FORMAT_R32_SFLOAT,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+        {
+            releaseNewBuffers();
+            return false;
+        }
+        const uint8_t* oldMapped = static_cast<const uint8_t*>(
+            m_InstanceTransformDataBuffers[frameSlot].GetMappedPtr());
+        for (uint32_t transformSlot : m_TransformSlotAllocator.GetActiveSlots())
+        {
+            const VkDeviceSize offset = static_cast<VkDeviceSize>(transformSlot) * sizeof(ModelDataStruct);
+            ModelDataStruct data{};
+            if (oldMapped)
+                std::memcpy(&data, oldMapped + offset, sizeof(ModelDataStruct));
+            if (!newBuffer.SetBufferData(&data, offset, sizeof(ModelDataStruct)))
+            {
+                releaseNewBuffers();
+                return false;
+            }
+        }
+        if (!newBuffer.PersistentMap())
+        {
+            releaseNewBuffers();
+            return false;
+        }
     }
 
-    // ── 3. 替换 Buffer（帧边界调用 + WaitIdle 确保 GPU 不在使用旧 Buffer）──
+    // Both old slot buffers remain valid until all GPU readers have retired.
     auto* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     if (vkDevice == nullptr || !vkDevice->WaitForDevice())
     {
         VANS_LOG_ERROR("[Scene] GrowTransformBuffer: failed to wait for device before buffer replacement");
-        newBuffer.DestroyVulkanBuffer(device);
+        releaseNewBuffers();
         return false;
     }
-    m_InstanceTransformDataBuffer.DestroyVulkanBuffer(device);
-    m_InstanceTransformDataBuffer = std::move(newBuffer);
-    m_InstanceTransformDataBuffer.PersistentMap();
+    m_InstanceTransformDataBuffers.swap(newBuffers);
+    releaseNewBuffers();
 
-    // ── 4. 更新 Allocator 容量 ───────────────────────────────────────────
     m_TransformSlotAllocator.SetMaxCapacity(newCapacity);
-
-    // ── 5. Re-write Descriptor Set 2 (指到新 Buffer) ─────────────────────
     UpdateTransformDescriptorSet();
 
     VANS_LOG("[Scene] GrowTransformBuffer: done, new capacity=" << newCapacity);
@@ -4008,6 +4354,12 @@ bool VansGraphics::VansScene::ApplyRuntimeComponentEnabled(
 
 	switch (component.typeId)
 	{
+	case Vans::VansRuntimeComponentType_NavigationSurface:
+	case Vans::VansRuntimeComponentType_NavigationSource:
+	case Vans::VansRuntimeComponentType_NavigationModifier:
+	case Vans::VansRuntimeComponentType_NavigationAgent:
+		// 这些纯配置组件的 enabled 权威已由 RuntimeWorld 提交；导航同步消费有效状态。
+		return m_RuntimeWorld->GetComponentHeader(component)!=nullptr;
 	case Vans::VansRuntimeComponentType_Transform:
 	case Vans::VansRuntimeComponentType_Vehicle:
 	case Vans::VansRuntimeComponentType_AudioReverbZone:
@@ -4369,7 +4721,7 @@ Vans::VansEntityHandle VansGraphics::VansScene::SpawnPhysicsInstance(
 	auto body = std::make_unique<VansEngine::VansPhysicsNode>();
 	const auto properties = Vans::VansBuildProjectilePhysicsProperties(request, boundsMin, boundsMax, pose.m_Scale);
 	body->SetName(render->m_NodeName);
-	body->Initialize(properties, render->m_TransformID, render->m_Mesh);
+	body->Initialize(properties, render->m_TransformID);
 	if (!body->HasActor())
 	{ body.reset(); m_TransformSlotAllocator.FreeSlot(slot); error = "Dynamic physics actor creation failed"; return {}; }
 	render->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);

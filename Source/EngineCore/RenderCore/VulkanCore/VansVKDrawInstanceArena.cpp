@@ -2,13 +2,15 @@
 
 #include "../../Util/VansLog.h"
 
-bool VansGraphics::VansVKDrawInstanceArena::Initialize(VkDevice device)
+bool VansGraphics::VansVKDrawInstanceArena::Initialize(VkDevice device, std::uint32_t recordsPerFrame)
 {
 	if (IsReady())
-		return true;
+		return m_RecordsPerFrame == recordsPerFrame;
+	if (recordsPerFrame == 0 || recordsPerFrame > RecordsPerFrame) return false;
+	m_RecordsPerFrame = recordsPerFrame;
 
 	const VkDeviceSize recordCount =
-		static_cast<VkDeviceSize>(RecordsPerFrame) * FrameSlotCount;
+		static_cast<VkDeviceSize>(m_RecordsPerFrame) * FrameSlotCount;
 	if (!m_Buffer.CreatVulkanBuffer(
 		device,
 		recordCount * sizeof(VansDrawInstanceDataGPU),
@@ -46,7 +48,7 @@ void VansGraphics::VansVKDrawInstanceArena::BeginFrame(std::uint32_t frameSlot)
 std::uint32_t VansGraphics::VansVKDrawInstanceArena::Upload(
 	const std::vector<VansDrawInstanceDataGPU>& records)
 {
-	const std::uint32_t frameBase = m_FrameSlot * RecordsPerFrame;
+	const std::uint32_t frameBase = m_FrameSlot * m_RecordsPerFrame;
 	if (records.empty())
 		return frameBase + m_RecordCount;
 	if (!IsReady())
@@ -54,11 +56,11 @@ std::uint32_t VansGraphics::VansVKDrawInstanceArena::Upload(
 		VANS_LOG_ERROR("[VansVKDrawInstanceArena] Upload requested before initialization.");
 		return InvalidRecordOffset;
 	}
-	if (records.size() > RecordsPerFrame - m_RecordCount)
+	if (records.size() > m_RecordsPerFrame - m_RecordCount)
 	{
 		VANS_LOG_ERROR("[VansVKDrawInstanceArena] Frame segment exhausted: requested="
 			<< records.size() << ", used=" << m_RecordCount
-			<< ", capacity=" << RecordsPerFrame);
+			<< ", capacity=" << m_RecordsPerFrame);
 		return InvalidRecordOffset;
 	}
 

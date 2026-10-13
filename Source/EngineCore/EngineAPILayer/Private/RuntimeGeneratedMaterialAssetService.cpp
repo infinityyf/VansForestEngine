@@ -270,29 +270,16 @@ Vans::VansMaterialAuthoringAsset BuildRuntimeMaterialAsset(
 
 	if (auto* cloth = dynamic_cast<VansGraphics::VansClothMaterial*>(material))
 	{
-		const char* clothModel = "fuzz";
-		if (cloth->m_ClothModel == VansGraphics::VansClothModel::Silk) clothModel = "silk";
-		else if (cloth->m_ClothModel == VansGraphics::VansClothModel::Thin) clothModel = "thin";
-
-		asset.materialType = "cloth";
-		asset.parameters = Vans::VansSerializedValue::Object({
-			{ "albedo", Vec3Value(cloth->m_BasePBRParam.m_albedo) },
-			{ "clothModel", Vans::VansSerializedValue::String(clothModel) },
-			{ "sheenRoughness", Vans::VansSerializedValue::Float(cloth->m_SheenRoughness) },
-			{ "sheenStrength", Vans::VansSerializedValue::Float(cloth->m_SheenStrength) },
-			{ "anisotropy", Vans::VansSerializedValue::Float(cloth->m_Anisotropy) },
-			{ "transmissionColor", Vec3Value(cloth->m_TransmissionColor) },
-			{ "translucency", Vans::VansSerializedValue::Float(cloth->m_Translucency) },
-			{ "thickness", Vans::VansSerializedValue::Float(cloth->m_Thickness) },
-			{ "ao", Vans::VansSerializedValue::Float(cloth->m_BasePBRParam.m_ao) }
-		});
-		if ((cloth->m_ClothFlags & VansGraphics::VANS_CLOTH_FLAG_ALBEDO_SHEEN_TINT) == 0u)
-			Vans::SetSerializedObjectField(asset.parameters, "sheenColor", Vec3Value(cloth->m_SheenColor));
+        asset.materialType = "cloth";
+        asset.parameters = Vans::WriteClothMaterialParameters(cloth->m_Params);
 		asset.textures = Vans::VansSerializedValue::Object({});
 		AddTextureRefIfResolvable(asset.textures, "basecolor", cloth->m_BaseColorTexture, database, rootName);
 		AddTextureRefIfResolvable(asset.textures, "normal", cloth->m_NormalTexture, database, rootName);
 		AddTextureRefIfResolvable(asset.textures, "roughness", cloth->m_RoughnessTexture, database, rootName);
 		AddTextureRefIfResolvable(asset.textures, "ao", cloth->m_AoTexture, database, rootName);
+        AddTextureRefIfResolvable(asset.textures, "sheenMask", cloth->m_SheenMaskTexture, database, rootName);
+        AddTextureRefIfResolvable(asset.textures, "fiberDirection", cloth->m_FiberDirectionTexture, database, rootName);
+        AddTextureRefIfResolvable(asset.textures, "opacity", cloth->m_OpacityTexture, database, rootName);
 		return asset;
 	}
 

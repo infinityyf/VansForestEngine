@@ -34,6 +34,8 @@ VansPcgResourcePlan BuildPcgResourcePlan(const VansPcgRecipeAsset& recipe,
     if (!plantErrors.empty()) { result.error=plantErrors.front(); return result; }
     for(const auto& variant:plant->variants) for(const auto& level:variant.lod.levels) for(const auto& part:level.parts)
      if(!add(part.model,VansAssetType::Model)||!add(part.material,VansAssetType::Material))return result;
+    for(const auto& variant:plant->variants)
+     if(variant.collision && !add(variant.collision->mesh,VansAssetType::Model,true))return result;
     for (const auto& variant : plant->variants) for (const auto& part : variant.parts) {
      if (!add(part.mesh,VansAssetType::Model,plant->category==VansPlantCategory::Grass) ||
          !add(part.material,VansAssetType::Material)) return result;

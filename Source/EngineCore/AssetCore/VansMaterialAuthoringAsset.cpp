@@ -1,5 +1,6 @@
 #include "VansMaterialAuthoringAsset.h"
 #include "../MaterialCore/VansHairMaterialParameters.h"
+#include "../MaterialCore/VansClothMaterialParameters.h"
 
 #include "Serialization/VansSerializedValueAccess.h"
 #include "VansAssetReference.h"
@@ -196,6 +197,26 @@ bool ReadMaterialAuthoringAsset(
         { error = "Hair requires an explicit linear alpha texture (red channel)"; return false; }
         if (hair.flowStrength > 0.0f && !FindObjectField(parsed.textures, "flow"))
         { error = "Hair flowStrength requires a flow texture"; return false; }
+    }
+    if (parsed.materialType == "cloth")
+    {
+        VansClothMaterialParameters cloth;
+        if (!ReadClothMaterialParameters(parsed.parameters, cloth, error)) return false;
+        parsed.parameters = WriteClothMaterialParameters(cloth);
+        if (parsed.textures.IsNull()) parsed.textures = VansSerializedValue::Object({});
+        if (parsed.textures.kind != VansSerializedValue::Kind::Object)
+        { error = "Cloth textures must be an object"; return false; }
+        std::vector<std::string> slots;
+        for (const auto& [slot, reference] : parsed.textures.objectFields)
+        {
+            if (!IsClothTextureSlot(slot))
+            { error = "Unknown Cloth texture slot: " + slot; return false; }
+            if (std::find(slots.begin(), slots.end(), slot) != slots.end())
+            { error = "Duplicate Cloth texture slot: " + slot; return false; }
+            slots.push_back(slot);
+        }
+        if (cloth.alphaMode == VansClothAlphaMode::Mask && !FindObjectField(parsed.textures, "opacity"))
+        { error = "Masked Cloth requires an explicit linear opacity texture"; return false; }
     }
     asset = std::move(parsed);
     return true;

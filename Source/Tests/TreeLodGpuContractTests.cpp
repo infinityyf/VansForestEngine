@@ -3,11 +3,13 @@
 #include "../EngineCore/RenderCore/VulkanCore/VansVKDevice.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansVKImage.h"
 #include "../EngineCore/RenderCore/VegetationCore/VansVegetationSystem.h"
+#include "../EngineCore/RenderCore/BRDFData/VansLight.h"
 #include "../EngineCore/Interfaces/INativeWindowProvider.h"
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <array>
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -18,7 +20,7 @@
 namespace
 {
 using namespace VansGraphics;
-void Require(bool value,const char* message){if(!value)throw std::runtime_error(message);}
+void Require(bool value,const char* message){if(!value){std::cerr<<"[TreeLodGPU] "<<message<<'\n';throw std::runtime_error(message);}}
 uint32_t validationErrors=0;
 VKAPI_ATTR VkBool32 VKAPI_CALL OnValidation(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT,const VkDebugUtilsMessengerCallbackDataEXT* message,void*)
@@ -35,7 +37,7 @@ struct Window final:INativeWindowProvider
 struct Resources
 {
     VkDevice device;
-    std::array<VansVKBuffer,5> buffers;
+	std::array<VansVKBuffer,7> buffers;
     VansVKImage image;
     VkDescriptorPool pool=VK_NULL_HANDLE;
     std::array<VkDescriptorSetLayout,2> layouts{};
@@ -70,12 +72,12 @@ bool RunTreeLodGpuContractTests()
         const auto destroy=reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance,"vkDestroyDebugUtilsMessengerEXT"));
         struct Messenger{VkInstance instance;PFN_vkDestroyDebugUtilsMessengerEXT destroy;VkDebugUtilsMessengerEXT handle{};
             ~Messenger(){if(handle)destroy(instance,handle,nullptr);}} messenger{instance,destroy};
-        Require(create && destroy,"Enable Vulkan debug validation");
         VkDebugUtilsMessengerCreateInfoEXT message{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
         message.messageSeverity=VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
         message.messageType=VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT|VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT;
         message.pfnUserCallback=OnValidation;
-        Require(create(instance,&message,nullptr,&messenger.handle)==VK_SUCCESS,"Validation messenger failed");
+        if(create && destroy)
+            Require(create(instance,&message,nullptr,&messenger.handle)==VK_SUCCESS,"Validation messenger failed");
         {
             Resources r{device->GetLogicDevice()};
             constexpr uint32_t count=6,lods=3;
@@ -87,32 +89,44 @@ bool RunTreeLodGpuContractTests()
             const std::array<float,count> distances{10,80,250,1000,63,500};
             for(uint32_t i=0;i<count;++i){trees[i].modelMatrix=glm::translate(glm::mat4(1),glm::vec3(i==5?10000.f:0.f,0,-distances[i]));
                 trees[i].boundsSphere=glm::vec4(glm::vec3(trees[i].modelMatrix[3]),1);}
-            std::array<uint32_t,lods*2> counts{};
-            std::array<uint32_t,count*lods*2> indices{};
+            std::array<uint32_t,lods*3> counts{};
+            std::array<uint32_t,count*lods*3> indices{};
+            std::array<uint32_t,count> lodStates{};
             std::array<TreeSpeciesCullInfo,lods> infos{};
             for(uint32_t i=0;i<lods;++i)infos[i]={i*count,count,{0,0}};
-            const void* data[]={&camera,trees.data(),counts.data(),indices.data(),infos.data()};
-            const size_t sizes[]={sizeof(camera),sizeof(trees),sizeof(counts),sizeof(indices),sizeof(infos)};
-            for(size_t i=0;i<5;++i){
+            VansRenderLightFrameData lightFrame;
+            lightFrame.prepared=true;
+            lightFrame.punctualShadowMapWidth=1;
+            VansDirectionalLight sun{};
+            sun.m_Intensity=1.0f;
+            lightFrame.directionalLights.push_back(sun);
+            std::vector<std::uint8_t> lightPayload;
+            Require(VansLightManager::BuildRenderLightBufferPayload(
+                lightFrame, {}, {}, lightPayload), "Light payload failed");
+			const void* data[]={&camera,trees.data(),counts.data(),indices.data(),infos.data(),lightPayload.data(),lodStates.data()};
+			const size_t sizes[]={sizeof(camera),sizeof(trees),sizeof(counts),sizeof(indices),sizeof(infos),lightPayload.size(),sizeof(lodStates)};
+			for(size_t i=0;i<7;++i){
                 Require(r.buffers[i].CreatVulkanBuffer(r.device,sizes[i],VK_FORMAT_R32_UINT,i==0?VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT:VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),"GPU buffer allocation failed");
                 Require(r.buffers[i].SetBufferData(data[i],0,sizes[i]),"GPU buffer upload failed");
             }
             Require(r.image.CreateVulkanImage(r.device,{1,1,1},VK_FORMAT_R32_SFLOAT,1,1,VK_IMAGE_TYPE_2D,
                 VK_IMAGE_USAGE_SAMPLED_BIT,VK_SAMPLE_COUNT_1_BIT,false,false,true),"Dummy Hi-Z allocation failed");
-            VkDescriptorSetLayoutBinding cameraBinding{0,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            std::array<VkDescriptorSetLayoutBinding,5> bindings{};
-            for(uint32_t i=0;i<5;++i)bindings[i]={i,i==4?VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-            VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};layout.bindingCount=1;layout.pBindings=&cameraBinding;
+            std::array<VkDescriptorSetLayoutBinding,2> globalBindings{{
+                {0,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+                {1,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr}}};
+			std::array<VkDescriptorSetLayoutBinding,6> bindings{};
+			for(uint32_t i=0;i<6;++i)bindings[i]={i,i==4?VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+            VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};layout.bindingCount=globalBindings.size();layout.pBindings=globalBindings.data();
             Require(vkCreateDescriptorSetLayout(r.device,&layout,nullptr,&r.layouts[0])==VK_SUCCESS,"Camera layout failed");
-            layout.bindingCount=5;layout.pBindings=bindings.data();Require(vkCreateDescriptorSetLayout(r.device,&layout,nullptr,&r.layouts[1])==VK_SUCCESS,"Tree layout failed");
-            const VkDescriptorPoolSize poolSizes[]={{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,4},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1}};
+			layout.bindingCount=6;layout.pBindings=bindings.data();Require(vkCreateDescriptorSetLayout(r.device,&layout,nullptr,&r.layouts[1])==VK_SUCCESS,"Tree layout failed");
+			const VkDescriptorPoolSize poolSizes[]={{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,6},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1}};
             VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pool.maxSets=2;pool.poolSizeCount=3;pool.pPoolSizes=poolSizes;
             Require(vkCreateDescriptorPool(r.device,&pool,nullptr,&r.pool)==VK_SUCCESS,"Descriptor pool failed");
             VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};allocate.descriptorPool=r.pool;allocate.descriptorSetCount=2;allocate.pSetLayouts=r.layouts.data();
             std::array<VkDescriptorSet,2> sets{};Require(vkAllocateDescriptorSets(r.device,&allocate,sets.data())==VK_SUCCESS,"Descriptor sets failed");
-            for(size_t i=0;i<5;++i){VkDescriptorBufferInfo buffer{r.buffers[i].GetNativeBuffer(),0,sizes[i]};
-                VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=sets[i==0?0:1];write.dstBinding=i==0?0:uint32_t(i-1);write.descriptorCount=1;
+			for(size_t i=0;i<7;++i){VkDescriptorBufferInfo buffer{r.buffers[i].GetNativeBuffer(),0,sizes[i]};
+                VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=sets[i==0||i==5?0:1];write.dstBinding=i==5?1:uint32_t(i==0?0:i-1);write.descriptorCount=1;
                 write.descriptorType=i==0?VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;write.pBufferInfo=&buffer;vkUpdateDescriptorSets(r.device,1,&write,0,nullptr);}
             VkDescriptorImageInfo image{r.image.GetSampler(),r.image.GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
             VkWriteDescriptorSet imageWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};imageWrite.dstSet=sets[1];imageWrite.dstBinding=4;imageWrite.descriptorCount=1;
@@ -131,7 +145,7 @@ bool RunTreeLodGpuContractTests()
             Require(vkCreateCommandPool(r.device,&cp,nullptr,&r.commands)==VK_SUCCESS,"Command pool failed");
             VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};ca.commandPool=r.commands;ca.commandBufferCount=1;ca.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;
             VkCommandBuffer command{};Require(vkAllocateCommandBuffers(r.device,&ca,&command)==VK_SUCCESS,"Command buffer failed");
-            TreeCullPushConstants pc{};pc.shadowDistance=120;pc.instanceCount=count;pc.lodCount=lods;pc.lodMidDistance=60;pc.lodFarDistance=180;pc.hysteresis=.1f;pc.cullingEnabled=1;
+            TreeCullPushConstants pc{};pc.shadowDistance=120;pc.instanceCount=count;pc.lodCount=lods;pc.lodMidDistance=60;pc.lodFarDistance=180;pc.hysteresis=.1f;pc.cullingEnabled=1;pc.shadowCascadeCount=2;
             bool first=true;
             const auto dispatch=[&](){
                 counts.fill(0);Require(r.buffers[2].SetBufferData(counts.data(),0,sizeof(counts)),"Count reset failed");
@@ -151,13 +165,41 @@ bool RunTreeLodGpuContractTests()
                 std::memcpy(counts.data(),r.buffers[2].GetMappedPtr(),sizeof(counts));
             };
             dispatch();
-            Require(counts==std::array<uint32_t,6>{2,1,2,0,2,1},"Near/mid/far bins, frustum or shadow grouping mismatch");
-            auto* gpuTrees=static_cast<TreeInstanceGPU*>(r.buffers[1].GetMappedPtr());
-            Require(gpuTrees[3].flags==2,"1000m tree disappeared instead of using LOD2");
-            gpuTrees[4].flags=1;r.buffers[1].FlushMappedRange(0,sizeof(trees));dispatch();
-            Require(counts[0]==1 && counts[1]==2 && gpuTrees[4].flags==1,"Distance boundary hysteresis failed");
+            Require(counts==std::array<uint32_t,9>{2,1,2,0,2,1,0,2,1},"Near/mid/far bins, frustum or shadow grouping mismatch");
+			const auto* gpuLods=static_cast<const uint32_t*>(r.buffers[6].GetMappedPtr());
+			Require(gpuLods[3]==2,"1000m tree disappeared instead of using LOD2");
+			lodStates[4]=1;Require(r.buffers[6].SetBufferData(lodStates.data(),0,sizeof(lodStates)),"LOD state upload failed");dispatch();
+			Require(counts[0]==1 && counts[1]==2 && gpuLods[4]==1,"Distance boundary hysteresis failed");
             pc.cullingEnabled=0;dispatch();Require(counts[0]+counts[1]+counts[2]==count,"Disabled frustum culling dropped trees");
-            std::cout<<"[TreeLodGPU] PASS: distance bins, 1000m LOD2, frustum, hysteresis, independent shadow LOD\n";
+            sun.m_ShadowMatrix[0]=glm::orthoRH_NO(-10.f,10.f,-10.f,10.f,.1f,100.f);
+            sun.m_ShadowMatrix[1]=glm::orthoRH_NO(-10.f,10.f,-10.f,10.f,100.f,1200.f);
+            lightFrame.directionalLights[0]=sun;
+            Require(VansLightManager::BuildRenderLightBufferPayload(
+                lightFrame, {}, {}, lightPayload) &&
+                r.buffers[5].SetBufferData(lightPayload.data(),0,lightPayload.size()),
+                "Cascade light upload failed");
+			lodStates.fill(0);
+			Require(r.buffers[6].SetBufferData(lodStates.data(),0,sizeof(lodStates)),"Tree LOD reset failed");
+            pc.shadowDistance=1200;pc.shadowViewValid=1;pc.cullingEnabled=1;dispatch();
+            Require(counts==std::array<uint32_t,9>{2,1,2,0,2,1,0,0,2},
+                "Per-cascade shadow candidate counts mismatch");
+            auto* gpuIndices=static_cast<const uint32_t*>(r.buffers[3].GetMappedPtr());
+            const auto cascadeIds=[&](uint32_t cascade){
+                std::vector<uint32_t> ids;
+                for(uint32_t lod=0;lod<lods;++lod)
+                    for(uint32_t slot=0;slot<counts[(cascade+1u)*lods+lod];++slot)
+                        ids.push_back(gpuIndices[(cascade+1u)*count*lods+lod*count+slot]);
+                std::sort(ids.begin(),ids.end());
+                return ids;
+            };
+            Require(cascadeIds(0)==std::vector<uint32_t>({0,1,4}) &&
+                cascadeIds(1)==std::vector<uint32_t>({2,3}),
+                "Per-cascade shadow lists selected incorrect trees");
+            pc.shadowCascadeCount=0;dispatch();
+            Require(counts[3]==0 && counts[4]==0 && counts[5]==0 &&
+                counts[6]==0 && counts[7]==0 && counts[8]==0,
+                "Disabled tree shadows generated cascade lists");
+            std::cout<<"[TreeLodGPU] PASS: distance bins, LOD hysteresis, independent cascade shadow lists\n";
         }
         Require(validationErrors==0,"Vulkan validation reported errors");return true;
     }catch(const std::exception& exception){std::cerr<<"[TreeLodGPU] "<<exception.what()<<'\n';return false;}

@@ -1019,7 +1019,8 @@ void VansAnimationNode::PrepareAnimationFrame(
 				m_Skeleton,
 				deltaTime,
 				VansExternalPoseEvaluationMode::TargetPostProcess,
-				true))
+				true,
+				&m_SourceController->GetSampledCurves()))
 			{
 				VANS_LOG_WARN("[Retarget] " << m_Name
 					<< ": target pose submission failed; using target fallback update");

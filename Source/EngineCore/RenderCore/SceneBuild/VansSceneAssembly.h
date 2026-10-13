@@ -21,6 +21,8 @@ public:
 		VkDevice& device,
 		const Vans::VansSceneObjectBuildPlan& buildPlan,
 		const std::string& projectRoot);
+	// 对象和环境源发布完成后装配导航、AI 与 Timeline；追加对象复用现有 owner。
+	static VansSceneObjectBuildResult InitializeDomains(VansScene& scene);
 
 private:
 	explicit VansSceneAssembly(VansScene& scene)
@@ -30,6 +32,7 @@ private:
 		  m_RuntimeWorld(scene.m_RuntimeWorld),
 		  m_GameplayRuntime(scene.m_GameplayRuntime),
 		  m_AIWorld(scene.m_AIWorld),
+		  m_NavigationRuntime(scene.m_NavigationRuntime),
 		  m_TimelineRuntime(scene.m_TimelineRuntime),
 		  m_CameraControlArbiter(scene.m_CameraControlArbiter),
 		  m_TransformGraph(scene.m_TransformGraph),
@@ -45,6 +48,7 @@ private:
 		VkDevice& device,
 		const Vans::VansSceneObjectBuildPlan& buildPlan,
 		const std::string& projectRoot);
+	VansSceneObjectBuildResult InitializeDomainsInternal();
 
 	VansScene& m_Scene;
 	decltype(VansScene::m_SceneObjects)& m_SceneObjects;
@@ -53,6 +57,7 @@ private:
 	decltype(VansScene::m_RuntimeWorld)& m_RuntimeWorld;
 	decltype(VansScene::m_GameplayRuntime)& m_GameplayRuntime;
 	decltype(VansScene::m_AIWorld)& m_AIWorld;
+	decltype(VansScene::m_NavigationRuntime)& m_NavigationRuntime;
 	decltype(VansScene::m_TimelineRuntime)& m_TimelineRuntime;
 	decltype(VansScene::m_CameraControlArbiter)& m_CameraControlArbiter;
 	decltype(VansScene::m_TransformGraph)& m_TransformGraph;

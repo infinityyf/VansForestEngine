@@ -54,6 +54,8 @@ class VansEditorRuntimeHost final :
 	Vans::VansSceneAuthoringResult SetSceneValue(
 		const Vans::DocumentPropertyPath& path,
 		Vans::VansSerializedValue value) override;
+    Vans::VansSceneAuthoringResult CommitSceneValues(std::vector<Vans::VansSceneAuthoringValue> values,
+        std::uint64_t expectedState,const Vans::VansSceneAuthoringCommit& commit) override;
 
   private:
 	bool StartCoreSystems();

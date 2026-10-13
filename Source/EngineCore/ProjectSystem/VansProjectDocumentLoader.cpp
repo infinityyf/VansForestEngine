@@ -1,3 +1,4 @@
+#include "../NavigationCore/Storage/VansNavigationSettingsStorage.h"
 #include "VansProjectDocumentLoader.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
@@ -69,7 +70,7 @@ VansProjectDocumentLoadResult VansProjectDocumentLoader::Load(const std::string&
 		const std::string path = projectRoot + config.navigationSettings;
 		VansNavigationSettings settings;
 		std::string error;
-		if (VansProjectSettingsStorage::LoadNavigationSettings(path, settings, error) &&
+		if (VansNavigationSettingsStorage::Load(path, settings, error) &&
 			result.m_Documents.m_Settings.SetNavigationSettings(settings, &error))
 		{
 			result.m_LoadedAny = true;

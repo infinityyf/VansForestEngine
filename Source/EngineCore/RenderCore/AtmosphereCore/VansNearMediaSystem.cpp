@@ -225,19 +225,23 @@ bool VansLocalFogFieldResourceTable::Initialize(
 		return false;
 	}
 
-	m_MetadataBufferCreated = m_MetadataBuffer.CreatVulkanBuffer(
-		logicalDevice,
-		sizeof(VansLocalFogFieldSampleMetadataGPU) * MaxLocalFogFieldSampleHandles,
-		VK_FORMAT_R32_UINT,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	if (!m_MetadataBufferCreated)
+	for (std::size_t slot = 0; slot < m_MetadataBuffers.size(); ++slot)
 	{
-		Shutdown();
-		return false;
+		m_MetadataBufferCreated[slot] = m_MetadataBuffers[slot].CreatVulkanBuffer(
+			logicalDevice,
+			sizeof(VansLocalFogFieldSampleMetadataGPU) * MaxLocalFogFieldSampleHandles,
+			VK_FORMAT_R32_UINT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		if (!m_MetadataBufferCreated[slot])
+		{
+			Shutdown();
+			return false;
+		}
 	}
 	BeginBuild();
-	EndBuild();
+	for (std::uint32_t slot = 0; slot < m_MetadataBuffers.size(); ++slot)
+		EndBuild(slot);
 	return true;
 }
 
@@ -425,9 +429,9 @@ void VansLocalFogFieldResourceTable::ReportInvalidSourceOnce(
 		VANS_LOG_ERROR("[LocalFogField] " << message);
 }
 
-bool VansLocalFogFieldResourceTable::EndBuild()
+bool VansLocalFogFieldResourceTable::EndBuild(std::uint32_t slot)
 {
-	if (!m_NeutralTexture || !m_MetadataBufferCreated)
+	if (!m_NeutralTexture || !m_MetadataBufferCreated.at(slot))
 		return false;
 	const VkDescriptorImageInfo neutralInfo{
 		m_ClampToEdgeSampler,
@@ -455,13 +459,13 @@ bool VansLocalFogFieldResourceTable::EndBuild()
 		HashBytes(signature, &info.imageLayout, sizeof(info.imageLayout));
 	}
 	HashBytes(signature, upload.data(), upload.size() * sizeof(upload.front()));
-	const bool changed = !m_HasSignature || signature != m_Signature;
+	const bool changed = !m_HasSignature[slot] || signature != m_Signatures[slot];
 	if (changed)
 	{
-		m_MetadataBuffer.SetBufferData(upload.data(), 0,
+		m_MetadataBuffers[slot].SetBufferData(upload.data(), 0,
 			upload.size() * sizeof(upload.front()));
-		m_Signature = signature;
-		m_HasSignature = true;
+		m_Signatures[slot] = signature;
+		m_HasSignature[slot] = true;
 		VANS_LOG("[LocalFogField] active descriptors="
 			<< (m_BuildDescriptors.size() - 1u) << "/"
 			<< (MaxLocalFogFieldTextureDescriptors - 1u)
@@ -471,10 +475,10 @@ bool VansLocalFogFieldResourceTable::EndBuild()
 	return changed;
 }
 
-VkDescriptorBufferInfo VansLocalFogFieldResourceTable::GetMetadataDescriptor() const
+VkDescriptorBufferInfo VansLocalFogFieldResourceTable::GetMetadataDescriptor(std::uint32_t slot) const
 {
 	return {
-		m_MetadataBuffer.GetNativeBuffer(), 0,
+		m_MetadataBuffers.at(slot).GetNativeBuffer(), 0,
 		sizeof(VansLocalFogFieldSampleMetadataGPU) * MaxLocalFogFieldSampleHandles
 	};
 }
@@ -484,8 +488,12 @@ void VansLocalFogFieldResourceTable::Shutdown()
 	if (m_Device)
 	{
 		VkDevice& logicalDevice = m_Device->GetLogicDevice();
-		if (m_MetadataBufferCreated)
-			m_MetadataBuffer.DestroyVulkanBuffer(logicalDevice);
+		for (std::size_t slot = 0; slot < m_MetadataBuffers.size(); ++slot)
+		{
+			if (m_MetadataBufferCreated[slot])
+				m_MetadataBuffers[slot].DestroyVulkanBuffer(logicalDevice);
+			m_MetadataBufferCreated[slot] = false;
+		}
 		delete m_NeutralTexture;
 		VansVKSampler::DestroySampler(logicalDevice, m_RepeatSampler);
 		VansVKSampler::DestroySampler(logicalDevice, m_ClampToEdgeSampler);
@@ -494,14 +502,13 @@ void VansLocalFogFieldResourceTable::Shutdown()
 	m_Device = nullptr;
 	m_Scene = nullptr;
 	m_NeutralTexture = nullptr;
-	m_MetadataBufferCreated = false;
 	m_BuildDescriptors.clear();
 	m_BuildSamples.clear();
 	m_BuildMetadata.clear();
 	m_DescriptorInfos.clear();
 	m_ReportedInvalidSources.clear();
-	m_Signature = 0u;
-	m_HasSignature = false;
+	m_Signatures.fill(0u);
+	m_HasSignature.fill(false);
 }
 
 bool VansNearMediaSystem::Initialize(VansVKDevice& device, VansScene& scene,
@@ -548,27 +555,30 @@ bool VansNearMediaSystem::CreateResources()
 	m_LocalFogTileIndexScratch.reserve(
 		tileCount * MaxLocalFogCandidatesPerTile);
 	VkDevice device = m_Device->GetLogicDevice();
-	m_ParamsBufferCreated = m_ParamsBuffer.CreatVulkanBuffer(
-		device, sizeof(VansNearMediaParamsGPU), VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_LocalFogVolumesBufferCreated = m_LocalFogVolumesBuffer.CreatVulkanBuffer(
-		device, sizeof(VansLocalFogVolumeGPU) * MaxLocalFogVolumes,
-		VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_LocalFogTileHeadersBufferCreated = m_LocalFogTileHeadersBuffer.CreatVulkanBuffer(
-		device, sizeof(glm::uvec2) * tileCount, VK_FORMAT_R32_UINT,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_LocalFogTileIndicesBufferCreated = m_LocalFogTileIndicesBuffer.CreatVulkanBuffer(
-		device, sizeof(std::uint32_t) * tileCount * MaxLocalFogCandidatesPerTile,
-		VK_FORMAT_R32_UINT,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	if (!m_ParamsBufferCreated || !m_LocalFogVolumesBufferCreated ||
-		!m_LocalFogTileHeadersBufferCreated || !m_LocalFogTileIndicesBufferCreated)
-		return false;
+	for (FrameBuffers& frame : m_FrameBuffers)
+	{
+		frame.paramsCreated = frame.params.CreatVulkanBuffer(
+			device, sizeof(VansNearMediaParamsGPU), VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		frame.localFogVolumesCreated = frame.localFogVolumes.CreatVulkanBuffer(
+			device, sizeof(VansLocalFogVolumeGPU) * MaxLocalFogVolumes,
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		frame.localFogTileHeadersCreated = frame.localFogTileHeaders.CreatVulkanBuffer(
+			device, sizeof(glm::uvec2) * tileCount, VK_FORMAT_R32_UINT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		frame.localFogTileIndicesCreated = frame.localFogTileIndices.CreatVulkanBuffer(
+			device, sizeof(std::uint32_t) * tileCount * MaxLocalFogCandidatesPerTile,
+			VK_FORMAT_R32_UINT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		if (!frame.paramsCreated || !frame.localFogVolumesCreated ||
+			!frame.localFogTileHeadersCreated || !frame.localFogTileIndicesCreated)
+			return false;
+	}
 	if (!m_LocalFogFieldResources.Initialize(*m_Device, *m_Scene))
 		return false;
 	const VkExtent3D extent{ m_GridWidth, m_GridHeight, m_Quality.slices };
@@ -622,31 +632,37 @@ bool VansNearMediaSystem::CreateVolumetricParticleResources()
 	const std::size_t tileCount =
 		static_cast<std::size_t>(m_GridWidth) * m_GridHeight;
 	VkDevice device = m_Device->GetLogicDevice();
-	m_VolumetricParticlesBufferCreated =
-		m_VolumetricParticlesBuffer.CreatVulkanBuffer(
+	bool buffersCreated = true;
+	for (FrameBuffers& frame : m_FrameBuffers)
+	{
+		frame.volumetricParticlesCreated = frame.volumetricParticles.CreatVulkanBuffer(
 			device,
 			sizeof(VansVolumetricParticleInstanceData) * MaxVolumetricParticles,
 			VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_VolumetricParticleTileHeadersBufferCreated =
-		m_VolumetricParticleTileHeadersBuffer.CreatVulkanBuffer(
-			device, sizeof(glm::uvec2) * tileCount, VK_FORMAT_R32_UINT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_VolumetricParticleTileIndicesBufferCreated =
-		m_VolumetricParticleTileIndicesBuffer.CreatVulkanBuffer(
-			device,
-			sizeof(std::uint32_t) * tileCount *
-				MaxVolumetricParticleCandidatesPerTile,
-			VK_FORMAT_R32_UINT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_VolumetricParticleParamsBufferCreated =
-		m_VolumetricParticleParamsBuffer.CreatVulkanBuffer(
+		frame.volumetricParticleTileHeadersCreated =
+			frame.volumetricParticleTileHeaders.CreatVulkanBuffer(
+				device, sizeof(glm::uvec2) * tileCount, VK_FORMAT_R32_UINT,
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		frame.volumetricParticleTileIndicesCreated =
+			frame.volumetricParticleTileIndices.CreatVulkanBuffer(
+				device,
+				sizeof(std::uint32_t) * tileCount *
+					MaxVolumetricParticleCandidatesPerTile,
+				VK_FORMAT_R32_UINT,
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		frame.volumetricParticleParamsCreated = frame.volumetricParticleParams.CreatVulkanBuffer(
 			device, sizeof(VansVolumetricParticleParamsGPU), VK_FORMAT_R32_UINT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		buffersCreated &= frame.volumetricParticlesCreated &&
+			frame.volumetricParticleTileHeadersCreated &&
+			frame.volumetricParticleTileIndicesCreated &&
+			frame.volumetricParticleParamsCreated;
+	}
 
 	const VkExtent3D extent{ m_GridWidth, m_GridHeight, m_Quality.slices };
 	const bool imagesCreated =
@@ -658,10 +674,7 @@ bool VansNearMediaSystem::CreateVolumetricParticleResources()
 			device, extent, VK_FORMAT_R16_SFLOAT, 1, 1,
 			VK_IMAGE_TYPE_3D, NearMediaUsage, VK_SAMPLE_COUNT_1_BIT,
 			false, false, true, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
-	if (!m_VolumetricParticlesBufferCreated ||
-		!m_VolumetricParticleTileHeadersBufferCreated ||
-		!m_VolumetricParticleTileIndicesBufferCreated ||
-		!m_VolumetricParticleParamsBufferCreated || !imagesCreated ||
+	if (!buffersCreated || !imagesCreated ||
 		!CreateVolumetricParticleDescriptors())
 	{
 		DestroyVolumetricParticleDescriptors();
@@ -737,79 +750,84 @@ bool VansNearMediaSystem::CreateDescriptors()
 		m_PassLayout))
 		return false;
 	std::vector<VkDescriptorSet> sets;
-	if (!descriptors->AllocateDescriptorSet(
-		{ m_PassLayout, m_PassLayout }, sets,
-		VansDescriptorLifetimeRole::ScenePersistent) || sets.size() != 2)
+	const std::vector<VkDescriptorSetLayout> layouts(
+		m_PassSets.size() * 2, m_PassLayout);
+	if (!descriptors->AllocateDescriptorSet(layouts, sets,
+		VansDescriptorLifetimeRole::ScenePersistent) || sets.size() != layouts.size())
 		return false;
-	m_PassSets[0] = sets[0];
-	m_PassSets[1] = sets[1];
+	for (std::size_t slot = 0; slot < m_PassSets.size(); ++slot)
+	for (std::uint32_t target = 0; target < 2; ++target)
+		m_PassSets[slot][target] = sets[slot * 2 + target];
 	auto* renderPasses = VansRenderPassManager::GetInstance();
+	for (std::uint32_t slot = 0; slot < m_PassSets.size(); ++slot)
 	for (std::uint32_t target = 0; target < 2; ++target)
 	{
+		const FrameBuffers& frame = m_FrameBuffers[slot];
+		const VkDescriptorSet passSet = m_PassSets[slot][target];
 		descriptors->BeginDescriptorUpdate();
-		descriptors->WriteImageDescriptor(m_PassSets[target], 0,
+		descriptors->WriteImageDescriptor(passSet, 0,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_RawInjection.GetSampler(), m_RawInjection.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_PassSets[target], 1,
+		descriptors->WriteImageDescriptor(passSet, 1,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{ m_Injection[target ^ 1u].GetSampler(), m_Injection[target ^ 1u].GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteBufferDescriptor(m_PassSets[target], 2,
+		descriptors->WriteBufferDescriptor(passSet, 2,
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			{{ m_ParamsBuffer.GetNativeBuffer(), 0, sizeof(VansNearMediaParamsGPU) }});
-		descriptors->WriteImageDescriptor(m_PassSets[target], 3,
+			{{ frame.params.GetNativeBuffer(), 0, sizeof(VansNearMediaParamsGPU) }});
+		descriptors->WriteImageDescriptor(passSet, 3,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{ renderPasses->GetCascadeShadowSampler(), renderPasses->GetCascadeShadowArrayView(),
 			   VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
-		descriptors->WriteImageDescriptor(m_PassSets[target], 4,
+		descriptors->WriteImageDescriptor(passSet, 4,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			renderPasses->GetPunctualShadowDescriptorInfos());
-		descriptors->WriteImageDescriptor(m_PassSets[target], 5,
+		descriptors->WriteImageDescriptor(passSet, 5,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_Scattering.GetSampler(), m_Scattering.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_PassSets[target], 6,
+		descriptors->WriteImageDescriptor(passSet, 6,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_OpticalDepth.GetSampler(), m_OpticalDepth.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteBufferDescriptor(m_PassSets[target], 7,
+		descriptors->WriteBufferDescriptor(passSet, 7,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ m_LocalFogVolumesBuffer.GetNativeBuffer(), 0,
+			{{ frame.localFogVolumes.GetNativeBuffer(), 0,
 			   sizeof(VansLocalFogVolumeGPU) * MaxLocalFogVolumes }});
 		const VkDeviceSize tileCount = static_cast<VkDeviceSize>(m_GridWidth) * m_GridHeight;
-		descriptors->WriteBufferDescriptor(m_PassSets[target], 8,
+		descriptors->WriteBufferDescriptor(passSet, 8,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ m_LocalFogTileHeadersBuffer.GetNativeBuffer(), 0,
+			{{ frame.localFogTileHeaders.GetNativeBuffer(), 0,
 			   sizeof(glm::uvec2) * tileCount }});
-		descriptors->WriteBufferDescriptor(m_PassSets[target], 9,
+		descriptors->WriteBufferDescriptor(passSet, 9,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ m_LocalFogTileIndicesBuffer.GetNativeBuffer(), 0,
+			{{ frame.localFogTileIndices.GetNativeBuffer(), 0,
 			   sizeof(std::uint32_t) * tileCount * MaxLocalFogCandidatesPerTile }});
-		descriptors->WriteImageDescriptor(m_PassSets[target], 10,
+		descriptors->WriteImageDescriptor(passSet, 10,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			m_LocalFogFieldResources.GetDescriptorInfos());
-		descriptors->WriteBufferDescriptor(m_PassSets[target], 11,
+		descriptors->WriteBufferDescriptor(passSet, 11,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{ m_LocalFogFieldResources.GetMetadataDescriptor() });
-		descriptors->WriteImageDescriptor(m_PassSets[target], 12,
+			{ m_LocalFogFieldResources.GetMetadataDescriptor(slot) });
+		descriptors->WriteImageDescriptor(passSet, 12,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_Injection[target].GetSampler(), m_Injection[target].GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_PassSets[target], 19,
+		descriptors->WriteImageDescriptor(passSet, 19,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_MaterialScatteringExtinction.GetSampler(),
 			   m_MaterialScatteringExtinction.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_PassSets[target], 20,
+		descriptors->WriteImageDescriptor(passSet, 20,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_MaterialLightingPhaseCloud.GetSampler(),
 			   m_MaterialLightingPhaseCloud.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_PassSets[target], 21,
+		descriptors->WriteImageDescriptor(passSet, 21,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_MaterialEmissiveWeight.GetSampler(),
 			   m_MaterialEmissiveWeight.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_PassSets[target], 22,
+		descriptors->WriteImageDescriptor(passSet, 22,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{ m_MaterialScatteringExtinction.GetSampler(),
 			   m_MaterialScatteringExtinction.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 		descriptors->CommitDescriptorUpdates();
 	}
-	m_LocalFogFieldDescriptorsDirty = false;
+	m_LocalFogFieldDescriptorsDirty.fill(false);
 	return true;
 }
 
@@ -826,100 +844,105 @@ bool VansNearMediaSystem::CreateVolumetricParticleDescriptors()
 		m_VolumetricParticlePassLayout))
 		return false;
 	std::vector<VkDescriptorSet> sets;
-	if (!descriptors->AllocateDescriptorSet(
-		{ m_VolumetricParticlePassLayout, m_VolumetricParticlePassLayout },
-		sets, VansDescriptorLifetimeRole::ScenePersistent) || sets.size() != 2)
+	const std::vector<VkDescriptorSetLayout> layouts(
+		m_VolumetricParticlePassSets.size() * 2, m_VolumetricParticlePassLayout);
+	if (!descriptors->AllocateDescriptorSet(layouts,
+		sets, VansDescriptorLifetimeRole::ScenePersistent) || sets.size() != layouts.size())
 		return false;
-	m_VolumetricParticlePassSets[0] = sets[0];
-	m_VolumetricParticlePassSets[1] = sets[1];
+	for (std::size_t slot = 0; slot < m_VolumetricParticlePassSets.size(); ++slot)
+	for (std::uint32_t target = 0; target < 2; ++target)
+		m_VolumetricParticlePassSets[slot][target] = sets[slot * 2 + target];
 
 	auto* renderPasses = VansRenderPassManager::GetInstance();
 	const VkDeviceSize tileCount =
 		static_cast<VkDeviceSize>(m_GridWidth) * m_GridHeight;
+	for (std::uint32_t slot = 0; slot < m_VolumetricParticlePassSets.size(); ++slot)
 	for (std::uint32_t target = 0; target < 2; ++target)
 	{
+		const FrameBuffers& frame = m_FrameBuffers[slot];
+		const VkDescriptorSet passSet = m_VolumetricParticlePassSets[slot][target];
 		descriptors->BeginDescriptorUpdate();
-		descriptors->WriteImageDescriptor(m_VolumetricParticlePassSets[target], 0,
+		descriptors->WriteImageDescriptor(passSet, 0,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_RawInjection.GetSampler(), m_RawInjection.GetImageView(),
 			   VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_VolumetricParticlePassSets[target], 1,
+		descriptors->WriteImageDescriptor(passSet, 1,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{ m_Injection[target ^ 1u].GetSampler(),
 			   m_Injection[target ^ 1u].GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteBufferDescriptor(m_VolumetricParticlePassSets[target], 2,
+		descriptors->WriteBufferDescriptor(passSet, 2,
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			{{ m_ParamsBuffer.GetNativeBuffer(), 0, sizeof(VansNearMediaParamsGPU) }});
-		descriptors->WriteImageDescriptor(m_VolumetricParticlePassSets[target], 3,
+			{{ frame.params.GetNativeBuffer(), 0, sizeof(VansNearMediaParamsGPU) }});
+		descriptors->WriteImageDescriptor(passSet, 3,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{ renderPasses->GetCascadeShadowSampler(),
 			   renderPasses->GetCascadeShadowArrayView(),
 			   VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
-		descriptors->WriteImageDescriptor(m_VolumetricParticlePassSets[target], 4,
+		descriptors->WriteImageDescriptor(passSet, 4,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			renderPasses->GetPunctualShadowDescriptorInfos());
-		descriptors->WriteBufferDescriptor(m_VolumetricParticlePassSets[target], 7,
+		descriptors->WriteBufferDescriptor(passSet, 7,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ m_LocalFogVolumesBuffer.GetNativeBuffer(), 0,
+			{{ frame.localFogVolumes.GetNativeBuffer(), 0,
 			   sizeof(VansLocalFogVolumeGPU) * MaxLocalFogVolumes }});
-		descriptors->WriteBufferDescriptor(m_VolumetricParticlePassSets[target], 8,
+		descriptors->WriteBufferDescriptor(passSet, 8,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ m_LocalFogTileHeadersBuffer.GetNativeBuffer(), 0,
+			{{ frame.localFogTileHeaders.GetNativeBuffer(), 0,
 			   sizeof(glm::uvec2) * tileCount }});
-		descriptors->WriteBufferDescriptor(m_VolumetricParticlePassSets[target], 9,
+		descriptors->WriteBufferDescriptor(passSet, 9,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ m_LocalFogTileIndicesBuffer.GetNativeBuffer(), 0,
+			{{ frame.localFogTileIndices.GetNativeBuffer(), 0,
 			   sizeof(std::uint32_t) * tileCount * MaxLocalFogCandidatesPerTile }});
-		descriptors->WriteImageDescriptor(m_VolumetricParticlePassSets[target], 10,
+		descriptors->WriteImageDescriptor(passSet, 10,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			m_LocalFogFieldResources.GetDescriptorInfos());
-		descriptors->WriteBufferDescriptor(m_VolumetricParticlePassSets[target], 11,
+		descriptors->WriteBufferDescriptor(passSet, 11,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{ m_LocalFogFieldResources.GetMetadataDescriptor() });
-		descriptors->WriteImageDescriptor(m_VolumetricParticlePassSets[target], 12,
+			{ m_LocalFogFieldResources.GetMetadataDescriptor(slot) });
+		descriptors->WriteImageDescriptor(passSet, 12,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_Injection[target].GetSampler(), m_Injection[target].GetImageView(),
 			   VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteBufferDescriptor(m_VolumetricParticlePassSets[target], 13,
+		descriptors->WriteBufferDescriptor(passSet, 13,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ m_VolumetricParticlesBuffer.GetNativeBuffer(), 0,
+			{{ frame.volumetricParticles.GetNativeBuffer(), 0,
 			   sizeof(VansVolumetricParticleInstanceData) * MaxVolumetricParticles }});
-		descriptors->WriteBufferDescriptor(m_VolumetricParticlePassSets[target], 14,
+		descriptors->WriteBufferDescriptor(passSet, 14,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ m_VolumetricParticleTileHeadersBuffer.GetNativeBuffer(), 0,
+			{{ frame.volumetricParticleTileHeaders.GetNativeBuffer(), 0,
 			   sizeof(glm::uvec2) * tileCount }});
-		descriptors->WriteBufferDescriptor(m_VolumetricParticlePassSets[target], 15,
+		descriptors->WriteBufferDescriptor(passSet, 15,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ m_VolumetricParticleTileIndicesBuffer.GetNativeBuffer(), 0,
+			{{ frame.volumetricParticleTileIndices.GetNativeBuffer(), 0,
 			   sizeof(std::uint32_t) * tileCount *
 				MaxVolumetricParticleCandidatesPerTile }});
-		descriptors->WriteBufferDescriptor(m_VolumetricParticlePassSets[target], 16,
+		descriptors->WriteBufferDescriptor(passSet, 16,
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			{{ m_VolumetricParticleParamsBuffer.GetNativeBuffer(), 0,
+			{{ frame.volumetricParticleParams.GetNativeBuffer(), 0,
 			   sizeof(VansVolumetricParticleParamsGPU) }});
-		descriptors->WriteImageDescriptor(m_VolumetricParticlePassSets[target], 17,
+		descriptors->WriteImageDescriptor(passSet, 17,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_VolumetricParticleActivity[target].GetSampler(),
 			   m_VolumetricParticleActivity[target].GetImageView(),
 			   VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_VolumetricParticlePassSets[target], 18,
+		descriptors->WriteImageDescriptor(passSet, 18,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{ m_VolumetricParticleActivity[target ^ 1u].GetSampler(),
 			   m_VolumetricParticleActivity[target ^ 1u].GetImageView(),
 			   VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_VolumetricParticlePassSets[target], 19,
+		descriptors->WriteImageDescriptor(passSet, 19,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_MaterialScatteringExtinction.GetSampler(),
 			   m_MaterialScatteringExtinction.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_VolumetricParticlePassSets[target], 20,
+		descriptors->WriteImageDescriptor(passSet, 20,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_MaterialLightingPhaseCloud.GetSampler(),
 			   m_MaterialLightingPhaseCloud.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_VolumetricParticlePassSets[target], 21,
+		descriptors->WriteImageDescriptor(passSet, 21,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			{{ m_MaterialEmissiveWeight.GetSampler(),
 			   m_MaterialEmissiveWeight.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_VolumetricParticlePassSets[target], 22,
+		descriptors->WriteImageDescriptor(passSet, 22,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{ m_MaterialScatteringExtinction.GetSampler(),
 			   m_MaterialScatteringExtinction.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
@@ -928,12 +951,12 @@ bool VansNearMediaSystem::CreateVolumetricParticleDescriptors()
 	return true;
 }
 
-void VansNearMediaSystem::UpdateLocalFogFieldDescriptors()
+void VansNearMediaSystem::UpdateLocalFogFieldDescriptors(std::uint32_t slot)
 {
-	if (!m_LocalFogFieldDescriptorsDirty)
+	if (!m_LocalFogFieldDescriptorsDirty.at(slot))
 		return;
 	auto* descriptors = VansVKDescriptorManager::GetInstance();
-	for (VkDescriptorSet passSet : m_PassSets)
+	for (VkDescriptorSet passSet : m_PassSets[slot])
 	{
 		if (passSet == VK_NULL_HANDLE)
 			continue;
@@ -945,7 +968,7 @@ void VansNearMediaSystem::UpdateLocalFogFieldDescriptors()
 	}
 	// 可选集合属于 NearMedia 的统一消费者；更新 Local Fog 字段不触碰
 	// 粒子候选表，粒子功能在零 Local Fog 组件时仍可独立工作。
-	for (VkDescriptorSet passSet : m_VolumetricParticlePassSets)
+	for (VkDescriptorSet passSet : m_VolumetricParticlePassSets[slot])
 	{
 		if (passSet == VK_NULL_HANDLE)
 			continue;
@@ -955,7 +978,7 @@ void VansNearMediaSystem::UpdateLocalFogFieldDescriptors()
 			m_LocalFogFieldResources.GetDescriptorInfos());
 		descriptors->CommitDescriptorUpdates();
 	}
-	m_LocalFogFieldDescriptorsDirty = false;
+	m_LocalFogFieldDescriptorsDirty[slot] = false;
 	m_HistoryValid = false;
 }
 
@@ -984,7 +1007,8 @@ void VansNearMediaSystem::RefreshLocalFogRegistry()
 void VansNearMediaSystem::CollectLocalFogVolumes(
 	std::vector<VansLocalFogVolumeGPU>& outVolumes,
 	std::vector<glm::uvec2>& outTileHeaders,
-	std::vector<std::uint32_t>& outTileIndices)
+	std::vector<std::uint32_t>& outTileIndices,
+	std::uint32_t slot)
 {
 	m_LocalFogFieldResources.BeginBuild();
 	outVolumes.clear();
@@ -1001,7 +1025,7 @@ void VansNearMediaSystem::CollectLocalFogVolumes(
 	}
 	if (!m_Scene)
 	{
-		m_LocalFogFieldDescriptorsDirty |= m_LocalFogFieldResources.EndBuild();
+		m_LocalFogFieldDescriptorsDirty[slot] |= m_LocalFogFieldResources.EndBuild(slot);
 		return;
 	}
 
@@ -1199,7 +1223,7 @@ void VansNearMediaSystem::CollectLocalFogVolumes(
 			++header.y;
 		}
 	}
-	m_LocalFogFieldDescriptorsDirty |= m_LocalFogFieldResources.EndBuild();
+	m_LocalFogFieldDescriptorsDirty[slot] |= m_LocalFogFieldResources.EndBuild(slot);
 }
 
 void VansNearMediaSystem::PrepareVolumetricParticles(
@@ -1209,6 +1233,7 @@ void VansNearMediaSystem::PrepareVolumetricParticles(
 {
 	if (!m_Initialized)
 		return;
+	FrameBuffers& frame = m_FrameBuffers.at(m_Device->GetFrameResourceSlot());
 	if (featureRequested != m_PreviousVolumetricParticleFeatureRequested)
 		m_HistoryValid = false;
 	m_PreviousVolumetricParticleFeatureRequested = featureRequested;
@@ -1379,14 +1404,14 @@ void VansNearMediaSystem::PrepareVolumetricParticles(
 	}
 
 	if (!m_VolumetricParticleScratch.empty())
-		m_VolumetricParticlesBuffer.SetBufferData(
+		frame.volumetricParticles.SetBufferData(
 			m_VolumetricParticleScratch.data(), 0,
 			m_VolumetricParticleScratch.size() *
 				sizeof(VansVolumetricParticleInstanceData));
-	m_VolumetricParticleTileHeadersBuffer.SetBufferData(
+	frame.volumetricParticleTileHeaders.SetBufferData(
 		m_VolumetricParticleTileHeaderScratch.data(), 0,
 		m_VolumetricParticleTileHeaderScratch.size() * sizeof(glm::uvec2));
-	m_VolumetricParticleTileIndicesBuffer.SetBufferData(
+	frame.volumetricParticleTileIndices.SetBufferData(
 		m_VolumetricParticleTileIndexScratch.data(), 0,
 		m_VolumetricParticleTileIndexScratch.size() * sizeof(std::uint32_t));
 	VansVolumetricParticleParamsGPU params{};
@@ -1394,16 +1419,18 @@ void VansNearMediaSystem::PrepareVolumetricParticles(
 		static_cast<std::uint32_t>(m_VolumetricParticleScratch.size()),
 		MaxVolumetricParticleCandidatesPerTile,
 		m_GridWidth, m_GridHeight);
-	m_VolumetricParticleParamsBuffer.SetBufferData(&params, 0, sizeof(params));
+	frame.volumetricParticleParams.SetBufferData(&params, 0, sizeof(params));
 }
 
-void VansNearMediaSystem::UploadParameters()
+void VansNearMediaSystem::UploadParameters(std::uint32_t slot)
 {
+	FrameBuffers& frame = m_FrameBuffers.at(slot);
 	CollectLocalFogVolumes(
 		m_LocalFogVolumeScratch,
 		m_LocalFogTileHeaderScratch,
-		m_LocalFogTileIndexScratch);
-	UpdateLocalFogFieldDescriptors();
+		m_LocalFogTileIndexScratch,
+		slot);
+	UpdateLocalFogFieldDescriptors(slot);
 	const auto& volumes = m_LocalFogVolumeScratch;
 	const auto& tileHeaders = m_LocalFogTileHeaderScratch;
 	const auto& tileIndices = m_LocalFogTileIndexScratch;
@@ -1424,11 +1451,11 @@ void VansNearMediaSystem::UploadParameters()
 
 	std::array<VansLocalFogVolumeGPU, MaxLocalFogVolumes> upload{};
 	std::copy(volumes.begin(), volumes.end(), upload.begin());
-	m_LocalFogVolumesBuffer.SetBufferData(
+	frame.localFogVolumes.SetBufferData(
 		upload.data(), 0, sizeof(upload));
-	m_LocalFogTileHeadersBuffer.SetBufferData(tileHeaders.data(), 0,
+	frame.localFogTileHeaders.SetBufferData(tileHeaders.data(), 0,
 		tileHeaders.size() * sizeof(glm::uvec2));
-	m_LocalFogTileIndicesBuffer.SetBufferData(tileIndices.data(), 0,
+	frame.localFogTileIndices.SetBufferData(tileIndices.data(), 0,
 		tileIndices.size() * sizeof(std::uint32_t));
 
 	VansNearMediaParamsGPU params{};
@@ -1451,18 +1478,19 @@ void VansNearMediaSystem::UploadParameters()
 		static_cast<float>(m_Quality.lightTransmittanceSamples),
 		m_Quality.lightTransmittanceMaxDistanceMeters,
 		0.0f, 0.0f);
-	m_ParamsBuffer.SetBufferData(&params, 0, sizeof(params));
+	frame.params.SetBufferData(&params, 0, sizeof(params));
 }
 
-void VansNearMediaSystem::BindGlobalDescriptor(VkDescriptorSet globalSet)
+void VansNearMediaSystem::BindGlobalDescriptor(VkDescriptorSet globalSet, std::uint32_t slot)
 {
-	if (!m_ParamsBufferCreated || globalSet == VK_NULL_HANDLE)
+	const FrameBuffers& frame = m_FrameBuffers.at(slot);
+	if (!frame.paramsCreated || globalSet == VK_NULL_HANDLE)
 		return;
 	auto* descriptors = VansVKDescriptorManager::GetInstance();
 	descriptors->BeginDescriptorUpdate();
 	descriptors->WriteBufferDescriptor(globalSet, GLOBAL_BINDING_LOCAL_MEDIA_UBO,
 		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		{{ m_ParamsBuffer.GetNativeBuffer(), 0, sizeof(VansNearMediaParamsGPU) }});
+		{{ frame.params.GetNativeBuffer(), 0, sizeof(VansNearMediaParamsGPU) }});
 	descriptors->CommitDescriptorUpdates();
 }
 
@@ -1507,7 +1535,8 @@ void VansNearMediaSystem::Record(VansVKCommandBuffer& commandBuffer)
 {
 	if (!m_Initialized)
 		return;
-	UploadParameters();
+	const std::uint32_t slot = m_Device->GetFrameResourceSlot();
+	UploadParameters(slot);
 	const std::uint32_t target = m_FrameParity & 1u;
 	const std::uint32_t previous = target ^ 1u;
 	const bool withVolumetricParticles =
@@ -1550,7 +1579,7 @@ void VansNearMediaSystem::Record(VansVKCommandBuffer& commandBuffer)
 			DivideRoundUp(m_GridWidth, 4u), DivideRoundUp(m_GridHeight, 4u),
 			DivideRoundUp(m_Quality.slices, 4u),
 			{ m_Scene->GetGlobalDescriptorSet(),
-			  m_VolumetricParticlePassSets[target] });
+			  m_VolumetricParticlePassSets[slot][target] });
 		BarrierForSampling(commandBuffer,
 			m_VolumetricParticleActivity[target]);
 		m_VolumetricParticleActivityInitialized[target] = true;
@@ -1562,7 +1591,7 @@ void VansNearMediaSystem::Record(VansVKCommandBuffer& commandBuffer)
 		commandBuffer.DispatchCompute(*m_InjectionShader,
 			DivideRoundUp(m_GridWidth, 4u), DivideRoundUp(m_GridHeight, 4u),
 			DivideRoundUp(m_Quality.slices, 4u),
-			{ m_Scene->GetGlobalDescriptorSet(), m_PassSets[target] });
+			{ m_Scene->GetGlobalDescriptorSet(), m_PassSets[slot][target] });
 	}
 	BarrierForSampling(commandBuffer, m_MaterialScatteringExtinction);
 	BarrierForSampling(commandBuffer, m_MaterialLightingPhaseCloud);
@@ -1581,7 +1610,7 @@ void VansNearMediaSystem::Record(VansVKCommandBuffer& commandBuffer)
 		DivideRoundUp(m_Quality.slices, 4u),
 		{ m_Scene->GetGlobalDescriptorSet(),
 		  withVolumetricParticles ?
-			m_VolumetricParticlePassSets[target] : m_PassSets[target] });
+			m_VolumetricParticlePassSets[slot][target] : m_PassSets[slot][target] });
 	BarrierForSampling(commandBuffer, m_RawInjection);
 	m_RawInjectionInitialized = true;
 
@@ -1598,7 +1627,7 @@ void VansNearMediaSystem::Record(VansVKCommandBuffer& commandBuffer)
 			DivideRoundUp(m_GridWidth, 4u), DivideRoundUp(m_GridHeight, 4u),
 			DivideRoundUp(m_Quality.slices, 4u),
 			{ m_Scene->GetGlobalDescriptorSet(),
-			  m_VolumetricParticlePassSets[target] });
+			  m_VolumetricParticlePassSets[slot][target] });
 		if (!m_VolumetricParticleFirstDispatchLogged &&
 			!m_VolumetricParticleScratch.empty())
 		{
@@ -1614,7 +1643,7 @@ void VansNearMediaSystem::Record(VansVKCommandBuffer& commandBuffer)
 		commandBuffer.DispatchCompute(*m_TemporalResolveShader,
 			DivideRoundUp(m_GridWidth, 4u), DivideRoundUp(m_GridHeight, 4u),
 			DivideRoundUp(m_Quality.slices, 4u),
-			{ m_Scene->GetGlobalDescriptorSet(), m_PassSets[target] });
+			{ m_Scene->GetGlobalDescriptorSet(), m_PassSets[slot][target] });
 	}
 	BarrierForSampling(commandBuffer, m_Injection[target]);
 	m_InjectionInitialized[target] = true;
@@ -1625,12 +1654,29 @@ void VansNearMediaSystem::Record(VansVKCommandBuffer& commandBuffer)
 		{ m_Scene->GetGlobalDescriptorSetLayout(), m_PassLayout });
 	commandBuffer.DispatchCompute(*m_IntegrationShader,
 		DivideRoundUp(m_GridWidth, 8u), DivideRoundUp(m_GridHeight, 8u), 1u,
-		{ m_Scene->GetGlobalDescriptorSet(), m_PassSets[target] });
+		{ m_Scene->GetGlobalDescriptorSet(), m_PassSets[slot][target] });
 	BarrierForSampling(commandBuffer, m_Scattering);
 	BarrierForSampling(commandBuffer, m_OpticalDepth);
 	m_HistoryValid = true;
 	m_OutputInitialized = true;
 	m_FrameParity ^= 1u;
+}
+
+void VansNearMediaSystem::DiscardRecordedFrame()
+{
+	// The frame graph can fail after recording or after a partial submit.
+	// Discard all assumptions about the shared image contents. The next
+	// transition uses UNDEFINED and establishes its layout again.
+	m_FrameParity = 0;
+	m_RawInjectionInitialized = false;
+	m_MaterialVolumesInitialized = false;
+	m_VolumetricParticleActivityInitialized[0] = false;
+	m_VolumetricParticleActivityInitialized[1] = false;
+	m_InjectionInitialized[0] = false;
+	m_InjectionInitialized[1] = false;
+	m_HasResolvedInjection = false;
+	m_HistoryValid = false;
+	m_OutputInitialized = false;
 }
 
 VkDescriptorImageInfo VansNearMediaSystem::GetScatteringDescriptor()
@@ -1667,7 +1713,8 @@ void VansNearMediaSystem::DestroyDescriptors()
 	DestroyVolumetricParticleDescriptors();
 	auto* descriptors = VansVKDescriptorManager::GetInstance();
 	std::vector<VkDescriptorSet> sets;
-	for (VkDescriptorSet& set : m_PassSets)
+	for (auto& slotSets : m_PassSets)
+	for (VkDescriptorSet& set : slotSets)
 	{
 		if (set != VK_NULL_HANDLE)
 			sets.push_back(set);
@@ -1686,7 +1733,8 @@ void VansNearMediaSystem::DestroyVolumetricParticleDescriptors()
 {
 	auto* descriptors = VansVKDescriptorManager::GetInstance();
 	std::vector<VkDescriptorSet> sets;
-	for (VkDescriptorSet& set : m_VolumetricParticlePassSets)
+	for (auto& slotSets : m_VolumetricParticlePassSets)
+	for (VkDescriptorSet& set : slotSets)
 	{
 		if (set != VK_NULL_HANDLE)
 			sets.push_back(set);
@@ -1716,19 +1764,22 @@ void VansNearMediaSystem::DestroyResources()
 		injection.DestroyVulkanImage(device);
 	m_Scattering.DestroyVulkanImage(device);
 	m_OpticalDepth.DestroyVulkanImage(device);
-	if (m_ParamsBufferCreated)
-		m_ParamsBuffer.DestroyVulkanBuffer(device);
-	if (m_LocalFogVolumesBufferCreated)
-		m_LocalFogVolumesBuffer.DestroyVulkanBuffer(device);
-	if (m_LocalFogTileHeadersBufferCreated)
-		m_LocalFogTileHeadersBuffer.DestroyVulkanBuffer(device);
-	if (m_LocalFogTileIndicesBufferCreated)
-		m_LocalFogTileIndicesBuffer.DestroyVulkanBuffer(device);
-	m_ParamsBufferCreated = false;
-	m_LocalFogVolumesBufferCreated = false;
-	m_LocalFogTileHeadersBufferCreated = false;
-	m_LocalFogTileIndicesBufferCreated = false;
-	m_LocalFogFieldDescriptorsDirty = false;
+	for (FrameBuffers& frame : m_FrameBuffers)
+	{
+		if (frame.paramsCreated)
+			frame.params.DestroyVulkanBuffer(device);
+		if (frame.localFogVolumesCreated)
+			frame.localFogVolumes.DestroyVulkanBuffer(device);
+		if (frame.localFogTileHeadersCreated)
+			frame.localFogTileHeaders.DestroyVulkanBuffer(device);
+		if (frame.localFogTileIndicesCreated)
+			frame.localFogTileIndices.DestroyVulkanBuffer(device);
+		frame.paramsCreated = false;
+		frame.localFogVolumesCreated = false;
+		frame.localFogTileHeadersCreated = false;
+		frame.localFogTileIndicesCreated = false;
+	}
+	m_LocalFogFieldDescriptorsDirty.fill(false);
 }
 
 void VansNearMediaSystem::DestroyVolumetricParticleResources()
@@ -1738,18 +1789,21 @@ void VansNearMediaSystem::DestroyVolumetricParticleResources()
 	VkDevice device = m_Device->GetLogicDevice();
 	for (auto& activity : m_VolumetricParticleActivity)
 		activity.DestroyVulkanImage(device);
-	if (m_VolumetricParticlesBufferCreated)
-		m_VolumetricParticlesBuffer.DestroyVulkanBuffer(device);
-	if (m_VolumetricParticleTileHeadersBufferCreated)
-		m_VolumetricParticleTileHeadersBuffer.DestroyVulkanBuffer(device);
-	if (m_VolumetricParticleTileIndicesBufferCreated)
-		m_VolumetricParticleTileIndicesBuffer.DestroyVulkanBuffer(device);
-	if (m_VolumetricParticleParamsBufferCreated)
-		m_VolumetricParticleParamsBuffer.DestroyVulkanBuffer(device);
-	m_VolumetricParticlesBufferCreated = false;
-	m_VolumetricParticleTileHeadersBufferCreated = false;
-	m_VolumetricParticleTileIndicesBufferCreated = false;
-	m_VolumetricParticleParamsBufferCreated = false;
+	for (FrameBuffers& frame : m_FrameBuffers)
+	{
+		if (frame.volumetricParticlesCreated)
+			frame.volumetricParticles.DestroyVulkanBuffer(device);
+		if (frame.volumetricParticleTileHeadersCreated)
+			frame.volumetricParticleTileHeaders.DestroyVulkanBuffer(device);
+		if (frame.volumetricParticleTileIndicesCreated)
+			frame.volumetricParticleTileIndices.DestroyVulkanBuffer(device);
+		if (frame.volumetricParticleParamsCreated)
+			frame.volumetricParticleParams.DestroyVulkanBuffer(device);
+		frame.volumetricParticlesCreated = false;
+		frame.volumetricParticleTileHeadersCreated = false;
+		frame.volumetricParticleTileIndicesCreated = false;
+		frame.volumetricParticleParamsCreated = false;
+	}
 	m_VolumetricParticleResourcesCreated = false;
 	m_VolumetricParticleActivityInitialized[0] = false;
 	m_VolumetricParticleActivityInitialized[1] = false;

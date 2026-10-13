@@ -60,7 +60,7 @@ struct VansComponentTypeDescriptor
 class VansComponentTypeCatalog final
 {
 public:
-	static const std::array<VansComponentTypeDescriptor, 27>& All();
+	static const std::array<VansComponentTypeDescriptor, 32>& All();
 
 	static const VansComponentTypeDescriptor* Find(std::string_view name)
 	{

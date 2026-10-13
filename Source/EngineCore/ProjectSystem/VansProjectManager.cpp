@@ -1,4 +1,6 @@
+#include "../NavigationCore/Storage/VansNavigationSettingsStorage.h"
 #include "VansProjectManager.h"
+#include <new>
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../AssetCore/Storage/VansFileStorage.h"
 #include "../AssetCore/VansAssetDatabase.h"
@@ -103,7 +105,7 @@ bool VansProjectManager::CreateProject(const std::string& folderPath, const std:
 			root + m_Config.renderSettings, m_ProjectSettings.BuildRenderSettingsData(), projectSettingsError) ||
 		!VansProjectSettingsStorage::SavePhysicsSettings(
 			root + m_Config.physicsSettings, m_ProjectSettings.BuildPhysicsSettingsData(), projectSettingsError) ||
-		!VansProjectSettingsStorage::SaveNavigationSettings(
+		!VansNavigationSettingsStorage::Save(
 			root + m_Config.navigationSettings,
 			m_ProjectSettings.GetNavigationSettings(), projectSettingsError))
 	{
@@ -212,13 +214,15 @@ VansProjectOpenResult VansProjectManager::OpenProject(const VansProjectOpenReque
 	std::unique_ptr<VansAssetDatabase> builtInAssetDatabase;
 	VansAssetObjectRepository assetObjectRepository;
 
-	if (request.m_Options.m_ScanAssets)
+	if (request.m_Options.m_AssetLoadMode != VansProjectAssetLoadMode::None)
 	{
 		assetDatabase = std::make_unique<VansAssetDatabase>(fs::path(root) / projectConfig.assetsRoot,
 			fs::path(root) / projectConfig.importedArtifactRoot);
 		const VansAssetScanResult assetScan = assetDatabase->Scan(request.m_Options.m_AssetPolicy);
 		for (const std::string& error : assetScan.errors)
 			VANS_LOG_ERROR("[AssetDatabase] " << error);
+		if (!assetScan && request.m_Options.m_AssetLoadMode == VansProjectAssetLoadMode::Catalog)
+			return fail(VansProjectOpenFailure::AssetCatalog, "Project source asset catalog is invalid");
 		VANS_LOG("[AssetDatabase] Registered " << assetScan.registered << " assets, generated "
 											   << assetScan.generatedMeta << " meta files, cooked "
 											   << assetScan.cookedArtifacts << " artifacts");
@@ -238,20 +242,23 @@ VansProjectOpenResult VansProjectManager::OpenProject(const VansProjectOpenReque
 		VANS_LOG("[BuiltInAssetDatabase] Registered " << builtInAssetDatabase->All().size()
 													  << " required engine assets");
 
-		std::vector<VansAssetRecord> memoryRecords = assetDatabase->All();
-		const std::vector<VansAssetRecord> builtInRecords = builtInAssetDatabase->All();
-		memoryRecords.insert(memoryRecords.end(), builtInRecords.begin(), builtInRecords.end());
-		const VansAssetObjectBootstrapResult memoryBootstrap =
-			VansAssetObjectBootstrapper::Publish(memoryRecords, assetObjectRepository, {},
-				documentLoad.m_Documents.m_Settings.GetNavigationSettings());
-		if (!memoryBootstrap)
+		if (request.m_Options.m_AssetLoadMode == VansProjectAssetLoadMode::Objects)
 		{
-			for (const std::string& error : memoryBootstrap.errors)
-				VANS_LOG_ERROR("[AssetObjectRepository] " << error);
-			return fail(VansProjectOpenFailure::AssetObjects, "Project asset object publication failed");
+			std::vector<VansAssetRecord> memoryRecords = assetDatabase->All();
+			const std::vector<VansAssetRecord> builtInRecords = builtInAssetDatabase->All();
+			memoryRecords.insert(memoryRecords.end(), builtInRecords.begin(), builtInRecords.end());
+			const VansAssetObjectBootstrapResult memoryBootstrap =
+				VansAssetObjectBootstrapper::Publish(memoryRecords, assetObjectRepository, {},
+					documentLoad.m_Documents.m_Settings.GetNavigationSettings());
+			if (!memoryBootstrap)
+			{
+				for (const std::string& error : memoryBootstrap.errors)
+					VANS_LOG_ERROR("[AssetObjectRepository] " << error);
+				return fail(VansProjectOpenFailure::AssetObjects, "Project asset object publication failed");
+			}
+			VANS_LOG("[AssetObjectRepository] Published " << memoryBootstrap.published
+														  << " project/built-in memory objects");
 		}
-		VANS_LOG("[AssetObjectRepository] Published " << memoryBootstrap.published
-													  << " project/built-in memory objects");
 	}
 
 	std::string assetObjectReplaceError;
@@ -267,7 +274,7 @@ VansProjectOpenResult VansProjectManager::OpenProject(const VansProjectOpenReque
 	m_SceneManager = std::move(sceneManager);
 	m_AssetDatabase = std::move(assetDatabase);
 	m_BuiltInAssetDatabase = std::move(builtInAssetDatabase);
-	if (request.m_Options.m_ScanAssets)
+	if (request.m_Options.m_AssetLoadMode != VansProjectAssetLoadMode::None)
 	{
 		m_PackagedAssetRecords.clear();
 		m_PackagedAssetRecordsByGuid.clear();
@@ -469,15 +476,39 @@ bool VansProjectManager::SetProjectRenderSettings(const VansProjectUpscalerSetti
 	return true;
 }
 
-void VansProjectManager::SetProjectCommandRecordingSettings(bool parallelEnabled, bool frameContextRingEnabled,
+bool VansProjectManager::SetProjectCommandRecordingSettings(bool parallelEnabled,
 															std::uint32_t framesInFlight, bool asyncComputeEnabled)
 {
 	if (!m_Loaded)
-		return;
-	m_ProjectSettings.SetCommandRecordingSettings(parallelEnabled, frameContextRingEnabled, framesInFlight,
-												  asyncComputeEnabled);
+		return false;
+	if (!m_ProjectSettings.SetCommandRecordingSettings(parallelEnabled, framesInFlight,
+												  asyncComputeEnabled))
+		return false;
 	MarkProjectDocumentsDirty(ProjectDocumentMask(VansProjectDocumentDomain::RenderSettings));
+	return true;
 }
+
+bool VansProjectManager::SetProjectRenderPasses(const std::vector<VansAssetGuid>& passes,std::string& error)
+{
+    if (!m_Loaded) { error="No project is loaded";return false; }
+    if (!m_ProjectSettings.SetProjectRenderPasses(passes,error)) return false;
+    MarkProjectDocumentsDirty(ProjectDocumentMask(VansProjectDocumentDomain::RenderSettings));
+    error.clear();return true;
+}
+
+bool VansProjectManager::SetNavigationSettings(const VansNavigationSettings& settings, std::string& error)
+try
+{
+    if (!m_Loaded) { error="No project is loaded"; return false; }
+    if (!ValidateNavigationSettings(settings,error)) return false;
+    if (SameNavigationSettings(m_ProjectSettings.GetNavigationSettings(),settings)) { error.clear(); return true; }
+    auto candidate=m_ProjectSettings;
+    if (!candidate.SetNavigationSettings(settings,&error)) return false;
+    m_ProjectSettings=std::move(candidate);
+    MarkProjectDocumentsDirty(ProjectDocumentMask(VansProjectDocumentDomain::NavigationSettings));
+    error.clear(); return true;
+}
+catch(const std::bad_alloc&) { error="Could not allocate navigation project settings"; return false; }
 
 bool VansProjectManager::SaveProjectDocuments(std::string& error)
 {

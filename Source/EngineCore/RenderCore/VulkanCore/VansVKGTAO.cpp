@@ -28,7 +28,7 @@ namespace VansGraphics
             if ((properties.optimalTilingFeatures & required) != required)
                 throw std::runtime_error(std::string("Unsupported GTAO storage/sampled format: ") + name);
             auto texture = std::make_unique<VansTexture>();
-            if (!texture->InitTextureWithoutData(m_VansVKCommandBuffer,
+            if (!texture->InitTextureWithoutData(m_MaintenanceGraphicsCommandBuffer,
                 m_RenderWidth, m_RenderHeight, 1, format, false, mipLimit > 1, true,
                 VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, mipLimit))
                 throw std::runtime_error(std::string("GTAO texture allocation failed: ") + name);
@@ -44,12 +44,19 @@ namespace VansGraphics
         // Packed four 2-bit connections. FP32 stores this integer exactly and uses
         // the framework's float sampler without integer/linear-filter conflicts.
         create(VansMaterialManager::RT_GTAO_EDGES, VK_FORMAT_R32_SFLOAT, 1);
+		constexpr uint32_t frameSetCount = VansCommandRecordingConfig::MaximumFramesInFlight;
         VansDescriptorSetLayoutFactory::CreateAndAllocate_GTAODepth(
-            manager.m_GTAODepthSetLayout, manager.m_GTAODepthDescriptorSets, manager.m_GTAOParameters.mipCount);
+            manager.m_GTAODepthSetLayout, manager.m_GTAODepthDescriptorSets,
+			static_cast<uint32_t>(manager.m_GTAOParameters.mipCount) * frameSetCount);
         VansDescriptorSetLayoutFactory::CreateAndAllocate_GTAOMain(
-            manager.m_GTAOMainSetLayout, manager.m_GTAOMainDescriptorSets);
+            manager.m_GTAOMainSetLayout, manager.m_GTAOMainDescriptorSets, frameSetCount);
         VansDescriptorSetLayoutFactory::CreateAndAllocate_GTAODenoise(
-            manager.m_GTAODenoiseSetLayout, manager.m_GTAODenoiseDescriptorSets);
+            manager.m_GTAODenoiseSetLayout, manager.m_GTAODenoiseDescriptorSets, frameSetCount);
+		if (manager.m_GTAODepthDescriptorSets.size() !=
+			static_cast<size_t>(manager.m_GTAOParameters.mipCount) * frameSetCount ||
+			manager.m_GTAOMainDescriptorSets.size() != frameSetCount ||
+			manager.m_GTAODenoiseDescriptorSets.size() != frameSetCount)
+			throw std::runtime_error("GTAO frame descriptor allocation failed");
         auto& shaders = VansShaderManager::Get();
         manager.m_GTAODepthShader = shaders.FindComputeShader("GTAODepth");
         manager.m_GTAOMainShader = shaders.FindComputeShader("GTAOMain");
@@ -61,14 +68,12 @@ namespace VansGraphics
     void VansVKDevice::UpdateGTAODescriptorSets(VansRenderPassManager* renderPassManager)
     {
         if (IsFeatureDescriptorCurrent(m_GTAODescSetGeneration)) return;
+		if (renderPassManager->GetGBufferFrameTargetCount() == 0) return;
         auto& manager = *m_Scene->GetMaterialManager();
         auto& depth = manager.GetRuntimeRenderTexture(VansMaterialManager::RT_GTAO_DEPTH)->GetImage();
         auto& raw = manager.GetRuntimeRenderTexture(VansMaterialManager::RT_GTAO_RAW)->GetImage();
         auto& edges = manager.GetRuntimeRenderTexture(VansMaterialManager::RT_GTAO_EDGES)->GetImage();
         auto& result = manager.GetRuntimeRenderTexture(VansMaterialManager::RT_GTAO_RESULT)->GetImage();
-        auto& normal = renderPassManager->GetNormal();
-        auto& material = renderPassManager->GetGbuffer1();
-        auto& position = renderPassManager->GetGbuffer2();
         auto* descriptors = VansVKDescriptorManager::GetInstance();
         descriptors->BeginDescriptorUpdate();
         auto sampled = [&](VkDescriptorSet set, uint32_t binding, VansVKImage& image, VkImageLayout layout)
@@ -81,31 +86,39 @@ namespace VansGraphics
             descriptors->WriteImageDescriptor(set, binding, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                 {{ VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL }});
         };
-        for (uint32_t mip = 0; mip < manager.m_GTAODepthDescriptorSets.size(); ++mip)
+		const uint32_t mipCount = static_cast<uint32_t>(manager.m_GTAOParameters.mipCount);
+		for (uint32_t slot = 0; slot < VansCommandRecordingConfig::MaximumFramesInFlight; ++slot)
         {
-            const auto set = manager.m_GTAODepthDescriptorSets[mip];
-            sampled(set, GTAO_DEPTH_POSITION, position, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            const auto sourceView = manager.m_GTAOParameters.mipCount == 1
-                ? depth.GetImageView() : depth.GetImageMipView(mip > 0 ? mip - 1 : 0);
-            descriptors->WriteImageDescriptor(set, GTAO_DEPTH_SOURCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                {{ depth.GetSampler(), sourceView, VK_IMAGE_LAYOUT_GENERAL }});
-            storage(set, GTAO_DEPTH_RESULT, depth,
-                manager.m_GTAOParameters.mipCount == 1 ? depth.GetImageView() : depth.GetImageMipView(mip));
+			const uint32_t targetSlot = std::min(slot, renderPassManager->GetGBufferFrameTargetCount() - 1);
+			auto& normal = renderPassManager->GetNormal(targetSlot);
+			auto& material = renderPassManager->GetGbuffer1(targetSlot);
+			auto& position = renderPassManager->GetGbuffer2(targetSlot);
+			for (uint32_t mip = 0; mip < mipCount; ++mip)
+			{
+				const auto set = manager.m_GTAODepthDescriptorSets[slot * mipCount + mip];
+				sampled(set, GTAO_DEPTH_POSITION, position, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+				const auto sourceView = mipCount == 1
+					? depth.GetImageView() : depth.GetImageMipView(mip > 0 ? mip - 1 : 0);
+				descriptors->WriteImageDescriptor(set, GTAO_DEPTH_SOURCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+					{{ depth.GetSampler(), sourceView, VK_IMAGE_LAYOUT_GENERAL }});
+				storage(set, GTAO_DEPTH_RESULT, depth,
+					mipCount == 1 ? depth.GetImageView() : depth.GetImageMipView(mip));
+			}
+			const auto mainSet = manager.m_GTAOMainDescriptorSets[slot];
+			sampled(mainSet, GTAO_MAIN_NORMAL, normal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			sampled(mainSet, GTAO_MAIN_MATERIAL, material, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			sampled(mainSet, GTAO_MAIN_POSITION, position, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			sampled(mainSet, GTAO_MAIN_DEPTH, depth, VK_IMAGE_LAYOUT_GENERAL);
+			storage(mainSet, GTAO_MAIN_RAW, raw, raw.GetImageView());
+			storage(mainSet, GTAO_MAIN_EDGES, edges, edges.GetImageView());
+			const auto denoiseSet = manager.m_GTAODenoiseDescriptorSets[slot];
+			sampled(denoiseSet, GTAO_DENOISE_RAW, raw, VK_IMAGE_LAYOUT_GENERAL);
+			sampled(denoiseSet, GTAO_DENOISE_EDGES, edges, VK_IMAGE_LAYOUT_GENERAL);
+			sampled(denoiseSet, GTAO_DENOISE_NORMAL, normal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			sampled(denoiseSet, GTAO_DENOISE_MATERIAL, material, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			sampled(denoiseSet, GTAO_DENOISE_POSITION, position, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			storage(denoiseSet, GTAO_DENOISE_RESULT, result, result.GetImageView());
         }
-        const auto mainSet = manager.m_GTAOMainDescriptorSets[0];
-        sampled(mainSet, GTAO_MAIN_NORMAL, normal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        sampled(mainSet, GTAO_MAIN_MATERIAL, material, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        sampled(mainSet, GTAO_MAIN_POSITION, position, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        sampled(mainSet, GTAO_MAIN_DEPTH, depth, VK_IMAGE_LAYOUT_GENERAL);
-        storage(mainSet, GTAO_MAIN_RAW, raw, raw.GetImageView());
-        storage(mainSet, GTAO_MAIN_EDGES, edges, edges.GetImageView());
-        const auto denoiseSet = manager.m_GTAODenoiseDescriptorSets[0];
-        sampled(denoiseSet, GTAO_DENOISE_RAW, raw, VK_IMAGE_LAYOUT_GENERAL);
-        sampled(denoiseSet, GTAO_DENOISE_EDGES, edges, VK_IMAGE_LAYOUT_GENERAL);
-        sampled(denoiseSet, GTAO_DENOISE_NORMAL, normal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        sampled(denoiseSet, GTAO_DENOISE_MATERIAL, material, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        sampled(denoiseSet, GTAO_DENOISE_POSITION, position, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        storage(denoiseSet, GTAO_DENOISE_RESULT, result, result.GetImageView());
         descriptors->CommitDescriptorUpdates();
         MarkFeatureDescriptorCurrent(m_GTAODescSetGeneration);
     }
@@ -115,6 +128,8 @@ namespace VansGraphics
         VANS_GPU_SCOPE(commandBuffer.GetVKCommandBuffer(), "GTAO.Depth");
         UpdateGTAODescriptorSets(renderPassManager);
         auto& manager = *m_Scene->GetMaterialManager();
+		const uint32_t targetSlot = GetCurrentGBufferTargetSlot();
+		const uint32_t mipCount = static_cast<uint32_t>(manager.m_GTAOParameters.mipCount);
         VkMemoryBarrier inputBarrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
         inputBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         inputBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -122,7 +137,7 @@ namespace VansGraphics
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, { inputBarrier });
         commandBuffer.EnsureComputeShader(*manager.m_GTAODepthShader,
             { m_Scene->GetGlobalDescriptorSetLayout(), manager.m_GTAODepthSetLayout });
-        for (uint32_t mip = 0; mip < manager.m_GTAODepthDescriptorSets.size(); ++mip)
+        for (uint32_t mip = 0; mip < mipCount; ++mip)
         {
             auto parameters = manager.m_GTAOParameters;
             parameters.sourceMip = static_cast<int32_t>(mip) - 1;
@@ -130,7 +145,7 @@ namespace VansGraphics
             const uint32_t width = (std::max)(1u, m_RenderWidth >> mip);
             const uint32_t height = (std::max)(1u, m_RenderHeight >> mip);
             commandBuffer.DispatchCompute(*manager.m_GTAODepthShader, (width + 7) / 8, (height + 7) / 8, 1,
-                { m_Scene->GetGlobalDescriptorSet(), manager.m_GTAODepthDescriptorSets[mip] });
+                { m_Scene->GetGlobalDescriptorSet(), manager.m_GTAODepthDescriptorSets[targetSlot * mipCount + mip] });
             VkMemoryBarrier mipBarrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
             mipBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
             mipBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -148,7 +163,7 @@ namespace VansGraphics
         commandBuffer.EnsureComputeShader(*manager.m_GTAOMainShader,
             { m_Scene->GetGlobalDescriptorSetLayout(), manager.m_GTAOMainSetLayout });
         commandBuffer.DispatchCompute(*manager.m_GTAOMainShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1,
-            { m_Scene->GetGlobalDescriptorSet(), manager.m_GTAOMainDescriptorSets[0] });
+            { m_Scene->GetGlobalDescriptorSet(), manager.m_GTAOMainDescriptorSets[GetCurrentGBufferTargetSlot()] });
         VkMemoryBarrier rawBarrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
         rawBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         rawBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -163,13 +178,13 @@ namespace VansGraphics
         commandBuffer.EnsureComputeShader(*manager.m_GTAODenoiseShader,
             { m_Scene->GetGlobalDescriptorSetLayout(), manager.m_GTAODenoiseSetLayout });
         commandBuffer.DispatchCompute(*manager.m_GTAODenoiseShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1,
-            { m_Scene->GetGlobalDescriptorSet(), manager.m_GTAODenoiseDescriptorSets[0] });
+            { m_Scene->GetGlobalDescriptorSet(), manager.m_GTAODenoiseDescriptorSets[GetCurrentGBufferTargetSlot()] });
         VkMemoryBarrier outputBarrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
         outputBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         outputBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         // A compute-only queue cannot use FRAGMENT_SHADER in a barrier. Its
         // semaphore provides the compute -> Deferred visibility dependency.
-        const bool graphicsQueue = &commandBuffer != &m_VansVKGraphicsScreenCommandBuffer;
+        const bool graphicsQueue = &commandBuffer != &CurrentAsyncFrameCommands().graphicsScreen;
         commandBuffer.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             graphicsQueue ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             { outputBarrier });

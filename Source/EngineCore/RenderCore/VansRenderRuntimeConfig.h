@@ -8,9 +8,13 @@ namespace VansGraphics
 {
 	struct VansCommandRecordingConfig
 	{
+		static constexpr std::uint32_t MaximumFramesInFlight = 2;
+		static constexpr bool ValidFramesInFlight(std::uint32_t count)
+		{
+			return count >= 1 && count <= MaximumFramesInFlight;
+		}
 		bool parallelEnabled = true;
-		bool frameContextRingEnabled = false;
-		std::uint32_t framesInFlight = 2;
+		std::uint32_t framesInFlight = 1;
 		bool asyncComputeEnabled = false;
 	};
 

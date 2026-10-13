@@ -98,6 +98,27 @@ void RegisterEngineShaders()
         0, false, false, 5
     });
 
+    // Cloth 复用现有阴影顶点路径，仅替换材质覆盖求值与本材质的双面状态。
+    VansGraphics::VansShaderEntry clothShadow{
+        "ClothShadow", "EngineAssets/Shaders/Cloth/Shadow",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE, 0, false};
+    clothShadow.colorAttachmentCount = 0;
+    clothShadow.explicitStageFiles = {
+        {VK_SHADER_STAGE_VERTEX_BIT, "../../Shadow/AlphaTest/ShadowAlphaTest.vert"},
+        {VK_SHADER_STAGE_FRAGMENT_BIT, "ClothShadow.frag"}};
+    clothShadow.materialPasses = {VansGraphics::VansPass::SHADOW};
+    reg.RegisterGraphicsShader("ClothShadow", std::move(clothShadow));
+
+    VansGraphics::VansShaderEntry clothPunctualShadow{
+        "ClothPunctualShadow", "EngineAssets/Shaders/Cloth/PunctualShadow",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE, 0, false};
+    clothPunctualShadow.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    clothPunctualShadow.explicitStageFiles = {
+        {VK_SHADER_STAGE_VERTEX_BIT, "../../PunctualShadow/AlphaTest/PunctualShadowAlphaTest.vert"},
+        {VK_SHADER_STAGE_FRAGMENT_BIT, "ClothPunctualShadow.frag"}};
+    clothPunctualShadow.materialPasses = {VansGraphics::VansPass::PUNCTUAL_SHADOW};
+    reg.RegisterGraphicsShader("ClothPunctualShadow", std::move(clothPunctualShadow));
+
     reg.RegisterGraphicsShader("HairVisibility", {
         "HairVisibility",
         "EngineAssets/Shaders/Hair/Visibility",
@@ -236,7 +257,7 @@ void RegisterEngineShaders()
     // Particle billboard shader.
     // - Depth test enabled and depth write disabled for transparent pass.
     // - CULL_NONE keeps billboards visible from both sides.
-    // - Alpha blend enabled for additive/overlay blending.
+    // - Standard alpha blend. Other output modes are explicit SpriteCard programs.
     // - Push constant: 16 bytes, vec4 spriteSheetParams.
     reg.RegisterGraphicsShader("Particle", {
         "Particle",
@@ -244,6 +265,23 @@ void RegisterEngineShaders()
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         16, true
     });
+
+    for (const std::string output : {"Alpha", "Additive", "HalfBlendAdd"})
+        for (const bool soft : {false,true})
+        {
+            const auto name = "ParticleCard" + output + (soft ? "Soft" : "");
+            VansGraphics::VansShaderEntry card{
+                name, "EngineAssets/Shaders/ParticleCard",
+                VK_TRUE,VK_FALSE,VK_COMPARE_OP_LESS_OR_EQUAL,VK_CULL_MODE_NONE,
+                // sheet/style/material/breakup 四个 vec4，覆盖 VS/PS 的完整常量范围。
+                64,output == "Alpha"
+            };
+            card.explicitStageFiles = {{VK_SHADER_STAGE_VERTEX_BIT,"ParticleCard.vert"},
+                {VK_SHADER_STAGE_FRAGMENT_BIT,soft ? "ParticleCardSoft.frag" : "ParticleCard.frag"}};
+            card.enableAdditiveBlend = output == "Additive";
+            card.enablePremultipliedAlphaBlend = output == "HalfBlendAdd";
+            reg.RegisterGraphicsShader(name,std::move(card));
+        }
 
 	VansGraphics::VansShaderEntry rainStreak{
 		"RainStreak", "EngineAssets/Shaders/Weather",
@@ -382,6 +420,17 @@ void RegisterEngineShaders()
     reflectionProbeCaptureShader.frontFace = VK_FRONT_FACE_CLOCKWISE;
     reg.RegisterGraphicsShader("ReflectionProbeCapture", std::move(reflectionProbeCaptureShader));
 
+    VansGraphics::VansShaderEntry clothProbeCaptureShader{
+        "ClothProbeCapture", "EngineAssets/Shaders/ReflectionProbeCapture",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        sizeof(float) * (16 + 4 + 4 + 4), false};
+    clothProbeCaptureShader.colorAttachmentCount = 1;
+    clothProbeCaptureShader.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    clothProbeCaptureShader.explicitStageFiles = {
+        {VK_SHADER_STAGE_VERTEX_BIT, "ReflectionProbeCapture.vert"},
+        {VK_SHADER_STAGE_FRAGMENT_BIT, "ClothProbeCapture.frag"}};
+    reg.RegisterGraphicsShader("ClothProbeCapture", std::move(clothProbeCaptureShader));
+
     VansGraphics::VansShaderEntry reflectionProbeCaptureSkyShader{
         "ReflectionProbeCaptureSky", "EngineAssets/Shaders/ReflectionProbeCaptureSky",
         VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS, VK_CULL_MODE_NONE,
@@ -488,8 +537,8 @@ void RegisterEngineShaders()
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_CLOTH, {
         { VansGraphics::VansPass::GBUFFER,          "Cloth"          },
-        { VansGraphics::VansPass::SHADOW,           "Shadow"         },
-        { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
+        { VansGraphics::VansPass::SHADOW,           "ClothShadow"         },
+        { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "ClothPunctualShadow" },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_HAIR, {

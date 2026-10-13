@@ -12,6 +12,7 @@
 #include "VansVKImage.h"
 #include "VansVKBuffer.h"
 #include "VansPipeline.h"
+#include "../VansRenderRuntimeConfig.h"
 #include "../ShadowCore/VansPunctualShadowTypes.h"
 
 namespace VansGraphics
@@ -98,7 +99,9 @@ namespace VansGraphics
 	private:
 		VansVKImage m_ColorImage;
 		// Deferred 与前向不透明只写原始辐亮度；大气合成后才写 m_ColorImage。
-		VansVKImage m_RawOpaqueSceneColorImage;
+		std::array<VansVKImage, VansCommandRecordingConfig::MaximumFramesInFlight> m_RawOpaqueSceneColorImages;
+		VkExtent2D m_RawOpaqueSceneColorExtent{};
+		std::uint32_t m_RawOpaqueSceneColorTargetCount = 0;
 
 		// Previous frame's diffuse exitant radiance.  This deliberately excludes
 		// specular, fog and all later composition so SSGI never feeds the final
@@ -107,14 +110,30 @@ namespace VansGraphics
 
 		// Deferred / forward-opaque scene color snapshot used by transmission
 		// glass during the later transparent pass.
-		VansVKImage m_OpaqueSceneColorImage;
+		std::array<VansVKImage, VansCommandRecordingConfig::MaximumFramesInFlight> m_OpaqueSceneColorImages;
+		VkExtent2D m_OpaqueSceneColorExtent{};
+		std::uint32_t m_OpaqueSceneColorMipCount = 0;
+		std::uint32_t m_OpaqueSceneColorTargetCount = 0;
 		// 水体预计算专用的早期场景色快照。它在水面 GBuffer 之后、透明与水面合成之前生成，
 		// 与透明材质使用的最终 OpaqueSceneColor 生命周期严格分离。
 		VansVKImage m_WaterBackgroundPyramidImage;
 
-		VansVKImage m_DepthImage;
-
-		VansVKImage m_MotionVectorImage;
+		struct GBufferFrameTargets
+		{
+			VansVKImage depth;
+			VansVKImage normal;
+			VansVKImage gbuffer0; // albedo + roughness
+			VansVKImage gbuffer1; // metallic + AO + material ID
+			VansVKImage gbuffer2; // world position + linear depth
+			VansVKImage motionVector;
+		};
+		std::array<GBufferFrameTargets, VansCommandRecordingConfig::MaximumFramesInFlight> m_GBufferFrameTargets;
+		VkExtent2D m_GBufferExtent{};
+		std::uint32_t m_GBufferFrameTargetCount = 0;
+		std::uint64_t m_GBufferFrameTargetGeneration = 0;
+		bool CreateGBufferFrameTarget(std::uint32_t slot);
+		void DestroyGBufferFrameTarget(std::uint32_t slot);
+		void RecordGBufferFrameTargetInitialLayouts(VansVKCommandBuffer& commandBuffer, std::uint32_t slot);
 
 		// Display-resolution result after post-processing the unified HDR upscaler output.
 		VansVKImage m_FinalDisplayColorImage;
@@ -138,22 +157,26 @@ namespace VansGraphics
 		std::array<VansVKImage, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT> m_PunctualShadowMapImages;
 
 
-		VansVKImage m_NormalImage;
-        VansVKImage m_DecalColorImage;
-        VansVKImage m_DecalNormalImage;
-        VansVKImage m_DecalRoughnessImage;
+		struct DecalFrameTargets
+		{
+			VansVKImage color;
+			VansVKImage normal;
+			VansVKImage roughness;
+		};
+		std::array<DecalFrameTargets, VansCommandRecordingConfig::MaximumFramesInFlight> m_DecalFrameTargets;
+		VkExtent2D m_DecalExtent{};
         VansVKImage m_EmptyDecalImage;
 
-		VansVKImage m_GBufferImage0; // albedo + roughness
-
-		VansVKImage m_GBufferImage1; // metalic + ao + materialID
-
-		VansVKImage m_GBufferImage2; // worldposition + linear depth
-
-		VansVKImage m_HairLayerDepthImage;
-		VansVKImage m_HairColorImage;
-		VansVKImage m_HairOpticalDepthImage;
-		VansVKBuffer m_HairLayerDepthBuffer;
+		struct HairFrameTargets
+		{
+			VansVKImage opticalDepth;
+			VansVKImage layerDepth;
+			VansVKImage color;
+			VansVKBuffer layerDepthBuffer;
+		};
+		std::array<HairFrameTargets, VansCommandRecordingConfig::MaximumFramesInFlight> m_HairFrameTargets;
+		VkExtent2D m_HairExtent{};
+		std::uint32_t m_HairFrameTargetCount = 0;
 
 	private:
 		static VansRenderPassManager* instance;
@@ -214,7 +237,32 @@ namespace VansGraphics
 		//void SetupVansRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surrface);
 
 		//延迟渲染资源初始化：拆分为 GBuffer pass + Deferred/PostProcess pass
-		void SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, const VkExtent2D& renderResolution);
+		void SetupVansDeferredRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue,
+			const VkExtent2D& renderResolution, std::uint32_t frameTargetCount);
+		bool SetGBufferFrameTargetCount(std::uint32_t frameTargetCount,
+			VansVKCommandBuffer& commandBuffer, VkQueue& queue);
+		struct FrameTargetCounts
+		{
+			std::uint32_t gbuffer = 0;
+			std::uint32_t decal = 0;
+			std::uint32_t hair = 0;
+			std::uint32_t opaqueSceneColor = 0;
+			std::uint32_t rawOpaqueSceneColor = 0;
+		};
+		FrameTargetCounts GetFrameTargetCounts() const;
+		bool GrowFrameTargetsAtIdle(std::uint32_t frameTargetCount,
+			VansVKCommandBuffer& commandBuffer, VkQueue& queue);
+		void ShrinkFrameTargetsAtIdle(const FrameTargetCounts& targetCounts,
+			VansVKCommandBuffer& commandBuffer, VkQueue& queue);
+		void ShrinkFrameTargetsAtIdle(std::uint32_t frameTargetCount,
+			VansVKCommandBuffer& commandBuffer, VkQueue& queue);
+		std::uint32_t GetGBufferFrameTargetCount() const { return m_GBufferFrameTargetCount; }
+		std::uint64_t GetGBufferFrameTargetGeneration() const { return m_GBufferFrameTargetGeneration; }
+		bool SetOpaqueSceneColorTargetCount(std::uint32_t frameTargetCount);
+		std::uint32_t GetOpaqueSceneColorTargetCount() const { return m_OpaqueSceneColorTargetCount; }
+		bool SetRawOpaqueSceneColorTargetCount(std::uint32_t frameTargetCount,
+			VansVKCommandBuffer& commandBuffer, VkQueue& queue);
+		std::uint32_t GetRawOpaqueSceneColorTargetCount() const { return m_RawOpaqueSceneColorTargetCount; }
 
 		//阴影渲染
 		void SetupVansShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue);
@@ -242,18 +290,25 @@ namespace VansGraphics
 
 		// 与主渲染分辨率一起创建、销毁；空纹理仅在创建时清零。
         void SetupVansDecalRenderPass(VkDevice& logic_device, VansVKCommandBuffer& commandBuffer,
-            VkQueue& queue, const VkExtent2D& renderResolution);
-        VansVKImage& GetDecalColor() { return m_DecalColorImage; }
-        VansVKImage& GetDecalNormal() { return m_DecalNormalImage; }
-        VansVKImage& GetDecalRoughness() { return m_DecalRoughnessImage; }
+            VkQueue& queue, const VkExtent2D& renderResolution, std::uint32_t frameTargetCount);
+		bool SetDecalFrameTargetCount(std::uint32_t frameTargetCount);
+		std::uint32_t GetDecalFrameTargetCount() const
+		{ return static_cast<std::uint32_t>(m_VansDecalPass.m_FrameBuffers.size()); }
+		VansVKImage& GetDecalColor(std::uint32_t slot) { return m_DecalFrameTargets.at(slot).color; }
+		VansVKImage& GetDecalNormal(std::uint32_t slot) { return m_DecalFrameTargets.at(slot).normal; }
+		VansVKImage& GetDecalRoughness(std::uint32_t slot) { return m_DecalFrameTargets.at(slot).roughness; }
         VansVKImage& GetEmptyDecal() { return m_EmptyDecalImage; }
 
 		// ── 水面 GBuffer pass ──────────────────────────────────────────────
-		// 须在 SetupVansDeferredRenderPass 之后调用（依赖已创建的 m_DepthImage）
+		// 须在 SetupVansDeferredRenderPass 之后调用（依赖已创建的主深度图像）
 		void SetupVansWaterGBufferPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
-		void SetupVansHairVisibilityPass(VkDevice& logic_device, VkPhysicalDevice physicalDevice, const VkExtent2D& renderResolution);
+		void SetupVansHairVisibilityPass(VkDevice& logic_device, VkPhysicalDevice physicalDevice,
+			const VkExtent2D& renderResolution);
+		bool SetHairFrameTargetCount(std::uint32_t frameTargetCount);
+		std::uint32_t GetHairFrameTargetCount() const { return m_HairFrameTargetCount; }
 		void SetupVansHairDepthResolvePass(VkDevice& logic_device, const VkExtent2D& renderResolution);
-		void SetupVansHairLightingPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
+		void SetupVansHairLightingPass(VkDevice& logic_device, const VkExtent2D& renderResolution,
+			std::uint32_t frameTargetCount);
 
 		// 水面 GBuffer 纹理访问器（供 VansWaterSystem / 描述符写入使用）
 		VansVKImage& GetWaterGBufNormal()      { return m_WaterGBufNormalImage; }
@@ -267,9 +322,9 @@ namespace VansGraphics
 		VansVKRenderPass& GetVansHairVisibilityPass() { return m_VansHairVisibilityPass; }
 		VansVKRenderPass& GetVansHairDepthResolvePass() { return m_VansHairDepthResolvePass; }
 		VansVKRenderPass& GetVansHairLightingPass() { return m_VansHairLightingPass; }
-		VansVKImage& GetHairColor() { return m_HairColorImage; }
-		VansVKImage& GetHairOpticalDepth() { return m_HairOpticalDepthImage; }
-		VansVKBuffer& GetHairLayerDepthBuffer() { return m_HairLayerDepthBuffer; }
+		VansVKImage& GetHairColor(std::uint32_t slot) { return m_HairFrameTargets.at(slot).color; }
+		VansVKImage& GetHairOpticalDepth(std::uint32_t slot) { return m_HairFrameTargets.at(slot).opticalDepth; }
+		VansVKBuffer& GetHairLayerDepthBuffer(std::uint32_t slot) { return m_HairFrameTargets.at(slot).layerDepthBuffer; }
 
 		// Water GBuffer pass 访问器
 		VansVKRenderPass& GetVansWaterGBufferPass() { return m_VansWaterGBufferPass; }
@@ -278,7 +333,7 @@ namespace VansGraphics
 		void DestroyUIRenderPass();
 
 		// 重建 UI pass（resize后调用）
-		void RecreateUIRenderPass(VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution);
+		bool RecreateUIRenderPass(VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution);
 
 		//渲染区域大小
 		VansRenderPassRuntimeInfo GetRenderPassRuntimeInfo(VansVKRenderPass& renderPass, int swap_chain_index = 0, uint32_t subpass = 0);
@@ -291,12 +346,17 @@ namespace VansGraphics
 		void DestroyRenderPass();
 		void DestroySceneResolutionRenderPasses();
 
-		void RecordFrameBufferImageLayoutReset(VansVKCommandBuffer& command_buffer);
+		void RecordFrameBufferImageLayoutReset(VansVKCommandBuffer& command_buffer,
+			std::uint32_t frameSlot, std::uint32_t gbufferTargetSlot);
 
 		VansVKRenderPass& GetVansGBufferPass() { return m_VansGBufferPass; }
 		VansVKRenderPass& GetVansUIRenderPass() { return m_VansUIPass; }
 
 		VansVKImage& GetShadowMap() { return m_CascadeShadowMapDepthImage; }
+		VkImage GetPunctualShadowAtlasImage(std::uint32_t atlasIndex)
+		{
+			return m_PunctualShadowMapImages.at(atlasIndex).GetImage();
+		}
 
 		VkImageView GetCascadeShadowArrayView() { return m_CascadeShadowArrayView; }
 
@@ -312,27 +372,27 @@ namespace VansGraphics
 			VkImageLayout layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
 		VansVKImage& GetColor() { return m_ColorImage; }
-		VansVKImage& GetRawOpaqueSceneColor() { return m_RawOpaqueSceneColorImage; }
+		VansVKImage& GetRawOpaqueSceneColor(std::uint32_t slot) { return m_RawOpaqueSceneColorImages.at(slot); }
 
 		VansVKImage& GetDiffuseExitantRadianceHistory() { return m_DiffuseExitantRadianceHistoryImage; }
 
-		VansVKImage& GetOpaqueSceneColor() { return m_OpaqueSceneColorImage; }
+		VansVKImage& GetOpaqueSceneColor(std::uint32_t slot) { return m_OpaqueSceneColorImages.at(slot); }
 		VansVKImage& GetWaterBackgroundPyramid() { return m_WaterBackgroundPyramidImage; }
 
-		VansVKImage& GetDepth() { return m_DepthImage; }
+		VansVKImage& GetDepth(std::uint32_t slot) { return m_GBufferFrameTargets.at(slot).depth; }
 
-		VansVKImage& GetMotionVector() { return m_MotionVectorImage; }
+		VansVKImage& GetMotionVector(std::uint32_t slot) { return m_GBufferFrameTargets.at(slot).motionVector; }
 
 		VansVKImage& GetFinalDisplayColor() { return m_FinalDisplayColorImage; }
 		VansVKImage* GetDisplayPostProcessInput() const { return m_DisplayPostProcessInput; }
 
-		VansVKImage& GetNormal() { return m_NormalImage; }
+		VansVKImage& GetNormal(std::uint32_t slot) { return m_GBufferFrameTargets.at(slot).normal; }
 
-		VansVKImage& GetGbuffer0() { return m_GBufferImage0; }
+		VansVKImage& GetGbuffer0(std::uint32_t slot) { return m_GBufferFrameTargets.at(slot).gbuffer0; }
 
-		VansVKImage& GetGbuffer1() { return m_GBufferImage1; }
+		VansVKImage& GetGbuffer1(std::uint32_t slot) { return m_GBufferFrameTargets.at(slot).gbuffer1; }
 
-		VansVKImage& GetGbuffer2() { return m_GBufferImage2; }
+		VansVKImage& GetGbuffer2(std::uint32_t slot) { return m_GBufferFrameTargets.at(slot).gbuffer2; }
 
 		VansVKRenderPass& GetVansDecalPass() { return m_VansDecalPass; }
 

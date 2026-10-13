@@ -17,6 +17,10 @@ std::vector<Vans::VansAssetGuid> VansParticleAsset::TextureDependencies() const
         if (renderer.m_LightingMode==VansParticleLightingMode::SixWayLit)
         { add(renderer.m_SixWayLighting.m_PositiveAxesTextureGuid); add(renderer.m_SixWayLighting.m_NegativeAxesTextureGuid); }
         else add(renderer.m_TextureGuid);
+        if (renderer.m_LightingMode==VansParticleLightingMode::SpriteCard && !renderer.m_Card.lookupTextureGuid.empty())
+            add(renderer.m_Card.lookupTextureGuid);
+        if (renderer.m_LightingMode==VansParticleLightingMode::SpriteCard && renderer.m_Card.breakup!=VansParticleCardBreakup::None)
+            add(renderer.m_Card.breakupTextureGuid);
     }
     return result;
 }

@@ -98,7 +98,7 @@ namespace VansGraphics
 		{
 			if (!RequireFields(root,
 				{ "assetKind", "name", "translationScale", "rootAlignment",
-				  "targetModelSpaceAlignment", "limbMappings" },
+				  "targetModelSpaceAlignment", "limbMappings", "controlBones" },
 				{ "assetKind", "name", "translationScale", "rootAlignment",
 				  "targetModelSpaceAlignment", "limbMappings" },
 				"Retarget Profile", error))
@@ -114,6 +114,25 @@ namespace VansGraphics
 				return false;
 			}
 			asset.name = root["name"].get<std::string>();
+			if (root.contains("controlBones"))
+			{
+				if (!root["controlBones"].is_array())
+				{ error = "controlBones must be an array"; return false; }
+				std::unordered_set<std::string> bones;
+				for (const auto& control : root["controlBones"])
+				{
+					if (!RequireFields(control, {"bone", "referenceBone"},
+						{"bone", "referenceBone"}, "controlBone", error)) return false;
+					if (!control["bone"].is_string() || !control["referenceBone"].is_string()
+						|| control["bone"].get<std::string>().empty()
+						|| control["referenceBone"].get<std::string>().empty()
+						|| control["bone"] == control["referenceBone"]
+						|| !bones.insert(control["bone"].get<std::string>()).second)
+					{ error = "controlBones requires unique bones and distinct non-empty references"; return false; }
+					asset.controlBones.push_back({control["bone"].get<std::string>(),
+						control["referenceBone"].get<std::string>()});
+				}
+			}
 			if (!ReadTranslationScale(root["translationScale"], asset, error))
 				return false;
 
@@ -240,6 +259,13 @@ namespace VansGraphics
 				{ "targetChain", mapping.targetChainId },
 				{ "positionWeight", mapping.positionWeight }
 			});
+		}
+		if (!asset.controlBones.empty())
+		{
+			root["controlBones"] = json::array();
+			for (const auto& control : asset.controlBones)
+				root["controlBones"].push_back({{"bone", control.bone},
+					{"referenceBone", control.referenceBone}});
 		}
 		VansRetargetProfileAsset verified;
 		return Decode(root, verified, error);

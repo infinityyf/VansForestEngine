@@ -437,7 +437,7 @@ namespace VansGraphics
 		}
 		auto* getFrameToken = reinterpret_cast<PFun_slGetNewFrameToken*>(m_GetNewFrameToken);
 		sl::FrameToken* frameToken = nullptr;
-		if (getFrameToken(frameToken, &dispatch.frameIndex) != sl::Result::eOk ||
+		if (getFrameToken(frameToken, &dispatch.frameTokenIndex) != sl::Result::eOk ||
 			frameToken == nullptr)
 		{
 			return false;
@@ -453,18 +453,22 @@ namespace VansGraphics
 		const sl::Extent outputExtent{ 0, 0, dispatch.outputWidth, dispatch.outputHeight };
 		const sl::Extent exposureExtent{ 0, 0, 1, 1 };
 		std::vector<sl::ResourceTag> tags;
+		// These images stay unchanged by the host until the evaluate call below
+		// returns. eOnlyValidNow permits immediate reuse and can make Streamline
+		// copy otherwise stable frame inputs before DLSS consumes them.
+		constexpr auto tagLifetime = sl::ResourceLifecycle::eValidUntilEvaluate;
 		tags.emplace_back(&color, sl::kBufferTypeScalingInputColor,
-			sl::ResourceLifecycle::eOnlyValidNow, &renderExtent);
+			tagLifetime, &renderExtent);
 		tags.emplace_back(&output, sl::kBufferTypeScalingOutputColor,
-			sl::ResourceLifecycle::eOnlyValidNow, &outputExtent);
+			tagLifetime, &outputExtent);
 		tags.emplace_back(&depth, sl::kBufferTypeDepth,
-			sl::ResourceLifecycle::eOnlyValidNow, &renderExtent);
+			tagLifetime, &renderExtent);
 		tags.emplace_back(&motion, sl::kBufferTypeMotionVectors,
-			sl::ResourceLifecycle::eOnlyValidNow, &renderExtent);
+			tagLifetime, &renderExtent);
 		if (dispatch.exposure.image != VK_NULL_HANDLE)
 		{
 			tags.emplace_back(&exposure, sl::kBufferTypeExposure,
-				sl::ResourceLifecycle::eOnlyValidNow, &exposureExtent);
+				tagLifetime, &exposureExtent);
 		}
 		auto* commandBuffer = reinterpret_cast<sl::CommandBuffer*>(dispatch.commandBuffer);
 		auto* setTags = reinterpret_cast<PFun_slSetTagForFrame*>(m_SetTagForFrame);

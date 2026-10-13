@@ -9,6 +9,7 @@
 #include "../../RenderCore/VulkanCore/VansRenderPass.h"
 #include "../../RenderCore/BRDFData/VansLight.h"
 #include "../../RenderCore/VansScene.h"
+#include "../../RenderCore/VansRenderSceneSnapshot.h"
 #include "../../RenderCore/VansRenderNode.h"
 #include "../../RenderCore//VansMaterial.h"
 #include "../../RenderCore/VansShaderManager.h"
@@ -192,6 +193,8 @@ void VansGraphics::VansRayTracing::ReleaseSceneResources(VkDevice device, bool r
 	m_State->m_ReceiverGeometryData.DestroyVulkanBuffer(device);
 	m_State->m_BLASInstanceBuffer.DestroyVulkanBuffer(device);
 	m_State->m_TLASInstanceMaterialBuffer.DestroyVulkanBuffer(device);
+	m_State->m_ClothInstanceUpdates.clear();
+	m_State->m_ClothLightingChanged = false;
 	m_State->m_TLASInstanceGIEmissionBuffer.DestroyVulkanBuffer(device);
 
 	for (GIRegionRuntime& region : m_State->m_GIRegions)
@@ -656,10 +659,13 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
     RequireGIResource(m_State->m_TLASInstanceMaterialBuffer.CreatVulkanBuffer(device->GetLogicDevice(),
         instanceMaterials.size() * sizeof(GIInstanceMaterialGPU),
         VK_FORMAT_UNDEFINED,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     ), "Failed to allocate GI buffer");
     RequireGIResource(m_State->m_TLASInstanceMaterialBuffer.SetBufferData(instanceMaterials.data(), 0, instanceMaterials.size() * sizeof(GIInstanceMaterialGPU)), "Failed to upload GI instance data");
+    for (uint32_t i = 0; i < instanceMaterials.size(); ++i)
+        if (instanceMaterials[i].clothMaterialIndex != 0xffffffffu)
+            m_State->m_ClothInstanceUpdates.push_back({i, instanceMaterials[i]});
 
 	if (instanceGIEmission.size() != instanceData.size())
 	{
@@ -1149,6 +1155,13 @@ void VansGraphics::VansRayTracing::PrepareGIProbeUpdate(
 
     if (m_State->m_GIFeedbackFence != VK_NULL_HANDLE || completionFence == VK_NULL_HANDLE)
         throw std::runtime_error("GI feedback reused before its frame completion");
+    // 材质编辑沿用既有历史重置合同，必须等上一批反馈退役后消费。
+    if (m_State->m_ClothLightingChanged)
+    {
+        m_State->m_WorkScheduler.ResetLighting();
+        if (materialManager) materialManager->m_SSGITemporalFrame = 0;
+        m_State->m_ClothLightingChanged = false;
+    }
     PrepareWorldUpdates();
     if(m_State->world)if(const auto changed=m_State->world->TakeLightingChanges())
     {
@@ -1748,6 +1761,43 @@ void VansGraphics::VansRayTracing::CreateGIRTPreviewDescriptorSets(VansVKDevice*
     m_State->m_GIRTPreviewDescriptorSetIsDirty = true;
 }
 
+bool VansGraphics::VansRayTracing::PrepareClothMaterialUpdates(const VansRenderMaterialFrameData& frame)
+{
+    if (m_State->m_ClothInstanceUpdates.empty()) return true;
+    if (!frame.prepared || frame.pbr.elementStride != sizeof(VansBasePBRParam) ||
+        frame.cloth.elementStride != sizeof(VansClothGPUParam)) return false;
+    // 先检查完整批次，禁止只更新部分实例。
+    for (const auto& update : m_State->m_ClothInstanceUpdates)
+    {
+        const size_t count = size_t(update.material.clothMaterialIndex) + 1u;
+        if (count > frame.pbr.bytes.size() / sizeof(VansBasePBRParam) ||
+            count > frame.cloth.bytes.size() / sizeof(VansClothGPUParam)) return false;
+    }
+    for (auto& update : m_State->m_ClothInstanceUpdates)
+    {
+        const uint32_t index = update.material.clothMaterialIndex;
+        VansBasePBRParam pbr{};
+        VansClothGPUParam cloth{};
+        std::memcpy(&pbr, frame.pbr.bytes.data() + size_t(index) * sizeof(pbr), sizeof(pbr));
+        std::memcpy(&cloth, frame.cloth.bytes.data() + size_t(index) * sizeof(cloth), sizeof(cloth));
+        const glm::vec3 diffuse = pbr.m_albedo * (glm::vec3(1.0f) - glm::vec3(cloth.transmittanceRoughness));
+        auto next = GIInstanceMaterialGPU::ResolveCloth(
+            update.material.packedTextureIndex & GIInstanceMaterialGPU::TextureIndexMask,
+            cloth.flags.x != 0u, cloth.surface.w, cloth.flags.y != 0u,
+            {diffuse.x, diffuse.y, diffuse.z}, pbr.m_roughness);
+        next.clothMaterialIndex = index;
+        if (std::memcmp(&next, &update.material, sizeof(next)) != 0) m_State->m_ClothLightingChanged = true;
+        update.material = next;
+    }
+    return true;
+}
+
+void VansGraphics::VansRayTracing::InvalidateClothTextureDescriptors()
+{
+    for (auto& region : m_State->m_GIRegions) region.rayTracingDescriptorSetIsDirty = true;
+    m_State->m_ClothLightingChanged = true;
+}
+
 void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene)
 {
     if (!m_State->m_RTResourcesReady || m_State->m_GIRegions.empty())
@@ -1779,6 +1829,10 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
     workToTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     workToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     commandBuffer->PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, {workToTransfer});
+    // 每个布料实例 32 B，随现有 GI 命令提交；重复记录使丢帧/丢弃提交不产生失效状态。
+    for (const auto& update : m_State->m_ClothInstanceUpdates)
+        commandBuffer->UpdateBuffer(m_State->m_TLASInstanceMaterialBuffer.GetNativeBuffer(),
+            VkDeviceSize(update.instanceIndex) * sizeof(GIInstanceMaterialGPU), sizeof(update.material), &update.material);
     if(m_State->world)
     {
         std::array<uint32_t,8> rayCounts{};

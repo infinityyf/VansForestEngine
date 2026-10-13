@@ -35,7 +35,8 @@ void VansParticleRenderSystem::Shutdown()
 {
     m_DrawItems.clear(); m_Materials.clear(); m_Staging.clear();
     for (auto& upload : m_Uploads) if (upload && upload->buffer.GetNativeBuffer()) upload->buffer.DestroyVulkanBuffer(m_Device);
-    m_Uploads.clear(); m_Device = VK_NULL_HANDLE; m_DepthView = VK_NULL_HANDLE;
+    m_Uploads.clear(); m_Device = VK_NULL_HANDLE;
+	m_GBufferTargetGeneration = 0;
     m_Diagnostics = {};
     std::lock_guard<std::mutex> lock(m_DiagnosticsMutex); m_PublishedDiagnostics = {};
 }
@@ -45,13 +46,23 @@ void VansParticleRenderSystem::Prepare(VansVKDevice& device, VansScene& scene,
     const VansRenderViewSnapshot& view, const VansRenderSceneFrameSnapshot& snapshot)
 {
     const auto started = std::chrono::steady_clock::now();
-    m_Device = device.GetLogicDevice(); m_FrameSlot = device.GetFrameResourceSlot();
+    const VansFrameResourceSelection frameResources = device.GetCurrentFrameResourceSelection();
+    m_Device = device.GetLogicDevice(); m_FrameSlot = frameResources.frameSlot;
     m_DrawItems.clear(); m_Staging.clear(); m_Diagnostics = {};
-    const auto depthView = VansRenderPassManager::GetInstance()->GetDepth().GetImageView();
-    if (m_DepthView != depthView)
+    auto* passes = VansRenderPassManager::GetInstance();
+	const std::uint32_t depthTargetCount = passes->GetGBufferFrameTargetCount();
+	if (depthTargetCount == 0 ||
+		depthTargetCount > VansCommandRecordingConfig::MaximumFramesInFlight)
+	{
+		VANS_LOG_ERROR("[Particle] GBuffer target count exceeds frame descriptor capacity");
+		return;
+	}
+	const std::uint64_t targetGeneration = passes->GetGBufferFrameTargetGeneration();
+	if (m_GBufferTargetGeneration != targetGeneration)
     {
         for (auto& entry : m_Materials) device.EnqueueDeferredDelete([retired=std::move(entry.second)] {});
-        m_Materials.clear(); m_DepthView = depthView;
+        m_Materials.clear();
+		m_GBufferTargetGeneration = targetGeneration;
     }
     for (auto& entry : m_Materials) entry.second->used = false;
     // 同一上传区包含静态四边形、Billboard 实例和 Ribbon 网格，按真正的帧槽隔离。
@@ -80,6 +91,11 @@ void VansParticleRenderSystem::Prepare(VansVKDevice& device, VansScene& scene,
             found = m_Materials.emplace(frame.asset.get(),std::move(entry)).first;
         }
         auto& entry = *found->second; entry.used = true;
+		for (auto& material : entry.materials)
+			if (material && !material->SelectFrameDescriptorSets(
+				scene.GetGlobalDescriptorSet(), m_FrameSlot,
+				frameResources.gbufferTargetSlot))
+				VANS_LOG_ERROR("[Particle] Failed to bind frame-local surface material");
         for (const auto& range : data.emitters)
         {
             if (range.emitterIndex >= entry.materials.size() || !entry.materials[range.emitterIndex]) continue;
