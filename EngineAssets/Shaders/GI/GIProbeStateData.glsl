@@ -17,4 +17,11 @@ bool GI_ProbeTraceOriginChanged(GIProbeState state, float cell)
     return length(state.relocationAndConfidence.xyz - state.traceOffsetAndBackface.xyz) > max(cell * 0.002, 1e-6);
 }
 
+// 图集与状态发布共用准入条件：缺失散射只能沿用同一位置的已发布历史。
+bool GI_ProbeCanRetainScattering(GIProbeState state, float cell, bool resetGeometry)
+{
+    return !resetGeometry && state.metadata.x != 0u && state.metadata.z != 0u &&
+        !GI_ProbeTraceOriginChanged(state, cell);
+}
+
 #endif

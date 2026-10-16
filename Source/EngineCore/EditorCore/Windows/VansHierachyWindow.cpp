@@ -1,4 +1,5 @@
 #include "VansHierachyWindow.h"
+#include "../VansEditorRuntimePreviewProjector.h"
 #include "../VansPrefabEditService.h"
 
 #include "../VansEditorSelectionService.h"
@@ -8,6 +9,7 @@
 #include "../../EngineAPILayer/Public/IAnimationEditorAPI.h"
 #include "../../EngineAPILayer/Public/IPlayModeEditorAPI.h"
 #include "../../EngineAPILayer/Public/IRuntimeSceneEditorAPI.h"
+#include "../../EngineAPILayer/Public/ISceneInteractionEditorAPI.h"
 #include "../VansSceneHierarchyService.h"
 #include "../VansSceneEditService.h"
 #include "../VansSceneEntityCreationService.h"
@@ -103,6 +105,7 @@ std::optional<Vans::VansSceneParentReference> ParentReferenceFromHandle(
 
 void ReparentDroppedEntity(
     Vans::EditorAPI::IRuntimeSceneEditorAPI& runtimeSceneAPI,
+    Vans::EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI,
     const std::string& childGuid,
     std::optional<Vans::VansSceneParentReference> parent,
     Vans::ReparentTransformPolicy policy = Vans::ReparentTransformPolicy::KeepWorld)
@@ -111,6 +114,23 @@ void ReparentDroppedEntity(
     Vans::VansSceneEditService* editService = VansEditorWindow::GetSceneEditService();
     if (!document || !editService)
         return;
+
+    Vans::SceneReparentRequest request;
+    request.childEntityGuid = childGuid;
+    request.newParent = parent;
+    request.transformPolicy = policy;
+    const auto validation = Vans::VansSceneHierarchyService::ValidateReparent(*document, request);
+    if (!validation)
+    {
+        VANS_LOG_WARN("[Hierarchy] Reparent rejected: " << validation.message);
+        return;
+    }
+    const auto before = document->CreateSnapshot();
+    Vans::EditorAPI::RuntimeEntityPreviewChange rollback;
+    if (const auto* entities = Vans::FindObjectField(before.Root(), "entities"))
+        for (const auto& entity : entities->arrayItems)
+            if (Vans::ReadSerializedStringField(entity, "id") == childGuid)
+                rollback = Vans::BuildRuntimeEntityHierarchyPreviewChange(entity);
 
 	Vans::EditorAPI::RuntimeEntityReparentRequest runtimeRequest;
 	runtimeRequest.childEntityGuid = childGuid;
@@ -153,10 +173,6 @@ void ReparentDroppedEntity(
 		return;
 	}
 
-	Vans::SceneReparentRequest request;
-	request.childEntityGuid = childGuid;
-	request.newParent = parent;
-	request.transformPolicy = policy;
 	if (policy == Vans::ReparentTransformPolicy::KeepWorld)
 		request.resolvedLocalTransform = runtimeResult.localTransform;
     const Vans::SceneHierarchyEditResult result =
@@ -164,7 +180,8 @@ void ReparentDroppedEntity(
     if (!result)
     {
         VANS_LOG_WARN("[Hierarchy] Reparent failed: " << result.message);
-		VansEditorWindow::ReloadCurrentSceneForEditing();
+        if (rollback.Empty() || !sceneInteractionAPI.ApplyRuntimeEntityPreviewChange(rollback))
+		    VansEditorWindow::ReloadCurrentSceneForEditing();
 		return;
     }
     if (result.changed)
@@ -191,8 +208,13 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 	Vans::EditorAPI::IAnimationEditorAPI& animationAPI = editorAPI;
 	Vans::EditorAPI::IPlayModeEditorAPI& playModeAPI = editorAPI;
 	Vans::EditorAPI::IRuntimeSceneEditorAPI& runtimeSceneAPI = editorAPI;
+    Vans::EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI = editorAPI;
     VANS_PROFILE_SCOPE("Editor::HierarchyWindow", Vans::ProfileCategory::Editor);
-    ImGui::Begin("Hierarchy");
+    if (!ImGui::Begin("Hierarchy"))
+    {
+        ImGui::End();
+        return;
+    }
     VansEditorWindow::DrawPrefabToolbar();
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
         !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive() &&
@@ -320,7 +342,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
     {
         std::string droppedEntityGuid;
         if (AcceptSceneEntityDrop(droppedEntityGuid))
-			ReparentDroppedEntity(runtimeSceneAPI, droppedEntityGuid, std::nullopt, reparentPolicy);
+			ReparentDroppedEntity(runtimeSceneAPI, sceneInteractionAPI, droppedEntityGuid, std::nullopt, reparentPolicy);
         ImGui::EndDragDropTarget();
     }
     ImGui::Separator();
@@ -437,22 +459,21 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
     };
 
 	std::function<void(const std::string&)> drawChildren;
-	std::function<void(const Vans::EditorAPI::SceneSkeletonHierarchyRig&, int)> drawBone;
-	drawBone = [&](const Vans::EditorAPI::SceneSkeletonHierarchyRig& rig, int boneIndex)
+	struct RigRows
+	{
+		std::vector<std::vector<int>> children;
+		std::vector<std::vector<const Vans::EditorAPI::SceneSkeletonHierarchySocket*>> sockets;
+	};
+	std::function<void(const Vans::EditorAPI::SceneSkeletonHierarchyRig&, const RigRows&, int)> drawBone;
+	drawBone = [&](const Vans::EditorAPI::SceneSkeletonHierarchyRig& rig, const RigRows& rows, int boneIndex)
 	{
 		if (boneIndex < 0 || boneIndex >= static_cast<int>(rig.bones.size()))
 			return;
 		const auto& bone = rig.bones[static_cast<std::size_t>(boneIndex)];
 		if (bone.guid.empty())
 			return;
-		std::vector<int> childBones;
-		for (int index = 0; index < static_cast<int>(rig.bones.size()); ++index)
-			if (rig.bones[static_cast<std::size_t>(index)].parentIndex == boneIndex)
-				childBones.push_back(index);
-		std::vector<const Vans::EditorAPI::SceneSkeletonHierarchySocket*> sockets;
-		for (const auto& socket : rig.sockets)
-			if (socket.parentBoneIndex == boneIndex)
-				sockets.push_back(&socket);
+		const auto& childBones = rows.children[static_cast<std::size_t>(boneIndex)];
+		const auto& sockets = rows.sockets[static_cast<std::size_t>(boneIndex)];
 		const std::string boneKey = AnchorHierarchyKey(rig.animationComponentGuid, bone.guid);
 		const bool hasChildren = !childBones.empty() || !sockets.empty()
 			|| children.find(boneKey) != children.end();
@@ -495,7 +516,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 					&& Vans::VansAssetGuid::TryParse(rig.animationComponentGuid, parent.animationComponentGuid)
 					&& Vans::VansAssetGuid::TryParse(bone.guid, parent.anchorGuid))
 				{
-					ReparentDroppedEntity(runtimeSceneAPI, droppedEntityGuid, std::move(parent), reparentPolicy);
+					ReparentDroppedEntity(runtimeSceneAPI, sceneInteractionAPI, droppedEntityGuid, std::move(parent), reparentPolicy);
 				}
 			}
 			ImGui::EndDragDropTarget();
@@ -503,7 +524,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 		if (!open || !hasChildren)
 			return;
 		for (const int childBone : childBones)
-			drawBone(rig, childBone);
+			drawBone(rig, rows, childBone);
 		for (const auto* socket : sockets)
 		{
 			const std::string socketKey = AnchorHierarchyKey(rig.animationComponentGuid, socket->guid);
@@ -547,7 +568,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 						&& Vans::VansAssetGuid::TryParse(rig.animationComponentGuid, parent.animationComponentGuid)
 						&& Vans::VansAssetGuid::TryParse(socket->guid, parent.anchorGuid))
 					{
-						ReparentDroppedEntity(runtimeSceneAPI, droppedEntityGuid, std::move(parent), reparentPolicy);
+						ReparentDroppedEntity(runtimeSceneAPI, sceneInteractionAPI, droppedEntityGuid, std::move(parent), reparentPolicy);
 					}
 				}
 				ImGui::EndDragDropTarget();
@@ -620,12 +641,12 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 					Vans::VansSceneParentReference parent;
 					parent.kind = Vans::VansSceneParentKind::Entity;
 					if (Vans::VansAssetGuid::TryParse(id, parent.entityGuid))
-						ReparentDroppedEntity(runtimeSceneAPI, droppedEntityGuid, std::move(parent), reparentPolicy);
+						ReparentDroppedEntity(runtimeSceneAPI, sceneInteractionAPI, droppedEntityGuid, std::move(parent), reparentPolicy);
 				}
                 ImGui::EndDragDropTarget();
             }
 
-            auto deleteEntity = [&runtimeSceneAPI, entities, &id]()
+            auto deleteEntity = [&runtimeSceneAPI, &sceneInteractionAPI, entities, &id]()
             {
                 if (id.empty())
                     return;
@@ -643,14 +664,13 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                     std::vector<Vans::VansSerializedValue> runtimeEntities;
                     runtimeEntities.push_back(removedEntity);
 
-                    std::vector<std::string> childGuids;
-                    for (const Vans::VansSerializedValue& candidateChild : entities->arrayItems)
+                    std::vector<Vans::EditorAPI::RuntimeTransformSnapshot> promotedChildren;
+                    for (const auto& child : entities->arrayItems)
                     {
-						const Vans::VansSerializedValue* candidateParent =
-							Vans::FindObjectField(candidateChild, "parent");
-						if (candidateParent
-							&& Vans::ReadSceneParentEntityGuid(*candidateParent) == id)
-                            childGuids.push_back(Vans::ReadSerializedStringField(candidateChild, "id"));
+                        const auto* parent = Vans::FindObjectField(child, "parent");
+                        if (parent && Vans::ReadSceneParentEntityGuid(*parent) == id)
+                            promotedChildren.push_back(sceneInteractionAPI.GetRuntimeTransform(
+                                Vans::ReadSerializedStringField(child, "id"), Vans::EditorAPI::RuntimeTransformSpace::World));
                     }
 
                     auto destroyRuntimeEntity = [&runtimeSceneAPI, entityGuid = id]()
@@ -659,7 +679,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                         request.entityGuid = entityGuid;
                         return runtimeSceneAPI.DestroyRuntimeEntity(request).destroyed;
                     };
-                    auto createRuntimeEntity = [&runtimeSceneAPI, runtimeEntities, childGuids, entityGuid = id]()
+                    auto createRuntimeEntity = [&runtimeSceneAPI, &sceneInteractionAPI, runtimeEntities, entityGuid = id]()
                     {
                         Vans::EditorAPI::RuntimeSceneEntitiesCreateRequest request;
                         request.sceneEntities = runtimeEntities;
@@ -673,27 +693,8 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                             return false;
                         }
 
-                        bool reparentedAll = true;
-                        for (const std::string& childGuid : childGuids)
-                        {
-                            if (childGuid.empty())
-                                continue;
-                            Vans::EditorAPI::RuntimeEntityReparentRequest reparentRequest;
-                            reparentRequest.childEntityGuid = childGuid;
-							reparentRequest.newParent.kind = Vans::EditorAPI::RuntimeParentKind::Entity;
-							reparentRequest.newParent.entityGuid = entityGuid;
-							reparentRequest.transformPolicy =
-								Vans::EditorAPI::RuntimeReparentTransformPolicy::KeepLocal;
-                            const Vans::EditorAPI::RuntimeEntityReparentResult reparentResult =
-                                runtimeSceneAPI.ReparentRuntimeEntity(reparentRequest);
-                            if (!reparentResult.applied && !reparentResult.message.empty())
-                            {
-                                VANS_LOG_WARN("[Hierarchy] Runtime delete undo child reparent failed: "
-                                    << reparentResult.message);
-                            }
-                            reparentedAll = reparentResult.applied && reparentedAll;
-                        }
-                        return reparentedAll;
+                        const auto* document = VansEditorWindow::GetSceneDocument();
+                        return document && Vans::RestoreRuntimeChildHierarchy(sceneInteractionAPI, *document, entityGuid);
                     };
 
                     Vans::SceneEditLifecycleHooks hooks;
@@ -703,11 +704,8 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 
                     if (auto* editService = VansEditorWindow::GetSceneEditService())
                     {
-                        Vans::SceneEditResult result = editService->Remove(
-                            Vans::MakeDocumentPropertyPath(
-                                Vans::DocumentPropertySpace::Scene,
-                                "/entities/" + std::to_string(i)),
-                            std::move(hooks));
+                        Vans::SceneEditResult result = editService->RemoveEntity(
+                            id, promotedChildren, std::move(hooks));
                         if (!result)
                             VANS_LOG_ERROR("[Hierarchy] Delete failed: " << result.message);
                         else if (!result.runtimeChangeApplied)
@@ -820,7 +818,9 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                 ImGui::EndPopup();
             }
 
-            if (isSelected && ImGui::IsKeyPressed(ImGuiKey_Delete))
+            if (isSelected && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+                !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive() &&
+                ImGui::IsKeyPressed(ImGuiKey_Delete, false))
             {
                 deleteEntity();
                 if (open && hasChildren)
@@ -835,9 +835,24 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 					const Vans::EditorAPI::SceneSkeletonHierarchySnapshot skeletonHierarchy =
 						animationAPI.GetSceneSkeletonHierarchy(id);
 					for (const auto& rig : skeletonHierarchy.rigs)
+					{
+						RigRows rows;
+						rows.children.resize(rig.bones.size());
+						rows.sockets.resize(rig.bones.size());
+						// 按原数组顺序建邻接表；递归绘制不再逐骨扫描整副骨架。
+						for (int index = 0; index < static_cast<int>(rig.bones.size()); ++index)
+						{
+							const int parent = rig.bones[static_cast<std::size_t>(index)].parentIndex;
+							if (parent >= 0 && parent < static_cast<int>(rig.bones.size()))
+								rows.children[static_cast<std::size_t>(parent)].push_back(index);
+						}
+						for (const auto& socket : rig.sockets)
+							if (socket.parentBoneIndex >= 0 && socket.parentBoneIndex < static_cast<int>(rig.bones.size()))
+								rows.sockets[static_cast<std::size_t>(socket.parentBoneIndex)].push_back(&socket);
 						for (int boneIndex = 0; boneIndex < static_cast<int>(rig.bones.size()); ++boneIndex)
 							if (rig.bones[static_cast<std::size_t>(boneIndex)].parentIndex < 0)
-								drawBone(rig, boneIndex);
+								drawBone(rig, rows, boneIndex);
+					}
 				}
                 drawChildren(id);
                 ImGui::TreePop();

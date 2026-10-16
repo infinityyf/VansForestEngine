@@ -1,16 +1,17 @@
 #pragma once
 
 #include "../ShadowCore/VansPunctualShadowTypes.h"
+#include "../../../../EngineAssets/Shaders/Lights/LightCapacity.h"
 
 #include <cstdint>
 #include <glm/glm.hpp>
 
 namespace VansGraphics
 {
-	inline constexpr uint32_t VANS_MAX_DIRECTION_LIGHTS = 1;
-	inline constexpr uint32_t VANS_MAX_POINT_LIGHTS = 64;
-	inline constexpr uint32_t VANS_MAX_SPOT_LIGHTS = 64;
-	inline constexpr uint32_t VANS_MAX_RECT_LIGHTS = 32;
+	inline constexpr uint32_t VANS_MAX_DIRECTION_LIGHTS = LIGHT_MAX_DIRECTION_COUNT;
+	inline constexpr uint32_t VANS_MAX_POINT_LIGHTS = LIGHT_MAX_POINT_COUNT;
+	inline constexpr uint32_t VANS_MAX_SPOT_LIGHTS = LIGHT_MAX_SPOT_COUNT;
+	inline constexpr uint32_t VANS_MAX_RECT_LIGHTS = LIGHT_MAX_RECT_COUNT;
 
 	enum class VansLightType
 	{

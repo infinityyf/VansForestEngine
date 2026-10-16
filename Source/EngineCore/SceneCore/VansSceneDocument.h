@@ -108,7 +108,10 @@ private:
     friend class VansApplyPrefabCommand;
 
     void RestoreAuthoringRoot(VansSerializedValue root, SceneStateId state);
-    bool RebuildResolvedViewFromAuthoring(VansSerializedValue authoringRoot, std::string& error);
+    bool RebuildResolvedViewFromAuthoring(VansSerializedValue authoringRoot, std::string& error,
+        std::shared_ptr<const VansSerializedValue> propertyView = {});
+    bool CapturePropertyEdit(const VansSerializedValue& edited, VansSerializedValue& authoring) const;
+    void PublishEditedRoot(VansSerializedValue root);
     SceneStateId AllocateStateId();
     SceneStateId ApplyEditedSerializedRoot(VansSerializedValue root);
     void RestoreEditedSerializedRoot(VansSerializedValue root, SceneStateId stateId);
@@ -117,6 +120,7 @@ private:
 
     std::shared_ptr<const VansSerializedValue> m_Root;
     std::shared_ptr<const VansSerializedValue> m_ResolvedRoot;
+    std::shared_ptr<const VansPrefabSceneIndex> m_PrefabIndex;
     VansPrefabLookup m_PrefabLookup;
     std::filesystem::path m_SourcePath;
     SceneFileFingerprint m_LoadedFingerprint;

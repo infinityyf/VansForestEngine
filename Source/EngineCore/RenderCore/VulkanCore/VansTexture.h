@@ -2,6 +2,7 @@
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
 #include "../VansAsset.h"
+#include "../../Util/VansColorEncoding.h"
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -16,6 +17,7 @@ namespace VansGraphics
 		std::vector<std::uint8_t> pixels;
 		int width = 0;
 		int height = 0;
+        Vans::VansColorEncoding encoding = Vans::VansColorEncoding::Linear;
 
 		bool IsValid() const;
 	};
@@ -83,7 +85,8 @@ namespace VansGraphics
 		// Runtime render/storage resources must declare their exact Vulkan format.
 		// TexturePrecision remains an import policy only and must never be used as
 		// a proxy for a shader storage-image format.
-		bool InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, bool isCube, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, uint32_t mipLevelLimit = 0);
+		// 维度由使用者声明，单层 3D 纹理不能按 slice == 1 推断为 2D。
+		bool InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, VkImageViewType viewType, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, uint32_t mipLevelLimit = 0);
 
 		// 从按 Z 轴编号导出的 PNG 切片组装 3D 纹理。
 		// slicePathFormat 需要包含一个整数格式占位符，例如 "Slice_Z_%03d.png"。
@@ -98,13 +101,14 @@ namespace VansGraphics
 		void LoadFromMemory(VansVKCommandBuffer& command_buffer,
 			const void* data, size_t dataSize,
 			int width, int height, VkFormat format,
-			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            VkImageUsageFlags additionalUsage = 0);
 
 		// 创建 VK_IMAGE_TYPE_2D 的二维贴图数组（sampler2DArray），带完整 mip 链。
 		// 所有层均初始化为 SHADER_READ_ONLY 布局；数据未填充，可按需调用 LoadTextureLayer 上传。
 		void InitTextureArray(VansVKCommandBuffer& command_buffer,
-			int width, int height, int layerCount, int numComponents,
-			bool generateMip, TexturePrecision texture_precision = LOW_PRES_8,
+			int width, int height, int layerCount, VkFormat format,
+			bool generateMip,
 			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
 		// Creates a samplerCubeArray. cubeCount is the number of cubemaps, while
@@ -118,19 +122,20 @@ namespace VansGraphics
 		// 若图片分辨率与数组不一致则进行最近邻缩放。layerIndex 必须 < layerCount。
 		// 返回 true 表示加载成功；false 表示文件不存在或读取失败（不会修改贴图数据）。
 		bool LoadTextureLayer(VansVKCommandBuffer& command_buffer,
-			const std::string& texturePath, int layerIndex, bool isSRGB = true,
-			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+			const std::string& texturePath, int layerIndex, bool isSRGB);
 
 		// 将已在 CPU 内存中的 RGBA8 像素上传到贴图数组的指定层（mip 0）并重新生成 mip 链。
-		// 像素格式必须为 RGBA8（与数组一致）。srcW/srcH 可与数组不一致，内部做最近邻缩放。
-		// 专为每帧视频帧更新面光源 emissive 数组层设计；返回 false 表示参数无效。
+		// 源像素编码与过滤策略由调用方声明；RGB 在线性空间过滤，Alpha 保持线性。
+		// 目标必须为 RGBA8 UNORM 或 sRGB；返回 false 表示参数或资源格式无效。
 		bool UpdateArrayLayerFromPixels(VansVKCommandBuffer& command_buffer,
-			const uint8_t* pixels, int srcW, int srcH, int layerIndex);
+			const uint8_t* pixels, int srcW, int srcH, int layerIndex,
+            Vans::VansColorEncoding sourceEncoding, VkFilter filter);
 
 		// 在已 Begin 的图形 command buffer 中记录贴图数组层更新，不独立提交或等待 fence。
 		// 供视频面光源逐帧更新使用，效果与 UpdateArrayLayerFromPixels 保持一致。
 		bool RecordArrayLayerUploadFromPixels(VansVKCommandBuffer& command_buffer,
-			const uint8_t* pixels, int srcW, int srcH, int layerIndex);
+			const uint8_t* pixels, int srcW, int srcH, int layerIndex,
+            Vans::VansColorEncoding sourceEncoding, VkFilter filter);
 
 		// 从已有 GPU 2D 纹理直接拷贝/缩放到数组层，避免视频面光源二次 CPU staging 上传。
 		bool RecordArrayLayerCopyFromTexture(VansVKCommandBuffer& command_buffer,

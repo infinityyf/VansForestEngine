@@ -312,7 +312,6 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 	VansGISettings giSettings{};
 	if (config.has_value())
 	{
-		ApplyOptionalValue(config->placement.enabled, giSettings.placement.enabled);
 		ApplyOptionalValue(config->world.enabled, giSettings.world.enabled);
 		ApplyOptionalValue(config->world.voxelSize, giSettings.world.voxelSize);
 		ApplyOptionalValue(config->world.coverageDistance, giSettings.world.coverageDistance);
@@ -329,7 +328,7 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 		ApplyOptionalValue(config->placement.maxRaysPerFrame, giSettings.placement.maxRaysPerFrame);
 		ApplyOptionalValue(config->ambientSkyCache.enabled, giSettings.ambientSkyCache.enabled);
 		ApplyOptionalValue(config->ambientSkyCache.gridSpacing, giSettings.ambientSkyCache.gridSpacing);
-		ApplyOptionalValue(config->ambientSkyCache.queriesPerFrame, giSettings.ambientSkyCache.queriesPerFrame);
+		ApplyOptionalValue(config->ambientSkyCache.cellUpdatesPerFrame, giSettings.ambientSkyCache.cellUpdatesPerFrame);
 		if (!config->regions.empty())
 		{
 			giSettings.regions.clear();
@@ -338,6 +337,7 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 			{
 				const Vans::VansSceneGIRegionSettingsConfig& sourceRegion = config->regions[index];
 				GIProbeRegionDesc region{};
+                region.mode = sourceRegion.mode == "adaptive" ? GIProbeRegionMode::Adaptive : GIProbeRegionMode::RegularGrid;
 				region.stableId = sourceRegion.stableId.value_or(static_cast<uint32_t>(index + 1u));
 				region.name = sourceRegion.name.value_or(index == 0 ? std::string("Default") : ("GI Region " + std::to_string(index + 1u)));
 				ApplyOptionalValue(sourceRegion.enabled, region.enabled);
@@ -366,7 +366,7 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 					region.overrideGridDimensions = true;
 				}
 				ApplyOptionalValue(sourceRegion.raysPerProbe, region.raysPerProbe);
-				ApplyOptionalValue(sourceRegion.maxRayDistance, region.maxRayDistance);
+				region.trace = { sourceRegion.trace.maxDistance, sourceRegion.trace.minVoxelSize, sourceRegion.trace.scatterMinVoxelSize };
 				ApplyOptionalValue(sourceRegion.normalBias, region.normalBias);
 				ApplyOptionalValue(sourceRegion.volumeFadeDistance, region.volumeFadeDistance);
 				ApplyOptionalValue(sourceRegion.priority, region.priority);

@@ -160,7 +160,7 @@ namespace glm {
 			{
 				bool b = true;
 				for (length_t i = 0; i < L; ++i)
-					b = b && detail::compute_equal<T, std::numeric_limits<T>::is_iec559>::call(v1.x, v2.x);
+					b = b && detail::compute_equal<T, std::numeric_limits<T>::is_iec559>::call(v1[i], v2[i]);
 				return b;
 			}
 		};

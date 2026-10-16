@@ -139,7 +139,7 @@ vec3 RainEvaluateDirectLighting(vec3 positionWS, vec3 normalWS, vec3 viewWS)
                 positionWS, normalWS, L, punctualShadowMap, int(lightIndex))
             : 1.0;
         vec3 radiance = light.color.rgb * light.intensity * attenuation *
-            coneAttenuation * SampleSurfaceLightCookie(65 + int(lightIndex), positionWS);
+            coneAttenuation * SampleSurfaceLightCookie(LIGHT_COOKIE_SPOT_OFFSET + int(lightIndex), positionWS);
         direct += RainDirectSpecular(
             positionWS, normalWS, viewWS, L, radiance, visibility);
     }

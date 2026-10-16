@@ -246,6 +246,10 @@ namespace Vans::EditorAPI
 				result->m_ClipName = n.m_ClipName; result->m_Speed = n.m_Speed; result->m_Loop = n.m_Loop;
 				result->m_SampleTimeParameter = n.m_SampleTimeParameter;
 				result->m_SampleTime = n.m_SampleTime;
+				result->m_SampleTimeOutputs = n.m_SampleTimeOutputs;
+				result->m_SampleEpochParameter = n.m_SampleEpochParameter;
+				result->m_SampleFromZeroOnEpoch=n.m_SampleFromZeroOnEpoch;
+				result->m_RootMotionReferenceSpace=n.m_RootMotionReferenceSpace;
 				result->m_StartPosition = n.m_StartPosition;
 				result->m_LoopParameter = n.m_LoopParameter;
 				result->m_AdditiveReferenceTime = n.m_AdditiveReferenceTime;
@@ -354,10 +358,14 @@ namespace Vans::EditorAPI
 				const auto& n = static_cast<const VansGraphics::AnimGraphAdditiveBlendNode&>(source);
 				result->m_AdditiveMode = n.m_AdditiveMode;
 				result->m_ParamName = n.m_ParamName; result->m_FixedWeight = n.m_FixedWeight; result->m_UseParam = n.m_UseParam;
+				result->m_UseAdditiveBoneMask=n.m_UseBoneMask;result->m_AdditiveBoneMask=ToDTO(n.m_BoneMask);
 				break;
 			}
 			case VansGraphics::VansAnimGraphNodeType::Inertialization:
 				result->m_TeleportDistance = static_cast<const VansGraphics::AnimGraphInertializationNode&>(source).m_TeleportDistance;
+				result->m_TriggerParameter = static_cast<const VansGraphics::AnimGraphInertializationNode&>(source).m_TriggerParameter;
+				result->m_DurationParameter = static_cast<const VansGraphics::AnimGraphInertializationNode&>(source).m_DurationParameter;
+				result->m_Duration = static_cast<const VansGraphics::AnimGraphInertializationNode&>(source).m_Duration;
 				break;
 			case VansGraphics::VansAnimGraphNodeType::SpeedScale:
 			{
@@ -406,6 +414,10 @@ namespace Vans::EditorAPI
 				result->m_DirectionWeightParameter = n.m_DirectionWeightParameter;
 				result->m_DirectionIsWorldSpace = n.m_DirectionIsWorldSpace;
 				result->m_PivotBone = n.m_PivotBone;
+				result->m_GeometryBone = n.m_GeometryBone;
+				result->m_TargetIsWorldSpace = n.m_TargetIsWorldSpace;
+				result->m_AimSettings.muzzleLocal = ToDTO(n.m_Settings.muzzleLocal);
+				result->m_AimSettings.barrelLocal = ToDTO(n.m_Settings.barrelLocal);
 				result->m_AimSettings.mode = static_cast<AnimationAimConstraintMode>(n.m_Settings.mode);
 				result->m_AimSettings.minYawDegrees = n.m_Settings.yawLimitDegrees.x;
 				result->m_AimSettings.maxYawDegrees = n.m_Settings.yawLimitDegrees.y;
@@ -455,6 +467,16 @@ namespace Vans::EditorAPI
 			case VansGraphics::VansAnimGraphNodeType::PoseSnapshot:
 				result->m_CacheName = static_cast<const VansGraphics::AnimGraphPoseSnapshotNode&>(source).m_SnapshotName;
 				break;
+			case VansGraphics::VansAnimGraphNodeType::PoseHistoryBlend:
+			{
+				const auto& n=static_cast<const VansGraphics::AnimGraphPoseHistoryBlendNode&>(source);
+				result->m_HistoryRevisionParameter=n.m_RevisionParameter;result->m_HistoryAlphaParameter=n.m_AlphaParameter;result->m_HistoryModeParameter=n.m_ModeParameter;
+				result->m_HistoryMaskIndexParameter=n.m_MaskIndexParameter;result->m_HistoryActiveParameter=n.m_ActiveParameter;
+				result->m_HistoryOutputWeightParameter=n.m_OutputWeightParameter;result->m_HistoryRetainCurrentMaskWeights=n.m_RetainCurrentMaskWeights;
+				result->m_HistorySnapshotName=n.m_HistorySnapshotName;result->m_HistorySnapshotParameter=n.m_HistorySnapshotParameter;
+				result->m_HistoryUnionCoverage=n.m_UnionMaskCoverage;result->m_HistoryAlignRootChildren=n.m_AlignRootChildren;result->m_HistoryDampingSeconds=n.m_DampingSeconds;
+				for(const auto& mask:n.m_Masks)result->m_HistoryMasks.push_back(ToDTO(mask));result->m_HistoryDampingMask=ToDTO(n.m_DampingMask);break;
+			}
 			case VansGraphics::VansAnimGraphNodeType::LayeredBlendPerBone:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphLayeredBlendPerBoneNode&>(source);
@@ -493,6 +515,10 @@ namespace Vans::EditorAPI
 				n.m_ClipName = source.m_ClipName; n.m_Speed = source.m_Speed; n.m_Loop = source.m_Loop;
 				n.m_SampleTimeParameter = source.m_SampleTimeParameter;
 				n.m_SampleTime = source.m_SampleTime;
+				n.m_SampleTimeOutputs = source.m_SampleTimeOutputs;
+				n.m_SampleEpochParameter = source.m_SampleEpochParameter;
+				n.m_SampleFromZeroOnEpoch=source.m_SampleFromZeroOnEpoch;
+				n.m_RootMotionReferenceSpace=source.m_RootMotionReferenceSpace;
 				n.m_StartPosition = source.m_StartPosition;
 				n.m_LoopParameter = source.m_LoopParameter;
 				n.m_AdditiveReferenceTime = source.m_AdditiveReferenceTime;
@@ -600,10 +626,14 @@ namespace Vans::EditorAPI
 				auto& n = static_cast<VansGraphics::AnimGraphAdditiveBlendNode&>(*result);
 				n.m_AdditiveMode = source.m_AdditiveMode;
 				n.m_ParamName = source.m_ParamName; n.m_FixedWeight = source.m_FixedWeight; n.m_UseParam = source.m_UseParam;
+				n.m_UseBoneMask=source.m_UseAdditiveBoneMask;n.m_BoneMask=ToNative(source.m_AdditiveBoneMask);
 				break;
 			}
 			case VansGraphics::VansAnimGraphNodeType::Inertialization:
 				static_cast<VansGraphics::AnimGraphInertializationNode&>(*result).m_TeleportDistance = source.m_TeleportDistance;
+				static_cast<VansGraphics::AnimGraphInertializationNode&>(*result).m_TriggerParameter = source.m_TriggerParameter;
+				static_cast<VansGraphics::AnimGraphInertializationNode&>(*result).m_DurationParameter = source.m_DurationParameter;
+				static_cast<VansGraphics::AnimGraphInertializationNode&>(*result).m_Duration = source.m_Duration;
 				break;
 			case VansGraphics::VansAnimGraphNodeType::SpeedScale:
 			{
@@ -652,6 +682,10 @@ namespace Vans::EditorAPI
 				n.m_DirectionWeightParameter = source.m_DirectionWeightParameter;
 				n.m_DirectionIsWorldSpace = source.m_DirectionIsWorldSpace;
 				n.m_PivotBone = source.m_PivotBone;
+				n.m_GeometryBone = source.m_GeometryBone;
+				n.m_TargetIsWorldSpace = source.m_TargetIsWorldSpace;
+				n.m_Settings.muzzleLocal = ToNative(source.m_AimSettings.muzzleLocal);
+				n.m_Settings.barrelLocal = ToNative(source.m_AimSettings.barrelLocal);
 				n.m_Settings.mode = static_cast<VansGraphics::VansAimConstraintMode>(source.m_AimSettings.mode);
 				n.m_Settings.yawLimitDegrees = { source.m_AimSettings.minYawDegrees, source.m_AimSettings.maxYawDegrees };
 				n.m_Settings.pitchLimitDegrees = { source.m_AimSettings.minPitchDegrees, source.m_AimSettings.maxPitchDegrees };
@@ -699,6 +733,16 @@ namespace Vans::EditorAPI
 			case VansGraphics::VansAnimGraphNodeType::PoseSnapshot:
 				static_cast<VansGraphics::AnimGraphPoseSnapshotNode&>(*result).m_SnapshotName = source.m_CacheName;
 				break;
+			case VansGraphics::VansAnimGraphNodeType::PoseHistoryBlend:
+			{
+				auto& n=static_cast<VansGraphics::AnimGraphPoseHistoryBlendNode&>(*result);
+				n.m_RevisionParameter=source.m_HistoryRevisionParameter;n.m_AlphaParameter=source.m_HistoryAlphaParameter;n.m_ModeParameter=source.m_HistoryModeParameter;
+				n.m_MaskIndexParameter=source.m_HistoryMaskIndexParameter;n.m_ActiveParameter=source.m_HistoryActiveParameter;
+				n.m_OutputWeightParameter=source.m_HistoryOutputWeightParameter;n.m_RetainCurrentMaskWeights=source.m_HistoryRetainCurrentMaskWeights;
+				n.m_HistorySnapshotName=source.m_HistorySnapshotName;n.m_HistorySnapshotParameter=source.m_HistorySnapshotParameter;
+				n.m_UnionMaskCoverage=source.m_HistoryUnionCoverage;n.m_AlignRootChildren=source.m_HistoryAlignRootChildren;n.m_DampingSeconds=source.m_HistoryDampingSeconds;
+				for(const auto& mask:source.m_HistoryMasks)n.m_Masks.push_back(ToNative(mask));n.m_DampingMask=ToNative(source.m_HistoryDampingMask);break;
+			}
 			case VansGraphics::VansAnimGraphNodeType::LayeredBlendPerBone:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphLayeredBlendPerBoneNode&>(*result);
@@ -777,6 +821,11 @@ namespace Vans::EditorAPI
 			auto result = std::make_unique<AnimatorDocumentDTO>();
 			result->name = source.name;
 			result->animationRigGuid = source.animationRigGuid;
+			result->normalizeRootPose = source.normalizeRootPose;
+			result->finalCompositionAfterProcedural = source.finalCompositionAfterProcedural;
+			result->composeBeforeRetarget=source.composeBeforeRetarget;
+			result->externalPoseTargetAllowsGraphSets = source.externalPoseTargetAllowsGraphSets;
+			result->externalPoseLayerGraphSetId = source.externalPoseLayerGraphSetId;
 			for (const auto& parameter : source.parameters)
 			{
 				AnimatorParameterDTO item;
@@ -840,6 +889,7 @@ namespace Vans::EditorAPI
 			{
 				AnimationGraphSetDTO item;
 				item.id = graphSet.id; item.name = graphSet.name;
+				item.characterMotionGraphId = graphSet.characterMotionGraphId;
 				for (const auto& binding : graphSet.bindings)
 					item.bindings.push_back({ binding.layerId, binding.graphId, binding.enabled });
 				result->graphSets.push_back(std::move(item));
@@ -883,6 +933,11 @@ namespace Vans::EditorAPI
 		{
 			result.name = source.name;
 			result.animationRigGuid = source.animationRigGuid;
+			result.normalizeRootPose = source.normalizeRootPose;
+			result.finalCompositionAfterProcedural = source.finalCompositionAfterProcedural;
+			result.composeBeforeRetarget=source.composeBeforeRetarget;
+			result.externalPoseTargetAllowsGraphSets = source.externalPoseTargetAllowsGraphSets;
+			result.externalPoseLayerGraphSetId = source.externalPoseLayerGraphSetId;
 			for (const auto& parameter : source.parameters)
 			{
 				VansGraphics::AnimatorParameter item;
@@ -949,6 +1004,7 @@ namespace Vans::EditorAPI
 			{
 				VansGraphics::VansAnimationGraphSetDefinition item;
 				item.id = graphSet.id; item.name = graphSet.name;
+				item.characterMotionGraphId = graphSet.characterMotionGraphId;
 				for (const auto& binding : graphSet.bindings)
 					item.bindings.push_back({ binding.layerId, binding.graphId, binding.enabled });
 				result.graphSets.push_back(std::move(item));
@@ -999,6 +1055,7 @@ namespace Vans::EditorAPI
 					rule.rootBone, rule.includeDescendants, rule.maxDepth, rule.rootWeight,
 					rule.endWeight, BridgeEnum<VansBoneMaskFalloffDTO>(rule.falloff) });
 			result.explicitWeights = source.explicitWeights;
+			for(const auto& [bone,channels]:source.explicitChannelWeights)result.explicitChannelWeights[bone]={channels.x,channels.y,channels.z};
 			result.editorExpandedBones = source.editorExpandedBones;
 			return result;
 		}
@@ -1015,6 +1072,7 @@ namespace Vans::EditorAPI
 					rule.rootBone, rule.includeDescendants, rule.maxDepth, rule.rootWeight,
 					rule.endWeight, BridgeEnum<VansGraphics::VansBoneMaskFalloff>(rule.falloff) });
 			result.explicitWeights = source.explicitWeights;
+			for(const auto& [bone,channels]:source.explicitChannelWeights)result.explicitChannelWeights[bone]={channels[0],channels[1],channels[2]};
 			result.editorExpandedBones = source.editorExpandedBones;
 			return result;
 		}

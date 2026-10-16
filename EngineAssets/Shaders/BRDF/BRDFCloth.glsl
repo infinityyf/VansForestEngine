@@ -57,7 +57,7 @@ void AddClothRectLight(uint index, BRDFData brdf, ClothMaterialPayload cloth, Cl
     sampler2DShadow shadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT], bool fallbackSelected, inout LightResult result)
 {
     RectLightData light = GetRectLight(int(index));
-    light.color_twoSided.rgb *= SampleSurfaceLightCookie(129+int(index),brdf.positionWS);
+    light.color_twoSided.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_RECT_OFFSET +int(index),brdf.positionWS);
     vec3 d,s;
     EvaluateRectLight_Cloth(light,brdf,cloth,area,d,s);
     vec3 delta = light.position_halfW.xyz-brdf.positionWS;
@@ -201,7 +201,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
     {
         uint i = tileLightIndices[tileLightHdr.spotOffset + spk];
         SpotLightData sl = GetSpotLight(int(i));
-        sl.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdf.positionWS);
+        sl.color.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_SPOT_OFFSET + int(i), brdf.positionWS);
         vec3 lightDir = sl.position.xyz - brdf.positionWS;
         float dist = length(lightDir);
         if (dist > sl.radius) continue;
@@ -272,7 +272,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
     for (uint i = 0u; i < uSpotLightCount; ++i)
     {
         SpotLightData sl = GetSpotLight(int(i));
-        sl.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdf.positionWS);
+        sl.color.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_SPOT_OFFSET + int(i), brdf.positionWS);
         vec3 lightDir = sl.position.xyz - brdf.positionWS;
         float dist = length(lightDir);
         if (dist > sl.radius) continue;

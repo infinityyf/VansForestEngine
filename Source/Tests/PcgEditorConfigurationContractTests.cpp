@@ -230,6 +230,11 @@ bool RunPcgEditorConfigurationContractTests()
     region.layers={layer};layer.id="second";layer.name="Second";layer.densityMask=VansAssetGuid::New();region.layers.push_back(layer);
     recipe.regions={region};
     VansPcgSplineAsset spline;spline.name="User spline";spline.terrain=VansAssetGuid::New();
+    VansPcgSpline splineRoad;splineRoad.id=VansAssetGuid::New().ToString();splineRoad.name="Cache contract road";
+    splineRoad.material=VansAssetGuid::New();
+    VansPcgSplinePoint firstPoint;firstPoint.id=VansAssetGuid::New().ToString();
+    auto lastPoint=firstPoint;lastPoint.id=VansAssetGuid::New().ToString();lastPoint.position={10,0,0};
+    splineRoad.points={firstPoint,lastPoint};spline.splines={splineRoad};
     VansSerializedValue plantRoot,recipeRoot,splineRoot;
     {
         VansScopedIOContext scope(VansIODomain::Authoring,"PcgConfiguration.Fixture",true);
@@ -417,7 +422,8 @@ bool RunPcgEditorConfigurationContractTests()
     {
         VansScopedIOContext scope(VansIODomain::Authoring,"PcgConfiguration.SceneFixture",true);
         nlohmann::ordered_json root={{"schemaVersion",2},{"sceneGuid",VansAssetGuid::New().ToString()},
-            {"name","PCG authoring"},{"entities",nlohmann::ordered_json::array()},{"settings",nlohmann::ordered_json::object()}};
+            {"name","PCG authoring"},{"entities",nlohmann::ordered_json::array()},
+            {"settings",{{"pcgSplines",{{"domain","ProjectAsset"},{"guid",splineGuid.ToString()},{"assetType","pcgSpline"}}}}}};
         if (!check(VansJsonFileStorage::WriteAtomic(scenePath,root,error),error)) return false;
     }
     auto scene=VansSceneDocumentLoader::Load(scenePath);
@@ -425,6 +431,60 @@ bool RunPcgEditorConfigurationContractTests()
     VansSceneEditService edits(*scene.document);
     ContractSceneAuthoringHost sceneHost(*scene.document,edits);
     api.BindSceneAuthoring(&sceneHost);
+    {
+        api.UpdatePcgSplineAuthoring();
+        const auto original=api.GetPcgSplineSnapshot();
+        if(!check(original->available && original->splines.size()==1 &&
+            original==api.GetPcgSplineSnapshot() && !api.GetPcgSplineStatus().toolEnabled,
+            "Idle spline queries rebuilt the immutable snapshot or lost their status"))return false;
+        if(!check(api.SelectPcgSpline(splineRoad.id,firstPoint.id,true).success,
+            "Cannot select the cache fixture spline"))return false;
+        const auto selected=api.GetPcgSplineSnapshot();
+        api.UpdatePcgSplineAuthoring();
+        if(!check(selected!=original && selected->toolEnabled && !original->toolEnabled &&
+            selected->guides.size()==1 && !selected->guides.front().center.empty() &&
+            selected==api.GetPcgSplineSnapshot(),
+            "Spline tool selection changed an old snapshot or failed to cache guides"))return false;
+        PcgSplineEditRequest edit;edit.documentState=selected->documentState;edit.spline=selected->splines.front();
+        edit.phase=PcgSplineEditPhase::Begin;
+        if(!check(api.ApplyPcgSplineEdit(edit).success,"Cannot begin the cache fixture draft"))return false;
+        edit.phase=PcgSplineEditPhase::Update;edit.spline.points.front().position[1]=2;
+        const auto failedPreview=api.ApplyPcgSplineEdit(edit);
+        const auto updated=api.GetPcgSplineSnapshot();
+        if(!check(!failedPreview.success && updated->dirty && !updated->canUndo &&
+            updated->splines.front().points.front().position[1]==2 &&
+            selected->splines.front().points.front().position[1]==0 &&
+            updated==api.GetPcgSplineSnapshot(),
+            "A failed terrain preview left a stale spline draft cache or mutated a retained snapshot"))return false;
+        edit.phase=PcgSplineEditPhase::Cancel;
+        api.ApplyPcgSplineEdit(edit);
+        const auto canceled=api.GetPcgSplineSnapshot();
+        if(!check(!canceled->dirty && canceled->splines.front().points.front().position[1]==0,
+            "Cancel did not restore cached spline points from the unchanged document"))return false;
+        edit.phase=PcgSplineEditPhase::Apply;edit.spline=canceled->splines.front();
+        edit.spline.points.front().position[1]=3;
+        api.ApplyPcgSplineEdit(edit);
+        const auto committed=api.GetPcgSplineSnapshot();
+        const auto splineDocument=registry.Find(splinePath);
+        if(!check(committed->dirty && committed->canUndo &&
+            committed->splines.front().points.front().position[1]==3 && splineDocument,
+            "Commit did not invalidate the spline cache and preserve its authoring history"))return false;
+        if(!check(VansAssetDocumentEditService::Undo(splineDocument->sourceDocument).success,
+            "Cannot undo the cached spline edit"))return false;
+        api.UpdatePcgSplineAuthoring();
+        if(!check(api.GetPcgSplineSnapshot()->splines.front().points.front().position[1]==0 &&
+            committed->splines.front().points.front().position[1]==3,
+            "External Undo did not invalidate the spline cache or mutated a retained snapshot"))return false;
+        if(!check(VansAssetDocumentEditService::Redo(splineDocument->sourceDocument).success,
+            "Cannot redo the cached spline edit"))return false;
+        api.UpdatePcgSplineAuthoring();
+        if(!check(api.GetPcgSplineSnapshot()->splines.front().points.front().position[1]==3,
+            "External Redo did not invalidate the spline cache"))return false;
+        VansAssetDocumentEditService::Undo(splineDocument->sourceDocument);
+        api.UpdatePcgSplineAuthoring();
+        if(!check(api.SelectPcgSpline({},{},false).success && !api.GetPcgSplineStatus().toolEnabled,
+            "Disabling the spline tool did not retain a lightweight closed-window status"))return false;
+    }
     if (!check(api.BindPcgRecipeToScene(created.target.recipeGuid).success && scene.document->IsDirty(),
         "Binding the new recipe did not edit the scene document")) return false;
     auto surface=api.GetPcgLayerConfiguration(created.target);surface.surface=PcgSurfaceKind::Plane;

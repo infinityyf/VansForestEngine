@@ -14,6 +14,14 @@ namespace Vans
 
 namespace VansGraphics
 {
+    struct VansRenderRectLightVideoFrameData;
+    struct VansFrameSubmitNode;
+    struct VansVideoFrameUpload
+    {
+        uint32_t videoRuntimeIndex = 0;
+        VansVideoUploadResult result;
+    };
+
     // ===========================================================================
     // VansVideoManager — 管理项目内所有视频纹理的生命周期
     //
@@ -64,7 +72,12 @@ namespace VansGraphics
         void TickAll(double deltaTime);
 
         // 在渲染命令录制阶段，将 TickAll() 选中的视频帧批量记录到当前 command buffer。
-        void RecordPendingUploads(VansVKCommandBuffer& cmd);
+        const std::vector<VansVideoFrameUpload>& RecordPendingUploads(VansVKCommandBuffer& cmd, uint32_t frameSlot,
+            VansTexture* rectArray, const std::vector<VansRenderRectLightVideoFrameData>& bindings);
+        void ResolveRecordedUploads(bool submitted);
+        // 声明本帧视频实际写入及采样资源，让帧图维护跨帧的读写依赖。
+        void AppendFrameResources(VansFrameSubmitNode& node, VansTexture* rectArray,
+            VkPipelineStageFlags stages, bool includeUploads) const;
 
         // ── 场景切换时暂停 ────────────────────────────────────────────────
         // 暂停所有视频播放，但保留 GPU 纹理资源（VkImage/VkImageView 仍然有效）。
@@ -89,6 +102,7 @@ namespace VansGraphics
         std::unordered_map<std::string, VansVideoTexture*> m_VideosByAssetGuid;
 		// 只在 project load/unload 的 RT idle 区间修改；逐帧快照使用稳定索引。
 		std::vector<VansVideoTexture*> m_RuntimeVideos;
+        std::vector<VansVideoFrameUpload> m_RecordedFrameUploads;
     };
 
 } // namespace VansGraphics

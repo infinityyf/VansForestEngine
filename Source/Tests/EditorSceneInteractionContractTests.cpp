@@ -3,6 +3,10 @@
 #include "../EngineCore/RuntimeCore/VansThreadContract.h"
 #include "../EngineCore/Util/VansSceneViewMath.h"
 #include "../EngineCore/EditorCore/VansEditorSelectionService.h"
+#include "../EngineCore/EditorCore/VansEditorWindow.h"
+#include "../EngineCore/EditorCore/Windows/VansConsoleWindow.h"
+#include "imgui.h"
+#include "imgui_internal.h"
 #include "../EngineCore/EditorCore/VansEditorCameraController.h"
 #include "../EngineCore/EditorCore/VansEditorHistoryService.h"
 #include "../EngineCore/EditorCore/VansEditorHistoryAdapter.h"
@@ -138,6 +142,96 @@ bool TestEditorSceneInteractionContract()
         pickingAPI.SetPlayState(Vans::EditorAPI::EnginePlayState::Edit);
         Check(pickingAPI.PickEditorScene(pickingRequest).message == "Scene is not ready for picking.",
             "Returning to Edit mode did not restore the normal scene picking path");
+        {
+            const auto previousContext = ImGui::GetCurrentContext();
+            const auto releaseContext = [previousContext](ImGuiContext* context)
+            {
+                ImGui::DestroyContext(context);
+                ImGui::SetCurrentContext(previousContext);
+            };
+            std::unique_ptr<ImGuiContext, decltype(releaseContext)> context(ImGui::CreateContext(), releaseContext);
+            auto& io = ImGui::GetIO();
+            io.IniFilename = nullptr;
+            io.DisplaySize = ImVec2(1280, 720);
+            io.DeltaTime = 1.0f / 60.0f;
+            unsigned char* pixels = nullptr; int width = 0, height = 0;
+            io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+            bool* consoleOpen = VansEditorWindow::WindowOpenState(VansEditorWindowId::Console);
+            const bool oldConsoleOpen = *consoleOpen;
+            struct RestoreConsole
+            {
+                bool* open; bool previous;
+                ~RestoreConsole() { *open = previous; VansConsole::Get().Clear(); }
+            } restoreConsole{consoleOpen, oldConsoleOpen};
+            *consoleOpen = true;
+            auto& console = VansConsole::Get();
+            console.Clear();
+            for (int index = 0; index < 2053; ++index)
+            {
+                std::string text = "row " + std::to_string(index);
+                if (index % 17 == 0) text += "\nsecond line\nthird line";
+                if (index == 2052) text += std::string(700, 'W');
+                if (index % 3 == 0) console.LogScript(text); else console.LogEngine(text);
+            }
+            Check(console.GetEntries().size() == 2048 && console.GetEntries().front().message == "row 5",
+                "Console FIFO retention changed");
+            VansConsoleWindow consoleWindow;
+            const auto findChild = [](const char* parentName)
+            {
+                ImGuiWindow* parent = ImGui::FindWindowByName(parentName);
+                Check(parent && !parent->DC.ChildWindows.empty(), "Console child window was not submitted");
+                return parent->DC.ChildWindows.front();
+            };
+            const auto drawConsole = [&](bool collapsed)
+            {
+                ImGui::NewFrame();
+                ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
+                ImGui::SetNextWindowSize(ImVec2(600, 260), ImGuiCond_Always);
+                ImGui::SetNextWindowCollapsed(collapsed, ImGuiCond_Always);
+                consoleWindow.ShowWindow(pickingAPI);
+                ImGui::Render();
+            };
+            drawConsole(false); drawConsole(false); drawConsole(false);
+            const auto virtualSize = findChild("Console")->ContentSize;
+            Check(findChild("Console")->Scroll.y > 0 && virtualSize.x > 1000,
+                "Console lost auto-scroll or the horizontal extent of a clipped long message");
+            // 原逐条布局作为行为参照，验证多行行高和完整滚动范围，不比较实现细节。
+            for (int frame = 0; frame < 2; ++frame)
+            {
+                ImGui::NewFrame();
+                ImGui::SetNextWindowSize(ImVec2(600, 260), ImGuiCond_Always);
+                ImGui::Begin("ConsoleReference");
+                ImGui::BeginChild("ReferenceRows", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+                for (const auto& entry : console.GetEntries())
+                {
+                    ImGui::TextDisabled("[%s]", entry.timestamp.c_str()); ImGui::SameLine();
+                    ImGui::TextUnformatted(entry.type == VansConsoleLogType::Engine ? "[Engine]" : "[Script]");
+                    ImGui::SameLine(); ImGui::TextUnformatted(entry.message.c_str());
+                }
+                ImGui::EndChild(); ImGui::End(); ImGui::Render();
+            }
+            const auto referenceSize = findChild("ConsoleReference")->ContentSize;
+            Check(std::abs(virtualSize.x - referenceSize.x) < 1.0f &&
+                std::abs(virtualSize.y - referenceSize.y) < 1.0f,
+                "Console virtualization changed multiline layout or scrollbar ranges");
+            auto* consoleChild = findChild("Console");
+            drawConsole(true);
+            Check(consoleChild->LastFrameActive < ImGui::GetFrameCount(),
+                "Collapsed Console still built its content");
+            console.LogEngine(std::string(1000, 'W'));
+            drawConsole(false); drawConsole(false);
+            Check(console.GetEntries().size() == 2048 &&
+                findChild("Console")->ContentSize.x > virtualSize.x,
+                "Console append at its retention limit left a stale row layout");
+            const float unscaledWidth = findChild("Console")->ContentSize.x;
+            io.FontGlobalScale = 1.25f;
+            drawConsole(false); drawConsole(false);
+            Check(findChild("Console")->ContentSize.x > unscaledWidth * 1.2f,
+                "Console font scaling did not invalidate its virtual layout");
+            console.Clear(); drawConsole(false); drawConsole(false);
+            Check(findChild("Console")->ContentSize.y < 1.0f,
+                "Console clear retained a stale virtual scrollbar range");
+        }
 		std::filesystem::path sourceFile = std::filesystem::path(__FILE__);
 		if (sourceFile.is_relative())
 			sourceFile = std::filesystem::absolute(sourceFile);
@@ -1624,7 +1718,7 @@ bool TestEditorSceneInteractionContract()
 			countText(editorHistoryAdapterSource, "history.AddSource(") == 5 &&
 			editorHistoryAdapterSource.find("GetRuntimeCommandHistory()") != std::string::npos &&
 			editorHistoryAdapterSource.find("GetTerrainEditorSnapshot()") != std::string::npos &&
-			editorHistoryAdapterSource.find("GetPcgSplineSnapshot()") != std::string::npos &&
+			editorHistoryAdapterSource.find("GetPcgSplineStatus()") != std::string::npos &&
 			editorHistoryAdapterSource.find("ApplyRuntimeMaterialPreviewChange(") != std::string::npos &&
 			editorHistoryAdapterSource.find("ApplyRuntimeEntityPreviewChange(") != std::string::npos &&
 			editorHistoryAdapterSource.find("reload();") != std::string::npos,
@@ -1800,7 +1894,7 @@ bool TestEditorSceneInteractionContract()
 			editorApiHeader.find("public IWaterEditorAPI") != std::string::npos &&
 			countText(shaderApiHeader, "virtual ") == 3 &&
 			countText(reflectionProbeApiHeader, "virtual ") == 10 &&
-			countText(giApiHeader, "virtual ") == 7 &&
+			countText(giApiHeader, "virtual ") == 10 &&
 			countText(waterApiHeader, "virtual ") == 4 &&
 			editorApiHeader.find("QueryShaderProgramSources(") == std::string::npos &&
 			editorApiHeader.find("ApplyShaderCandidateAtRenderSafePoint(") == std::string::npos &&
@@ -1813,6 +1907,15 @@ bool TestEditorSceneInteractionContract()
 			editorApiHeader.find("RequestReflectionProbeBake(") == std::string::npos &&
 			editorApiHeader.find("SaveReflectionProbeConfiguration(") == std::string::npos &&
 			editorApiHeader.find("ConvertReflectionProbeToManual(") == std::string::npos &&
+			editorApiHeader.find("GetGIFrameCost(") == std::string::npos &&
+			giApiHeader.find("GetGIFrameCost(") != std::string::npos &&
+			giWindowSource.find("giAPI.GetGIFrameCost(") != std::string::npos &&
+			editorApiHeader.find("GetGIFrameWork(") == std::string::npos &&
+			giApiHeader.find("GetGIFrameWork(") != std::string::npos &&
+			giWindowSource.find("giAPI.GetGIFrameWork(") != std::string::npos &&
+			editorApiHeader.find("GetGIMemorySnapshot(") == std::string::npos &&
+			giApiHeader.find("GetGIMemorySnapshot(") != std::string::npos &&
+			giWindowSource.find("giAPI.GetGIMemorySnapshot(") != std::string::npos &&
 			editorApiHeader.find("GetGISettings(") == std::string::npos &&
 			editorApiHeader.find("ApplyGISettings(") == std::string::npos &&
 			editorApiHeader.find("SaveGIConfiguration(") == std::string::npos &&
@@ -2137,8 +2240,8 @@ bool TestEditorSceneInteractionContract()
 			particleDebugWindowSource.find("IParticleEditorAPI& particleAPI = api") != std::string::npos &&
 			inspectorWindowSource.find("IParticleEditorAPI& particleAPI = api") != std::string::npos,
 			"AI, Motion Matching, or Particle editor operations escaped their domain API facets");
-		const std::array<const char*, 27> pcgFacetMethods = {
-			"BuildPcgPlantLods", "GetPcgSplineSnapshot", "CreatePcgSplineAsset",
+		const std::array<const char*, 29> pcgFacetMethods = {
+			"BuildPcgPlantLods", "UpdatePcgSplineAuthoring", "GetPcgSplineStatus", "GetPcgSplineSnapshot", "CreatePcgSplineAsset",
 			"BindPcgSplineAsset", "SelectPcgSpline", "ApplyPcgSplineEdit",
 			"ExecutePcgSplineCommand", "AppendPcgSplinePoint", "GetPcgEditorSnapshot",
 			"CreatePcgLayer", "RemovePcgLayer", "BindPcgRecipeToScene",
@@ -2150,7 +2253,7 @@ bool TestEditorSceneInteractionContract()
 			"GetPcgInstances", "EditPcgInstance"
 		};
 		Check(editorApiHeader.find("public IPcgEditorAPI") != std::string::npos &&
-			countText(pcgApiHeader, "virtual ") == 28,
+			countText(pcgApiHeader, "virtual ") == 30,
 			"PCG editor facet inheritance or operation count changed");
 		for (const char* method : pcgFacetMethods)
 			Check(editorApiHeader.find(std::string(method) + "(") == std::string::npos,
@@ -2437,7 +2540,7 @@ bool TestEditorSceneInteractionContract()
 			cameraArbiterSource.find("FrameStage::BaseCaptured") != std::string::npos &&
 			apiSource.find("IsBaseCameraWriteWindowOpen()") != std::string::npos,
 			"camera base-write and contribution phases became implicit again");
-		std::cout<<"EDITOR_SCENE_INTERACTION_PASS window_catalog=26+single_state+configured_defaults editor_config=strict+fonts+layout+windows+platform window_registry=34+ordered+typed+owned debug_view_state=owned+injected+automation shell_menu=19_assets+command_sink+lazy_availability shell_commands=shortcut_priority+semantic_dispatch authoring_commands=save_all+reload+exit_gate package_session=dirty_order+request_forward+result_state prefab_session=owned+queued+stage play_toolbar=edit+play+pause+scene_gate play_commands=gate+timer+physics+state+reload_order project_session=selector+loaded+pending_request project_switch=dirty_gate+unload+open+publish_order scene_load_session=current+pending+mode scene_document_session=paired_owner+prefab_swap scene_load_controller=gate+prepare+publish+mode_order scene_load_request=encapsulated theme_owner=fonts+base_style+49_colors+toolbar history=chronological history_adapter=five_sources+runtime_patch selection_snapshot=derived+single_service save_transaction=single+scene_assets entity_preview_projection=scene_reader+dto_translation serialized_value=direct_dto+single_pointer_validator scene_document=rebuild+live_diagnostics+schema_validation authoring_boundary=instance_sessions+scene_host+asset_creation_transaction+runtime_neutral_preview engine_configuration=explicit_paths+project_owner+immutable_render_bootstrap runtime_command_commit=typed_points+game_logic_guard+batched_hierarchy_recompute scene_vehicle=guid_keyed+postbuild_publish material_override_transaction=service_owned camera_base_write=explicit_window+phase_assert api_facets=animation_12+animation_preview_20+asset_authoring_8+asset_catalog_3+audio_6+ai_1+gaf_19+gi_6+motion_matching_1+particle_2+pcg_27+play_mode_4+project_13+reflection_probe_9+render_24+runtime_command_history_4+runtime_frame_15+navigation_2+runtime_physics_9+runtime_scene_9+scene_interaction_9+scene_settings_11+script_lifecycle_3+shader_2+terrain_11+timeline_7+ui_7+vehicle_1+water_3 asset_meta_dead_bridge=removed lighting_commit_dead_bridge=removed particle_dead_bridge=removed project_mesh_alias_dead_bridge=removed reflection_probe_rebuild_dead_bridge=removed runtime_history_can_helpers_dead_bridge=removed runtime_resource_ready_dead_bridge=removed runtime_script_module_dead_bridge=removed runtime_transform_command_dead_bridge=removed runtime_unique_name_dead_bridge=removed runtime_vehicle_input_dead_bridge=removed runtime_vehicle_step=private viewport_texture_dead_bridge=removed transform=preview+single_scene_commit+undo_redo preview_ownership=instance_registry+session_owner+runtime_detach ray_projection=perspective+orthographic bounds=finite+limited+parallel frame=wide+tall cancel=pass play_isolation=pass selection_toggle=pass\n";
+		std::cout<<"EDITOR_SCENE_INTERACTION_PASS window_catalog=26+single_state+configured_defaults editor_config=strict+fonts+layout+windows+platform window_registry=34+ordered+typed+owned debug_view_state=owned+injected+automation shell_menu=19_assets+command_sink+lazy_availability shell_commands=shortcut_priority+semantic_dispatch authoring_commands=save_all+reload+exit_gate package_session=dirty_order+request_forward+result_state prefab_session=owned+queued+stage play_toolbar=edit+play+pause+scene_gate play_commands=gate+timer+physics+state+reload_order project_session=selector+loaded+pending_request project_switch=dirty_gate+unload+open+publish_order scene_load_session=current+pending+mode scene_document_session=paired_owner+prefab_swap scene_load_controller=gate+prepare+publish+mode_order scene_load_request=encapsulated theme_owner=fonts+base_style+49_colors+toolbar history=chronological history_adapter=five_sources+runtime_patch selection_snapshot=derived+single_service save_transaction=single+scene_assets entity_preview_projection=scene_reader+dto_translation serialized_value=direct_dto+single_pointer_validator scene_document=rebuild+live_diagnostics+schema_validation authoring_boundary=instance_sessions+scene_host+asset_creation_transaction+runtime_neutral_preview engine_configuration=explicit_paths+project_owner+immutable_render_bootstrap runtime_command_commit=typed_points+game_logic_guard+batched_hierarchy_recompute scene_vehicle=guid_keyed+postbuild_publish material_override_transaction=service_owned camera_base_write=explicit_window+phase_assert api_facets=animation_12+animation_preview_20+asset_authoring_8+asset_catalog_3+audio_6+ai_1+gaf_19+gi_9+motion_matching_1+particle_2+pcg_29+play_mode_4+project_13+reflection_probe_9+render_24+runtime_command_history_4+runtime_frame_15+navigation_2+runtime_physics_9+runtime_scene_9+scene_interaction_9+scene_settings_11+script_lifecycle_3+shader_2+terrain_11+timeline_7+ui_7+vehicle_1+water_3 asset_meta_dead_bridge=removed lighting_commit_dead_bridge=removed particle_dead_bridge=removed project_mesh_alias_dead_bridge=removed reflection_probe_rebuild_dead_bridge=removed runtime_history_can_helpers_dead_bridge=removed runtime_resource_ready_dead_bridge=removed runtime_script_module_dead_bridge=removed runtime_transform_command_dead_bridge=removed runtime_unique_name_dead_bridge=removed runtime_vehicle_input_dead_bridge=removed runtime_vehicle_step=private viewport_texture_dead_bridge=removed transform=preview+single_scene_commit+undo_redo preview_ownership=instance_registry+session_owner+runtime_detach ray_projection=perspective+orthographic bounds=finite+limited+parallel frame=wide+tall cancel=pass play_isolation=pass selection_toggle=pass\n";
         return true;
     }
     catch(const std::exception& e) { std::cerr<<"EDITOR_SCENE_INTERACTION_FAIL "<<e.what()<<'\n'; return false; }

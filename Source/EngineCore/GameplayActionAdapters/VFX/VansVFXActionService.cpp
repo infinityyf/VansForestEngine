@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <cstring>
 
 namespace Vans
 {
@@ -37,6 +38,11 @@ VansActionCommandResult VansVFXActionService::Execute(const VansActionCommand& c
         field.minNormalY=number("minNormalY",0.25f);
         field.duration=number("duration",0); field.spreadDuration=number("spreadDuration",0);
         field.spawnInterval=number("spawnInterval",0.1f);
+        field.connected=ReadSerializedBoolField(command.payload,"connectedPropagation",false);
+        field.spreadSpeed=number("spreadSpeed",1);
+        field.childIntervalMultiplier=number("childIntervalMultiplier",1);
+        field.maxChildInterval=number("maxChildInterval",.5f);
+        const auto depth=ReadSerializedIntField(command.payload,"maxDepth",4);
         const auto maximum=ReadSerializedIntField(command.payload,"maxSurfaces",16);
         const auto capacity=ReadSerializedIntField(command.payload,"maxConcurrentPerSource",8);
         VansVFXSpawnRequest request; request.owner=command.context.Entity(VansActionContextSlots::Owner);
@@ -49,7 +55,17 @@ VansActionCommandResult VansVFXActionService::Execute(const VansActionCommand& c
             || !std::isfinite(field.duration) || field.duration<=0 || field.duration>60
             || !std::isfinite(field.spreadDuration) || field.spreadDuration<=0 || field.spreadDuration>field.duration
             || !std::isfinite(field.spawnInterval) || field.spawnInterval<0.02f || field.spawnInterval>1
+            || !std::isfinite(field.spreadSpeed) || field.spreadSpeed<.1f || field.spreadSpeed>100
+            || !std::isfinite(field.childIntervalMultiplier) || field.childIntervalMultiplier<.001f || field.childIntervalMultiplier>10
+            || !std::isfinite(field.maxChildInterval) || field.maxChildInterval<.001f || field.maxChildInterval>1
+            || depth<1 || depth>16
             || maximum<1 || maximum>16 || capacity<1 || capacity>16) return reject("Surface field parameters are invalid");
+        field.maxDepth=static_cast<std::uint32_t>(depth);
+        std::uint32_t xBits=0,zBits=0;
+        std::memcpy(&xBits,&field.origin.x,sizeof(xBits));std::memcpy(&zBits,&field.origin.z,sizeof(zBits));
+        field.randomState=xBits^zBits^(request.owner.index+1u)*0x9e3779b9u
+            ^command.action.value.index^command.action.value.generation*0x85ebca6bu;
+        if (!field.randomState) field.randomState=1;
         unsigned fields=0; m_Effects.ForEach([&](auto,const Effect& effect) { if (effect.field) ++fields; });
         if (fields>=16) return reject("Scene surface field capacity reached");
         for (const auto& layer : layers->arrayItems) {
@@ -63,7 +79,7 @@ VansActionCommandResult VansVFXActionService::Execute(const VansActionCommand& c
         // Balanced concentric candidates are a generic bounded placement policy.
         // They are not Valve's unrecovered inferno propagation algorithm.
         unsigned remaining=field.maximum-1;
-        for (unsigned ring=1;remaining && ring*field.spacing<=field.radius;++ring) {
+        for (unsigned ring=1;!field.connected && remaining && ring*field.spacing<=field.radius;++ring) {
             const unsigned count=std::min(remaining,static_cast<unsigned>(std::floor(6.2831853f*ring)));
             for (unsigned i=0;i<count;++i) {
                 const float angle=6.2831853f*i/count+(ring%2 ? 0 : 0.3926991f);
@@ -72,7 +88,8 @@ VansActionCommandResult VansVFXActionService::Execute(const VansActionCommand& c
             remaining-=count;
         }
         std::uint32_t budget=12;
-        if (!PlaceSurfaceCell(field,field.origin,budget)) return reject("Surface field origin has no visible supported surface");
+        if (!PlaceSurfaceCell(field,field.origin,budget,0)) return reject("Surface field origin has no visible supported surface");
+        if (field.connected) field.origin=field.cells.front().point.position;
         request.worldPosition=field.cells.front().point.position;
         request.emissionPoints=field.points; request.maxConcurrentPerSource=static_cast<std::uint32_t>(capacity);
         std::string error; const auto instance=m_Backend.spawn(request,error);
@@ -201,7 +218,8 @@ void VansVFXActionService::PublishSurfaceField(VansGenerationHandle handle,const
     if (!m_Backend.surfaceFields->Publish(handle,snapshot))
         VANS_LOG_ERROR("[VFX] Surface field snapshot capacity or identity was rejected");
 }
-bool VansVFXActionService::PlaceSurfaceCell(SurfaceField& field,glm::vec3 candidate,std::uint32_t& budget)
+bool VansVFXActionService::PlaceSurfaceCell(SurfaceField& field,glm::vec3 candidate,std::uint32_t& budget,float bornTime,
+    std::optional<std::uint32_t> requestedParent)
 {
     if (budget<12 || field.cells.size()>=field.maximum) return false;
     const auto raycast=[&](glm::vec3 from,glm::vec3 direction,float length,VansEngine::VansPhysicsQueryHit& hit) {
@@ -218,19 +236,29 @@ bool VansVFXActionService::PlaceSurfaceCell(SurfaceField& field,glm::vec3 candid
     float nearest=std::numeric_limits<float>::max();
     for (std::uint32_t i=0;i<field.cells.size();++i) {
         const auto distance=glm::distance(field.cells[i].point.position,surface.position);
-        if (distance<field.spacing*0.7f) return false;
+        if (distance<field.spacing*(field.connected ? .999f : .7f)) return false;
         if (field.cells[i].point.active && distance<nearest) { nearest=distance; parent=i; }
     }
     if (!field.cells.empty() && nearest==std::numeric_limits<float>::max()) return false;
+    if (requestedParent) {
+        if (*requestedParent>=field.cells.size() || !field.cells[*requestedParent].point.active) return false;
+        parent=*requestedParent;
+    }
     const auto target=surface.position+surface.normal*0.025f;
+    if (field.connected && !field.cells.empty() && glm::distance(target,field.origin)>field.radius+.001f) return false;
     const auto from=field.cells.empty() ? field.origin+glm::vec3(0,0.08f,0) : field.cells[parent].point.position+glm::vec3(0,0.12f,0);
     const auto delta=target+glm::vec3(0,0.12f,0)-from; const auto length=glm::length(delta);
     VansEngine::VansPhysicsQueryHit obstruction;
     if (length>0.05f && raycast(from,delta/length,length-0.04f,obstruction)) return false;
     VansGraphics::VansParticleEmissionPoint core;
     core.id=static_cast<std::uint32_t>(field.cells.size())*16+1;
-    core.channel=1; core.position=target; core.normal=surface.normal; core.bornTime=field.age;
-    field.cells.push_back({core,parent}); field.points.push_back(core);
+    core.channel=1; core.position=target; core.normal=surface.normal; core.bornTime=bornTime;
+    SurfaceCell cell;cell.point=core;cell.parent=parent;
+    cell.depth=field.cells.empty() ? 0 : field.cells[parent].depth+1;
+    cell.interval=field.cells.empty() ? field.spawnInterval
+        : std::min(field.cells[parent].interval*field.childIntervalMultiplier,field.maxChildInterval);
+    cell.nextSpawn=bornTime+cell.interval;
+    field.cells.push_back(cell); field.points.push_back(core);
     // Boundary samples are traced independently; an edge cannot float across a ledge.
     for (unsigned i=0;i<4;++i) {
         const float angle=i*1.5707963f;
@@ -274,10 +302,44 @@ void VansVFXActionService::ExtendSurfaceField(Effect& effect,float seconds,std::
             VANS_LOG_ERROR("[VFX] Surface field drain was rejected at expiry");
         return;
     }
-    if (field.age>field.spreadDuration || field.age<field.nextSpawn || budget<12 || field.candidate>=field.candidates.size()) return;
-    const auto candidate=field.candidates[field.candidate++];
-    field.nextSpawn=field.age+field.spawnInterval;
-    if (PlaceSurfaceCell(field,candidate,budget) && !m_Backend.setEmissionPoints(effect.instance,field.points)) {
+    bool changed=false;
+    if (field.connected) {
+        const auto random=[&]() {
+            auto& s=field.randomState;s^=s<<13;s^=s>>17;s^=s<<5;
+            return static_cast<float>(s>>8)*(1.f/16777216.f);
+        };
+        // 通用连通扩散：每个支持节点独立计时，候选从真实父节点发出。
+        const float tickInterval=.1f/field.spreadSpeed;
+        while (field.age+1.e-6f>=field.nextSpawn && field.cells.size()<field.maximum && budget>=12) {
+            const float tick=field.nextSpawn;field.nextSpawn+=tickInterval;
+            const auto count=field.cells.size();
+            for (std::uint32_t parent=0;parent<count && field.cells.size()<field.maximum && budget>=12;++parent) {
+                auto& source=field.cells[parent];
+                if (!source.point.active || source.depth+1>=field.maxDepth
+                    || tick>source.point.bornTime+field.spreadDuration || tick+1.e-6f<source.nextSpawn) continue;
+                const float born=source.nextSpawn;source.nextSpawn+=source.interval;
+                const glm::vec3 origin=source.point.position;
+                const unsigned first=static_cast<unsigned>(random()*4);
+                for (unsigned i=0;i<4 && field.cells.size()<field.maximum && budget>=12;++i) {
+                    const float angle=((first+i)%4+random())*1.5707963268f;
+                    auto candidate=origin+glm::vec3(std::cos(angle),0,std::sin(angle))*field.spacing;
+                    const auto fromRoot=candidate-field.origin;
+                    const float distance=glm::length(fromRoot);
+                    // 直接投回传播边界，不用最后一圈的半径取整缩小覆盖。
+                    if (distance>field.radius) candidate=field.origin+fromRoot*(field.radius/distance);
+                    changed=PlaceSurfaceCell(field,candidate,budget,born,parent) || changed;
+                }
+            }
+        }
+    }
+    // 按预定出生时刻补齐本帧应到的扩散；仍共享场景查询预算，长帧不延长每个间隔。
+    while (!field.connected && field.nextSpawn<=field.spreadDuration && field.age+1.e-6f>=field.nextSpawn
+        && budget>=12 && field.candidate<field.candidates.size()) {
+        const float bornTime=field.nextSpawn;
+        field.nextSpawn+=field.spawnInterval;
+        changed=PlaceSurfaceCell(field,field.candidates[field.candidate++],budget,bornTime) || changed;
+    }
+    if (changed && !m_Backend.setEmissionPoints(effect.instance,field.points)) {
         field.stopped=true;
         VANS_LOG_ERROR("[VFX] Surface field emission point update was rejected");
         if (!m_Backend.stop || !m_Backend.stop(effect.instance,VansVFXStopMode::Drain))

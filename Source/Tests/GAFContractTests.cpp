@@ -6635,10 +6635,13 @@ static bool TestSurfaceDamageRuntime(const Vans::VansGameplayAssetLibrary& asset
         {"surfaceLayers",V::Array({V::String("Default")})},{"radius",V::Float(2)},{"spacing",V::Float(1)},
         {"duration",V::Float(5.5)},{"spreadDuration",V::Float(3)},{"spawnInterval",V::Float(.1)},{"maxSurfaces",V::Int(3)}});
     auto supported=vfx.Execute(create);
-    for (int i=0;i<4;++i) vfx.Tick(.11);
+    vfx.Tick(.31);
     VansSurfaceFieldSnapshot supportedSnapshot;
     if (!ExpectGAF(supported && registry->Read(supported.resource,supportedSnapshot) && supportedSnapshot.cellCount==3,
         "Supported VFX cells were not published to the shared gameplay snapshot")) return false;
+    if (!ExpectGAF(std::abs(supportedSnapshot.cells[1].bornTime-.1f)<1.e-5f
+        && std::abs(supportedSnapshot.cells[2].bornTime-.2f)<1.e-5f,
+        "Long-frame surface spreading did not preserve the scheduled cell birth clocks")) return false;
     VansActionCommand smoke; smoke.stableName="VFX.ExtinguishingVolume"; smoke.context=create.context;
     smoke.payload=V::Object({{"effect",V::String("90be03fb-4c7e-5d5a-af19-b559c345cf36")},{"position",vector(supportedSnapshot.cells[0].position)},
         {"extinguishEffect",V::String("36dc83be-9195-5727-95df-2cfe4cc1c36a")},{"extinctionThreshold",V::Float(.03)},
@@ -6691,6 +6694,35 @@ static bool TestSurfaceDamageRuntime(const Vans::VansGameplayAssetLibrary& asset
         && runtime.fieldStopped==3 && runtime.fieldStopReason=="Empty"
         && vfx.Release(supported.resource,error) && vfx.Release(smallCloud.resource,error),
         "A locally emptied field below minimumCells must not report the full-extinguish sound branch")) return false;
+    auto connected=create;
+    *FindObjectField(connected.payload,"maxSurfaces")=V::Int(16);
+    *FindObjectField(connected.payload,"radius")=V::Float(2.794);
+    *FindObjectField(connected.payload,"spacing")=V::Float(1.0668);
+    *FindObjectField(connected.payload,"spawnInterval")=V::Float(.02);
+    for (const auto& entry : V::Object({{"connectedPropagation",V::Bool(true)},{"spreadSpeed",V::Float(10)},
+        {"childIntervalMultiplier",V::Float(.1)},{"maxChildInterval",V::Float(.5)},{"maxDepth",V::Int(4)}}).objectFields)
+        connected.payload.objectFields.push_back(entry);
+    const auto growth=vfx.Execute(connected);
+    for (int i=0;i<100;++i) vfx.Tick(.01);
+    VansSurfaceFieldSnapshot grown;
+    if (!ExpectGAF(growth && registry->Read(growth.resource,grown) && grown.active && grown.cellCount>=8 && grown.cellCount<=16,
+        "Connected propagation did not fill supported ground within its capacity")) return false;
+    float extent=0;
+    for (std::size_t i=0;i<grown.cellCount;++i) {
+        extent=std::max(extent,glm::distance(grown.cells[i].position,grown.origin));
+        if (!ExpectGAF(glm::distance(grown.cells[i].position,grown.origin)<=2.795f && grown.cells[i].bornTime<1,
+            "Connected propagation exceeded its ignition radius or delayed its birth clock")) return false;
+        for (std::size_t j=0;j<i;++j)
+            if (!ExpectGAF(glm::distance(grown.cells[i].position,grown.cells[j].position)>=1.065f,
+                "Connected propagation packed cells below the requested minimum spacing")) return false;
+    }
+    if (!ExpectGAF(extent>2.5f,"Connected growth still rounded its extent down to a complete ring")) return false;
+    vfx.Tick(4.4);registry->Read(growth.resource,grown);
+    if (!ExpectGAF(grown.active,"Late child cells shortened the whole-field lifetime")) return false;
+    vfx.Tick(.101);registry->Read(growth.resource,grown);
+    if (!ExpectGAF(!grown.active && runtime.fieldStopReason=="Completed" && vfx.Release(growth.resource,error),
+        "Connected growth extended lifetime from its final child or failed to notify expiry")) return false;
+    std::cout << "[ConnectedSurface] cells=" << grown.cellCount << " extent=" << extent << " lifetime=5.5 spacing=1.0668 queryBudget=64\n";
     std::cout << "[SurfaceDamage] realPhysics=1 parts=19 cadence=.2 ramp=2 wall=1 elevation=1 exit=1 lethal=1 stale=1 callbackRelease=1 armor=1\n";
     std::cout << "[SmokeExtinguish] publishedCells=3 densityThresholdStrict=1 exactOneThirdPartial=1 full=1 combinedVolumes=1 perCellRoots=1 localDirections=1 coincidentDirection=1 fullIdentity=1 fieldGroups=1 smallFieldNoFullSound=1 notifiedOnce=1 staleCleanup=1\n";
     return true;
@@ -7183,6 +7215,22 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan, bool damageTest = false)
 		payload["targetLayer"] = "MissingLayer"; query.payload = Vans::DecodeSerializedValueJson(payload);
 		if (!ExpectGAF(!combatService->Execute(query), "Unknown hitscan layer silently selected Default")) return false;
 		payload["targetLayer"] = "Enemy"; query.payload = Vans::DecodeSerializedValueJson(payload);
+		// 世界武器的发射线与相机无关；不完整或非法显式向量必须拒绝，不能借用相机。
+		payload["origin"] = {{"x",10.0},{"y",20.0},{"z",30.0}};
+		payload["direction"] = {{"x",2.0},{"y",0.0},{"z",0.0}};
+		query.payload = Vans::DecodeSerializedValueJson(payload);
+		const auto worldShot = combatService->Execute(query);
+		const auto* worldOrigin = Vans::FindObjectField(worldShot.payload,"origin");
+		const auto* worldDirection = Vans::FindObjectField(worldShot.payload,"direction");
+		if (!ExpectGAF(worldShot && worldOrigin && worldDirection &&
+			Vans::ReadSerializedNumber(*Vans::FindObjectField(*worldOrigin,"x"),0)==10 &&
+			Vans::ReadSerializedNumber(*Vans::FindObjectField(*worldDirection,"x"),0)==1,
+			"Explicit world shot used the camera ray or failed to normalize direction")) return false;
+		payload["direction"]["x"] = 0.0; query.payload = Vans::DecodeSerializedValueJson(payload);
+		if (!ExpectGAF(!combatService->Execute(query),"Zero explicit direction accepted")) return false;
+		payload.erase("direction"); query.payload = Vans::DecodeSerializedValueJson(payload);
+		if (!ExpectGAF(!combatService->Execute(query),"Incomplete explicit ray fell back to the camera")) return false;
+		payload.erase("origin");
 		// 偏转必须同时送入精确网格和 PhysX，并返回真正使用的方向。
 		payload["spreadRight"] = 1.0;
 		query.payload = Vans::DecodeSerializedValueJson(payload);

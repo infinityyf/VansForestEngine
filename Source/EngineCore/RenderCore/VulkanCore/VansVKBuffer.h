@@ -7,6 +7,7 @@
 #include "vulkan/vulkan.h"
 
 #include "../VansGraphicsBuffer.h"
+#include "VansVKResourceLifetime.h"
 #include <vector>
 
 // Forward declare VMA opaque allocation handle to keep this header light.
@@ -55,6 +56,7 @@ namespace VansGraphics
 		// 否则 VMA 断言：Unmapping allocation not previously mapped。
 		// 若 m_MappedPtr 来自 VMA_ALLOCATION_CREATE_MAPPED_BIT 持久映射，则保持 false。
 		bool m_ExplicitlyMapped = false;
+		std::shared_ptr<VansVKResourceLifetime> m_ResourceLifetime;
 
 	private:
 		VkBufferView m_VansVKBufferView = VK_NULL_HANDLE;
@@ -64,6 +66,8 @@ namespace VansGraphics
 		bool CreatVulkanBuffer(VkDevice& logical_device, VkDeviceSize size, VkFormat format, VkBufferUsageFlags usage, VkMemoryPropertyFlags memory_properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		void DestroyVulkanBuffer(VkDevice& logical_device);
+		VansVKResourceLifetime::Lease RetainNativeResources()
+		{ return VansVKResourceLifetime::Retain(m_ResourceLifetime); }
 
 		//设置buffer memory barrier
 		void SetBufferMemoryBarrier(VansVKCommandBuffer& commandBuffer, VkPipelineStageFlags generating_stages, VkPipelineStageFlags consuming_stages, BufferTransition bufferTransition);
@@ -96,6 +100,7 @@ namespace VansGraphics
 		VmaAllocation GetNativeAllocation() const { return m_VansVKBufferAllocation; }
 
 		VkDeviceSize GetBufferSize() const { return m_BufferSize; }
+		VkDeviceSize GetAllocationSize() const;
 	private:
 		//transition a buffer: can transition usage or used queue
 	//add barrier to memory manager

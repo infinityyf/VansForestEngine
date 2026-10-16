@@ -62,16 +62,6 @@ private:
 	std::shared_ptr<MaterialOverrideBatchState> m_State;
 };
 
-std::filesystem::path NormalizeAssetPath(const std::filesystem::path& path)
-{
-	std::error_code error;
-	std::filesystem::path normalized = std::filesystem::weakly_canonical(path, error);
-	if (!error)
-		return normalized;
-	normalized = std::filesystem::absolute(path, error);
-	return error ? path.lexically_normal() : normalized.lexically_normal();
-}
-
 VansMaterialParameterValue ToMaterialParameterValue(const Vans::EditorAPI::PropertyValue& value)
 {
 	return std::visit([](const auto& typedValue) -> VansMaterialParameterValue
@@ -603,17 +593,9 @@ bool VansMaterialLiveEditService::ApplyMaterialPreviewChange(
 	auto* database = Vans::VansProjectManager::Get().GetAssetDatabase();
 	if (!database) return false;
 
-	std::string materialName;
-	const std::filesystem::path selectedPath = NormalizeAssetPath(assetPath);
-	for (const Vans::VansAssetRecord& record : database->All())
-	{
-		if (NormalizeAssetPath(record.sourcePath) == selectedPath)
-		{
-			materialName = record.guid.ToString();
-			break;
-		}
-	}
-	if (materialName.empty()) return false;
+	const auto record = database->Find(assetPath);
+	if (!record) return false;
+	const std::string materialName = record->guid.ToString();
 
 	bool changed = false;
 	for (const Vans::EditorAPI::RuntimeMaterialParameterEdit& edit : parameterEdits)
@@ -703,6 +685,8 @@ bool VansMaterialLiveEditService::ApplyMaterialTexture(
 		DestroyMaterialOwnedTextureDescriptors(*material);
 		RecreateNodesUsingMaterial(*scene, *material);
 	}
+	// Main 已暂停的材质维护事务中同步作者快照；普通帧再交给 GI 消费者。
+	materialManager->FlushMaterialPayload(*material);
 
 	return true;
 }

@@ -9,6 +9,8 @@
 #include "../EngineCore/AnimationCore/Storage/VansBoneMaskStorage.h"
 #include "../EngineCore/AnimationCore/Storage/VansRetargetProfileStorage.h"
 #include "../EngineCore/AnimationCore/Serialization/VansRetargetProfileJsonCodec.h"
+#include "../EngineCore/AnimationCore/Retargeting/VansAnimationRetargetBaker.h"
+#include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
 #include "../EngineCore/AssetCore/VansAssetObjectRepository.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
@@ -42,6 +44,7 @@
 #include "../EngineCore/Util/VansFileFingerprint.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <filesystem>
@@ -83,6 +86,8 @@ namespace
 		Rewrite,
 		Validate,
 		ImportAnimationFbx,
+		BakeRetargetClips,
+		ImportAnimationPoses,
 		RebuildAnimationClips,
 		RefreshSkeletonSubAssets,
 		InspectSkeleton,
@@ -128,6 +133,8 @@ namespace
 				" (--dry-run|--write)\n"
 			<< "  ForestAssetTool inspect-skeleton --project <path> --source <asset-relative-model>"
 				" [--bone <name>]...\n"
+			<< "  ForestAssetTool bake-retarget-clips --project <path> --source <project-relative-manifest> (--dry-run|--write)\n"
+			<< "  ForestAssetTool import-animation-poses --project <path> --source <project-relative-json> --skeleton <project-relative-model> --destination-root <asset-relative-directory> (--dry-run|--write)\n"
 			<< "  ForestAssetTool validate-lua-script --project <path> --script <project-relative-lua>"
 				" --entry <table-name>\n"
 			<< "  ForestAssetTool bake-navigation --project <path> --source <project-relative-scene>"
@@ -146,6 +153,8 @@ namespace
 		if (command == "rewrite-animation-assets") options.command = Command::Rewrite;
 		else if (command == "validate-animation-assets") options.command = Command::Validate;
 		else if (command == "import-animation-fbx") options.command = Command::ImportAnimationFbx;
+		else if (command == "bake-retarget-clips") options.command = Command::BakeRetargetClips;
+		else if (command == "import-animation-poses") options.command = Command::ImportAnimationPoses;
 		else if (command == "rebuild-animation-clips") options.command = Command::RebuildAnimationClips;
 		else if (command == "refresh-skeleton-subassets") options.command = Command::RefreshSkeletonSubAssets;
 		else if (command == "inspect-skeleton") options.command = Command::InspectSkeleton;
@@ -320,6 +329,11 @@ namespace
 			error = "Skeleton sub-asset refresh requires exactly one of --dry-run or --write.";
 			return false;
 		}
+		if (options.command == Command::BakeRetargetClips && (modeCount != 1 || options.sourcePath.empty()))
+		{ error = "Retarget bake requires --source and exactly one of --dry-run or --write."; return false; }
+		if (options.command == Command::ImportAnimationPoses && (modeCount != 1 || options.sourcePath.empty()
+			|| options.skeletonClipPath.empty() || options.destinationRoot.empty()))
+		{ error = "Pose import requires --source, --skeleton, --destination-root and one write mode."; return false; }
 		if (options.command == Command::InspectSkeleton
 			&& (modeCount != 0 || options.sourcePath.empty()))
 		{
@@ -714,6 +728,236 @@ namespace
 		std::cout << " guid=" << record.guid.ToString();
 		std::cout << '\n';
 		return 0;
+	}
+
+	int BakeRetargetClips(const fs::path& projectRoot, const fs::path& assetsRoot, const Options& options)
+	{
+		using namespace VansGraphics;
+		std::string error;
+		const fs::path manifestPath = fs::weakly_canonical(projectRoot / options.sourcePath);
+		if (!IsWithin(manifestPath, projectRoot)) { std::cerr << "Bake manifest must be inside project.\n"; return 2; }
+		nlohmann::json manifest;
+		if (!Vans::VansJsonFileStorage::Read(manifestPath, manifest, error)) { std::cerr << error << '\n'; return 1; }
+		const auto fields = [&](const nlohmann::json& value, std::initializer_list<const char*> names) {
+			if (!value.is_object() || value.size() != names.size()) return false;
+			for (auto name : names) if (!value.contains(name)) return false;
+			return true;
+		};
+		if (!fields(manifest, {"sourceModel", "targetModel", "targetRig", "profile", "motionRoot", "clips"})
+			|| !manifest["clips"].is_array() || manifest["clips"].empty())
+		{ std::cerr << "Invalid retarget bake manifest fields.\n"; return 2; }
+		const auto resolveInput = [&](const nlohmann::json& value, fs::path& result) {
+			if (!value.is_string() || value.get<std::string>().empty()) return false;
+			result = fs::weakly_canonical(projectRoot / fs::u8path(value.get<std::string>()));
+			return IsWithin(result, projectRoot) && fs::is_regular_file(result);
+		};
+		fs::path sourceModel, targetModel, rigPath, profilePath;
+		if (!resolveInput(manifest["sourceModel"], sourceModel) || !resolveInput(manifest["targetModel"], targetModel)
+			|| !resolveInput(manifest["targetRig"], rigPath) || !resolveInput(manifest["profile"], profilePath))
+		{ std::cerr << "Bake input must be an existing project file.\n"; return 2; }
+		Skeleton sourceSkeleton, importedTarget, targetSkeleton;
+		VansAnimationRigAsset rigAsset; VansCompiledAnimationRig rig;
+		VansRetargetProfileAsset profile;
+		if (!LoadToolSkeletonFromModel(sourceModel, sourceSkeleton, error)
+			|| !LoadToolSkeletonFromModel(targetModel, importedTarget, error)
+			|| !VansAnimationRigStorage::Load(rigPath, rigAsset, error)
+			|| !VansAnimationRigCompiler::BuildRuntimeSkeleton(rigAsset, importedTarget, targetSkeleton, error)
+			|| !VansAnimationRigCompiler::Compile(rigAsset, targetSkeleton, rig, error)
+			|| !VansRetargetProfileStorage::Load(profilePath, profile, error))
+		{ std::cerr << error << '\n'; return 1; }
+		VansRetargetRuntimeDesc desc;
+		desc.translationScaleMode = profile.translationScaleMode; desc.translationScale = profile.explicitTranslationScale;
+		desc.rootAlignment = profile.rootAlignment; desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment;
+		desc.limbChains = profile.limbChains; desc.controlBones = profile.controlBones; desc.boneMappings = profile.boneMappings;
+		desc.outputModelRotation = profile.outputModelRotation;
+		VansRetargetProcessor audit;
+		if (!audit.Build(sourceSkeleton, targetSkeleton, rig, desc)) { std::cerr << "Invalid retarget mapping.\n"; return 1; }
+		if (!manifest["motionRoot"].is_string() || sourceSkeleton.FindBoneIndex(manifest["motionRoot"].get<std::string>()) < 0)
+		{ std::cerr << "Bake requires an explicit source motionRoot.\n"; return 2; }
+		const auto stats = audit.GetStats();
+		std::cout << "Retarget source=" << stats.sourceBoneCount << " target=" << stats.targetBoneCount
+			<< " mapped=" << stats.mappedBoneCount << " limbs=" << stats.limbChainCount << " scale=" << stats.translationScale << '\n';
+		std::unordered_map<std::string, std::vector<VansAnimationClip>> loaded;
+		std::unordered_set<std::string> outputs;
+		std::vector<fs::path> outputPaths;
+		Vans::VansStagedFileTransaction transaction;
+		for (const auto& item : manifest["clips"])
+		{
+			if (!fields(item, {"source", "take", "output", "delta"}) || !item["take"].is_string() || !item["output"].is_string())
+			{ std::cerr << "Invalid retarget clip fields.\n"; return 2; }
+			fs::path sourcePath;
+			if (!resolveInput(item["source"], sourcePath)) { std::cerr << "Missing retarget source.\n"; return 2; }
+			const fs::path output = fs::weakly_canonical(projectRoot / fs::u8path(item["output"].get<std::string>()));
+			if (!IsWithin(output, assetsRoot) || output.extension() != ".vclip" || !outputs.insert(output.generic_string()).second)
+			{ std::cerr << "Retarget outputs must be unique .vclip paths inside Assets.\n"; return 2; }
+			const auto key = sourcePath.generic_string();
+			if (loaded.find(key) == loaded.end())
+			{
+				std::vector<VansAnimationClip> clips;
+				if (sourcePath.extension() == ".vclip")
+				{
+					VansAnimationClip clip; Skeleton embedded;
+					if (!VansAnimationClipIO::Load(sourcePath.string(), clip, embedded)
+						|| embedded.ComputeSignature() != sourceSkeleton.ComputeSignature())
+					{ std::cerr << "Source clip does not match the source model Skeleton.\n"; return 1; }
+					clips.push_back(std::move(clip));
+				}
+				else if (!VansSkinnedMeshLoader::ExtractExternAnimationClips(sourcePath.string(), sourceSkeleton, clips))
+				{ std::cerr << "Could not extract source animation.\n"; return 1; }
+				loaded.emplace(key, std::move(clips));
+			}
+			const auto& clips = loaded.at(key);
+			const std::string take = item["take"].get<std::string>();
+			const VansAnimationClip* selected = nullptr;
+			for (const auto& clip : clips) if (clip.clipName == take)
+			{
+				if (selected) { std::cerr << "Ambiguous source take: " << take << '\n'; return 1; }
+				selected = &clip;
+			}
+			if (!selected) { std::cerr << "Missing source take: " << take << '\n'; return 1; }
+			VansRetargetBakeSettings bakeSettings;
+			if (!item["delta"].is_null())
+			{
+				const auto& delta = item["delta"];
+				if (!fields(delta, {"source", "take", "time", "channels", "weights"}) || !delta["take"].is_string()
+					|| !delta["time"].is_number() || !delta["channels"].is_object() || !delta["weights"].is_object())
+				{ std::cerr << "Invalid native delta reference or channel mask.\n"; return 2; }
+				fs::path referencePath;
+				if (!resolveInput(delta["source"], referencePath)) { std::cerr << "Missing native delta reference.\n"; return 2; }
+				const auto referenceKey = referencePath.generic_string();
+				if (loaded.find(referenceKey) == loaded.end())
+				{
+					std::vector<VansAnimationClip> references;
+					if (!VansSkinnedMeshLoader::ExtractExternAnimationClips(referencePath.string(), sourceSkeleton, references))
+					{ std::cerr << "Could not extract delta reference source.\n"; return 1; }
+					loaded.emplace(referenceKey, std::move(references));
+				}
+				for (const auto& reference : loaded.at(referenceKey)) if (reference.clipName == delta["take"].get<std::string>())
+				{
+					if (bakeSettings.referenceClip) { std::cerr << "Ambiguous native delta reference.\n"; return 1; }
+					bakeSettings.referenceClip = &reference;
+				}
+				if (!bakeSettings.referenceClip) { std::cerr << "Missing native delta reference take.\n"; return 1; }
+				bakeSettings.referenceTime = delta["time"].get<float>();
+				bakeSettings.nativeDeltaChannels.assign(sourceSkeleton.bones.size(), 0);
+				bakeSettings.nativeDeltaWeights.assign(sourceSkeleton.bones.size(), 0);
+				if (delta["channels"].size() != delta["weights"].size()) { std::cerr << "Delta channels/weights differ.\n"; return 2; }
+				for (const auto& channel : delta["channels"].items())
+				{
+					const int bone = sourceSkeleton.FindBoneIndex(channel.key());
+					if (bone < 0 || !channel.value().is_number_integer() || !delta["weights"].contains(channel.key())
+						|| !delta["weights"][channel.key()].is_number()) { std::cerr << "Invalid delta bone channel.\n"; return 2; }
+					const int flags = channel.value().get<int>();
+					if (flags < 0 || flags > 7) { std::cerr << "Invalid delta TRS flags.\n"; return 2; }
+					bakeSettings.nativeDeltaChannels[bone] = static_cast<std::uint8_t>(flags);
+					bakeSettings.nativeDeltaWeights[bone] = delta["weights"][channel.key()].get<float>();
+				}
+			}
+			VansAnimationClip sourceClip = *selected;
+			if (sourceClip.rootMotion.boneName.empty()) sourceClip.rootMotion.boneName = manifest["motionRoot"].get<std::string>();
+			VansAnimationClip baked;
+			if (!VansAnimationRetargetBaker::Bake(sourceClip, sourceSkeleton, targetSkeleton, rig, desc, baked, error, bakeSettings))
+			{ std::cerr << take << ": " << error << '\n'; return 1; }
+			std::string bytes;
+			if (!VansAnimationClipBinaryCodec::Encode(baked, targetSkeleton, bytes, error)) { std::cerr << error << '\n'; return 1; }
+			if (options.write)
+			{
+				Vans::VansStagedFile stage;
+				if (!Vans::VansFileStorage::StageWriteBytes(output, bytes, stage, error)) { std::cerr << error << '\n'; return 1; }
+				transaction.Add(std::move(stage)); outputPaths.push_back(output);
+			}
+			std::cout << (options.write ? "Staged " : "Inspected ") << output.filename().string()
+				<< " duration=" << baked.duration << " bytes=" << bytes.size() << '\n';
+		}
+		if (options.write)
+		{
+			if (!transaction.Publish(error)) { std::cerr << error << '\n'; return 1; }
+			Vans::VansAssetDatabase database(assetsRoot);
+			for (const auto& path : outputPaths)
+				if (!database.RegisterOrRefresh(path, Vans::VansAssetOperationPolicy::Authoring(), error))
+				{ std::cerr << error << '\n'; return 1; }
+		}
+		std::cout << "Retarget bake passed clips=" << manifest["clips"].size() << " write=" << options.write << '\n';
+		return 0;
+	}
+
+	int ImportAnimationPoses(const fs::path& projectRoot, const fs::path& assetsRoot, const Options& options)
+	{
+		using namespace VansGraphics;
+		const auto inputPath=fs::weakly_canonical(projectRoot/options.sourcePath);
+		const auto modelPath=fs::weakly_canonical(projectRoot/options.skeletonClipPath);
+		const auto destination=fs::weakly_canonical(projectRoot/options.destinationRoot);
+		if(!IsWithin(inputPath,projectRoot) || !fs::is_regular_file(inputPath)
+			|| !IsWithin(modelPath,projectRoot) || !fs::is_regular_file(modelPath) || !IsWithin(destination,assetsRoot))
+		{ std::cerr<<"Pose input/model must be inside project and outputs inside Assets.\n";return 2; }
+		std::string error;Skeleton skeleton;
+		if(!LoadToolSkeletonFromModel(modelPath,skeleton,error)){std::cerr<<error<<'\n';return 1;}
+		nlohmann::json input;
+		if(!Vans::VansJsonFileStorage::Read(inputPath,input,error)){std::cerr<<error<<'\n';return 1;}
+		auto fields=[](const nlohmann::json& value,std::initializer_list<const char*> names){
+			if(!value.is_object() || value.size()!=names.size())return false;
+			for(const char* name:names)if(!value.contains(name))return false;return true;};
+		if(!fields(input,{"producer","sampleRate","requiredBones","clips"}) || !input["producer"].is_string()
+			|| !input["sampleRate"].is_number() || !input["requiredBones"].is_array() || !input["clips"].is_array() || input["clips"].empty())
+		{std::cerr<<"Invalid pose exchange fields.\n";return 2;}
+		const float sampleRate=input["sampleRate"].get<float>();
+		if(!std::isfinite(sampleRate) || sampleRate<=0){std::cerr<<"Invalid pose sampling rate.\n";return 2;}
+		std::unordered_set<std::string> required,outputs;
+		for(const auto& name:input["requiredBones"])
+			if(!name.is_string() || skeleton.FindBoneIndex(name.get<std::string>())<0 || !required.insert(name.get<std::string>()).second)
+			{std::cerr<<"Invalid or duplicate required pose bone.\n";return 2;}
+		Vans::VansStagedFileTransaction transaction;std::vector<fs::path> published;
+		try
+		{
+			for(const auto& row:input["clips"])
+			{
+				if(!fields(row,{"alias","asset","duration","delta","tracks","motionSource","motionTake","rootMotionTrack"})
+					|| !row["alias"].is_string() || !row["asset"].is_string() || !row["delta"].is_boolean()
+					|| !row["duration"].is_number() || !row["tracks"].is_object() || row["tracks"].size()!=required.size()
+					|| !row["motionSource"].is_string() || !row["motionTake"].is_string() || !row["rootMotionTrack"].is_array())
+				{std::cerr<<"Invalid pose clip fields.\n";return 2;}
+				VansAnimationClip clip;clip.clipName=row["alias"].get<std::string>();clip.duration=row["duration"].get<float>();clip.ticksPerSecond=sampleRate;
+				if(clip.clipName.empty() || !std::all_of(clip.clipName.begin(),clip.clipName.end(),[](unsigned char c){return std::isalnum(c)||c=='_';})
+					|| !outputs.insert(clip.clipName).second || !std::isfinite(clip.duration) || clip.duration<=0)
+				{std::cerr<<"Invalid pose clip name/duration.\n";return 2;}
+				const bool delta=row["delta"].get<bool>();clip.boneKeyframes.resize(skeleton.bones.size());
+				if(delta!=row["rootMotionTrack"].empty()){std::cerr<<"Absolute clips require explicit root travel; delta clips must omit travel.\n";return 2;}
+				if(delta)for(auto& track:clip.boneKeyframes)track.push_back({0,glm::vec3(0),glm::quat(1,0,0,0),glm::vec3(1)});
+				auto tracks=row["tracks"];if(!delta)tracks["root"]=row["rootMotionTrack"];
+				for(const auto& item:tracks.items())
+				{
+					const int bone=skeleton.FindBoneIndex(item.key());
+					if(!required.count(item.key()) || bone<0 || !item.value().is_array() || item.value().empty())
+					{std::cerr<<"Invalid pose track bone or key list.\n";return 2;}
+					auto& track=clip.boneKeyframes[bone];track.clear();float previous=-1;
+					for(const auto& values:item.value())
+					{
+						if(!values.is_array() || values.size()!=11){std::cerr<<"Pose keys require time+TRS.\n";return 2;}
+						std::array<float,11> key{};
+						for(std::size_t index=0;index<key.size();++index)
+						{if(!values[index].is_number()){std::cerr<<"Pose keys must be numeric.\n";return 2;}key[index]=values[index].get<float>();if(!std::isfinite(key[index]))return 2;}
+						const glm::quat rotation(key[7],key[4],key[5],key[6]);
+						if(key[0]<0 || key[0]<=previous || key[0]>clip.duration+.0001f || std::abs(glm::dot(rotation,rotation)-1)>1.e-3f
+							|| key[8]<=0 || key[9]<=0 || key[10]<=0){std::cerr<<"Invalid pose key ordering, rotation or scale.\n";return 2;}
+						track.push_back({key[0],glm::vec3(key[1],key[2],key[3]),glm::normalize(rotation),glm::vec3(key[8],key[9],key[10])});previous=key[0];
+					}
+					if(track.front().time!=0){std::cerr<<"Pose tracks must begin at zero.\n";return 2;}
+				}
+				clip.rootMotion.enabled=!delta;clip.rootMotion.boneName="root";clip.rootMotion.forceLock=!delta;clip.rootMotion.lockMode=delta?AnimationRootLockMode::None:AnimationRootLockMode::ReferencePose;
+				std::string bytes;if(!VansAnimationClipBinaryCodec::Encode(clip,skeleton,bytes,error)){std::cerr<<error<<'\n';return 1;}
+				const auto output=destination/fs::u8path(clip.clipName+".vclip");
+				if(options.write){Vans::VansStagedFile staged;if(!Vans::VansFileStorage::StageWriteBytes(output,bytes,staged,error)){std::cerr<<error<<'\n';return 1;}transaction.Add(std::move(staged));published.push_back(output);}
+				std::cout<<(options.write?"Staged ":"Inspected ")<<clip.clipName<<" bones="<<skeleton.bones.size()<<" bytes="<<bytes.size()<<'\n';
+			}
+		}
+		catch(const std::exception& exception){std::cerr<<"Pose import rejected: "<<exception.what()<<'\n';return 2;}
+		if(options.write)
+		{
+			if(!transaction.Publish(error)){std::cerr<<error<<'\n';return 1;}
+			Vans::VansAssetDatabase database(assetsRoot);
+			for(const auto& path:published)if(!database.RegisterOrRefresh(path,Vans::VansAssetOperationPolicy::Authoring(),error)){std::cerr<<error<<'\n';return 1;}
+		}
+		std::cout<<"Pose import passed clips="<<input["clips"].size()<<" write="<<options.write<<'\n';return 0;
 	}
 
 	int ImportAnimationFbx(const fs::path& projectRoot, const fs::path& assetsRoot,
@@ -1315,6 +1559,10 @@ namespace
             return BuildPcgLods(fs::weakly_canonical(assetsRoot),options);
 		if (options.command == Command::ImportAnimationFbx)
 			return ImportAnimationFbx(projectRoot, fs::weakly_canonical(assetsRoot), options);
+		if (options.command == Command::BakeRetargetClips)
+			return BakeRetargetClips(projectRoot, fs::weakly_canonical(assetsRoot), options);
+		if (options.command == Command::ImportAnimationPoses)
+			return ImportAnimationPoses(projectRoot, fs::weakly_canonical(assetsRoot), options);
 		if (options.command == Command::RebuildAnimationClips)
 			return RebuildAnimationClips(
 				projectRoot, fs::weakly_canonical(assetsRoot), options);
@@ -1408,6 +1656,10 @@ namespace
 		}
 
 		std::vector<fs::path> assets;
+		const fs::path selectedRoot = options.sourcePath.empty() ? fs::weakly_canonical(assetsRoot)
+			: fs::weakly_canonical(projectRoot / options.sourcePath);
+		if (!IsWithin(selectedRoot, fs::weakly_canonical(assetsRoot)) || !fs::exists(selectedRoot))
+		{ std::cerr << "Animation audit source must exist inside Assets.\n"; return 2; }
 		for (fs::recursive_directory_iterator iterator(assetsRoot,
 			fs::directory_options::skip_permission_denied, fileError), end;
 			iterator != end; iterator.increment(fileError))
@@ -1418,6 +1670,7 @@ namespace
 				return 2;
 			}
 			if (!iterator->is_regular_file()) continue;
+			if (!IsWithin(fs::weakly_canonical(iterator->path()), selectedRoot)) continue;
 			const std::string extension = iterator->path().extension().string();
 			if (extension == ".vanimator" || extension == ".vanimrig"
 				|| extension == ".vretarget"

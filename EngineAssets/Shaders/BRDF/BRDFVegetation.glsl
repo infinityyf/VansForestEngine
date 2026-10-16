@@ -133,7 +133,7 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
     {
         uint i = tileLightIndices[tile.spotOffset + k];
         SpotLightData spotLight = GetSpotLight(int(i));
-        spotLight.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdfData.positionWS);
+        spotLight.color.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_SPOT_OFFSET + int(i), brdfData.positionWS);
         vec3 lightDirection = spotLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > spotLight.radius) continue;

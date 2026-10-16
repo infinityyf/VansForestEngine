@@ -82,6 +82,8 @@ const VansActionServiceCapability& VansCombatActionCapability()
 				VansActionCommandNumberField("upwardBias",ValueKind::Float,false,VansSerializedValue::Float(0),0,10)
 			}),
 			VansActionCommandCapability("Combat.FireHitscan", ResourcePolicy::None, {
+				VansActionCommandField("origin", ValueKind::Object, false, VansSerializedValue::Object({})),
+				VansActionCommandField("direction", ValueKind::Object, false, VansSerializedValue::Object({})),
 				asset("targetLayer"),
 				optionalString("targetTag"), optionalString("responseAction"),
 				VansActionCommandField("blockingLayers", ValueKind::Array, true,
@@ -520,7 +522,30 @@ VansActionCommandResult VansCombatActionService::FireHitscan(const VansActionCom
 	auto instigator = command.context.Entity(VansActionContextSlots::Instigator);
 	if (!instigator.IsValid()) instigator = owner;
 	glm::vec3 origin, direction;
-	if (!m_Runtime.HasHost(owner) || !m_Backend.viewRay || !m_Backend.viewRay(origin, direction))
+	if (!m_Runtime.HasHost(owner)) return reject("Hitscan requires an action host");
+	const auto* explicitOrigin = FindObjectField(command.payload, "origin");
+	const auto* explicitDirection = FindObjectField(command.payload, "direction");
+	if ((explicitOrigin && explicitOrigin->kind != VansSerializedValue::Kind::Object) ||
+		(explicitDirection && explicitDirection->kind != VansSerializedValue::Kind::Object))
+		return reject("Hitscan explicit ray must use vector objects");
+	const bool hasOrigin = explicitOrigin && !explicitOrigin->objectFields.empty();
+	const bool hasDirection = explicitDirection && !explicitDirection->objectFields.empty();
+	if (hasOrigin || hasDirection)
+	{
+		// AI/世界武器显式提供同一发射线；缺失或非法输入不能回退到玩家相机。
+		const auto readVector = [](const VansSerializedValue* value, glm::vec3& result) {
+			if (!value || value->kind != VansSerializedValue::Kind::Object) return false;
+			const auto* x = FindObjectField(*value, "x");
+			const auto* y = FindObjectField(*value, "y");
+			const auto* z = FindObjectField(*value, "z");
+			if (!x || !y || !z) return false;
+			result = {ReadSerializedNumber(*x, NAN), ReadSerializedNumber(*y, NAN), ReadSerializedNumber(*z, NAN)};
+			return std::isfinite(glm::length(result));
+		};
+		if (!hasOrigin || !hasDirection || !readVector(explicitOrigin, origin) || !readVector(explicitDirection, direction))
+			return reject("Hitscan explicit ray requires finite origin and direction");
+	}
+	else if (!m_Backend.viewRay || !m_Backend.viewRay(origin, direction))
 		return reject("Hitscan requires the resolved scene camera view");
 	const float length = glm::length(direction);
 	const float range = ReadNumberField(command.payload, "range", 0.0f);

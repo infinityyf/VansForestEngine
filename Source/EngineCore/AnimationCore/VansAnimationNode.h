@@ -81,14 +81,18 @@ namespace VansGraphics
 			return m_Controller ? m_Controller->GetFinalPoseView(m_Skeleton)
 				: VansSkeletonPoseView{};
 		}
-		bool SavePoseSnapshot(const std::string& name);
+		bool SavePoseSnapshot(const std::string& name, const std::string& layerId = {});
+		bool SaveActivePoseSnapshot(const std::string& name);
+		VansAnimationController* ResolveSlotPlaybackController(const std::string& slotId);
+		// 动作可在切换骨架图之前订阅 Clip；查询可见定义，不改变当前播放或移动所有者。
+		const VansAnimationClip* FindClipByAlias(const std::string& alias) const;
 		// Character motion is evaluated on the source controller for source-proxy
 		// retargeting, while the target controller only post-processes the
 		// retargeted pose. CCT motion must query the same controller that owns
 		// Motion Matching or Root Motion; Root Motion 本身不依赖 Motion Matching。
 		VansAnimationController* GetCharacterMotionController() const
 		{
-			return m_RetargetEnabled && m_SourceController
+			return UsesRetargetSource()
 				? m_SourceController.get()
 				: m_Controller.get();
 		}
@@ -97,6 +101,7 @@ namespace VansGraphics
 		                             const VansRetargetRuntimeDesc& desc,
 		                             std::string& error);
 		bool IsRetargetEnabled() const { return m_RetargetEnabled; }
+		bool UsesRetargetSource() const { return m_RetargetEnabled && m_SourceController && !m_TargetGraphSetActive; }
 		const Skeleton& GetRetargetSourceSkeleton() const { return m_SourceSkeleton; }
 		VansAnimationController* GetRetargetSourceController() { return m_SourceController.get(); }
 		const VansAnimationController* GetRetargetSourceController() const { return m_SourceController.get(); }
@@ -131,7 +136,7 @@ namespace VansGraphics
 		float GetSpeed() const;
 
 		const VansAnimationFrameVector<VansAnimationEventSample>& GetSampledEvents() const;
-		bool ClaimSampledEventPublication();
+		VansAnimationEventPublicationRange ClaimSampledEventPublicationRange();
 
 		// Root motion
 		void EnableRootMotion(bool enable);
@@ -192,6 +197,10 @@ namespace VansGraphics
 		VansRetargetRuntimeDesc m_RetargetDesc;
 		VansRetargetProcessor m_RetargetProcessor;
 		bool m_RetargetEnabled = false;
+		bool m_TargetGraphSetActive = false;
+		std::string m_TargetSlotPlaybackId;
+		std::size_t m_ForwardedTargetEventCount = 0;
+		bool m_TargetOverlayEventsPrepared = false;
 		bool m_RetargetPoseAuditLogged = false;
 		int m_LastRetargetSourceMMSwitchCount = -1;
 		std::string m_LastRetargetSourceMMActiveClip;
@@ -205,6 +214,8 @@ namespace VansGraphics
 		uint32_t m_TransformID           = 0;
 		bool     m_HasTransformID        = false;
 		bool     m_CharacterMotionFramePrepared = false;
+		bool     m_CharacterMotionPoseDeferred = false;
+		bool     m_CharacterMotionPreparedOnSource = false;
 
 		// Bone overrides
 		std::unordered_map<std::string, glm::mat4> m_BoneOverrides;
@@ -226,6 +237,7 @@ namespace VansGraphics
 		void RebuildNodeTransformBindings();
 		void ApplySampledNodeTransforms();
 		void SyncRetargetParameters();
+		void ForwardTargetOverlayEvents();
 	};
 
 }  // namespace VansGraphics

@@ -13,6 +13,7 @@
 #include "BRDFData/VansPBR.h"
 #include "ShadowCore/VansPunctualShadowTypes.h"
 #include "GICore/VansGISettings.h"
+#include "GICore/VansGIVoxelMaterial.h"
 #include "VansPostProcessProfile.h"
 #include "../AnimationCore/VansAnimationTypes.h"
 #include "../ParticleCore/VansParticleInstanceData.h"
@@ -182,6 +183,7 @@ namespace VansGraphics
 		VansRenderMaterialBufferSnapshot custom;
 		bool rewriteBindlessTextures = false;
 		std::uint64_t clothLightingRevision = 0;
+        std::shared_ptr<const VansGIVoxelMaterialInputs> voxelMaterials;
 		bool prepared = false;
 	};
 

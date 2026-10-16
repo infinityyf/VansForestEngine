@@ -17,7 +17,7 @@ vec3 GIWorldSparseScatterRadiance(vec3 albedo,vec3 incoming,float transmission,f
 vec3 GIWorldCompositeRadiance(vec3 surface,float transmission,vec3 scattering,float radianceLimit)
 { return min(min(max(surface*transmission,vec3(0)),vec3(radianceLimit))+scattering,vec3(65504.0)); }
 // 相函数重建低频入射光；使用比事件定位更粗的足迹，限制穿过整个森林的步数。
-float GIWorldScatterFootprint(float probeSpacing) { return max(probeSpacing/8.0,gwGrid.x*4.0); }
+float GIWorldScatterFootprint(float minimumVoxelSize) { return max(minimumVoxelSize,gwGrid.x*4.0); }
 // 照明查询必须越过已知世界边界；短距离 miss 不等于天空可见。
 float GIWorldEnvironmentDistance(vec3 p)
 {

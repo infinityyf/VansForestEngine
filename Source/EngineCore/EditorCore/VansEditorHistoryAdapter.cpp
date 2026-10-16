@@ -34,8 +34,8 @@ namespace VansGraphics
 			: Vans::VansAuthoringHistorySnapshot{};
 		const Vans::EditorAPI::EditorCommandHistorySnapshot runtimeHistory =
 			runtimeHistoryAPI.GetRuntimeCommandHistory();
-		const Vans::EditorAPI::PcgSplineSnapshot splineEditor =
-			pcgAPI.GetPcgSplineSnapshot();
+		const Vans::EditorAPI::PcgSplineStatus splineEditor =
+			pcgAPI.GetPcgSplineStatus();
 		const bool splineEditingActive = splineEditor.editable && splineEditor.toolEnabled;
 		const Vans::EditorAPI::TerrainEditorSnapshot terrainEditor =
 			terrainAPI.GetTerrainEditorSnapshot();

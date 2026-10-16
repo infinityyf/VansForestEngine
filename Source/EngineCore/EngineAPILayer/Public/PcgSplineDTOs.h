@@ -2,6 +2,7 @@
 #include "PcgEditorDTOs.h"
 #include <array>
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -52,7 +53,7 @@ struct PcgSplineGuide
     std::vector<std::array<float,3>> center,left,right;
     std::vector<std::array<float,3>> flowOrigins,flowVectors;
 };
-struct PcgSplineSnapshot
+struct PcgSplineStatus
 {
     bool available=false,editable=false,dirty=false,canUndo=false,canRedo=false,building=false,toolEnabled=false;
     std::uint64_t documentState=0;
@@ -60,11 +61,14 @@ struct PcgSplineSnapshot
     std::string assetGuid,terrainGuid,selectedSpline,selectedPoint,message;
     float fieldTexelSize=.5f,sampleSpacing=.5f,curveTolerance=.025f,heightConflictThreshold=1;
     float minimumRiverTransitionWidth=2.f;
+    std::size_t activeTiles=0,rebuiltTiles=0;
+};
+struct PcgSplineSnapshot : PcgSplineStatus
+{
     std::vector<PcgSplineItem> splines;
     std::vector<PcgSplineGuide> guides;
     std::vector<std::string> warnings;
     std::vector<std::array<float,3>> uncoveredBankPoints;
-    std::size_t activeTiles=0,rebuiltTiles=0;
 };
 enum class PcgSplineEditPhase { Apply, Begin, Update, Commit, Cancel };
 struct PcgSplineEditRequest

@@ -4,6 +4,7 @@
 #include "PcgSplineDTOs.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace Vans::EditorAPI
@@ -13,7 +14,9 @@ namespace Vans::EditorAPI
 	public:
 		virtual ~IPcgEditorAPI() = default;
 		virtual PcgEditorOperationResult BuildPcgPlantLods(const std::string& guid) = 0;
-		virtual PcgSplineSnapshot GetPcgSplineSnapshot() = 0;
+		virtual void UpdatePcgSplineAuthoring() = 0;
+		virtual PcgSplineStatus GetPcgSplineStatus() const = 0;
+		virtual std::shared_ptr<const PcgSplineSnapshot> GetPcgSplineSnapshot() const = 0;
 		virtual PcgEditorOperationResult CreatePcgSplineAsset(const std::string& name) = 0;
 		virtual PcgEditorOperationResult BindPcgSplineAsset(const std::string& guid) = 0;
 		virtual PcgEditorOperationResult SelectPcgSpline(

@@ -270,13 +270,16 @@ namespace VansGraphics
 						|| !std::isfinite(clipNode->m_StartPosition) || clipNode->m_StartPosition < 0
 						|| (clipNode->m_StartPosition != 0 && clipNode->HasExplicitSampleTime())
 						|| !std::isfinite(clipNode->m_SampleTime) || (clipNode->m_SampleTime < 0 && clipNode->m_SampleTime != -1)
-						|| (clipNode->m_AdditiveMode!=VansAdditivePoseMode::LocalSpherical && clipNode->m_AdditiveMode!=VansAdditivePoseMode::LocalLinear && clipNode->m_AdditiveMode!=VansAdditivePoseMode::MeshRotationLinear)
+						|| (clipNode->m_AdditiveMode!=VansAdditivePoseMode::LocalSpherical && clipNode->m_AdditiveMode!=VansAdditivePoseMode::LocalLinear && clipNode->m_AdditiveMode!=VansAdditivePoseMode::MeshRotationLinear && clipNode->m_AdditiveMode!=VansAdditivePoseMode::LocalSphericalLeft)
 						|| (clipNode->m_AdditiveMode!=VansAdditivePoseMode::LocalSpherical && clipNode->m_AdditiveReferenceTime<0)
 						|| !std::isfinite(clipNode->m_AdditiveReferenceTime) || clipNode->m_AdditiveReferenceTime < -1
 						|| (!clipNode->m_AdditiveReferenceClip.empty() && (clipNode->m_AdditiveReferenceTime < 0
 							|| clipNames.find(clipNode->m_AdditiveReferenceClip) == clipNames.end()))
 						|| (!clipNode->m_LoopParameter.empty() && (!hasParameter(clipNode->m_LoopParameter, AnimatorParamType::Bool)
-							|| clipNode->HasExplicitSampleTime()))
+							|| (clipNode->HasExplicitSampleTime() && !clipNode->m_SampleTimeOutputs)))
+						|| (clipNode->m_SampleTimeOutputs && !clipNode->HasExplicitSampleTime())
+						|| (!clipNode->m_SampleEpochParameter.empty() && (!clipNode->m_SampleTimeOutputs || !hasParameter(clipNode->m_SampleEpochParameter,AnimatorParamType::Int)))
+						|| (clipNode->m_SampleFromZeroOnEpoch && clipNode->m_SampleEpochParameter.empty())
 						|| (!clipNode->m_SampleTimeParameter.empty()
 							&& !hasParameter(clipNode->m_SampleTimeParameter, AnimatorParamType::Float)))
 					{
@@ -547,6 +550,14 @@ namespace VansGraphics
 						return false;
 					}
 				}
+				else if(node->GetType()==VansAnimGraphNodeType::Inertialization)
+				{
+					const auto& inertia=*static_cast<const AnimGraphInertializationNode*>(node.get());
+					if(!std::isfinite(inertia.m_Duration) || inertia.m_Duration<0
+						|| (!inertia.m_TriggerParameter.empty() && !hasParameter(inertia.m_TriggerParameter,AnimatorParamType::Trigger))
+						|| (!inertia.m_DurationParameter.empty() && !hasParameter(inertia.m_DurationParameter,AnimatorParamType::Float)))
+					{error="Inertialization trigger/duration binding is invalid";return false;}
+				}
 				else if (node->GetType() == VansAnimGraphNodeType::BlendListByEnum)
 				{
 					const auto* blend = static_cast<const AnimGraphBlendListByEnumNode*>(node.get());
@@ -562,12 +573,33 @@ namespace VansGraphics
 						return false;
 					}
 				}
+				else if(node->GetType()==VansAnimGraphNodeType::PoseHistoryBlend)
+				{
+					const auto& history=*static_cast<const AnimGraphPoseHistoryBlendNode*>(node.get());
+					if(!hasParameter(history.m_RevisionParameter,AnimatorParamType::Int) || !hasParameter(history.m_AlphaParameter,AnimatorParamType::Float)
+						|| !hasParameter(history.m_ModeParameter,AnimatorParamType::Int,true) || !hasParameter(history.m_MaskIndexParameter,AnimatorParamType::Int,true)
+						|| !hasParameter(history.m_ActiveParameter,AnimatorParamType::Bool,true) || !std::isfinite(history.m_DampingSeconds) || history.m_DampingSeconds<0
+						|| !hasParameter(history.m_OutputWeightParameter,AnimatorParamType::Float,true)
+						|| !hasParameter(history.m_HistorySnapshotParameter,AnimatorParamType::Bool,true)
+						|| (!history.m_HistorySnapshotParameter.empty() && history.m_HistorySnapshotName.empty())
+						|| (!history.m_MaskIndexParameter.empty() && history.m_Masks.empty()))
+					{error="Pose history requires typed revision/alpha, optional typed control parameters and nonnegative damping";return false;}
+					for(const auto& mask:history.m_Masks)if(!VansBoneMaskCompiler::ValidateDefinition(mask,error))return false;
+					if(history.m_DampingSeconds>0 && !VansBoneMaskCompiler::ValidateDefinition(history.m_DampingMask,error))return false;
+				}
+				else if (node->GetType() == VansAnimGraphNodeType::LayeredBlendPerBone)
+				{
+					const auto* blend=static_cast<const AnimGraphLayeredBlendPerBoneNode*>(node.get());
+					if(!VansBoneMaskCompiler::ValidateDefinition(blend->m_Mask,error))return false;
+				}
 				else if (node->GetType() == VansAnimGraphNodeType::AdditiveBlend)
 				{
 					const auto* blend = static_cast<const AnimGraphAdditiveBlendNode*>(node.get());
+					if(blend->m_UseBoneMask && !VansBoneMaskCompiler::ValidateDefinition(blend->m_BoneMask,error))return false;
 					if (!std::isfinite(blend->m_FixedWeight) || blend->m_FixedWeight < 0.0f
 						|| blend->m_FixedWeight > 1.0f
-						|| (blend->m_AdditiveMode!=VansAdditivePoseMode::LocalSpherical && blend->m_AdditiveMode!=VansAdditivePoseMode::LocalLinear && blend->m_AdditiveMode!=VansAdditivePoseMode::MeshRotationLinear)
+						|| (blend->m_UseBoneMask && blend->m_AdditiveMode!=VansAdditivePoseMode::LocalSphericalLeft)
+						|| (blend->m_AdditiveMode!=VansAdditivePoseMode::LocalSpherical && blend->m_AdditiveMode!=VansAdditivePoseMode::LocalLinear && blend->m_AdditiveMode!=VansAdditivePoseMode::MeshRotationLinear && blend->m_AdditiveMode!=VansAdditivePoseMode::LocalSphericalLeft)
 						|| (blend->m_UseParam && !hasParameter(blend->m_ParamName, AnimatorParamType::Float)))
 					{
 						error = "Additive Blend node in Graph '" + graph.name + "' has an invalid weight source";
@@ -594,11 +626,17 @@ namespace VansGraphics
 				{
 					const auto* aim = static_cast<const AnimGraphAimConstraintNode*>(node.get());
 					const auto& settings = aim->m_Settings;
-					const bool pointMode = settings.mode == VansAimConstraintMode::LookAtPoint;
+					const bool geometryMode = settings.mode == VansAimConstraintMode::WeaponRay;
+					const bool pointMode = settings.mode == VansAimConstraintMode::LookAtPoint || geometryMode;
 					const bool directionMode = settings.mode == VansAimConstraintMode::LookAtDirection ||
 						settings.mode == VansAimConstraintMode::PitchOffset;
 					if (aim->m_ChainId.empty()
 						|| (!pointMode && !directionMode)
+						|| (aim->m_TargetIsWorldSpace && !pointMode)
+						|| (geometryMode && (aim->m_GeometryBone.empty()
+							|| !std::isfinite(settings.muzzleLocal.x) || !std::isfinite(settings.muzzleLocal.y) || !std::isfinite(settings.muzzleLocal.z)
+							|| !std::isfinite(settings.barrelLocal.x) || !std::isfinite(settings.barrelLocal.y) || !std::isfinite(settings.barrelLocal.z)
+							|| glm::dot(settings.barrelLocal,settings.barrelLocal) <= 1.e-12f))
 						|| (!aim->m_PivotBone.empty() && settings.mode != VansAimConstraintMode::PitchOffset)
 						|| (pointMode && !validateGoal(aim->m_Target, false, "Aim Constraint in Graph '" + graph.name + "'"))
 						|| (directionMode && (!hasParameter(aim->m_DirectionParameter, AnimatorParamType::Vector3) ||
@@ -730,6 +768,11 @@ namespace VansGraphics
 		if (finalCompositionGraphCount > 1)
 		{
 			error = "Animator can contain at most one Final Composition Graph";
+			return false;
+		}
+		if (data.finalCompositionAfterProcedural && finalCompositionGraphCount != 1)
+		{
+			error = "After-procedural composition requires exactly one Final Composition Graph";
 			return false;
 		}
 
@@ -869,6 +912,13 @@ namespace VansGraphics
 				return false;
 			}
 			hasDefaultGraphSet = hasDefaultGraphSet || graphSet.id == data.defaultGraphSetId;
+			if (!graphSet.characterMotionGraphId.empty())
+			{
+				const auto* motion = data.FindGraph(graphSet.characterMotionGraphId);
+				if (!motion || graphRoles.at(graphSet.characterMotionGraphId) != AnimatorGraphAsset::Role::Pose)
+				{ error = "Character Motion Graph must reference a Pose Graph"; return false; }
+				if (!motion->ValidateCharacterMotionGraph(error)) return false;
+			}
 			for (std::size_t index = 0; index < data.layers.size(); ++index)
 			{
 				const VansAnimationLayerDefinition& layer = data.layers[index];
@@ -990,6 +1040,16 @@ namespace VansGraphics
 					return false;
 				}
 			}
+		}
+		if(!data.externalPoseLayerGraphSetId.empty())
+		{
+			const auto selected=std::find_if(data.graphSets.begin(),data.graphSets.end(),[&](const auto& set){return set.id==data.externalPoseLayerGraphSetId;});
+			if(!data.externalPoseTargetAllowsGraphSets || selected==data.graphSets.end())
+			{error="External pose overlay composition requires full target Graph Sets and a valid Graph Set ID";return false;}
+			// 外部姿态没有目标播放器时钟，不能假装成为跟随目标基础播放器的同步源。
+			for(std::size_t i=1;i<data.layers.size();++i)
+				if(selected->bindings[i].enabled && data.layers[i].sync!=VansLayerSyncMode::Independent)
+				{error="External pose overlays require independent layer clocks";return false;}
 		}
 		if (!hasDefaultGraphSet)
 		{

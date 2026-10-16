@@ -646,7 +646,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     {
         uint i = tileLightIndices[tileLightHdr.spotOffset + spk];
         SpotLightData spotLight = GetSpotLight(int(i));
-        spotLight.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdfData.positionWS);
+        spotLight.color.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_SPOT_OFFSET + int(i), brdfData.positionWS);
         vec3 lightDirection = spotLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > spotLight.radius) continue;
@@ -696,7 +696,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     {
         uint i = tileLightIndices[tileLightHdr.rectOffset + rck];
         RectLightData rectLight = GetRectLight(int(i));
-        rectLight.color_twoSided.rgb *= SampleSurfaceLightCookie(129 + int(i), brdfData.positionWS);
+        rectLight.color_twoSided.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_RECT_OFFSET + int(i), brdfData.positionWS);
         vec3 rectD = vec3(0.0);
         vec3 rectS = vec3(0.0);
         EvaluateRectLight_Skin(rectLight, brdfData, curvature, skin, rectD, rectS);
@@ -762,7 +762,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     for (uint i = 0; i < uSpotLightCount; ++i)
     {
         SpotLightData spotLight = GetSpotLight(int(i));
-        spotLight.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdfData.positionWS);
+        spotLight.color.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_SPOT_OFFSET + int(i), brdfData.positionWS);
         vec3  lightDirection = spotLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > spotLight.radius) continue;
@@ -808,7 +808,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     for (uint i = 0u; i < rectCount && i < uint(MAX_RECT_LIGHTS); ++i)
     {
         RectLightData rectLight = GetRectLight(int(i));
-        rectLight.color_twoSided.rgb *= SampleSurfaceLightCookie(129 + int(i), brdfData.positionWS);
+        rectLight.color_twoSided.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_RECT_OFFSET + int(i), brdfData.positionWS);
         vec3 rectD = vec3(0.0);
         vec3 rectS = vec3(0.0);
         EvaluateRectLight_Skin(rectLight, brdfData, curvature, skin, rectD, rectS);

@@ -98,7 +98,7 @@ namespace VansGraphics
 		{
 			if (!RequireFields(root,
 				{ "assetKind", "name", "translationScale", "rootAlignment",
-				  "targetModelSpaceAlignment", "limbMappings", "controlBones" },
+				  "targetModelSpaceAlignment", "limbMappings", "controlBones", "boneMappings", "outputRotation" },
 				{ "assetKind", "name", "translationScale", "rootAlignment",
 				  "targetModelSpaceAlignment", "limbMappings" },
 				"Retarget Profile", error))
@@ -114,6 +114,41 @@ namespace VansGraphics
 				return false;
 			}
 			asset.name = root["name"].get<std::string>();
+			if (root.contains("outputRotation"))
+			{
+				const auto& rotation = root["outputRotation"];
+				if (!rotation.is_array() || rotation.size()!=4) { error = "outputRotation requires XYZW"; return false; }
+				for (const auto& value : rotation) if (!value.is_number()) { error="outputRotation must be numeric";return false; }
+				asset.outputModelRotation={rotation[3].get<float>(),rotation[0].get<float>(),rotation[1].get<float>(),rotation[2].get<float>()};
+				const auto& q=asset.outputModelRotation;
+				if (!std::isfinite(q.w)||!std::isfinite(q.x)||!std::isfinite(q.y)||!std::isfinite(q.z)
+					|| std::abs(glm::length(q)-1.0f)>.0001f) {error="outputRotation must be a finite unit quaternion";return false;}
+			}
+			if (root.contains("boneMappings"))
+			{
+				if (!root["boneMappings"].is_array()) { error = "boneMappings must be an array"; return false; }
+				std::unordered_set<std::string> targets;
+				for (const auto& value : root["boneMappings"])
+				{
+					if (!RequireFields(value, {"sourceBone", "targetBone", "rotationReferenceBone", "rotationBlend", "copyTranslationDelta"},
+						{"sourceBone", "targetBone", "rotationReferenceBone", "rotationBlend", "copyTranslationDelta"}, "boneMapping", error)) return false;
+					if (!value["sourceBone"].is_string() || !value["targetBone"].is_string()
+						|| !value["rotationReferenceBone"].is_string() || !value["rotationBlend"].is_number()
+						|| !value["copyTranslationDelta"].is_boolean()) { error = "Invalid boneMapping field types"; return false; }
+					VansRetargetBoneMappingDesc mapping;
+					mapping.sourceBone = value["sourceBone"].get<std::string>();
+					mapping.targetBone = value["targetBone"].get<std::string>();
+					mapping.rotationReferenceBone = value["rotationReferenceBone"].get<std::string>();
+					mapping.rotationBlend = value["rotationBlend"].get<float>();
+					mapping.copyTranslationDelta = value["copyTranslationDelta"].get<bool>();
+					if (mapping.sourceBone.empty() || mapping.targetBone.empty() || !targets.insert(mapping.targetBone).second
+						|| !std::isfinite(mapping.rotationBlend) || mapping.rotationBlend < 0 || mapping.rotationBlend > 1
+						|| (!mapping.rotationReferenceBone.empty() && mapping.rotationReferenceBone == mapping.sourceBone)
+						|| (mapping.rotationReferenceBone.empty() && mapping.rotationBlend != 1.0f))
+					{ error = "boneMappings requires unique targets, valid source references and a finite blend in [0,1]"; return false; }
+					asset.boneMappings.push_back(std::move(mapping));
+				}
+			}
 			if (root.contains("controlBones"))
 			{
 				if (!root["controlBones"].is_array())
@@ -152,11 +187,15 @@ namespace VansGraphics
 				asset.targetModelSpaceAlignment = VansRetargetModelSpaceAlignment::None;
 			else if (modelAlignment == "sourceBindPose")
 				asset.targetModelSpaceAlignment = VansRetargetModelSpaceAlignment::SourceBindPose;
+			else if (modelAlignment == "targetBindPose")
+				asset.targetModelSpaceAlignment = VansRetargetModelSpaceAlignment::TargetBindPose;
 			else
 			{
 				error = "Unknown targetModelSpaceAlignment '" + modelAlignment + "'";
 				return false;
 			}
+			if (!asset.boneMappings.empty() && asset.targetModelSpaceAlignment == VansRetargetModelSpaceAlignment::None)
+			{ error = "Explicit boneMappings requires model-space bind alignment"; return false; }
 
 			std::unordered_set<std::string> names;
 			std::unordered_set<std::string> targetChains;
@@ -236,6 +275,7 @@ namespace VansGraphics
 		{
 		case VansRetargetModelSpaceAlignment::None: modelAlignment = "none"; break;
 		case VansRetargetModelSpaceAlignment::SourceBindPose: modelAlignment = "sourceBindPose"; break;
+		case VansRetargetModelSpaceAlignment::TargetBindPose: modelAlignment = "targetBindPose"; break;
 		default:
 			error = "Retarget Profile contains an invalid targetModelSpaceAlignment enum";
 			return false;
@@ -267,6 +307,16 @@ namespace VansGraphics
 				root["controlBones"].push_back({{"bone", control.bone},
 					{"referenceBone", control.referenceBone}});
 		}
+		if (!asset.boneMappings.empty())
+		{
+			root["boneMappings"] = json::array();
+			for (const auto& mapping : asset.boneMappings)
+				root["boneMappings"].push_back({{"sourceBone", mapping.sourceBone}, {"targetBone", mapping.targetBone},
+					{"rotationReferenceBone", mapping.rotationReferenceBone}, {"rotationBlend", mapping.rotationBlend},
+					{"copyTranslationDelta", mapping.copyTranslationDelta}});
+		}
+		if (asset.outputModelRotation != glm::quat(1,0,0,0))
+			root["outputRotation"]={asset.outputModelRotation.x,asset.outputModelRotation.y,asset.outputModelRotation.z,asset.outputModelRotation.w};
 		VansRetargetProfileAsset verified;
 		return Decode(root, verified, error);
 	}

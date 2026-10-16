@@ -1,6 +1,8 @@
 #include "../EngineCore/SceneRuntime/Transform/VansTransformStore.h"
 #include "ProceduralAnimationContractTests.h"
 #include "../EngineCore/AnimationCore/VansAnimGraph.h"
+#include "../EngineCore/AnimationCore/Storage/VansBoneMaskStorage.h"
+#include "../EngineCore/AnimationCore/VansAnimationLayer.h"
 #include "../EngineCore/SceneRuntime/Animation/VansAnimationTargetResolver.h"
 #include "../EngineCore/SceneCore/VansSceneParentReference.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
@@ -15,7 +17,18 @@
 #include "../EngineCore/AnimationCore/Storage/VansAnimationRigStorage.h"
 #include "../EngineCore/AnimationCore/Serialization/VansRetargetProfileJsonCodec.h"
 #include "../EngineCore/AnimationCore/VansAnimationController.h"
+#include "../EngineCore/AnimationCore/VansAnimationNode.h"
+#include "../EngineCore/RuntimeCore/VansCharacterLocomotionResolver.h"
 #include "../EngineCore/AnimationCore/VansPoseMath.h"
+#include "../EngineCore/AnimationCore/Retargeting/VansAnimationRetargetBaker.h"
+#include "../EngineCore/AnimationCore/VansSkinnedMeshLoader.h"
+#include "../EngineCore/AnimationCore/Storage/VansRetargetProfileStorage.h"
+#include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
+#include "../EngineCore/AnimationCore/VansAnimationSampler.h"
+#include "../EngineCore/AnimationCore/VansAnimatorRuntimeCompiler.h"
+#include "../EngineCore/AnimationCore/VansAnimatorValidator.h"
+#include "../EngineCore/RenderCore/Animation/VansAnimationGpuBinding.h"
+#include <fstream>
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../EngineCore/AssetCore/VansAssetDocument.h"
 #include "../EngineCore/SceneCore/VansSceneAnimationComponentReader.h"
@@ -1527,6 +1540,37 @@ namespace
 			"Aim constraint exceeded its chain-wide angular-speed limit")) return false;
 		// 每帧重新输入原动画，连续限速仍须到达完整目标，不能卡在 speed * dt。
 		const auto animatedPose = BuildLocalPose(aimSkeleton);
+		// 独立几何验收：枪口视差而非骨轴 look-at；旋转完整子树，保留腕部局部姿态。
+		VansCompiledRigChain rayChain = aimRig.chains.front();
+		rayChain.boneIndices = {spine}; rayChain.weights = {1};
+		VansAimConstraintSettings raySettings;
+		raySettings.mode = VansAimConstraintMode::WeaponRay;
+		raySettings.muzzleLocal = {.25f,.08f,.45f}; raySettings.barrelLocal = {.2f,.1f,1.f};
+		const int geometry = aimSkeleton.FindBoneIndex("head");
+		for (int yaw : {-70,-35,0,35,70}) for (int pitch : {-45,0,45})
+		{
+			aimWorkspace.Initialize(aimSkeleton, BuildLocalPose(aimSkeleton));
+			const auto originalHand = aimWorkspace.GetLocal(geometry);
+			const auto pivot = aimWorkspace.GetComponentPosition(spine);
+			const auto offset = aimWorkspace.GetComponentPosition(geometry) + raySettings.muzzleLocal - pivot;
+			const auto forward = glm::normalize(raySettings.barrelLocal);
+			const auto toTarget = glm::vec3(100*std::sin(glm::radians(float(yaw))), 100*std::sin(glm::radians(float(pitch))), 100);
+			const float along = glm::dot(offset,forward);
+			const float distance = -along+std::sqrt(along*along+glm::dot(toTarget,toTarget)-glm::dot(offset,offset));
+			const auto from = glm::normalize(offset+distance*forward); const auto to = glm::normalize(toTarget);
+			const auto cross = glm::cross(from,to);
+			const auto expected = glm::normalize(glm::quat(1+glm::dot(from,to),cross.x,cross.y,cross.z));
+			VansAimConstraintTarget rayGoal{pivot+toTarget,1,true}; VansAimConstraintState rayState;
+			const auto solved = VansAimConstraintSolver::Solve(aimWorkspace,aimRig,rayChain,rayGoal,1.f/120,rayState,raySettings,-1,geometry);
+			const auto actual = aimWorkspace.GetComponentRotation(spine);
+			const auto muzzle = aimWorkspace.GetComponentPosition(geometry)+aimWorkspace.GetComponentRotation(geometry)*raySettings.muzzleLocal;
+			const auto barrel = glm::normalize(aimWorkspace.GetComponentRotation(geometry)*raySettings.barrelLocal);
+			if (!Check(solved.status == VansProceduralSolverStatus::Solved && std::abs(glm::dot(actual,expected)) > .999999f
+				&& glm::dot(barrel,glm::normalize(rayGoal.valueModel-muzzle)) > .999999f
+				&& glm::distance(originalHand.translation,aimWorkspace.GetLocal(geometry).translation) < 1.e-6f
+				&& std::abs(glm::dot(originalHand.rotation,aimWorkspace.GetLocal(geometry).rotation)) > .999999f,
+				"WeaponRay did not match geometric parallax or changed wrist articulation")) return false;
+		}
 		for (auto mode : {VansAimConstraintMode::PitchOffset, VansAimConstraintMode::LookAtDirection})
 		for (int fps : {30, 60, 120})
 		for (float requested : {-80.0f, -30.0f, 0.0f, 30.0f, 80.0f})
@@ -1555,6 +1599,264 @@ namespace
 			aimGoal.weight = 1;
 		}
 		return true;
+	}
+
+	bool TestConfigurableRetargetReferences()
+	{
+		const auto make = [](const char* prefix, float scale) {
+			Skeleton value;
+			const std::vector<std::string> labels={"Origin","Center","Crown","TipA","TipB","BaseA","BaseB"};
+			const std::vector<int> parents={-1,0,1,1,1,0,0};
+			const std::vector<glm::vec3> positions={{0,0,0},{0,1,0},{0,1,0},{-1,.5f,0},{1,.5f,0},{-.2f,1,0},{.2f,1,0}};
+			for(std::size_t i=0;i<labels.size();++i)
+			{
+				const auto name=std::string(prefix)+labels[i];AddBone(value,name.c_str(),parents[i],positions[i]*scale);
+				value.bones[i].guid="id-"+name;value.bones[i].canonicalPath="fixture/"+name;
+			}
+			value.sourceSkeletonGuid=std::string(prefix)=="Input"?"f2eea6ee-9f63-49c1-93d1-5372af9f79f1":"204a8d8b-d589-49c7-aef4-dbf31e30622b";
+			value.BuildTopologicalOrder();value.RebuildIdentityMapsAndSignature();return value;
+		};
+		auto source=make("Input",1),target=make("Output",2);
+		VansCompiledAnimationRig rig;rig.skeleton=&target;
+		VansRetargetRuntimeDesc desc;desc.targetModelSpaceAlignment=VansRetargetModelSpaceAlignment::TargetBindPose;
+		desc.rootAlignment=VansRetargetRootAlignment::FeetToOwner;
+		for(std::size_t i=0;i<source.bones.size();++i)desc.boneMappings.push_back({source.bones[i].name,target.bones[i].name,"",1,i<2});
+		VansRetargetProcessor processor;
+		if(!Check(!processor.Build(source,target,rig,desc),"Custom reference skeleton silently used missing canonical roles"))return false;
+		VansAnimationRigAsset rigAsset;rigAsset.name="Reference identity fixture";rigAsset.skeletonGuid=target.sourceSkeletonGuid;
+		rigAsset.semanticBones={{"pelvis",target.bones[1].guid},{"head",target.bones[2].canonicalPath},
+			{"leftHand",target.bones[3].name},{"rightHand",target.bones[4].name},
+			{"leftFoot",target.bones[5].canonicalPath},{"rightFoot",target.bones[6].guid}};
+		std::string error;
+		if(!VansAnimationRigCompiler::Compile(rigAsset,target,rig,error))return Check(false,error.c_str());
+		if(!Check(processor.Build(source,target,rig,desc)&&std::abs(processor.GetStats().translationScale-2)<1.e-5f,
+			"Authored reference identities did not drive target/source basis and AutoPelvis scale"))return false;
+		std::vector<glm::mat4> local,model,result;
+		for(const auto& bone:source.bones)local.push_back(bone.localTransform);
+		for(float travel:{0.f,.25f,.5f})
+		{
+			local[0]=glm::translate(glm::mat4(1),glm::vec3(0,travel,0));
+			if(!VansPoseMath::BuildModelTransforms(local,source,model)||!processor.Process(model,source,target,result))return false;
+			if(!Check(std::abs(result[5][3].y-travel*2)<1.e-4f&&std::abs(result[6][3].y-travel*2)<1.e-4f,
+				"Configured feet calibration followed current pose or lost source root travel"))return false;
+		}
+		nlohmann::json encoded;VansAnimationRigAsset decoded;
+		if(!VansAnimationRigStorage::SerializeToJsonObject(rigAsset,encoded,error)
+			||!VansAnimationRigStorage::DeserializeFromJsonObject(encoded,decoded,error))return Check(false,error.c_str());
+		nlohmann::json encodedAgain;
+		if(!VansAnimationRigStorage::SerializeToJsonObject(decoded,encodedAgain,error)||!Check(encodedAgain==encoded,"Rig semantic identities changed on typed JSON roundtrip"))return false;
+		auto invalid=encoded;invalid["semanticBones"]["head"]=42;
+		if(!Check(!VansAnimationRigStorage::DeserializeFromJsonObject(invalid,decoded,error),"Rig semantic binding accepted a nonstring identity"))return false;
+		auto missing=rigAsset;missing.semanticBones["head"]="missing";VansCompiledAnimationRig invalidRig;
+		if(!Check(!VansAnimationRigCompiler::Compile(missing,target,invalidRig,error),"Rig semantic binding accepted a missing bone"))return false;
+		missing=rigAsset;missing.semanticBones.erase("head");
+		if(!VansAnimationRigCompiler::Compile(missing,target,invalidRig,error)
+			||!Check(!processor.Build(source,target,invalidRig,desc),"Retarget invented an undeclared custom head reference"))return false;
+		std::cout<<"RETARGET_RIG_SEMANTICS_PASS GUID/path/name, source/target basis, AutoPelvis, bind-only feet, existing Rig roundtrip\n";
+		return true;
+	}
+
+	bool TestExplicitRetargetMappingAndBake()
+	{
+		const auto make = [](bool target) {
+			Skeleton skeleton;
+			const std::vector<std::string> names = target
+				? std::vector<std::string>{"root","pelvis","spine_a","spine_b","head","hand_l","hand_r","foot_l","foot_r"}
+				: std::vector<std::string>{"S_Root","S_Hip","S_Spine","S_Head","S_LeftHand","S_RightHand","S_LeftFoot","S_RightFoot"};
+			const std::vector<int> parents = target ? std::vector<int>{-1,0,1,2,3,0,0,0,0}
+				: std::vector<int>{-1,0,1,2,0,0,0,0};
+			const float scale = target ? 100.0f : 1.0f;
+			for (std::size_t index=0; index<names.size(); ++index)
+			{
+				BoneInfo bone; bone.id=static_cast<int>(index); bone.name=names[index];
+				bone.guid="id-"+bone.name; bone.parentIndex=parents[index];
+				bone.canonicalPath=parents[index]<0 ? bone.name : skeleton.bones[parents[index]].canonicalPath+"/"+bone.name;
+				glm::vec3 translation(0.0f);
+				if(index==1)translation={0,scale,0};
+				else if (index>1 && index<(target?5:4)) translation={0,.25f*scale,0};
+				else if(index==(target?5:4))translation={-.5f*scale,scale,0};
+				else if(index==(target?6:5))translation={.5f*scale,scale,0};
+				else if(index==(target?7:6))translation={-.15f*scale,0,0};
+				else if(index==(target?8:7))translation={.15f*scale,0,0};
+				bone.localTransform=glm::translate(glm::mat4(1),translation);
+				if(target && index==0)bone.localTransform*=glm::toMat4(glm::angleAxis(glm::radians(90.0f),glm::vec3(0,1,0)));
+				if(target && index==2)bone.localTransform*=glm::toMat4(glm::angleAxis(glm::radians(23.0f),glm::vec3(0,1,0)));
+				skeleton.bones.push_back(bone);
+				if(parents[index]>=0)skeleton.bones[parents[index]].children.push_back(static_cast<int>(index));
+			}
+			skeleton.BuildTopologicalOrder(); skeleton.RebuildIdentityMapsAndSignature(); return skeleton;
+		};
+		auto source=make(false), target=make(true);
+		VansCompiledAnimationRig rig; rig.skeleton=&target;
+		VansRetargetRuntimeDesc desc; desc.translationScaleMode=VansRetargetTranslationScaleMode::Explicit;
+		desc.translationScale=100; desc.targetModelSpaceAlignment=VansRetargetModelSpaceAlignment::TargetBindPose;
+		desc.boneMappings={{"S_Root","root","",1,true},{"S_Hip","pelvis","",1,true},
+			{"S_Spine","spine_a","S_Hip",.5f,false},{"S_Spine","spine_b","",1,false},
+			{"S_Head","head","",1,false},{"S_LeftHand","hand_l","",1,false},
+			{"S_RightHand","hand_r","",1,false},{"S_LeftFoot","foot_l","",1,false},{"S_RightFoot","foot_r","",1,false}};
+		VansRetargetProcessor processor;
+		if(!Check(processor.Build(source,target,rig,desc),"Explicit differing-axis retarget failed to build"))return false;
+		std::vector<glm::mat4> sourceLocal,targetLocal,sourceModel,targetBind,result;
+		for(const auto& b:source.bones)sourceLocal.push_back(b.localTransform);
+		for(const auto& b:target.bones)targetLocal.push_back(b.localTransform);
+		VansPoseMath::BuildModelTransforms(sourceLocal,source,sourceModel);
+		VansPoseMath::BuildModelTransforms(targetLocal,target,targetBind);
+		if(!Check(processor.Process(sourceModel,source,target,result),"Explicit bind retarget failed"))return false;
+		for(std::size_t bone=0;bone<targetBind.size();++bone)for(int column=0;column<4;++column)
+			if(!Check(glm::length(result[bone][column]-targetBind[bone][column])<.0001f,
+				"TargetBindPose did not preserve target binding axes and origin"))return false;
+		sourceLocal[2]*=glm::toMat4(glm::angleAxis(glm::radians(90.0f),glm::vec3(0,1,0)));
+		sourceLocal[1][3].y+=.1f;
+		VansPoseMath::BuildModelTransforms(sourceLocal,source,sourceModel);
+		if(!processor.Process(sourceModel,source,target,result))return false;
+		glm::vec3 t,s;glm::quat actual,bind;
+		VansBoneTransform a,b;
+		VansPoseMath::TryDecompose(result[2],a);VansPoseMath::TryDecompose(targetBind[2],b);
+		if(!Check(std::abs(VansQuaternionAngleDegrees(a.rotation*glm::inverse(b.rotation))-45)<.002f
+			&& std::abs(result[1][3].y-targetBind[1][3].y-10)<.001f,
+			"Explicit spine interpolation or metre-to-centimetre translation changed"))return false;
+		for(auto invalid : {0,1,2})
+		{
+			auto bad=desc;
+			if(invalid==0)bad.boneMappings[1].sourceBone="missing";
+			if(invalid==1)bad.boneMappings[2].rotationReferenceBone="S_LeftHand";
+			if(invalid==2)bad.boneMappings.push_back(bad.boneMappings[1]);
+			VansRetargetProcessor rejected;
+			if(!Check(!rejected.Build(source,target,rig,bad),"Invalid explicit retarget map was accepted"))return false;
+		}
+		VansAnimationClip clip;clip.clipName="RetargetAudit";clip.duration=1;clip.rootMotion.boneName="S_Root";
+		clip.boneKeyframes.resize(source.bones.size());
+		for(std::size_t bone=0;bone<source.bones.size();++bone)
+		{
+			VansBoneTransform first,last;
+			VansPoseMath::TryDecompose(source.bones[bone].localTransform,first);
+			VansPoseMath::TryDecompose(sourceLocal[bone],last);
+			clip.boneKeyframes[bone]={{0,first.translation,first.rotation,first.scale},{1,last.translation,last.rotation,last.scale}};
+		}
+		clip.events.push_back({42,.75f,"Audit.End",{}});
+		VansAnimationClip baked;std::string error;
+		if(!Check(VansAnimationRetargetBaker::Bake(clip,source,target,rig,desc,baked,error),error.c_str()))return false;
+		if(!Check(baked.rootMotion.boneName=="root" && baked.events.size()==1 && baked.events[0].time==.75f,
+			"Retarget bake lost the motion root or event timestamp"))return false;
+		VansAnimationSampleRequest request;request.currentTime=1;request.loop=false;request.extractRootMotion=false;
+		VansPosePayload sampled;VansAnimationFrameVector<glm::mat4> bakedModel;
+		if(!VansAnimationSampler::Sample(baked,target,request,sampled)
+			|| !VansPoseMath::BuildModelTransforms(sampled.localPose,target,bakedModel))return false;
+		for(std::size_t bone=0;bone<result.size();++bone)for(int column=0;column<4;++column)
+			if(!Check(glm::length(bakedModel[bone][column]-result[bone][column])<.0001f,
+				"Baked clip differs from the runtime Retarget processor"))return false;
+		VansAnimationClip native=clip;
+		for(auto& channel:native.boneKeyframes)for(auto& key:channel)
+		{ key.position=glm::vec3(0);key.rotation=glm::quat(1,0,0,0);key.scale=glm::vec3(1); }
+		for(auto& key:native.boneKeyframes[1])key.position={0,.2f,0};
+		for(auto& key:native.boneKeyframes[2])key.rotation=glm::angleAxis(glm::radians(60.0f),glm::vec3(0,1,0));
+		VansRetargetBakeSettings settings;settings.referenceClip=&clip;
+		settings.nativeDeltaChannels.assign(source.bones.size(),0);
+		settings.nativeDeltaWeights.assign(source.bones.size(),1);
+		settings.nativeDeltaChannels[1]=1;settings.nativeDeltaChannels[2]=2;
+		if(!VansAnimationRetargetBaker::Bake(native,source,target,rig,desc,baked,error,settings)
+			|| !VansAnimationSampler::Sample(baked,target,request,sampled)
+			|| !VansPoseMath::BuildModelTransforms(sampled.localPose,target,bakedModel))return false;
+		VansPoseMath::TryDecompose(bakedModel[2],a);VansPoseMath::TryDecompose(targetBind[2],b);
+		if(!Check(!baked.rootMotion.enabled && std::abs(bakedModel[1][3].y-targetBind[1][3].y-20)<.001f
+			&& std::abs(VansQuaternionAngleDegrees(a.rotation*glm::inverse(b.rotation))-30)<.002f,
+			"Native delta bake interpreted relative Hip/Spine tracks as absolute poses"))return false;
+		settings.nativeDeltaWeights[2]=2;
+		if(!Check(!VansAnimationRetargetBaker::Bake(native,source,target,rig,desc,baked,error,settings),
+			"Native delta bake accepted an invalid channel weight"))return false;
+		auto projected=desc;
+		projected.outputModelRotation=glm::angleAxis(glm::radians(90.0f),glm::vec3(1,0,0));
+		VansRetargetProcessor projection;
+		std::vector<glm::mat4> projectedPose;
+		if(!projection.Build(source,target,rig,projected)||!projection.Process(sourceModel,source,target,projectedPose))return false;
+		const auto expectedProjection=glm::toMat4(projected.outputModelRotation)*result[1];
+		for(int column=0;column<4;++column)
+			if(!Check(glm::length(projectedPose[1][column]-expectedProjection[column])<.0001f,
+				"Output coordinate projection changed the anatomical retarget result"))return false;
+		projected.outputModelRotation=glm::quat(2,0,0,0);
+		if(!Check(!projection.Build(source,target,rig,projected)&&!projection.IsValid(),
+			"Invalid output quaternion left the Retarget processor valid"))return false;
+		VansRetargetProfileAsset profile;profile.name="Explicit audit";
+		// External clocks must publish only their traversed interval, once.
+		clip.boneKeyframes[0].back().position.x=1;
+		clip.rootMotion.enabled=true;
+		clip.rootMotion.forceLock=true;clip.rootMotion.lockMode=AnimationRootLockMode::FirstFrame;
+		VansAnimationClip lockedBake;
+		if(!Check(VansAnimationRetargetBaker::Bake(clip,source,target,rig,desc,lockedBake,error)
+			&& glm::length(lockedBake.boneKeyframes[0].back().position-lockedBake.boneKeyframes[0].front().position)>99,
+			"Offline bake discarded root tracks from a force-locked runtime clip"))return false;
+		std::unordered_map<std::string,VansAnimationClip> clips{{"clock",clip}};
+		std::unordered_map<std::string,AnimatorParameter> parameters;
+		parameters["time"].type=AnimatorParamType::Float;
+		VansAnimGraph graph;
+		auto player=std::make_unique<AnimGraphClipNode>();
+		player->m_ClipName="clock";player->m_Loop=false;player->m_RootMotion=true;
+		player->m_SampleTimeParameter="time";player->m_SampleTimeOutputs=true;
+		const int playerId=graph.AddNode(std::move(player));
+		const int outputId=graph.AddNode(std::make_unique<AnimGraphOutputNode>());
+		graph.AddLink(playerId,0,outputId,0);
+		VansAnimGraphInstance instance(graph);
+		AnimGraphContext context;context.skeleton=&source;context.clips=&clips;context.parameters=&parameters;context.deltaTime=.9f;
+		parameters["time"].floatVal=0;instance.EvaluateFrame(context);
+		parameters["time"].floatVal=.8f;auto clockPose=instance.EvaluateFrame(context);
+		if(!Check(clockPose.valid && clockPose.events.size()==1 && clockPose.rootMotion.valid
+			&& glm::length(clockPose.rootMotion.translation)>.7f,"External clock lost traversed root motion or event"))return false;
+		auto paused=instance.EvaluateFrame(context);
+		if(!Check(paused.events.empty() && glm::length(paused.rootMotion.translation)<.0001f,"External clock advanced while paused"))return false;
+		instance.Reset();parameters["time"].floatVal=.8f;
+		auto entered=instance.EvaluateFrame(context);
+		if(!Check(entered.events.empty() && glm::length(entered.rootMotion.translation)<.0001f,
+			"External clock replayed motion/events from zero when entering at a nonzero phase"))return false;
+		auto* firstClock=static_cast<AnimGraphClipNode*>(graph.GetNode(playerId));firstClock->m_SampleEpochParameter="epoch";firstClock->m_SampleFromZeroOnEpoch=true;
+		parameters["epoch"].type=AnimatorParamType::Int;parameters["epoch"].intVal=1;instance.Reset();
+		const auto firstTraversal=instance.EvaluateFrame(context);
+		if(!Check(firstTraversal.events.size()==1 && glm::length(firstTraversal.rootMotion.translation)>.7f,
+			"First epoch sample skipped a completion event at low frame rate"))return false;
+		if(!Check(instance.EvaluateFrame(context).events.empty(),"Paused epoch replayed completion events"))return false;
+		VansAnimGraph tailGraph;
+		auto tailPlayer=std::make_unique<AnimGraphClipNode>();tailPlayer->m_ClipName="clock";tailPlayer->m_Loop=false;
+		tailPlayer->m_SampleTimeParameter="time";tailPlayer->m_SampleTimeOutputs=true;tailPlayer->m_SampleEpochParameter="epoch";
+		const int tailClip=tailGraph.AddNode(std::move(tailPlayer));
+		auto inertial=std::make_unique<AnimGraphInertializationNode>();inertial->m_TriggerParameter="tail";inertial->m_Duration=.5f;
+		const int tail=tailGraph.AddNode(std::move(inertial));const int tailOut=tailGraph.AddNode(std::make_unique<AnimGraphOutputNode>());
+		tailGraph.AddLink(tailClip,0,tail,0);tailGraph.AddLink(tail,0,tailOut,0);
+		parameters["epoch"].type=AnimatorParamType::Int;parameters["tail"].type=AnimatorParamType::Trigger;
+		VansAnimGraphInstance tailInstance(tailGraph);context.deltaTime=1.f/60;
+		parameters["time"].floatVal=0;tailInstance.EvaluateFrame(context);tailInstance.EvaluateFrame(context);
+		parameters["epoch"].intVal=1;parameters["time"].floatVal=.8f;parameters["tail"].boolVal=true;
+		auto joined=tailInstance.EvaluateFrame(context);parameters["tail"].boolVal=false;
+		if(!Check(joined.valid && std::abs(joined.localPose[1].translation.y-1)<.02f,
+			"Triggered transition tail did not preserve outgoing pose continuity"))return false;
+		for(int frame=0;frame<40;++frame){parameters["time"].floatVal=1;joined=tailInstance.EvaluateFrame(context);}
+		if(!Check(std::abs(joined.localPose[1].translation.y-1.1f)<.0001f,
+			"Transition tail froze the incoming motion instead of decaying over it"))return false;
+		// Rotation-only upper masks must preserve local translations and scales.
+		VansBoneMaskAsset maskAsset;maskAsset.id="channels";maskAsset.name="channels";maskAsset.defaultWeight=1;
+		maskAsset.explicitChannelWeights["S_Hip"]={0,1,0};
+		nlohmann::json maskJson;VansBoneMaskAsset maskLoaded;
+		if(!VansBoneMaskStorage::SerializeToJsonObject(maskAsset,maskJson,error)
+			|| !VansBoneMaskStorage::DeserializeFromJsonObject(maskJson,maskLoaded,error))return false;
+		auto mask=VansBoneMaskCompiler::Compile(maskLoaded,source);
+		VansAnimationFrameVector<VansBoneTransform> bindPose;
+		VansAnimationLayerMixer::BuildBindPose(source,bindPose);
+		VansPosePayload basePayload,layerPayload;basePayload.valid=layerPayload.valid=true;
+		basePayload.localPose=layerPayload.localPose=bindPose;
+		layerPayload.localPose[1].translation+=glm::vec3(4,5,6);layerPayload.localPose[1].scale*=2;
+		layerPayload.localPose[1].rotation=glm::angleAxis(glm::radians(45.f),glm::vec3(0,1,0));
+		for(auto space:{VansRotationBlendSpace::Local,VansRotationBlendSpace::Mesh})
+		{
+			VansAnimationLayerDefinition definition;definition.rotationSpace=space;
+			auto mixed=VansAnimationLayerMixer::ApplyLayer(basePayload,layerPayload,definition,mask,source,bindPose,1);
+			if(!Check(glm::length(mixed.localPose[1].translation-bindPose[1].translation)<.0001f
+				&& glm::length(mixed.localPose[1].scale-bindPose[1].scale)<.0001f
+				&& VansQuaternionAngleDegrees(mixed.localPose[1].rotation)>40,"Channel mask changed translation/scale or lost rotation"))return false;
+		}
+		profile.targetModelSpaceAlignment=desc.targetModelSpaceAlignment;profile.boneMappings=desc.boneMappings;
+		nlohmann::json json;VansRetargetProfileAsset roundTrip;
+		if(!VansRetargetProfileJsonCodec::Encode(profile,json,error)
+			|| !VansRetargetProfileJsonCodec::Decode(json,roundTrip,error))return false;
+		return Check(roundTrip.boneMappings.size()==9 && roundTrip.boneMappings[2].rotationBlend==.5f,
+			"Explicit retarget profile roundtrip lost spine mapping fields");
 	}
 
 	bool TestStrictRetargetAndContactConfiguration()
@@ -2241,12 +2543,851 @@ bool RunProceduralAnimationContractTests()
 		&& TestRigValidationAndLimbSolver()
 		&& TestChainAndAimSolvers()
 		&& TestStrictRetargetAndContactConfiguration()
+		&& TestExplicitRetargetMappingAndBake()
 		&& TestProjectSceneProceduralConfiguration();
 }
 
 bool RunComponentBoneTransformContractTest()
 {
 	return TestComponentBoneTransformCheckpoint();
+}
+
+bool RunExplicitRetargetMappingAndBakeContract()
+{
+	return TestStrictRetargetAndContactConfiguration() && TestExplicitRetargetMappingAndBake();
+}
+
+bool RunWeaponRayAlignmentContract()
+{
+	return TestChainAndAimSolvers();
+}
+
+bool RunLeonSourceGraphComparison()
+{
+	using namespace VansGraphics;
+	auto workspace=std::filesystem::current_path();for(int i=0;i<6 && !std::filesystem::is_directory(workspace/"DemoHallProject");++i)workspace=workspace.parent_path();
+	const auto project=workspace/"DemoHallProject",task=project/"Tools/LeonSurvival";std::string error;
+	nlohmann::json oracle,stages,input;std::ifstream(task/"runtime_input.json")>>input;
+	std::ifstream(task/"Audit/ue_source_stage_oracle.json")>>oracle;std::ifstream(task/"Audit/source_graph_stages.json")>>stages;
+	nlohmann::json temporal;std::ifstream(task/"Audit/ue_source_transition_oracle.json")>>temporal;for(const auto& row:temporal["cases"])oracle["cases"].push_back(row);
+	nlohmann::json finalTemporal;std::ifstream(task/"Audit/ue_final_temporal_oracle.json")>>finalTemporal;for(const auto& row:finalTemporal["cases"])oracle["cases"].push_back(row);
+	AnimatorAssetData asset;if(!VansAnimatorIO::Load((project/"Assets/AnimationSources/Leon/Leon_Source.vanimator").string(),asset))return false;
+	nlohmann::json canonical;if(!VansAnimatorIO::SerializeToJsonObject(asset,canonical,error))return Check(false,error.c_str());
+	const auto dto=Vans::EditorAPI::AnimationAuthoringBridge::DecodeAnimator(canonical.dump());if(!dto.success)return Check(false,"Source Animator DTO decode failed");
+	const auto encoded=Vans::EditorAPI::AnimationAuthoringBridge::EncodeAnimator(*dto.document);
+	if(!Check(encoded.success && nlohmann::json::parse(encoded.canonicalJson)==canonical,"Source Animator changed through native/DTO/native"))return false;
+	std::unordered_map<std::string,std::shared_ptr<const VansAnimationClipAsset>> clips;
+	for(const auto& ref:asset.clipRefs)if(!clips.count(ref.assetGuid)){auto clip=std::make_shared<VansAnimationClipAsset>();if(!VansAnimationClipIO::Load((project/ref.pathHint).string(),clip->clip,clip->skeleton))return false;clips.emplace(ref.assetGuid,std::move(clip));}
+	const auto skeleton=clips.at(asset.clipRefs[0].assetGuid)->skeleton;auto rig=std::make_shared<VansAnimationRigAsset>();
+	if(!Check(skeleton.bones.size()==415,"Source graph lost source skeleton") || !VansAnimationRigStorage::Load(project/"Assets/AnimationSources/Leon/Leon_Source.vanimrig",*rig,error))return Check(false,error.c_str());
+	VansAnimatorRuntimeCompileOptions options;options.normalizeRootPose=false;options.enableTargetPostProcess=false;options.enableFinalComposition=false;options.enableRootMotion=false;
+	options.rigResolver=[rig](const auto&,auto&){return rig;};
+	auto resolveClip=[&](const auto& ref,auto& out,auto&){out=clips.at(ref.assetGuid);return true;};auto resolveMask=[](const auto&,auto& out,auto&){out.reset();return true;};
+	auto fullOptions=options;fullOptions.mode=VansAnimatorRuntimeCompileMode::RetargetSource;fullOptions.enableTargetPostProcess=true;fullOptions.enableFinalComposition=true;
+	auto eventController=VansAnimatorRuntimeCompiler::Compile(asset,skeleton,resolveClip,resolveMask,fullOptions,error);if(!eventController)return Check(false,error.c_str());
+	{
+		auto base=*eventController->GetClip("Base_Idle");AnimationClipEvent early;early.id=4231;early.time=.1f;early.name="BeforeProcedural";
+		base.events.push_back(early);eventController->AddClip("Base_Idle",std::move(base));
+	}
+	eventController->Play();eventController->Update(0,skeleton);
+	eventController->SetBool("LeonBaseLoop",false);eventController->SetFloat("LeonBaseTimeA",.4f);eventController->SetFloat("LeonBaseTimeB",.4f);
+	eventController->SetInt("LeonShotEpoch",1);eventController->SetFloat("LeonNativeShotEventTime",.4f);
+	eventController->SetFloat("LeonNativeShotTime",.4f);eventController->SetBool("LeonShotActive",true);eventController->SetFloat("LeonNativeShotWeight",1);
+	eventController->PrepareFrame(.4f,skeleton);
+	const auto earlyRange=eventController->ClaimSampledEventPublicationRange();
+	if(!Check(earlyRange.begin==0 && earlyRange.end>0,"Pre-CCT fixture did not publish its base event prefix"))return false;
+	eventController->GatherPreparedWorldQueries(skeleton);
+	if(eventController->HasPreparedWorldQueries())eventController->ResolvePreparedWorldQueries({},skeleton);
+	int nativeShotEvents=0;
+	for(const auto& event:eventController->GetSampledEvents())
+	{std::cout<<"NATIVE_SOURCE_EVENT name="<<event.name<<" clip="<<event.clipId<<" weight="<<event.weight<<'\n';if(event.name=="Pistol_Shot.Finished" && event.clipId==VansAnimationStableId("Pistol_Shot") && event.weight>=.5f)++nativeShotEvents;}
+	if(!Check(nativeShotEvents==1,"Full CCT-prepared source pipeline lost native shot completion"))return false;
+	const auto lateRange=eventController->ClaimSampledEventPublicationRange();
+	if(!Check(lateRange.begin==earlyRange.end && lateRange.end==lateRange.begin+1
+		&& eventController->GetSampledEvents()[lateRange.begin].name=="Pistol_Shot.Finished",
+		"Final event publication repeated the base prefix or omitted the late shot"))return false;
+	const auto repeated=eventController->ClaimSampledEventPublicationRange();
+	if(!Check(repeated.begin==repeated.end,"An event suffix was published twice"))return false;
+	asset.composeBeforeRetarget=false;
+	auto graphOnly=VansAnimatorRuntimeCompiler::Compile(asset,skeleton,resolveClip,resolveMask,fullOptions,error);if(!graphOnly)return Check(false,error.c_str());
+	graphOnly->Play();graphOnly->SetInt("LeonShotEpoch",1);graphOnly->SetFloat("LeonNativeShotEventTime",.4f);graphOnly->Update(.4f,skeleton);
+	if(!Check(graphOnly->GetSampledEvents().empty(),"Source composition opt-in changed graph-only retarget behavior"))return false;
+	asset.composeBeforeRetarget=true;
+	{
+		nlohmann::json motionOracle;std::ifstream(task/"Audit/native_motion_oracle.json")>>motionOracle;
+		auto motionOptions=options;motionOptions.enableRootMotion=true;
+		auto motion=VansAnimatorRuntimeCompiler::Compile(asset,skeleton,resolveClip,resolveMask,motionOptions,error);if(!motion)return Check(false,error.c_str());
+		float maximum=0;std::size_t intervals=0;
+		for(const auto& group:motionOracle["groups"])
+		{
+			motion->Play();motion->SetBool("LeonBaseLoop",false);
+			motion->SetInt("LeonBaseA",input["baseIndex"][group["first"].get<std::string>()].get<int>());
+			motion->SetInt("LeonBaseB",input["baseIndex"][group["second"].get<std::string>()].get<int>());
+			for(const auto& frame:group["frames"])
+			{
+				motion->SetFloat("LeonBaseTimeA",frame["timeA"].get<float>());motion->SetFloat("LeonBaseTimeB",frame["timeB"].get<float>());
+				motion->SetFloat("LeonDirectionBlend",frame["blend"].get<float>());
+				if(!motion->PrepareIndependentCharacterMotion(1.f/60,skeleton))return Check(false,"Native CCT motion graph did not own root preparation");
+				const auto& expected=frame["expectedTranslation"];
+				maximum=std::max(maximum,glm::distance(motion->GetRootMotionDelta(),glm::vec3(expected[0].get<float>(),expected[1].get<float>(),expected[2].get<float>())));++intervals;
+			}
+		}
+		nlohmann::json report={{"producer",motionOracle["producer"]},{"intervals",intervals},{"maxPositionMeters",maximum},{"passed",maximum<.0001f}};
+		std::ofstream(task/"Audit/native_motion_comparison.json")<<report.dump(2);
+		std::cout<<"NATIVE_PAIR_ROOT_COMPARISON intervals="<<intervals<<" errorMeters="<<maximum<<'\n';
+		if(!Check(maximum<.0001f,"Incoming PairRoot diverged from UE root-position intervals"))return false;
+	}
+	// 正式编译入口必须在外部姿势模式下保留显式启用的目标动作图。
+	AnimatorAssetData targetAsset;if(!VansAnimatorIO::Load((project/"Assets/AnimationSources/Leon/Survival_Leon_Target.vanimator").string(),targetAsset))return false;
+	std::unordered_map<std::string,std::shared_ptr<const VansAnimationClipAsset>> targetClips;
+	for(const auto& ref:targetAsset.clipRefs)if(!targetClips.count(ref.assetGuid)){auto clip=std::make_shared<VansAnimationClipAsset>();if(!VansAnimationClipIO::Load((project/ref.pathHint).string(),clip->clip,clip->skeleton))return false;targetClips.emplace(ref.assetGuid,std::move(clip));}
+	auto targetRig=std::make_shared<VansAnimationRigAsset>();if(!VansAnimationRigStorage::Load(project/"Assets/AnimationSources/Leon/Survival_Leon_Target.vanimrig",*targetRig,error))return false;
+	VansAnimatorRuntimeCompileOptions targetOptions;targetOptions.mode=VansAnimatorRuntimeCompileMode::ExternalPoseTarget;
+	targetOptions.rigResolver=[targetRig](const auto&,auto&){return targetRig;};targetOptions.queryProfileResolver=[](const auto&,std::uint32_t& mask,auto&){mask=1;return true;};
+	auto resolveTargetClip=[&](const auto& ref,auto& out,auto&){out=targetClips.at(ref.assetGuid);return true;};
+	nlohmann::json targetCanonical;if(!VansAnimatorIO::SerializeToJsonObject(targetAsset,targetCanonical,error))return false;
+	const auto targetDTO=Vans::EditorAPI::AnimationAuthoringBridge::DecodeAnimator(targetCanonical.dump());
+	if(!targetDTO.success)return Check(false,"Target overlay DTO decode failed");
+	const auto targetEncoded=Vans::EditorAPI::AnimationAuthoringBridge::EncodeAnimator(*targetDTO.document);
+	if(!Check(targetEncoded.success&&nlohmann::json::parse(targetEncoded.canonicalJson)==targetCanonical,"External pose layer Graph Set changed through DTO"))return false;
+	auto resolveTargetMask=[&](const auto& layer,auto& out,auto& message){if(layer.maskGuid.empty()){out.reset();return true;}auto mask=std::make_shared<VansBoneMaskAsset>();if(!VansBoneMaskStorage::Load(project/layer.maskPathHint,*mask,message))return false;out=std::move(mask);return true;};
+	auto targetController=VansAnimatorRuntimeCompiler::Compile(targetAsset,targetClips.at(targetAsset.clipRefs[0].assetGuid)->skeleton,resolveTargetClip,resolveTargetMask,targetOptions,error);
+	if(!Check(targetController && targetController->HasGraphSet("graph-set-preserved-air") && targetController->HasGraphSet("graph-set-preserved-window") && targetController->HasGraphSet("graph-set-attack"),error.c_str()))return false;
+	{
+		const Skeleton targetSkeleton=*targetController->GetRuntimeSkeleton();
+		VansRetargetProfileAsset profile;if(!VansRetargetProfileStorage::Load(project/"Assets/Retarget/Leon_To_Survival.vretarget",profile,error))return Check(false,error.c_str());
+		VansRetargetRuntimeDesc desc;desc.translationScaleMode=profile.translationScaleMode;desc.translationScale=profile.explicitTranslationScale;
+		desc.rootAlignment=profile.rootAlignment;desc.targetModelSpaceAlignment=profile.targetModelSpaceAlignment;
+		desc.limbChains=profile.limbChains;desc.controlBones=profile.controlBones;desc.boneMappings=profile.boneMappings;desc.outputModelRotation=profile.outputModelRotation;
+		VansAnimationNode node("Native Source Events");node.SetSkeleton(targetSkeleton);
+		if(!node.SetController(std::move(targetController))||!node.ConfigureRetargetSource(skeleton,std::move(eventController),desc,error))return Check(false,error.c_str());
+		node.Play(VansAnimationEvaluationPurpose::EditorPreview);node.Update({VansAnimationEvaluationPurpose::EditorPreview,0});
+		auto* parameters=node.GetController();parameters->SetInt("LeonShotEpoch",1);parameters->SetFloat("LeonNativeShotEventTime",.4f);
+		parameters->SetBool("LeonShotActive",true);parameters->SetFloat("LeonNativeShotWeight",1);parameters->SetFloat("LeonNativeShotTime",.4f);
+		parameters->SetBool("LeonBaseLoop",false);parameters->SetFloat("LeonBaseTimeA",.4f);parameters->SetFloat("LeonBaseTimeB",.4f);
+		Vans::VansCharacterTrajectory trajectory;node.PrepareCharacterMotionFrame(.4f,trajectory);
+		const auto rootRange=node.ClaimSampledEventPublicationRange();if(!Check(rootRange.begin==rootRange.end,"Independent root preparation emitted pose events"))return false;
+		node.Update({VansAnimationEvaluationPurpose::EditorPreview,.4f});
+		const auto posed=node.ClaimSampledEventPublicationRange();int shots=0;
+		for(auto i=posed.begin;i<posed.end;++i)if(node.GetSampledEvents()[i].name=="Pistol_Shot.Finished")++shots;
+		if(!Check(shots==1,"Actual independent-root/post-CCT/retarget node lost the late shot event"))return false;
+		const auto again=node.ClaimSampledEventPublicationRange();if(!Check(again.begin==again.end,"Native source node republished its events"))return false;
+		if(!Check(node.RestartLayer("layer-survival-attack-upper")&&node.UsesRetargetSource()&&!node.RestartLayer("missing-layer"),
+			"Authored target overlay restart did not preserve source locomotion owner"))return false;
+		auto pulse=*parameters->GetClip("Attack_Crowbar");AnimationClipEvent targetEvent;targetEvent.id=4532;targetEvent.time=.03f;targetEvent.name="TargetOverlayPulse";
+		pulse.events.push_back(targetEvent);parameters->AddClip("Attack_Crowbar",std::move(pulse));parameters->SetFloat("SurvivalAttackWeight",1);
+		node.RestartLayer("layer-survival-attack-upper");node.PrepareCharacterMotionFrame(.1f,trajectory);
+		node.ClaimSampledEventPublicationRange();node.Update({VansAnimationEvaluationPurpose::EditorPreview,.1f});
+		const auto overlayRange=node.ClaimSampledEventPublicationRange();int targetPulses=0;
+		for(auto i=overlayRange.begin;i<overlayRange.end;++i)if(node.GetSampledEvents()[i].name=="TargetOverlayPulse")++targetPulses;
+		const auto overlayAgain=node.ClaimSampledEventPublicationRange();
+		if(!Check(targetPulses==1&&overlayAgain.begin==overlayAgain.end&&node.UsesRetargetSource(),"Target overlay events did not reach the source-owned event stream exactly once"))return false;
+		std::cout<<"TARGET_OVERLAY_EVENTS_PASS source owner, target restart, suffix once\n";
+		std::cout<<"NATIVE_LATE_EVENTS_PASS prefix, suffix, noDuplicates, independentRoot, postCCT, retarget\n";
+	}
+	nlohmann::json report={{"producer","Source CPU Animator versus independent UE compressed pose stage equations"},{"cases",nlohmann::json::array()}};
+	float maxPosition=0,maxAngle=0,maxScale=0;std::size_t samples=0;
+	const auto originalGraph=asset.FindGraph(stages["graph"].get<std::string>())->Clone();
+	for(const auto& row:oracle["cases"])
+	{
+		for(auto& definition:asset.graphs)if(definition.id==stages["graph"].get<std::string>())definition.graph=originalGraph->Clone();
+		const bool finalStage=row["stage"]=="final";
+		if(!finalStage)
+		{
+		auto* graph=asset.FindGraph(stages["graph"].get<std::string>());const int output=graph->GetOutputNodeId();const auto links=graph->GetLinks();
+		for(const auto& link:links)if(link.toNodeId==output)graph->RemoveLink(link.linkId);
+		graph->AddLink(stages["stages"][row["stage"].get<std::string>()].get<int>(),0,output,0);
+		std::unordered_set<int> reachable;std::vector<int> pending{output};while(!pending.empty()){const int id=pending.back();pending.pop_back();if(!reachable.insert(id).second)continue;for(const auto& link:graph->GetLinks())if(link.toNodeId==id)pending.push_back(link.fromNodeId);}
+		std::vector<int> remove;for(const auto& [id,node]:graph->GetNodes())if(!reachable.count(id))remove.push_back(id);for(const int id:remove)graph->RemoveNode(id);
+		}
+		auto controller=VansAnimatorRuntimeCompiler::Compile(asset,skeleton,resolveClip,resolveMask,finalStage?fullOptions:options,error);if(!controller)return Check(false,error.c_str());
+		controller->Play();const auto frames=row.contains("frames")?row["frames"]:nlohmann::json::array({row});int frameIndex=0;
+		for(const auto& frame:frames)
+		{
+		controller->SavePoseSnapshot("LeonPreviousDisplay",skeleton);
+		for(const auto& parameter:frame["parameters"].items())
+		{const auto& value=parameter.value();if(value.is_array())controller->SetVector3(parameter.key(),glm::vec3(value[0].get<float>(),value[1].get<float>(),value[2].get<float>()));
+		else if(value.is_boolean())controller->SetBool(parameter.key(),value.get<bool>());else if(value.is_number_integer())controller->SetInt(parameter.key(),value.get<int>());else controller->SetFloat(parameter.key(),value.get<float>());}
+		// JSON 中数值的 int/float 表示不决定 Animator 的参数类型。
+		for(const auto& parameter:asset.parameters)if(frame["parameters"].contains(parameter.name) && parameter.type==AnimatorParamType::Float)controller->SetFloat(parameter.name,frame["parameters"][parameter.name].get<float>());
+		controller->Update(frame.value("dt",1.f/60),skeleton);const auto view=controller->GetFinalPoseView(skeleton);
+		if(!Check(view.IsValid(),"Source graph did not produce a full final pose"))return false;
+		std::vector<glm::mat4> local;if(!VansPoseMath::BuildLocalTransforms(controller->GetCachedGlobalTransforms(),skeleton,local))return false;
+		float position=0,angle=0,scale=0;std::string worst;
+		for(const auto& entry:frame["local"].items())
+		{
+			const auto& v=entry.value();VansBoneTransform actual;if(!VansPoseMath::TryDecompose(local[skeleton.FindBoneIndex(entry.key())],actual))return false;
+			const auto expected=glm::normalize(glm::quat(v[6].get<float>(),v[3].get<float>(),v[4].get<float>(),v[5].get<float>()));
+			position=std::max(position,glm::distance(actual.translation,glm::vec3(v[0].get<float>(),v[1].get<float>(),v[2].get<float>())));
+			scale=std::max(scale,glm::distance(actual.scale,glm::vec3(v[7].get<float>(),v[8].get<float>(),v[9].get<float>())));
+			const float rotation=glm::degrees(2*std::acos(std::clamp(std::abs(glm::dot(actual.rotation,expected)),0.f,1.f)));if(rotation>angle){angle=rotation;worst=entry.key();}++samples;
+		}
+		report["cases"].push_back({{"name",row["name"]},{"frame",frameIndex++},{"temporal",row.contains("frames")},{"stage",row["stage"]},{"positionMeters",position},{"rotationDegrees",angle},{"scaleError",scale},{"worstBone",worst}});
+		maxPosition=std::max(maxPosition,position);maxAngle=std::max(maxAngle,angle);maxScale=std::max(maxScale,scale);
+		}
+	}
+	report["samples"]=samples;report["maxPositionMeters"]=maxPosition;report["maxRotationDegrees"]=maxAngle;report["maxScaleError"]=maxScale;report["passed"]=maxPosition<.0002f && maxAngle<.25f && maxScale<.0001f;
+	std::ofstream(task/"Audit/source_stage_comparison.json")<<report.dump(2);
+	std::cout<<"LEON_SOURCE_STAGE_COMPARISON cases="<<oracle["cases"].size()<<" samples="<<samples<<" position="<<maxPosition<<" angle="<<maxAngle<<" scale="<<maxScale<<'\n';return report["passed"].get<bool>();
+}
+
+bool RunPoseHistoryBlendContract()
+{
+	using namespace VansGraphics;
+	std::vector<std::vector<VertexBoneData>> skin(1,std::vector<VertexBoneData>(1));std::string paletteError;
+	skin[0][0].boneIDs[0]=static_cast<int>(MAX_BONES)-1;skin[0][0].weights[0]=1;
+	if(!VansAnimationGpuBinding::ValidateSkinWeights(skin,paletteError))return false;
+	skin[0][0].boneIDs[0]=MAX_BONES;
+	if(!Check(!VansAnimationGpuBinding::ValidateSkinWeights(skin,paletteError),"CPU skeleton expansion allowed an out-of-range rendered bone"))return false;
+	skin[0][0].weights[0]=0;if(!VansAnimationGpuBinding::ValidateSkinWeights(skin,paletteError))return false;
+	// 深层共享子图共有 2^48 条路径，校验只需遍历节点与不同的速率上下文。
+	VansAnimGraph diamond;auto leaf=std::make_unique<AnimGraphClipNode>();leaf->m_ClipName="pose";int current=diamond.AddNode(std::move(leaf));
+	for(int i=0;i<48;++i){const int blend=diamond.AddNode(std::make_unique<AnimGraphBlendNode>());diamond.AddLink(current,0,blend,0);diamond.AddLink(current,0,blend,1);current=blend;}
+	const int diamondOutput=diamond.AddNode(std::make_unique<AnimGraphOutputNode>());diamond.AddLink(current,0,diamondOutput,0);
+	std::vector<int> plan;std::string planError;if(!Check(diamond.BuildExecutionPlan(plan,planError) && plan.size()==50,"Shared DAG speed validation did not finish with one entry per node"))return false;
+	VansAnimGraph conflict;auto clipSource=std::make_unique<AnimGraphClipNode>();clipSource->m_ClipName="pose";const int source=conflict.AddNode(std::move(clipSource));
+	const int speedA=conflict.AddNode(std::make_unique<AnimGraphSpeedScaleNode>()),speedB=conflict.AddNode(std::make_unique<AnimGraphSpeedScaleNode>()),combined=conflict.AddNode(std::make_unique<AnimGraphBlendNode>()),conflictOutput=conflict.AddNode(std::make_unique<AnimGraphOutputNode>());
+	conflict.AddLink(source,0,speedA,0);conflict.AddLink(source,0,speedB,0);conflict.AddLink(speedA,0,combined,0);conflict.AddLink(speedB,0,combined,1);conflict.AddLink(combined,0,conflictOutput,0);
+	if(!Check(!conflict.BuildExecutionPlan(plan,planError) && planError.find("conflicting SpeedScale paths")!=std::string::npos,"DAG memoization hid a shared clock conflict"))return false;
+	Skeleton skeleton;AddBone(skeleton,"root",-1,glm::vec3(0));AddBone(skeleton,"hand",0,glm::vec3(0));skeleton.BuildTopologicalOrder();
+	VansAnimationClip clip;clip.duration=1;clip.boneKeyframes.resize(2);
+	for(int i=0;i<2;++i)clip.boneKeyframes[i]={{0,glm::vec3(0),glm::quat(1,0,0,0),glm::vec3(1)},{1,glm::vec3((i+1)*10,0,0),glm::quat(1,0,0,0),glm::vec3(1)}};
+	std::unordered_map<std::string,VansAnimationClip> clips{{"pose",clip}};
+	std::unordered_map<std::string,AnimatorParameter> parameters;
+	for(const auto name:{"revision","mode","mask"})parameters[name].type=AnimatorParamType::Int;
+	for(const auto name:{"time","alpha"})parameters[name].type=AnimatorParamType::Float;
+	parameters["active"].type=AnimatorParamType::Bool;parameters["active"].boolVal=true;
+	VansAnimGraph graph;auto player=std::make_unique<AnimGraphClipNode>();player->m_ClipName="pose";player->m_SampleTimeParameter="time";player->m_Loop=false;
+	const int input=graph.AddNode(std::move(player));auto definition=std::make_unique<AnimGraphPoseHistoryBlendNode>();auto* history=definition.get();
+	history->m_RevisionParameter="revision";history->m_AlphaParameter="alpha";history->m_ModeParameter="mode";history->m_MaskIndexParameter="mask";history->m_ActiveParameter="active";history->m_UnionMaskCoverage=true;
+	for(const auto bone:{"hand","root"}){VansBoneMaskAsset mask;mask.id=bone;mask.name=bone;mask.defaultWeight=0;mask.explicitWeights[bone]=1;history->m_Masks.push_back(mask);}
+	const int historyId=graph.AddNode(std::move(definition)),output=graph.AddNode(std::make_unique<AnimGraphOutputNode>());graph.AddLink(input,0,historyId,0);graph.AddLink(historyId,0,output,0);
+	AnimGraphContext context;context.skeleton=&skeleton;context.clips=&clips;context.parameters=&parameters;context.deltaTime=.02f;
+	VansAnimGraphInstance instance(graph);auto sample=[&](float time,int revision,float alpha,int mask,int mode=0){parameters["time"].floatVal=time;parameters["revision"].intVal=revision;parameters["alpha"].floatVal=alpha;parameters["mask"].intVal=mask;parameters["mode"].intVal=mode;return instance.EvaluateFrame(context);};
+	sample(.1f,1,1,0);const auto saved=instance.CaptureRuntimeState();auto result=sample(.5f,2,0,1);
+	if(!Check(result.valid && std::abs(result.localPose[0].translation.x-1)<1.e-5f && std::abs(result.localPose[1].translation.x-2)<1.e-5f,"History coverage union did not preserve the displayed prior pose"))return false;
+	result=sample(.6f,2,.5f,1);
+	if(!Check(std::abs(result.localPose[0].translation.x-3.5f)<1.e-5f && std::abs(result.localPose[1].translation.x-7)<1.e-5f,"History blended from a recursive current value instead of captured pose"))return false;
+	if(!instance.RestoreRuntimeState(saved))return false;sample(.5f,2,0,1);const auto replay=sample(.6f,2,.5f,1);
+	if(!Check(glm::distance(replay.localPose[1].translation,result.localPose[1].translation)<1.e-6f,"History snapshot lost interrupted blend state"))return false;
+	result=sample(.9f,3,0,0);if(!Check(std::abs(result.localPose[1].translation.x-7)<1.e-5f,"Revision interruption did not capture displayed result"))return false;
+	result=sample(.3f,4,0,0,1);result=sample(.4f,4,.5f,0,1);
+	if(!Check(std::abs(result.localPose[0].translation.x-4.25f)<1.e-5f && std::abs(result.localPose[1].translation.x-8.5f)<1.e-5f,"Offset tail stopped the incoming clip or used velocity inertia"))return false;
+	// Actor 转向时，根子骨须保持捕获时的世界位置和旋转。
+	history->m_AlignRootChildren=true;history->m_UnionMaskCoverage=false;
+	VansAnimGraphInstance worldInstance(graph);parameters["time"].floatVal=.1f;parameters["alpha"].floatVal=1;parameters["mask"].intVal=0;parameters["mode"].intVal=0;parameters["revision"].intVal=1;
+	const auto first=worldInstance.EvaluateFrame(context);const auto oldWorld=VansPoseMath::Compose(first.localPose[0])*VansPoseMath::Compose(first.localPose[1]);
+	context.ownerWorldTransform=glm::rotate(glm::mat4(1),glm::half_pi<float>(),glm::vec3(0,0,1));parameters["revision"].intVal=2;parameters["alpha"].floatVal=0;
+	const auto aligned=worldInstance.EvaluateFrame(context);const auto actualWorld=context.ownerWorldTransform*VansPoseMath::Compose(aligned.localPose[0])*VansPoseMath::Compose(aligned.localPose[1]);
+	for(int c=0;c<4;++c)if(!Check(glm::length(actualWorld[c]-oldWorld[c])<1.e-4f,"History root-child alignment changed planted world pose"))return false;
+	history->m_AlignRootChildren=false;history->m_DampingSeconds=.04f;history->m_DampingMask=history->m_Masks[0];
+	VansAnimGraphInstance damped(graph);context.ownerWorldTransform=glm::mat4(1);parameters["active"].boolVal=false;damped.EvaluateFrame(context);parameters["active"].boolVal=true;parameters["mode"].intVal=2;
+	const auto filtered=damped.EvaluateFrame(context);
+	if(!Check(std::abs(filtered.localPose[1].translation.x-2*(1-std::exp(-.5f)))<1.e-5f
+		&& std::abs(filtered.localPose[0].translation.x-1)<1.e-5f,"Exponential damping touched unfiltered bones or did not reset to identity"))return false;
+	// 当前标量遮罩与旧通道并集分开；内层显示缓存不能被外层权重污染。
+	VansAnimationClip liveClip=clip;for(auto& keys:liveClip.boneKeyframes)for(auto& key:keys)key.position=glm::vec3(0);clips["live"]=liveClip;
+	parameters["outerWeight"].type=AnimatorParamType::Float;parameters["outerWeight"].floatVal=.5f;
+	VansAnimGraph weightedGraph;auto sourcePlayer=std::make_unique<AnimGraphClipNode>();sourcePlayer->m_ClipName="pose";sourcePlayer->m_SampleTimeParameter="time";sourcePlayer->m_Loop=false;
+	const int weightedSource=weightedGraph.AddNode(std::move(sourcePlayer));auto livePlayer=std::make_unique<AnimGraphClipNode>();livePlayer->m_ClipName="live";livePlayer->m_SampleTime=0;
+	const int liveInput=weightedGraph.AddNode(std::move(livePlayer));auto weightedDefinition=std::make_unique<AnimGraphPoseHistoryBlendNode>(*history);auto* weighted=weightedDefinition.get();
+	weighted->m_DampingSeconds=0;weighted->m_RetainCurrentMaskWeights=true;weighted->m_UnionMaskCoverage=true;weighted->m_OutputWeightParameter="outerWeight";
+	weighted->m_Masks[1]=weighted->m_Masks[0];weighted->m_Masks[1].explicitWeights["hand"]=.25f;weighted->m_Masks[1].explicitChannelWeights["hand"]=glm::vec3(0,1,0);
+	const int weightedHistory=weightedGraph.AddNode(std::move(weightedDefinition)),weightedOutput=weightedGraph.AddNode(std::make_unique<AnimGraphOutputNode>());
+	weightedGraph.AddLink(weightedSource,0,weightedHistory,0);weightedGraph.AddLink(liveInput,0,weightedHistory,1);weightedGraph.AddLink(weightedHistory,0,weightedOutput,0);
+	VansAnimGraphInstance weightedInstance(weightedGraph);auto weightedSample=[&](float time,int revision,float alpha,int mask){parameters["time"].floatVal=time;parameters["revision"].intVal=revision;parameters["alpha"].floatVal=alpha;parameters["mask"].intVal=mask;parameters["mode"].intVal=0;return weightedInstance.EvaluateFrame(context);};
+	const auto initialWeighted=weightedSample(.1f,1,1,0);const auto changedWeighted=weightedSample(.5f,2,0,1);
+	const auto advancedWeighted=weightedSample(.6f,2,.5f,1);
+	if(!Check(std::abs(initialWeighted.localPose[1].translation.x-1)<1.e-5f && std::abs(changedWeighted.localPose[1].translation.x-1)<1.e-5f
+		&& std::abs(advancedWeighted.localPose[1].translation.x-1.34375f)<1.e-5f,"History did not retain current scalar, previous channel coverage or unweighted displayed cache"))return false;
+	parameters["active"].boolVal=false;if(!Check(glm::length(weightedInstance.EvaluateFrame(context).localPose[1].translation)<1.e-6f,"Inactive weighted history did not return live base"))return false;
+	// The external display includes later procedural/additive stages, not this node's last input.
+	weighted->m_HistorySnapshotName="display";weighted->m_HistorySnapshotParameter="captureDisplay";
+	parameters["captureDisplay"].type=AnimatorParamType::Bool;parameters["captureDisplay"].boolVal=true;parameters["active"].boolVal=true;
+	std::vector<VansBoneTransform> display(2);display[1].translation=glm::vec3(30,0,0);
+	weightedInstance.SetPoseSnapshot("display",display);const auto fromDisplay=weightedSample(.2f,9,0,0);
+	if(!Check(std::abs(fromDisplay.localPose[1].translation.x-15)<1.e-5f,"History captured pre-solver node pose instead of final displayed snapshot"))return false;
+	parameters["captureDisplay"].boolVal=false;const auto localHistory=weightedSample(.2f,10,0,0);
+	if(!Check(std::abs(localHistory.localPose[1].translation.x-15)<1.e-5f,"Disabled external capture lost ordinary node history"))return false;
+	auto workspace=std::filesystem::current_path();for(int i=0;i<6 && !std::filesystem::is_directory(workspace/"DemoHallProject");++i)workspace=workspace.parent_path();
+	AnimatorAssetData asset;std::string error;if(!VansAnimatorIO::Load((workspace/"DemoHallProject/Assets/Animations/LeonSurvival/Survival_Leon.vanimator").string(),asset))return false;
+	auto* final=asset.FindFinalCompositionGraph();const int finalOutput=final->GetOutputNodeId();const auto links=final->GetLinks();
+	int targetInput=-1;for(const auto& [id,node]:final->GetNodes())if(node->GetType()==VansAnimGraphNodeType::TargetPoseInput)targetInput=id;
+	for(const auto& link:links)if(link.toNodeId==finalOutput){final->RemoveLink(link.linkId);auto copy=std::make_unique<AnimGraphPoseHistoryBlendNode>(*weighted);const int added=final->AddNode(std::move(copy));final->AddLink(link.fromNodeId,link.fromPinIndex,added,0);final->AddLink(targetInput,0,added,1);final->AddLink(added,0,finalOutput,0);}
+	for(const auto& [name,value]:parameters)if(name!="time"){auto added=value;added.name=name;asset.parameters.push_back(added);}
+	nlohmann::json canonical;if(!VansAnimatorIO::SerializeToJsonObject(asset,canonical,error))return Check(false,error.c_str());
+	const auto dto=Vans::EditorAPI::AnimationAuthoringBridge::DecodeAnimator(canonical.dump());if(!dto.success)return Check(false,"Pose history DTO decode failed");
+	const auto encoded=Vans::EditorAPI::AnimationAuthoringBridge::EncodeAnimator(*dto.document);
+	if(!Check(encoded.success && nlohmann::json::parse(encoded.canonicalJson)==canonical,"Pose history fields changed through DTO"))return false;
+	std::cout<<"POSE_HISTORY_BLEND_PASS coverage union, interruption, offset tail, world alignment, damping, snapshot, DTO\n";return true;
+}
+
+bool RunMaskedLocalDeltaContract()
+{
+	using namespace VansGraphics;
+	Skeleton skeleton;AddBone(skeleton,"root",-1,glm::vec3(0));AddBone(skeleton,"hand",0,glm::vec3(0,1,0));skeleton.BuildTopologicalOrder();
+	VansBoneMaskAsset mask;mask.id="native-delta";mask.name="Native Delta";mask.defaultWeight=0;
+	mask.explicitWeights["hand"]=.8f;mask.explicitChannelWeights["hand"]=glm::vec3(.25f,1.f,0.f);
+	VansAnimationFrameVector<VansBoneTransform> base(2),delta(2),actual;
+	base[1].translation=glm::vec3(2,3,4);base[1].rotation=glm::angleAxis(.7f,glm::vec3(0,1,0));base[1].scale=glm::vec3(2,3,4);
+	delta[0].translation=glm::vec3(100);delta[1].translation=glm::vec3(4,8,12);delta[1].rotation=glm::angleAxis(1.f,glm::vec3(1,0,0));delta[1].scale=glm::vec3(2);
+	const auto compiled=VansBoneMaskCompiler::Compile(mask,skeleton);
+	if(!Check(compiled.valid && VansPoseMath::ApplyMaskedLocalDeltaPose(base,delta,compiled,.5f,actual),"Masked native delta failed"))return false;
+	const auto expected=glm::angleAxis(.4f,glm::vec3(1,0,0))*base[1].rotation;
+	if(!Check(glm::length(actual[0].translation)<1.e-6f && glm::distance(actual[1].translation,glm::vec3(2.4f,3.8f,5.2f))<1.e-5f
+		&& std::abs(glm::dot(expected,actual[1].rotation))>1-1.e-6f && actual[1].scale==base[1].scale,
+		"Masked delta changed excluded TRS or used right-multiplied rotation"))return false;
+	// 图运行时独立检查，防止仅数学接口正确而节点丢掉通道遮罩。
+	std::unordered_map<std::string,VansAnimationClip> clips;
+	for(const auto& [name,pose]:std::vector<std::pair<std::string,VansAnimationFrameVector<VansBoneTransform>>>{{"base",base},{"delta",delta}})
+	{auto& clip=clips[name];clip.duration=1;clip.boneKeyframes.resize(2);for(int i=0;i<2;++i)clip.boneKeyframes[i]={{0,pose[i].translation,pose[i].rotation,pose[i].scale}};}
+	VansAnimGraph graph;auto player=[&](const char* alias){auto node=std::make_unique<AnimGraphClipNode>();node->m_ClipName=alias;node->m_SampleTime=0;return graph.AddNode(std::move(node));};
+	const int first=player("base"),second=player("delta");auto blend=std::make_unique<AnimGraphAdditiveBlendNode>();blend->m_FixedWeight=.5f;blend->m_AdditiveMode=VansAdditivePoseMode::LocalSphericalLeft;blend->m_UseBoneMask=true;blend->m_BoneMask=mask;
+	const int mix=graph.AddNode(std::move(blend)),output=graph.AddNode(std::make_unique<AnimGraphOutputNode>());graph.AddLink(first,0,mix,0);graph.AddLink(second,0,mix,1);graph.AddLink(mix,0,output,0);
+	VansAnimGraphInstance instance(graph);AnimGraphContext context;context.skeleton=&skeleton;context.clips=&clips;
+	const auto result=instance.EvaluateFrame(context);if(!Check(result.valid && glm::distance(result.localPose[1].translation,actual[1].translation)<1.e-6f
+		&& std::abs(glm::dot(result.localPose[1].rotation,expected))>1-1.e-6f,"Additive graph ignored compiled mask"))return false;
+	auto workspace=std::filesystem::current_path();for(int i=0;i<6 && !std::filesystem::is_directory(workspace/"DemoHallProject");++i)workspace=workspace.parent_path();
+	AnimatorAssetData asset;std::string error;if(!VansAnimatorIO::Load((workspace/"DemoHallProject/Assets/Animations/LeonSurvival/Survival_Leon.vanimator").string(),asset))return false;
+	AnimGraphAdditiveBlendNode* masked=nullptr;for(auto& [id,node]:asset.FindFinalCompositionGraph()->GetNodes())if(node->GetType()==VansAnimGraphNodeType::AdditiveBlend)masked=static_cast<AnimGraphAdditiveBlendNode*>(node.get());
+	if(!masked)return false;masked->m_UseBoneMask=true;masked->m_BoneMask=mask;
+	nlohmann::json canonical;if(!VansAnimatorIO::SerializeToJsonObject(asset,canonical,error))return Check(false,error.c_str());
+	const auto dto=Vans::EditorAPI::AnimationAuthoringBridge::DecodeAnimator(canonical.dump());if(!dto.success)return Check(false,"Masked delta DTO decode failed");
+	const auto encoded=Vans::EditorAPI::AnimationAuthoringBridge::EncodeAnimator(*dto.document);
+	if(!Check(encoded.success && nlohmann::json::parse(encoded.canonicalJson)==canonical,"Masked native delta fields changed through DTO"))return false;
+	masked->m_BoneMask.explicitChannelWeights["hand"].x=std::numeric_limits<float>::quiet_NaN();
+	if(!Check(!VansAnimatorValidator::Validate(asset,error),"Typed validator accepted a nonfinite inline channel mask"))return false;
+	std::cout<<"MASKED_LOCAL_DELTA_PASS independent TRS, graph, exact DTO, invalid definition\n";return true;
+}
+
+bool RunIndependentCharacterMotionContract()
+{
+	using namespace VansGraphics;
+	Skeleton skeleton;AddBone(skeleton,"root",-1,glm::vec3(0));AddBone(skeleton,"child",0,glm::vec3(0,1,0));
+	skeleton.sourceSkeletonGuid="f2eea6ee-9f63-49c1-93d1-5372af9f79f1";skeleton.BuildTopologicalOrder();
+	VansAnimationRigAsset rigAsset;rigAsset.name="Independent Motion";rigAsset.skeletonGuid=skeleton.sourceSkeletonGuid;
+	VansCompiledAnimationRig rig;std::string error;if(!VansAnimationRigCompiler::Compile(rigAsset,skeleton,rig,error))return Check(false,error.c_str());
+	VansAnimationClip clip;clip.clipName="motion";clip.duration=1;clip.boneKeyframes.resize(2);
+	clip.boneKeyframes[0]={{0,glm::vec3(0),glm::quat(1,0,0,0),glm::vec3(1)},
+		{1,glm::vec3(1,0,0),glm::angleAxis(glm::radians(90.f),glm::vec3(0,0,1)),glm::vec3(1)}};
+	clip.boneKeyframes[1]={{0,glm::vec3(0,1,0),glm::quat(1,0,0,0),glm::vec3(1)}};
+	clip.rootMotion.boneName="root";clip.rootMotion.forceLock=true;clip.rootMotion.lockMode=AnimationRootLockMode::ReferencePose;
+	VansAnimationSampleRequest request;request.loop=false;request.previousTime=.25f;request.currentTime=.5f;
+	const auto interval=VansAnimationSampler::ExtractRootMotion(clip,skeleton,request);
+	request.rootMotionReferenceSpace=true;
+	const auto reference=VansAnimationSampler::ExtractRootMotion(clip,skeleton,request);
+	if(!Check(glm::distance(reference.translation,glm::vec3(.25f,0,0))<1.e-5f && glm::distance(reference.translation,interval.translation)>.05f,
+		"Reference root translation was rotated by the interval's prior heading"))return false;
+	request.loop=true;request.previousTime=.9f;request.currentTime=1.1f;
+	if(!Check(glm::distance(VansAnimationSampler::ExtractRootMotion(clip,skeleton,request).translation,glm::vec3(.2f,0,0))<1.e-5f,
+		"Reference root loop did not preserve authored translation across the endpoint"))return false;
+	Vans::VansCharacterLocomotionResolver resolver;resolver.Clear(glm::vec3(0),90);
+	Vans::VansCharacterMotionIntent intent;intent.valid=true;intent.gravity=0;intent.rootMotionReferenceYaw=0;resolver.SetIntent(intent);
+	Vans::VansCharacterMotionSettings settings;settings.rootRotationWeight=0;
+	resolver.Prepare(.25f,settings,glm::vec3(0),90,true,false);
+	Vans::VansLocomotionAuthority authority;authority.mode=Vans::VansLocomotionAuthorityMode::RootMotion;
+	const auto travel=resolver.Resolve(glm::vec3(1,0,0),glm::quat(1,0,0,0),true,authority,settings,glm::vec3(1),90);
+	if(!Check(glm::distance(travel.displacementWorld,glm::vec3(1,0,0))<1.e-5f,"CCT ignored the authored translation heading"))return false;
+	auto makeGraph=[&](bool history){auto graph=std::make_unique<VansAnimGraph>();
+		auto sample=std::make_unique<AnimGraphClipNode>();sample->m_ClipName="motion";sample->m_Loop=false;sample->m_RootMotion=true;
+		sample->m_SampleTimeParameter="Time";sample->m_SampleTimeOutputs=true;sample->m_SampleEpochParameter="Revision";
+		sample->m_SampleFromZeroOnEpoch=true;sample->m_RootMotionReferenceSpace=true;
+		int input=graph->AddNode(std::move(sample));
+		if(history){auto blend=std::make_unique<AnimGraphPoseHistoryBlendNode>();blend->m_RevisionParameter="Revision";
+			blend->m_AlphaParameter="Alpha";blend->m_AlignRootChildren=true;const int next=graph->AddNode(std::move(blend));graph->AddLink(input,0,next,0);input=next;}
+		const int output=graph->AddNode(std::make_unique<AnimGraphOutputNode>());graph->AddLink(input,0,output,0);return graph;};
+	if(!Check(!makeGraph(true)->ValidateCharacterMotionGraph(error),"Motion graph accepted pose history side effects"))return false;
+	auto makeController=[&](bool independent){auto controller=std::make_unique<VansAnimationController>();controller->AddClip("motion",clip);
+		controller->AddParameter("Time",AnimatorParamType::Float);controller->AddParameter("Alpha",AnimatorParamType::Float);controller->AddParameter("Revision",AnimatorParamType::Int);
+		controller->SetFloat("Alpha",1);controller->SetInt("Revision",1);
+		std::vector<VansAnimationLayerSetup> layers(1);layers[0].definition.id="base";layers[0].definition.name="Base";layers[0].definition.kind=VansAnimationLayerKind::Base;
+		std::vector<VansAnimationGraphSetSetup> sets(1);auto& set=sets[0];set.definition.id="default";set.definition.name="Default";
+		set.definition.bindings.push_back({"base","pose",true});set.bindings.push_back({{"base","pose",true},makeGraph(true)});
+		if(independent){set.definition.characterMotionGraphId="root";set.characterMotionGraph=makeGraph(false);}
+		if(!controller->SetAnimationGraphSets(std::move(layers),std::move(sets),"default",{},{},error)||!controller->SetAnimationRig(rig,{},error))return std::unique_ptr<VansAnimationController>{};
+		controller->SetNormalizeRootPose(false);controller->EnableRootMotion(true);controller->Play();controller->Update(0,skeleton);return controller;};
+	auto source=makeController(true),target=makeController(false);if(!Check(source && target,error.c_str()))return false;
+	if(!Check(!target->PrepareIndependentCharacterMotion(.25f,skeleton),"Unconfigured controller stopped using its existing prepare path"))return false;
+	source->SetFloat("Time",.25f);
+	if(!source->PrepareIndependentCharacterMotion(.25f,skeleton)||!Check(glm::distance(source->GetRootMotionDelta(),glm::vec3(.25f,0,0))<1.e-5f,
+		"Motion entry discarded the first interval from zero"))return false;
+	std::string transfer;auto resumed=makeController(true);
+	if(!resumed->TransferRuntimeStateFrom(*source,skeleton,transfer))return Check(false,transfer.c_str());
+	resumed->SetFloat("Time",.5f);resumed->PrepareIndependentCharacterMotion(.25f,skeleton);
+	if(!Check(glm::distance(resumed->GetRootMotionDelta(),glm::vec3(.25f,0,0))<1.e-5f,"Motion hot reload restarted its clip interval"))return false;
+	source->SetInt("Revision",2);source->SetFloat("Time",.1f);source->PrepareIndependentCharacterMotion(.1f,skeleton);
+	if(!Check(glm::distance(source->GetRootMotionDelta(),glm::vec3(.1f,0,0))<1.e-5f,"Same clip reentry reused the preceding epoch"))return false;
+	const auto id=Vans::VansTransformStore::Allocate();struct Release{std::uint32_t id;~Release(){Vans::VansTransformStore::Release(id);}} release{id};
+	auto transform=Vans::VansTransformStore::Read(id);transform.m_Position=glm::vec3(0);transform.m_Rotation=glm::vec3(0);transform.m_Scale=glm::vec3(1);Vans::VansTransformStore::Write(id,transform);
+	VansAnimationNode node("Independent Motion");node.SetSkeleton(skeleton);node.SetTransformID(id);
+	VansRetargetRuntimeDesc desc;desc.translationScaleMode=VansRetargetTranslationScaleMode::Explicit;desc.translationScale=1;
+	if(!node.SetController(std::move(target))||!node.ConfigureRetargetSource(skeleton,std::move(source),desc,error))return Check(false,error.c_str());
+	node.Play(VansAnimationEvaluationPurpose::EditorPreview);auto* active=node.GetCharacterMotionController();auto* parameters=node.GetController();
+	parameters->SetInt("Revision",1);parameters->SetFloat("Time",0);parameters->SetFloat("Alpha",1);node.Update({VansAnimationEvaluationPurpose::EditorPreview,0});
+	const auto revision=active->GetFinalPoseView(skeleton).revision;
+	parameters->SetInt("Revision",2);parameters->SetFloat("Time",.25f);parameters->SetFloat("Alpha",.5f);
+	Vans::VansCharacterTrajectory trajectory;node.PrepareCharacterMotionFrame(.25f,trajectory);
+	if(!Check(active->GetFinalPoseView(skeleton).revision==revision,"Preparing CCT root advanced displayed pose history"))return false;
+	transform.m_Position.x=.25f;Vans::VansTransformStore::Write(id,transform);
+	node.Update({VansAnimationEvaluationPurpose::EditorPreview,.25f});
+	const float local=active->GetCachedGlobalTransforms()[1][3].x;
+	if(!Check(std::abs(local+.125f)<1.e-4f,"Source base history did not evaluate in the post-CCT owner frame"))return false;
+	std::cout<<"INDEPENDENT_CHARACTER_MOTION_PASS firstInterval, epoch, referenceFrame, hotReload, postCCT, legacyFallback\n";
+	return true;
+}
+
+bool RunRetargetControllerRoutingContract()
+{
+	using namespace VansGraphics;
+	if(!TestConfigurableRetargetReferences())return false;
+	Skeleton skeleton;AddBone(skeleton,"root",-1,glm::vec3(0));skeleton.sourceSkeletonGuid="f2eea6ee-9f63-49c1-93d1-5372af9f79f1";skeleton.BuildTopologicalOrder();
+	VansAnimationRigAsset asset;asset.name="Routing Fixture";asset.skeletonGuid=skeleton.sourceSkeletonGuid;
+	VansCompiledAnimationRig rig;std::string error;if(!VansAnimationRigCompiler::Compile(asset,skeleton,rig,error))return Check(false,error.c_str());
+	auto makeController=[&](bool target,float duration=0.f){
+		auto controller=std::make_unique<VansAnimationController>();
+		VansAnimationClip clip;clip.clipName="pose";clip.duration=1;clip.boneKeyframes.resize(1);clip.boneKeyframes[0]={{0,glm::vec3(0),glm::quat(1,0,0,0),glm::vec3(1)},{1,glm::vec3(1,0,0),glm::quat(1,0,0,0),glm::vec3(1)}};clip.rootMotion.boneName="root";controller->AddClip("pose",clip);
+		auto graph=[](){auto value=std::make_unique<VansAnimGraph>();auto clip=std::make_unique<AnimGraphClipNode>();clip->m_ClipName="pose";clip->m_Loop=false;clip->m_RootMotion=true;const int input=value->AddNode(std::move(clip));const int output=value->AddNode(std::make_unique<AnimGraphOutputNode>());value->AddLink(input,0,output,0);return value;};
+		std::vector<VansAnimationLayerSetup> layers(1);layers[0].definition.id="base";layers[0].definition.name="Base";layers[0].definition.kind=VansAnimationLayerKind::Base;
+		std::vector<VansAnimationGraphSetSetup> sets;
+		for(const std::string id:target?std::vector<std::string>{"default","preserved"}:std::vector<std::string>{"default"})
+		{VansAnimationGraphSetSetup set;set.definition.id=id;set.definition.name=id;set.definition.bindings.push_back({"base","pose",true});set.bindings.push_back({{"base","pose",true},graph()});sets.push_back(std::move(set));}
+		VansGraphSetTransitionPolicy policy;policy.duration=duration;policy.requireStateMatch=false;
+		if(!controller->SetAnimationGraphSets(std::move(layers),std::move(sets),"default",policy,{},error)||!controller->SetAnimationRig(rig,{},error))return std::unique_ptr<VansAnimationController>{};
+		controller->SetNormalizeRootPose(false);controller->EnableRootMotion(true);return controller;};
+	auto target=makeController(true),source=makeController(false);if(!Check(target && source,error.c_str()))return false;
+	target->AddClip("preservedOnly",*target->GetClip("pose"));source->AddClip("sourceOnly",*source->GetClip("pose"));
+	const auto* targetView=target.get();const auto* sourceView=source.get();
+	VansAnimationNode node("Routing Fixture");node.SetSkeleton(skeleton);
+	VansRetargetRuntimeDesc desc;desc.translationScaleMode=VansRetargetTranslationScaleMode::Explicit;desc.translationScale=2;desc.outputModelRotation=glm::angleAxis(glm::radians(90.f),glm::vec3(1,0,0));
+	if(!node.SetController(std::move(target))||!node.ConfigureRetargetSource(skeleton,std::move(source),desc,error))return Check(false,error.c_str());
+	if(!Check(node.FindClipByAlias("preservedOnly")&&node.FindClipByAlias("sourceOnly")&&!node.FindClipByAlias("missing")&&node.UsesRetargetSource(),
+		"Cross-controller Clip lookup changed motion owner or hid a pending authored Clip"))return false;
+	node.Play(VansAnimationEvaluationPurpose::EditorPreview);node.Update({VansAnimationEvaluationPurpose::EditorPreview,.25f});
+	if(!Check(node.UsesRetargetSource() && node.GetCharacterMotionController()==sourceView,"Initial retarget graph owner is not source"))return false;
+	if(!Check(glm::distance(node.GetRootMotionDelta(),glm::vec3(.5f,0,0))<1.e-4f,"Source root delta did not use compiled target units"))return false;
+	Vans::VansCharacterTrajectory trajectory;node.PrepareCharacterMotionFrame(.25f,trajectory);node.Update({VansAnimationEvaluationPurpose::EditorPreview,.25f});
+	if(!Check(std::abs(targetView->GetCachedGlobalTransforms()[0][3].x-1.f)<1.e-4f,
+		"CCT-prepared source pose was stale or its clock advanced twice before retarget"))return false;
+	if(!Check(node.SwitchGraphSet("preserved")==VansGraphSetSwitchResult::Completed && !node.UsesRetargetSource()
+		&& node.GetCharacterMotionController()==targetView && node.GetActiveGraphSetId()=="preserved","Target-only preserved graph was not routed to target owner"))return false;
+	node.Update({VansAnimationEvaluationPurpose::EditorPreview,.25f});
+	if(!Check(node.SwitchGraphSet("unknown")==VansGraphSetSwitchResult::UnknownGraphSet && !node.UsesRetargetSource(),"Unknown graph changed controller owner"))return false;
+	if(!Check(node.SwitchGraphSet("default")==VansGraphSetSwitchResult::AlreadyActive && node.UsesRetargetSource()
+		&& node.GetCharacterMotionController()==sourceView,"Returning to source graph lost source owner"))return false;
+	auto handoff=makeController(true,.2f);handoff->Play();handoff->Update(.4f,skeleton);
+	const float beforeHandoff=handoff->GetCachedGlobalTransforms()[0][3].x;
+	handoff->BeginDisplayedPoseHandoff(skeleton,"default","preserved");
+	std::vector<glm::mat4> incoming{glm::translate(glm::mat4(1),glm::vec3(4,0,0))};
+	if(!handoff->SubmitExternalModelPose(incoming,skeleton,.1f,VansExternalPoseEvaluationMode::TargetPostProcess,false))return false;
+	const float displayed=handoff->GetCachedGlobalTransforms()[0][3].x;
+	std::cout<<"DISPLAY_HANDOFF prior="<<beforeHandoff<<" output="<<displayed<<" expected="<<(beforeHandoff+4)*.5f<<'\n';
+	if(!Check(std::abs(displayed-(beforeHandoff+4)*.5f)<1.e-4f,"Cross-owner handoff did not blend from target displayed pose"))return false;
+	handoff->BeginDisplayedPoseHandoff(skeleton,"preserved","default");
+	if(!handoff->SubmitExternalModelPose(incoming,skeleton,0,VansExternalPoseEvaluationMode::TargetPostProcess,false)
+		|| !Check(std::abs(handoff->GetCachedGlobalTransforms()[0][3].x-displayed)<1.e-4f,"Interrupted owner handoff snapped to stale input"))return false;
+	// 非角色骨名验证外部基础姿态与普通 Layer Stack 的 Mesh Space、动态加性、惯性和事件等价。
+	Skeleton overlaySkeleton;AddBone(overlaySkeleton,"anchor",-1,{0,0,0});AddBone(overlaySkeleton,"segment",0,{0,1,0});overlaySkeleton.sourceSkeletonGuid=skeleton.sourceSkeletonGuid;overlaySkeleton.BuildTopologicalOrder();
+	VansAnimationRigAsset overlayRigAsset;overlayRigAsset.name="Overlay fixture";overlayRigAsset.skeletonGuid=overlaySkeleton.sourceSkeletonGuid;
+	VansCompiledAnimationRig overlayRig;
+	if(!VansAnimationRigCompiler::Compile(overlayRigAsset,overlaySkeleton,overlayRig,error))return Check(false,error.c_str());
+	for(bool dynamic:{false,true})
+	{
+		auto createOverlay=[&](bool external){
+			auto c=std::make_unique<VansAnimationController>();c->AddParameter("time",AnimatorParamType::Float);c->AddParameter("weight",AnimatorParamType::Float);
+			for(const std::string alias:{"seed","overlay"})
+			{
+				VansAnimationClip clip;clip.duration=2;clip.boneKeyframes.resize(2);
+				clip.boneKeyframes[0]={{0,{0,0,0},glm::quat(1,0,0,0),{1,1,1}},{2,{2,0,0},glm::angleAxis(.8f,glm::vec3(0,1,0)),{1,1,1}}};
+				clip.boneKeyframes[1]={{0,{0,1,0},glm::quat(1,0,0,0),{1,1,1}},{2,{.2f,1,.1f},glm::angleAxis(alias=="overlay"?1.2f:.3f,glm::vec3(1,0,0)),{1,1,1}}};
+				if(alias=="overlay"){AnimationClipEvent e;e.id=16;e.time=.15f;e.name="SegmentPulse";clip.events.push_back(e);}c->AddClip(alias,clip);
+			}
+			auto graph=[&](bool overlay){auto g=std::make_unique<VansAnimGraph>();auto p=std::make_unique<AnimGraphClipNode>();p->m_ClipName=overlay?"overlay":"seed";p->m_Loop=false;p->m_RootMotion=false;if(!overlay)p->m_SampleTimeParameter="time";const int player=g->AddNode(std::move(p)),out=g->AddNode(std::make_unique<AnimGraphOutputNode>());g->AddLink(player,0,out,0);return g;};
+			std::vector<VansAnimationLayerSetup> layers(2);auto& base=layers[0].definition;base.id="base";base.name="Base";base.kind=VansAnimationLayerKind::Base;base.updateWhenWeightIsZero=true;
+			auto& layer=layers[1].definition;layer.id="overlay";layer.name="Overlay";layer.kind=VansAnimationLayerKind::Overlay;layer.useWeightParameter=true;layer.weightParameter="weight";
+			layer.rotationSpace=VansRotationBlendSpace::Mesh;layer.dynamicAdditive=dynamic;layer.dynamicAdditiveWeight=.65f;
+			layer.activationBlendInSeconds=.12f;layer.activationBlendOutSeconds=.16f;layer.activationCurve=VansLayerActivationCurve::SmoothStep;layer.restartOnActivation=true;
+			layer.inertializationHalfLife=.1f;layer.inertializationMaxDuration=.28f;layer.updateWhenWeightIsZero=true;layer.rootMotion=VansLayerRootMotionMode::Ignore;
+			auto mask=std::make_shared<VansBoneMaskAsset>();mask->id="segment-mask";mask->name="Segment";mask->defaultWeight=0;mask->explicitWeights["segment"]=1;layers[1].mask=*mask;
+			std::vector<VansAnimationGraphSetSetup> sets;
+			for(const std::string id:{"ordinary","external"}){VansAnimationGraphSetSetup set;set.definition.id=id;set.definition.name=id;
+				for(int i=0;i<2;++i){VansAnimationGraphBindingDefinition binding{i?"overlay":"base",i?"overlay":"seed",true};set.definition.bindings.push_back(binding);set.bindings.push_back({binding,graph(i==1)});}sets.push_back(std::move(set));}
+			VansGraphSetTransitionPolicy policy;policy.duration=0;
+			if(!c->SetAnimationGraphSets(std::move(layers),std::move(sets),"ordinary",policy,{},error)||!c->SetAnimationRig(overlayRig,{},error))return std::unique_ptr<VansAnimationController>{};
+			if(external&&!c->SetExternalPoseLayerGraphSet("external",error))return std::unique_ptr<VansAnimationController>{};
+			c->SetNormalizeRootPose(false);c->EnableRootMotion(false);c->Play();return c;
+		};
+		auto expected=createOverlay(false),external=createOverlay(true);if(!expected||!external)return Check(false,error.c_str());
+		int fullEvents=0,externalEvents=0;float maximum=0;
+		for(int frame=0;frame<85;++frame)
+		{
+			const float time=frame/60.f,weight=frame>=5&&frame<47?1.f:0.f;
+			expected->SetFloat("time",time);expected->SetFloat("weight",weight);external->SetFloat("weight",weight);
+			if(frame==26){expected->RestartLayer("overlay");external->RestartLayer("overlay");}
+			expected->Update(1.f/60,overlaySkeleton);
+			VansAnimationSampleRequest request;request.loop=false;request.extractRootMotion=false;request.previousTime=request.currentTime=time;
+			VansPosePayload input;VansAnimationFrameVector<glm::mat4> matrices;
+			if(!VansAnimationSampler::Sample(*expected->GetClip("seed"),overlaySkeleton,request,input)||!VansPoseMath::BuildModelTransforms(input.localPose,overlaySkeleton,matrices))return false;
+			const std::vector<glm::mat4> model(matrices.begin(),matrices.end());
+			if(!external->SubmitExternalModelPose(model,overlaySkeleton,1.f/60,VansExternalPoseEvaluationMode::TargetPostProcess,false))return false;
+			const auto& a=expected->GetCachedGlobalTransforms();const auto& b=external->GetCachedGlobalTransforms();
+			for(std::size_t bone=0;bone<a.size();++bone)for(int col=0;col<4;++col)for(int row=0;row<4;++row)maximum=std::max(maximum,std::abs(a[bone][col][row]-b[bone][col][row]));
+			fullEvents+=static_cast<int>(expected->GetSampledEvents().size());externalEvents+=static_cast<int>(external->GetSampledEvents().size());
+		}
+		if(!Check(maximum<1.e-5f && fullEvents==externalEvents && fullEvents>0 && external->GetActiveGraphSetId()=="ordinary",
+			"External base layers changed existing mixer/activation/inertia/events or switched the active target graph"))return false;
+	}
+	std::cout<<"EXTERNAL_POSE_LAYERS_PASS mesh, dynamicAdditive, activation, inertia, restart, events, namedSet\n";
+	std::cout<<"RETARGET_CONTROLLER_ROUTING_PASS source/target/source and root units\n";return true;
+}
+
+bool RunLeonUEPoseComparison()
+{
+	using namespace VansGraphics;
+	auto workspace=std::filesystem::current_path();
+	for(int depth=0;depth<6 && !std::filesystem::is_directory(workspace/"DemoHallProject");++depth)workspace=workspace.parent_path();
+	const auto project=workspace/"DemoHallProject",task=project/"Tools/LeonSurvival";
+	nlohmann::json oracle,input,sources,bakeManifest;
+	std::ifstream(task/"Audit/ue_compressed_pose_oracle.json")>>oracle;
+	std::ifstream(task/"runtime_input.json")>>input;
+	std::ifstream(task/"Audit/selected_sources.json")>>sources;
+	std::ifstream(task/"leon_bake.json")>>bakeManifest;
+	Skeleton sourceSkeleton;std::string error;
+	const auto sourcePath=task/"Inputs/Assets/Leon_Verified.fbx";Vans::VansAssetMeta sourceMeta;
+	if (!Vans::VansAssetMetaStorage::Load(Vans::VansAssetMeta::MetaPathFor(sourcePath),sourceMeta,error)
+		|| !VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(sourcePath.string(),Vans::ReadSkeletalMeshImportSettings(sourceMeta),sourceSkeleton,error)) return Check(false,error.c_str());
+	VansAnimationClip targetClip;Skeleton targetSkeleton;
+	if (!VansAnimationClipIO::Load((project/input["aliases"]["Base_Idle"].get<std::string>()).string(),targetClip,targetSkeleton)) return false;
+	VansAnimationRigAsset rigAsset;VansCompiledAnimationRig rig;
+	if (!VansAnimationRigStorage::Load(project/"Assets/AnimationRigs/Survival_Leon.vanimrig",rigAsset,error)
+		|| !VansAnimationRigCompiler::Compile(rigAsset,targetSkeleton,rig,error)) return Check(false,error.c_str());
+	VansRetargetProfileAsset profile;
+	if (!VansRetargetProfileStorage::Load(project/"Assets/Retarget/Leon_To_Survival.vretarget",profile,error)) return Check(false,error.c_str());
+	VansRetargetRuntimeDesc desc;desc.translationScaleMode=profile.translationScaleMode;desc.translationScale=profile.explicitTranslationScale;
+	desc.rootAlignment=profile.rootAlignment;desc.targetModelSpaceAlignment=profile.targetModelSpaceAlignment;
+	desc.limbChains=profile.limbChains;desc.controlBones=profile.controlBones;desc.boneMappings=profile.boneMappings;desc.outputModelRotation=profile.outputModelRotation;
+	VansRetargetProcessor processor;
+	if (!processor.Build(sourceSkeleton,targetSkeleton,rig,desc)) return Check(false,"UE pose comparison could not bind retarget profile");
+	std::unordered_map<std::string,std::size_t> ueIndices;
+	for (std::size_t index=0;index<oracle["bones"].size();++index) ueIndices.emplace(oracle["bones"][index].get<std::string>(),index);
+	// UE 左手坐标到原始 FBX 右手坐标：位置 [-Y,Z,X]，旋转伪向量 [Y,-Z,-X]。
+	auto convert=[](const nlohmann::json& values){
+		VansBoneTransform transform;transform.translation={-values[1].get<float>(),values[2].get<float>(),values[0].get<float>()};
+		transform.rotation=glm::normalize(glm::quat(values[6].get<float>(),values[4].get<float>(),-values[5].get<float>(),-values[3].get<float>()));
+		transform.scale={values[7].get<float>(),values[8].get<float>(),values[9].get<float>()};return transform;};
+	nlohmann::json result={{"producer","Independent UE compressed pose -> one engine retarget versus current standalone baked VCLIP"},{"clips",nlohmann::json::array()}};
+	float maximumPosition=0,maximumAngle=0;int samples=0;
+	std::unordered_map<std::string,std::vector<VansAnimationClip>> rawClips;
+	for (const auto& entry:oracle["clips"])
+	{
+		const auto alias=entry["alias"].get<std::string>();
+		const auto selected=std::find_if(sources.begin(),sources.end(),[&](const auto& row){return row["alias"]==alias;});
+		if (selected==sources.end() || !(*selected)["deltaReference"].is_null()) continue;
+		VansAnimationClip baked;Skeleton bakedSkeleton;
+		if (!VansAnimationClipIO::Load((project/input["aliases"][alias].get<std::string>()).string(),baked,bakedSkeleton)) return false;
+		const auto job=std::find_if(bakeManifest["clips"].begin(),bakeManifest["clips"].end(),[&](const auto& row){return row["output"]==input["aliases"][alias];});
+		const auto rawPath=(*job)["source"].get<std::string>();
+		if (!rawClips.count(rawPath) && !VansSkinnedMeshLoader::ExtractExternAnimationClips((project/rawPath).string(),sourceSkeleton,rawClips[rawPath])) return false;
+		const auto rawClip=std::find_if(rawClips[rawPath].begin(),rawClips[rawPath].end(),[&](const auto& clip){return clip.clipName==(*job)["take"].get<std::string>();});
+		if (rawClip==rawClips[rawPath].end()) return false;
+		float clipPosition=0,clipAngle=0,rawPosition=0,rawAngle=0;std::string worstBone,rawWorstBone;
+		nlohmann::json details=nlohmann::json::array();
+		for (const auto& frame:entry["samples"])
+		{
+			std::vector<VansBoneTransform> sourcePose(sourceSkeleton.bones.size());
+			for (std::size_t bone=0;bone<sourcePose.size();++bone)
+			{
+				const auto& name=sourceSkeleton.bones[bone].name;sourcePose[bone]=convert(frame["local"][ueIndices.at(name)]);
+				if (name=="root" || name=="Null_Offset")
+				{
+					VansBoneTransform rest;if (!VansPoseMath::TryDecompose(sourceSkeleton.bones[bone].localTransform,rest)) return false;
+					sourcePose[bone].translation=rest.translation;sourcePose[bone].rotation=rest.rotation;
+					if (name=="root") sourcePose[bone].scale=rest.scale;
+				}
+			}
+			std::vector<glm::mat4> sourceModel,expectedModel;
+			VansAnimationSampleRequest rawRequest;rawRequest.loop=false;rawRequest.extractRootMotion=false;rawRequest.previousTime=rawRequest.currentTime=frame["time"].get<float>();
+			VansPosePayload rawPose;if (!VansAnimationSampler::Sample(*rawClip,sourceSkeleton,rawRequest,rawPose)) return false;
+			for (const auto& mapping:desc.boneMappings)
+			{
+				const int bone=sourceSkeleton.FindBoneIndex(mapping.sourceBone);if(mapping.sourceBone=="root" || mapping.sourceBone=="Null_Offset")continue;
+				const float position=glm::distance(rawPose.localPose[bone].translation,sourcePose[bone].translation);
+				const float angle=glm::degrees(2*std::acos(std::clamp(std::abs(glm::dot(rawPose.localPose[bone].rotation,sourcePose[bone].rotation)),0.f,1.f)));
+				if(angle>rawAngle){rawAngle=angle;rawWorstBone=mapping.sourceBone;}rawPosition=std::max(rawPosition,position);
+			}
+			if (alias=="WP_AimWalkBR")
+			{
+				nlohmann::json diagnostic={{"time",frame["time"]},{"bones",nlohmann::json::object()}};
+				for (const std::string name:{"root","Null_Offset","Spine_2","R_UpperArm","R_Forearm","R_Hand"})
+				{
+					const int bone=sourceSkeleton.FindBoneIndex(name);const auto& raw=rawPose.localPose[bone];const auto& expected=sourcePose[bone];
+					diagnostic["bones"][name]={{"rawPosition",{raw.translation.x,raw.translation.y,raw.translation.z}},{"uePosition",{expected.translation.x,expected.translation.y,expected.translation.z}},
+						{"rawQuaternion",{raw.rotation.x,raw.rotation.y,raw.rotation.z,raw.rotation.w}},{"ueQuaternion",{expected.rotation.x,expected.rotation.y,expected.rotation.z,expected.rotation.w}}};
+				}
+				details.push_back(std::move(diagnostic));
+			}
+			if (!VansPoseMath::BuildModelTransforms(sourcePose,sourceSkeleton,sourceModel)
+				|| !processor.Process(sourceModel,sourceSkeleton,targetSkeleton,expectedModel)) return false;
+			VansAnimationSampleRequest request;request.loop=false;request.extractRootMotion=false;request.previousTime=request.currentTime=frame["time"].get<float>();
+			VansPosePayload sampled;VansAnimationFrameVector<glm::mat4> actualModel;
+			if (!VansAnimationSampler::Sample(baked,targetSkeleton,request,sampled)
+				|| !VansPoseMath::BuildModelTransforms(sampled.localPose,targetSkeleton,actualModel)) return false;
+			for (const auto& mapping:desc.boneMappings)
+			{
+				const int bone=targetSkeleton.FindBoneIndex(mapping.targetBone);
+				VansBoneTransform actual,expected;
+				if (!VansPoseMath::TryDecompose(actualModel[bone],actual) || !VansPoseMath::TryDecompose(expectedModel[bone],expected)) return false;
+				const float position=glm::distance(actual.translation,expected.translation);
+				const float angle=glm::degrees(2*std::acos(std::clamp(std::abs(glm::dot(actual.rotation,expected.rotation)),0.f,1.f)));
+				if (angle>clipAngle) {clipAngle=angle;worstBone=mapping.targetBone;}
+				clipPosition=std::max(clipPosition,position);
+			}
+			++samples;
+		}
+		result["clips"].push_back({{"alias",alias},{"maxPositionCm",clipPosition},{"maxRotationDegrees",clipAngle},{"worstRotationBone",worstBone},
+			{"sourcePositionMeters",rawPosition},{"sourceRotationDegrees",rawAngle},{"sourceWorstRotationBone",rawWorstBone},{"details",details}});
+		maximumPosition=std::max(maximumPosition,clipPosition);maximumAngle=std::max(maximumAngle,clipAngle);
+	}
+	result["samples"]=samples;result["maxPositionCm"]=maximumPosition;result["maxRotationDegrees"]=maximumAngle;
+	result["passed"]=maximumPosition<.05f && maximumAngle<.2f;
+	std::ofstream(task/"Audit/ue_retarget_pose_comparison.json")<<result.dump(2);
+	std::cout<<"LEON_UE_RETARGET_COMPARISON samples="<<samples<<" positionCm="<<maximumPosition<<" angle="<<maximumAngle<<"\n";
+	return result["passed"].get<bool>();
+}
+
+bool RunLeonSurvivalProjectContract()
+{
+	using namespace VansGraphics;
+	auto workspace=std::filesystem::current_path();
+	for(int depth=0;depth<6 && !std::filesystem::is_directory(workspace/"DemoHallProject");++depth)workspace=workspace.parent_path();
+	const auto project=workspace/"DemoHallProject";
+	AnimatorAssetData asset;std::string error;
+	if(!Check(VansAnimatorIO::Load((project/"Assets/Animations/LeonSurvival/Survival_Leon.vanimator").string(),asset),"Leon Animator failed to load"))return false;
+	nlohmann::json authored,restored;
+	if (!VansAnimatorIO::SerializeToJsonObject(asset,authored,error)) return Check(false,error.c_str());
+	const auto dto=Vans::EditorAPI::AnimationAuthoringBridge::DecodeAnimator(authored.dump());
+	if (!Check(dto.success,"Leon Animator native-to-DTO failed")) return false;
+	const auto encoded=Vans::EditorAPI::AnimationAuthoringBridge::EncodeAnimator(*dto.document);
+	if (!Check(encoded.success,"Leon Animator DTO-to-native failed")) return false;
+	restored=nlohmann::json::parse(encoded.canonicalJson);
+	if (!Check(restored==authored,"Leon Animator geometry or composition policy was lost in DTO roundtrip")) return false;
+	std::unordered_map<std::string,std::shared_ptr<const VansAnimationClipAsset>> clips;
+	for(const auto& ref:asset.clipRefs)
+	{
+		if(clips.count(ref.assetGuid))continue;
+		auto clip=std::make_shared<VansAnimationClipAsset>();
+		if(!Check(VansAnimationClipIO::Load((project/ref.pathHint).string(),clip->clip,clip->skeleton),ref.pathHint.c_str()))return false;
+		clips.emplace(ref.assetGuid,std::move(clip));
+	}
+	const auto skeleton=clips.at(asset.clipRefs[0].assetGuid)->skeleton;
+	if(!Check(skeleton.bones.size()==161,"Leon output is not the Survival skeleton"))return false;
+	int clipSamples=0;
+	for(const auto& entry:clips)
+	{
+		const auto& source=*entry.second;
+		if(!Check(skeleton.MatchesAnimationLayout(source.skeleton,&error),error.c_str()))return false;
+		for(int frame=0;frame<=20;++frame)
+		{
+			VansAnimationSampleRequest request;request.loop=false;request.extractRootMotion=false;
+			request.previousTime=request.currentTime=source.clip.duration*frame/20;
+			VansPosePayload pose;VansAnimationFrameVector<glm::mat4> model;
+			if(!Check(VansAnimationSampler::Sample(source.clip,skeleton,request,pose)
+				&& pose.valid && pose.localPose.size()==skeleton.bones.size()
+				&& VansPoseMath::BuildModelTransforms(pose.localPose,skeleton,model),
+				"Leon clip failed full target skeleton sampling"))return false;
+			for(const auto& matrix:model)for(int column=0;column<4;++column)for(int row=0;row<4;++row)
+				if(!Check(std::isfinite(matrix[column][row]),"Leon clip contains a non-finite target bone"))return false;
+			++clipSamples;
+		}
+	}
+	auto rig=std::make_shared<VansAnimationRigAsset>();
+	if(!VansAnimationRigStorage::Load(project/"Assets/AnimationRigs/Survival_Leon.vanimrig",*rig,error))return Check(false,error.c_str());
+	VansAnimatorRuntimeCompileOptions options;options.normalizeRootPose=false;options.enableRootMotion=true;
+	options.rigResolver=[rig](const auto&,auto&){return rig;};
+	options.queryProfileResolver=[](const auto& profile,std::uint32_t& mask,auto&){mask=1;return profile=="characterGround";};
+	auto resolveClip=[&](const auto& ref,auto& out,auto&){out=clips.at(ref.assetGuid);return true;};
+	auto resolveMask=[&](const auto& layer,auto& out,auto& message){
+		if(layer.maskGuid.empty()){out.reset();return true;}
+		auto mask=std::make_shared<VansBoneMaskAsset>();
+		if(!VansBoneMaskStorage::Load(project/layer.maskPathHint,*mask,message))return false;
+		out=std::move(mask);return true;};
+	auto controller=VansAnimatorRuntimeCompiler::Compile(asset,skeleton,resolveClip,resolveMask,options,error);
+	if(!Check(controller!=nullptr,error.c_str()))return false;
+	controller->Play();controller->SetFloat("LeonBaseFade",1);
+	// 保留的目标烘焙试作按自身图中的选择器验证，不能混入后来源图新增的动作索引。
+	nlohmann::json data={{"baseIndex",nlohmann::json::object()}};
+	for(const auto& definition:asset.graphs)if(definition.graph)
+		for(const auto& [id,node]:definition.graph->GetNodes())
+			if(node->GetType()==VansAnimGraphNodeType::Switch && static_cast<const AnimGraphSwitchNode*>(node.get())->m_ParamName=="LeonBaseA")
+				for(const auto& link:definition.graph->GetLinks())if(link.toNodeId==id)
+				{
+					const auto* clip=definition.graph->GetNode(link.fromNodeId);
+					if(clip && clip->GetType()==VansAnimGraphNodeType::Clip)
+						data["baseIndex"][static_cast<const AnimGraphClipNode*>(clip)->m_ClipName]=link.toPinIndex;
+				}
+	if(!Check(!data["baseIndex"].empty(),"Preserved prototype lost its authored base selectors"))return false;
+	// 瞄准后的后坐必须保留：用独立采样与矩阵组合验证实际 Controller 的阶段顺序。
+	controller->SetInt("LeonBaseA",data["baseIndex"]["Base_Idle"].get<int>());
+	controller->SetInt("LeonBaseB",data["baseIndex"]["Base_Idle"].get<int>());
+	controller->SetFloat("PistolAimWeight",1);controller->SetVector3("LeonAimTarget",glm::vec3(2200,-8000,3200));
+	controller->SetFloat("LeonShotWeight",0);controller->Update(1.f/60,skeleton);
+	const auto aimModel = controller->GetCachedGlobalTransforms();
+	std::vector<glm::mat4> aimLocal;
+	VansPosePayload aimPose,shotPose,referencePose;
+	if (!VansPoseMath::BuildLocalTransforms(aimModel,skeleton,aimLocal)
+		|| !VansPoseMath::FromMatrices(aimLocal,aimPose.localPose)) return false;
+	auto clipByAlias=[&](const std::string& alias)->const VansAnimationClip&{
+		const auto ref=std::find_if(asset.clipRefs.begin(),asset.clipRefs.end(),[&](const auto& value){return value.name==alias;});
+		return clips.at(ref->assetGuid)->clip;};
+	VansAnimationSampleRequest aimRequest;aimRequest.loop=false;aimRequest.extractRootMotion=false;
+	VansAnimationSampler::Sample(clipByAlias("WP_AimLoop"),skeleton,aimRequest,referencePose);
+	aimRequest.previousTime=aimRequest.currentTime=.08f;
+	VansAnimationSampler::Sample(clipByAlias("Pistol_Shot"),skeleton,aimRequest,shotPose);
+	if (!VansPoseMath::MakeAdditiveDeltaPose(shotPose.localPose,referencePose.localPose,skeleton,VansAdditivePoseMode::LocalSphericalLeft)) return false;
+	VansAnimationFrameVector<VansBoneTransform> expectedPose;
+	if (!VansPoseMath::ApplyAdditiveDeltaPose(aimPose.localPose,shotPose.localPose,1,skeleton,expectedPose,VansAdditivePoseMode::LocalSphericalLeft)) return false;
+	VansAnimationFrameVector<glm::mat4> expectedModel;
+	if (!VansPoseMath::BuildModelTransforms(expectedPose,skeleton,expectedModel)) return false;
+	controller->SetFloat("LeonShotWeight",1);controller->SetFloat("LeonShotTime",.08f);controller->SetInt("LeonShotEpoch",1);
+	controller->Update(1.f/60,skeleton);
+	const auto& shotModel=controller->GetCachedGlobalTransforms();
+	float orderError=0;
+	for (std::size_t bone=0;bone<shotModel.size();++bone) for(int column=0;column<4;++column)for(int row=0;row<4;++row)
+		orderError=std::max(orderError,std::abs(shotModel[bone][column][row]-expectedModel[bone][column][row]));
+	if (!Check(orderError<.001f,"Recoil was applied before geometric aim or used the wrong additive product")) return false;
+	controller->SetFloat("PistolAimWeight",0);controller->SetFloat("LeonShotWeight",0);controller->SetFloat("LeonShotTime",0);controller->SetInt("LeonShotEpoch",2);
+	const auto ownerWorld=glm::translate(glm::mat4(1),glm::vec3(7,2,-4))*glm::toMat4(glm::angleAxis(glm::radians(67.f),glm::vec3(0,1,0)))*glm::scale(glm::mat4(1),glm::vec3(.01f));
+	controller->SetOwnerWorldTransform(ownerWorld);controller->SetFloat("PistolAimWeight",1);const glm::vec3 worldTarget(8,4,-15);controller->SetVector3("LeonAimTarget",worldTarget);controller->Update(1.f/60,skeleton);
+	nlohmann::json geometry;std::ifstream(project/"Tools/LeonSurvival/Audit/pistol_aim_geometry.json")>>geometry;
+	const auto& weaponModel=controller->GetCachedGlobalTransforms()[skeleton.FindBoneIndex("weapon_r")];
+	const glm::vec3 muzzleLocal(geometry["muzzleLocal"][0].get<float>(),geometry["muzzleLocal"][1].get<float>(),geometry["muzzleLocal"][2].get<float>());
+	const glm::vec3 barrelLocal(geometry["barrelLocal"][0].get<float>(),geometry["barrelLocal"][1].get<float>(),geometry["barrelLocal"][2].get<float>());
+	const auto muzzleWorld=glm::vec3(ownerWorld*weaponModel*glm::vec4(muzzleLocal,1));
+	const auto barrelWorld=glm::normalize(glm::vec3(ownerWorld*weaponModel*glm::vec4(barrelLocal,0)));
+	const float worldAimDot=glm::dot(barrelWorld,glm::normalize(worldTarget-muzzleWorld));
+	std::cout<<"LEON_WORLD_AIM dot="<<worldAimDot<<" muzzle="<<muzzleWorld.x<<","<<muzzleWorld.y<<","<<muzzleWorld.z<<" barrel="<<barrelWorld.x<<","<<barrelWorld.y<<","<<barrelWorld.z<<"\n";
+	if (!Check(worldAimDot>.999999f,"World aim target ignored current actor translation, rotation or scale")) return false;
+	controller->SetOwnerWorldTransform(glm::mat4(1));controller->SetFloat("PistolAimWeight",0);
+	// A sparse CarryJog track must leave the source's untracked left arm on the live gait.
+	controller->SetInt("LeonBaseA",data["baseIndex"]["Base_Jog"].get<int>());
+	controller->SetInt("LeonBaseB",data["baseIndex"]["Base_Jog"].get<int>());
+	for(float time:{.37f,.74f,1.11f,1.48f})
+	{
+		controller->SetFloat("LeonCarryJogWeight",0);controller->SetFloat("LeonCarryTime",time);
+		controller->SetFloat("LeonBaseTimeA",time);controller->SetFloat("LeonBaseTimeB",time);
+		for(int frame=0;frame<24;++frame)controller->Update(1.f/60,skeleton);
+		const auto before=controller->GetCachedGlobalTransforms();
+		controller->SetFloat("LeonCarryJogWeight",1);
+		for(int frame=0;frame<24;++frame)controller->Update(1.f/60,skeleton);
+		const auto& after=controller->GetCachedGlobalTransforms();
+		for(const char* name:{"clavicle_l","upperarm_l","lowerarm_l","hand_l"})
+		{
+			const auto index=skeleton.FindBoneIndex(name);float difference=0;
+			for(int column=0;column<4;++column)for(int row=0;row<4;++row)
+				difference=std::max(difference,std::abs(before[index][column][row]-after[index][column][row]));
+			if(!Check(difference<.0001f,"CarryJog overwrote the untracked live left arm"))return false;
+		}
+	}
+	controller->SetFloat("LeonCarryJogWeight",0);
+	int samples=0;
+	for(const auto& item:data["baseIndex"].items())
+	{
+		const auto name=item.key();const int selector=item.value().get<int>();
+		controller->RestartLayer("layer-base");controller->SetInt("LeonBaseA",selector);controller->SetInt("LeonBaseB",selector);
+		controller->SetBool("LeonBaseLoop",false);
+		const auto* clip=controller->GetClip(name);if(!clip)return Check(false,name.c_str());
+		for(int frame=0;frame<=20;++frame)
+		{
+			const float time=clip->duration*frame/20;controller->SetFloat("LeonBaseTimeA",time);controller->SetFloat("LeonBaseTimeB",time);
+			controller->Update(1.f/60,skeleton);
+			const auto& model=controller->GetCachedGlobalTransforms();
+			if(!Check(model.size()==skeleton.bones.size(),"Leon graph did not output the full target pose"))return false;
+			for(const auto& m:model)for(int c=0;c<4;++c)for(int r=0;r<4;++r)
+				if(!Check(std::isfinite(m[c][r]),"Leon graph produced a non-finite bone matrix"))return false;
+			const int pelvis=skeleton.FindBoneIndex("pelvis"),head=skeleton.FindBoneIndex("head");
+			if(!Check(model[head][3].z>model[pelvis][3].z,"Leon graph lost Z-up root coordinates"))return false;
+			++samples;
+		}
+	}
+	controller->SetInt("LeonBaseA",data["baseIndex"]["WP_AimLoop"].get<int>());controller->SetInt("LeonBaseB",data["baseIndex"]["WP_AimLoop"].get<int>());
+	controller->SetFloat("LeonBaseTimeA",0);controller->SetFloat("LeonBaseTimeB",0);
+	controller->SetFloat("LeonShotWeight",1);controller->RestartLayer("layer-leon-shot");
+	int events=0;
+	for(int frame=0;frame<=80;++frame)
+	{
+		controller->SetFloat("LeonShotTime",std::min(frame/60.f,.8333333f));controller->Update(1.f/60,skeleton);
+		for(const auto& event:controller->GetSampledEvents())if(event.name=="Pistol_Shot.Finished")
+		{
+			if(!Check(event.clipId==controller->GetClip("Pistol_Shot")->stableId && event.weight>=.5f,
+				"Leon Shot signal does not match the existing GAF subscription identity/weight"))return false;
+			++events;
+		}
+	}
+	if(!Check(events==1,"Leon Shot did not publish exactly one accepted completion signal"))return false;
+	controller->SetFloat("LeonShotWeight",0);
+	controller->RestartLayer("layer-leon-upper-Equip-stand");controller->RestartLayer("layer-leon-upper-Equip-moving");
+	const float equipDuration=controller->GetClip("WP_Equip")->duration;int equipEvents=0;
+	for(int frame=0;frame<54;++frame)
+	{
+		const float time=std::min(frame/60.f,equipDuration);const bool final=time>=equipDuration;
+		controller->SetFloat("LeonWeaponTime",time);
+		controller->SetFloat("LeonUpper_Equip_stand",final?0:1);controller->SetFloat("LeonUpper_Equip_moving",final?1:0);
+		controller->Update(1.f/60,skeleton);
+		for(const auto& event:controller->GetSampledEvents())if(event.name=="Leon.Draw.Finished")++equipEvents;
+	}
+	if(!Check(equipEvents==1,"Changing movement at the last weapon frame lost/duplicated the completion signal"))return false;
+	controller->SetFloat("LeonUpper_Equip_moving",0);
+	for(const auto& set:asset.graphSets)
+	{
+		const auto result=controller->SwitchGraphSet(set.id);
+		if(result==VansGraphSetSwitchResult::UnknownGraphSet || result==VansGraphSetSwitchResult::Rejected
+			|| result==VansGraphSetSwitchResult::StateHandoffFailed)return Check(false,set.id.c_str());
+		for(int frame=0;frame<30;++frame)controller->Update(1.f/60,skeleton);
+	}
+	std::cout<<"LEON_SURVIVAL_GRAPH_PASS samples="<<samples<<" clipSamples="<<clipSamples<<" clips="<<clips.size()<<" shotSignals="<<events<<" graphSets="<<asset.graphSets.size()<<'\n';
+	return true;
+}
+
+bool RunLeonUESourcePoseComparison()
+{
+	using namespace VansGraphics;
+	auto workspace=std::filesystem::current_path();
+	for(int depth=0;depth<6 && !std::filesystem::is_directory(workspace/"DemoHallProject");++depth)workspace=workspace.parent_path();
+	const auto project=workspace/"DemoHallProject",task=project/"Tools/LeonSurvival";
+	nlohmann::json oracle;
+	std::ifstream(task/"Audit/ue_canonical_clip_oracle.json")>>oracle;
+	nlohmann::json output={{"clips",nlohmann::json::array()},{"producer","Independent UE compressed samples versus formally imported source VCLIP"}};
+	float maxPosition=0,maxAngle=0,maxScale=0;std::size_t samples=0,deltaSamples=0;
+	for(const auto& row:oracle["clips"])
+	{
+		const auto alias=row["alias"].get<std::string>();
+		VansAnimationClip clip;Skeleton skeleton;
+		if(!VansAnimationClipIO::Load((project/"Assets/AnimationSources/Leon/Clips"/(alias+".vclip")).string(),clip,skeleton))return false;
+		if(!Check(skeleton.bones.size()==415,"Source pose clip did not retain canonical source skeleton"))return false;
+		float clipPosition=0,clipAngle=0,clipScale=0;std::string worst;
+		for(const auto& sample:row["samples"])
+		{
+			VansAnimationSampleRequest request;request.loop=false;request.extractRootMotion=false;request.previousTime=request.currentTime=sample["time"].get<float>();
+			VansPosePayload pose;if(!VansAnimationSampler::Sample(clip,skeleton,request,pose))return false;
+			for(const auto& entry:sample["local"].items())
+			{
+				const auto name=entry.key();const auto& values=entry.value();
+				const glm::vec3 position(values[0].get<float>(),values[1].get<float>(),values[2].get<float>());
+				const auto rotation=glm::normalize(glm::quat(values[6].get<float>(),values[3].get<float>(),values[4].get<float>(),values[5].get<float>()));
+				const auto& actual=pose.localPose[skeleton.FindBoneIndex(name)];
+				clipPosition=std::max(clipPosition,glm::distance(actual.translation,position));
+				clipScale=std::max(clipScale,glm::distance(actual.scale,glm::vec3(values[7].get<float>(),values[8].get<float>(),values[9].get<float>())));
+				const float angle=glm::degrees(2*std::acos(std::clamp(std::abs(glm::dot(actual.rotation,rotation)),0.f,1.f)));
+				if(angle>clipAngle){clipAngle=angle;worst=name;}++samples;if(row["delta"].get<bool>())++deltaSamples;
+			}
+		}
+		output["clips"].push_back({{"alias",alias},{"delta",row["delta"]},{"maxPositionMeters",clipPosition},{"maxRotationDegrees",clipAngle},{"maxScaleError",clipScale},{"worstBone",worst}});
+		maxPosition=std::max(maxPosition,clipPosition);maxAngle=std::max(maxAngle,clipAngle);maxScale=std::max(maxScale,clipScale);
+	}
+	output["samples"]=samples;output["deltaSamples"]=deltaSamples;output["maxPositionMeters"]=maxPosition;output["maxRotationDegrees"]=maxAngle;output["maxScaleError"]=maxScale;
+	output["passed"]=maxPosition<.0001f && maxAngle<.15f && maxScale<.0001f;
+	std::ofstream(task/"Audit/ue_source_pose_comparison.json")<<output.dump(2);
+	std::cout<<"LEON_UE_SOURCE_COMPARISON samples="<<samples<<" positionMeters="<<maxPosition<<" angle="<<maxAngle<<'\n';
+	return output["passed"].get<bool>();
 }
 
 bool RunProceduralLimbIKContractTests()

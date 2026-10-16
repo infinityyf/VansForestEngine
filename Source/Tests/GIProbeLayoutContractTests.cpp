@@ -141,7 +141,7 @@ namespace
     void ValidatePackedLayout(const VansGIProbeLayout& layout, const std::vector<GIResolvedRegion>& regions)
     {
         const auto data = BuildGIProbeLayoutGPUData(regions, &layout);
-        Check(data[0].x == 1 && data[0].y == regions.size() && data[0].z == 4, "GPU layout header differs from current protocol");
+        Check(data[0].x == (1u << regions.size()) - 1u && data[0].y == regions.size() && data[0].z == 4, "GPU layout header differs from current protocol");
         const uint32_t roots = data[0].w, nodes = data[1].x, leaves = data[1].y;
         const uint32_t positions = data[1].z, stencils = data[1].w;
         Check(roots == 4u + regions.size() * 5u && nodes >= roots && leaves >= nodes && positions >= leaves &&
@@ -198,8 +198,16 @@ namespace
         Check(!GISettingsResourceLayoutEquals(baseline, changed), "regular layout ignored frame budget change");
         baseline.regions.push_back(baseline.regions[0]); baseline.regions.back().stableId = 92;
         changed = baseline; changed.selectedRegionIndex = 1;
-        Check(!GISettingsResourceLayoutEquals(baseline, changed), "primary region reorder reused old physical mapping");
-        baseline.placement.enabled = true;
+        Check(GISettingsResourceLayoutEquals(baseline, changed), "Diagnostic selection invalidated the rendering layout");
+        const auto baselineOrder = BuildActiveGIRegionOrder(baseline);
+        const auto selectedOrder = BuildActiveGIRegionOrder(changed);
+        Check(baselineOrder.size() == selectedOrder.size() && selectedOrder[0]->stableId == baselineOrder[0]->stableId &&
+            selectedOrder[1]->stableId == baselineOrder[1]->stableId, "Diagnostic selection reordered physical regions");
+        changed.regions[1].enabled = false;
+        const auto disabledOrder = BuildActiveGIRegionOrder(changed);
+        Check(disabledOrder.size() == 1 && disabledOrder[0]->stableId == baseline.regions[0].stableId,
+            "Selecting a disabled region hid an active region");
+        baseline.regions[0].mode = GIProbeRegionMode::Adaptive;
         changed = baseline; changed.regions[0].normalBias += 0.125f;
         Check(!GISettingsResourceLayoutEquals(baseline, changed), "geometry demand bias did not rebuild automatic layout");
         changed = baseline; changed.placement.parentProbeMaxSize = 2.5f;
@@ -224,7 +232,7 @@ namespace
     }
     GIResolvedRegion Region()
     {
-        GIProbeRegionDesc region; region.center = {0,-8,0}; region.probeSpacing = 4;
+        GIProbeRegionDesc region; region.mode = GIProbeRegionMode::Adaptive; region.center = {0,-8,0}; region.probeSpacing = 4;
         region.gridDimensions = {4,2,4}; region.overrideGridDimensions = true;
         return ResolveGIRegion(region);
     }
@@ -390,7 +398,7 @@ namespace
     }
     void Scenarios()
     {
-        GIProbePlacementSettings settings; settings.enabled = true; settings.maxProbeCount = 65536;
+        GIProbePlacementSettings settings; settings.maxProbeCount = 65536;
         const auto region = Region(); std::string error;
         VansGIProbeLayout layout; VansSceneGeometrySnapshot geometry;
         Check(layout.Build({region}, settings, geometry, nullptr, error), error.c_str());
@@ -487,10 +495,10 @@ namespace
         settings.maxProbeCount = 8;
         Check(!layout.Build({region}, settings, geometry, nullptr, error) && !error.empty(), "insufficient coarse coverage budget silently truncated layout");
         Check(layout.Roots() == retainedRoots && layout.Positions().size() == retainedCount, "failed build published a partial layout");
-        settings.enabled = false;
-        Check(!layout.Build({region}, settings, geometry, nullptr, error) && layout.Roots() == retainedRoots, "disabled generator replaced authored selection");
+        auto uniform = region; uniform.mode = GIProbeRegionMode::RegularGrid;
+        Check(!layout.Build({uniform}, settings, geometry, nullptr, error) && layout.Roots() == retainedRoots, "uniform region entered the adaptive generator");
 
-        settings.enabled = true; settings.maxProbeCount = 65536;
+        settings.maxProbeCount = 65536;
         BuildQuery(geometry.opaque, {}); geometry.transmissionReceivers = Floor();
         Check(layout.Build({region}, settings, geometry, nullptr, error) && !layout.Positions().empty(), "transparent receivers lost GI support");
         geometry.transmissionReceivers.clear(); geometry.dynamicReceivers = {{{-1,-9,-1},{1,-7,1}}};

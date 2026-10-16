@@ -70,17 +70,17 @@ namespace VansGraphics
 			if (materials == nullptr)
 				return;
 			constexpr std::pair<const char*, const char*> images[] = {
-				{"SSGIResult", VansMaterialManager::RT_SSGI_RESULT},
-				{"SSGIProbeCacheRadiance", VansMaterialManager::RT_SSGI_PROBE_CACHE_RADIANCE},
-				{"SSGIProbeCacheSurface", VansMaterialManager::RT_SSGI_PROBE_CACHE_SURFACE},
-				{"SSGITemporalA", VansMaterialManager::RT_SSGI_TEMPORAL_A},
-				{"SSGITemporalB", VansMaterialManager::RT_SSGI_TEMPORAL_B},
-				{"SSGIMomentsA", VansMaterialManager::RT_SSGI_MOMENTS_A},
-				{"SSGIMomentsB", VansMaterialManager::RT_SSGI_MOMENTS_B},
-				{"SSGISurfaceHistoryA", VansMaterialManager::RT_SSGI_SURFACE_HISTORY_A},
-				{"SSGISurfaceHistoryB", VansMaterialManager::RT_SSGI_SURFACE_HISTORY_B},
-				{"SSGIAtrousA", VansMaterialManager::RT_SSGI_ATROUS_A},
-				{"SSGIFilterResult", VansMaterialManager::RT_SSGI_FILTER_RESULT}
+				{"SSGIResult", VansVKSSGI::TextureResult},
+				{"SSGIProbeCacheRadiance", VansVKSSGI::TextureProbeCacheRadiance},
+				{"SSGIProbeCacheSurface", VansVKSSGI::TextureProbeCacheSurface},
+				{"SSGITemporalA", VansVKSSGI::TextureTemporalA},
+				{"SSGITemporalB", VansVKSSGI::TextureTemporalB},
+				{"SSGIMomentsA", VansVKSSGI::TextureMomentsA},
+				{"SSGIMomentsB", VansVKSSGI::TextureMomentsB},
+				{"SSGISurfaceHistoryA", VansVKSSGI::TextureSurfaceHistoryA},
+				{"SSGISurfaceHistoryB", VansVKSSGI::TextureSurfaceHistoryB},
+				{"SSGIAtrousA", VansVKSSGI::TextureAtrousA},
+				{"SSGIFilterResult", VansVKSSGI::TextureFilterResult}
 			};
 			for (const auto& [name, runtimeName] : images)
 			{
@@ -988,7 +988,10 @@ namespace VansGraphics
 		{
             // 此销毁事务已经等待设备空闲，先退役反馈，再销毁它对应的 fence。
             if (slot.gpuWorkPending)
+            {
                 rayTracingContext.CompleteGIProbeUpdate(slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
+                RetireGIConsumerWork(slot);
+            }
 			slot.deferredDeletes.Flush();
 			slot.projectPreludeSubmit.Shutdown();
 			DestroyVKFence(slot.projectPreludeCommandBuffer.m_CommandBufferFinishSubmitFence);
@@ -1049,6 +1052,7 @@ namespace VansGraphics
 		const VkFence fence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		// The submit graph already waited for this final fence. Publish GI feedback
 		// before resetting it for the next use of this slot.
+        RetireGIConsumerWork(slot);
 		Vans::VansGpuProfiler::Get().MarkSubmittedFrameRetired(slot.profilerFrameIndex);
 		slot.profilerFrameIndex = UINT64_MAX;
 		rayTracingContext.CompleteGIProbeUpdate(slot.submittedWithAsyncCompute
@@ -1478,7 +1482,7 @@ namespace VansGraphics
 				m_CurrentFramePlan,
 				VansRenderPassNames::VideoTextureUpload,
 				[&]() { m_Scene->RecordFrameUploads(
-					frameGraphicsCommandBuffer, m_CurrentRenderSceneSnapshot); });
+					frameGraphicsCommandBuffer, GetFrameResourceSlot(), m_CurrentRenderSceneSnapshot, m_GILightingContentChanges); });
 
 			// Upload cloth simulation results from staging buffers to device-local vertex buffers
 			RecordFrameStep(
@@ -2103,7 +2107,7 @@ namespace VansGraphics
 					m_CurrentFramePlan,
 					VansRenderPassNames::VideoTextureUpload,
 					[&]() { m_Scene->RecordFrameUploads(
-						CurrentAsyncFrameCommands().gbuffer, m_CurrentRenderSceneSnapshot); });
+						CurrentAsyncFrameCommands().gbuffer, GetFrameResourceSlot(), m_CurrentRenderSceneSnapshot, m_GILightingContentChanges); });
 				RecordFrameStep(
 					m_CurrentFramePlan,
 					VansRenderPassNames::ClothVertexUpload,
@@ -2799,7 +2803,22 @@ namespace VansGraphics
 	}
 
 	void VansVKDevice::ResolvePreparedFrameHistory(bool submitted, bool graphExecuted)
-	{
+    {
+        if (submitted)
+        {
+            m_RecordedGIConsumerWork.available = true;
+            m_RecordedGIConsumerWork.renderFrameNumber = GetFrameRecordingSerial();
+            m_RecordedGIConsumerWork.profilerFrameIndex = Vans::VansGpuProfiler::Get().GetRecordingFrameIndex();
+            CurrentFrameSlot().giConsumerWork = m_RecordedGIConsumerWork;
+        }
+        m_RecordedGIConsumerWork = {};
+        if (m_Scene)
+        {
+            const bool uploadsSubmitted = submitted || (graphExecuted &&
+                (CurrentFrameSubmitGraph().GetSubmittedTimelinePoint("GBuffer").has_value() ||
+                 CurrentFrameSubmitGraph().GetSubmittedTimelinePoint("GraphicsFrame").has_value()));
+            m_Scene->GetVideoManager()->ResolveRecordedUploads(uploadsSubmitted);
+        }
 		if (m_Scene && m_Scene->GetVegetationCollection())
 		{
 			const bool vegetationSubmitted = submitted || (graphExecuted &&
@@ -2821,26 +2840,12 @@ namespace VansGraphics
 		{
 			if (m_Scene != nullptr && m_Scene->GetMaterialManager() != nullptr)
 			{
-				auto& frame = m_Scene->GetMaterialManager()->m_GIReceiverVisibility.frame;
-				if (submitted)
-					++frame;
-				else
-					frame = 0; // A partially submitted graph may have touched the history buffer.
+				m_Scene->GetMaterialManager()->m_GIReceiverVisibility.state.ResolveRecordedFrame(submitted);
 			}
 			m_GIReceiverVisibilityFrameRecorded = false;
 		}
-		if (m_SSGIFrameRecorded)
-		{
-			if (m_Scene != nullptr && m_Scene->GetMaterialManager() != nullptr)
-			{
-				auto& frame = m_Scene->GetMaterialManager()->m_SSGITemporalFrame;
-				if (submitted)
-					++frame;
-				else
-					frame = 0; // A partially submitted graph may have updated a history image.
-			}
-			m_SSGIFrameRecorded = false;
-		}
+		if (m_Scene != nullptr && m_Scene->GetMaterialManager() != nullptr)
+			m_Scene->GetMaterialManager()->m_SSGI.history.ResolveRecordedFrame(submitted, graphExecuted);
 		if (m_AmbientSkyCacheFrameRecorded)
 		{
 			if (!submitted && m_Scene != nullptr && m_Scene->GetMaterialManager() != nullptr)
@@ -2848,8 +2853,8 @@ namespace VansGraphics
 				auto* materials = m_Scene->GetMaterialManager();
 				// The GIData node may already have written part of the cache. The
 				// next frame must clear it before using the recorded ring cursor.
-				materials->m_AmbientSkyCacheInitialized = false;
-				materials->m_AmbientSkyCacheFrameOffset = 0u;
+				materials->m_AmbientSkyCache.initialized = false;
+				materials->m_AmbientSkyCache.frameOffset = 0u;
 			}
 			m_AmbientSkyCacheFrameRecorded = false;
 		}
@@ -2915,6 +2920,12 @@ namespace VansGraphics
 		return true;
 	}
 
+    void VansVKDevice::RetireGIConsumerWork(VansFrameContextRingSlot& slot)
+    {
+        m_GIFrameWorkPublication->PublishConsumers(slot.giConsumerWork);
+        slot.giConsumerWork = {};
+    }
+
 	bool VansVKDevice::RetireSubmittedFrame()
 	{
 		VansFrameContextRingSlot& slot = CurrentFrameSlot();
@@ -2939,6 +2950,15 @@ namespace VansGraphics
 		CurrentFrameSubmitGraph().SetCrossFrameResourceLedger(
 			m_ConfiguredFramesInFlight > 1 && m_FrameQueueTimelines.IsReady()
 				? &m_CrossFrameResourceLedger : nullptr);
+        const auto appendVideoResources = [this](VansFrameSubmitNode& node,
+            VkPipelineStageFlags stages, bool uploads, bool rectLights = true)
+        {
+            if (!m_Scene) return;
+            auto* rectArray = rectLights && !m_CurrentRenderSceneSnapshot.rectLightVideos.empty()
+                ? m_Scene->GetMaterialManager()->GetRuntimeRenderTexture(VansMaterialManager::RT_RECT_LIGHT_EMISSIVE)
+                : nullptr;
+            m_Scene->GetVideoManager()->AppendFrameResources(node, rectArray, stages, uploads);
+        };
 		const auto appendGIRegionResources = [this](VansFrameSubmitNode& node,
 			VkPipelineStageFlags stages, VkAccessFlags access, bool write)
 		{
@@ -2965,6 +2985,13 @@ namespace VansGraphics
 					node.resources.push_back({ "GIRegionProbeState" + suffix, stages, access,
 						VK_IMAGE_LAYOUT_UNDEFINED, false, write, true, false,
 						VansPhysicalResourceIdentity::ForBuffer(state->GetNativeBuffer()) });
+                // 分量历史只在 GI 更新内读写；屏幕消费者只依赖合成图集。
+                if (write)
+                    if (const auto* history = rayTracingContext.GetGIRegionIrradianceHistoryBuffer(index);
+                        history && history->GetNativeBuffer() != VK_NULL_HANDLE)
+                        node.resources.push_back({"GIRegionIrradianceHistory" + suffix, stages, access,
+                            VK_IMAGE_LAYOUT_UNDEFINED, false, true, true, false,
+                            VansPhysicalResourceIdentity::ForBuffer(history->GetNativeBuffer())});
 			}
 		};
 		const auto appendTileLightBuffers = [this](VansFrameSubmitNode& node,
@@ -3363,9 +3390,9 @@ namespace VansGraphics
 							VansMaterialManager::RT_GTAO_RESULT,
 							VansMaterialManager::RT_CASCADE_SHADOW_MIN_MAX,
 							VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT,
-							VansMaterialManager::RT_AMBIENT_SKY_CACHE_X,
-							VansMaterialManager::RT_AMBIENT_SKY_CACHE_Y,
-							VansMaterialManager::RT_AMBIENT_SKY_CACHE_Z
+							VansVKAmbientSkyCache::TextureX,
+							VansVKAmbientSkyCache::TextureY,
+							VansVKAmbientSkyCache::TextureZ
 						};
 						constexpr const char* resourceNames[] = {
 							"HZB", "OcclusionHZB", "GTAODepth",
@@ -3412,7 +3439,8 @@ namespace VansGraphics
 						VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, true);
 				}
 				CurrentFrameSlot().submittedWithAsyncCompute = false;
-				CurrentFrameSubmitGraph().AddNode(std::move(graphics));
+				appendVideoResources(graphics, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, true, true);
+                CurrentFrameSubmitGraph().AddNode(std::move(graphics));
 				CurrentFrameSubmitGraph().AddExternalPrerequisite(CurrentFrameSlot().projectPreludeCompletion);
                 CurrentFrameSubmitGraph().AddQueueReadResources(VansQueueRole::Graphics,m_ProjectRenderPassRuntime.ExportedReadResources());
                 CurrentFrameSubmitGraph().AddQueueReadResources(VansQueueRole::Graphics,m_Scene->TerrainInteractionReadResources());
@@ -3634,7 +3662,8 @@ namespace VansGraphics
 					VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 					VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT, false);
 				shadowMaps.fence = CurrentFrameContext().shadowMapsFence;
-				CurrentFrameSubmitGraph().AddNode(std::move(shadowMaps));
+				appendVideoResources(shadowMaps, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, false, false);
+                CurrentFrameSubmitGraph().AddNode(std::move(shadowMaps));
 
 
 				VansFrameSubmitNode gbuffer;
@@ -3665,7 +3694,8 @@ namespace VansGraphics
 				appendGBufferImages(gbuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 					VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, true);
 				gbuffer.fence = CurrentFrameContext().gbufferFence;
-				CurrentFrameSubmitGraph().AddNode(std::move(gbuffer));
+				appendVideoResources(gbuffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, true, true);
+                CurrentFrameSubmitGraph().AddNode(std::move(gbuffer));
 
 				VansFrameSubmitNode gbufferMaterial;
 				gbufferMaterial.name = "GBufferMaterial";
@@ -3686,7 +3716,8 @@ namespace VansGraphics
 				appendGBufferImages(gbufferMaterial, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 					VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, true);
 				gbufferMaterial.fence = CurrentFrameContext().gbufferMaterialFence;
-				CurrentFrameSubmitGraph().AddNode(std::move(gbufferMaterial));
+				appendVideoResources(gbufferMaterial, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, false, false);
+                CurrentFrameSubmitGraph().AddNode(std::move(gbufferMaterial));
 
 				VansFrameSubmitNode gtaoRaw;
 				gtaoRaw.name = "GTAORaw";
@@ -3750,7 +3781,8 @@ namespace VansGraphics
 					VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
 					true);
 				rayTracing.fence = CurrentFrameContext().rayTracingFence;
-				CurrentFrameSubmitGraph().AddNode(std::move(rayTracing));
+				appendVideoResources(rayTracing, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, false, true);
+                CurrentFrameSubmitGraph().AddNode(std::move(rayTracing));
 
 				VansFrameSubmitNode giData;
 				giData.name = "GIData";
@@ -3776,13 +3808,13 @@ namespace VansGraphics
 						VK_IMAGE_LAYOUT_GENERAL, true, true, true, false }
 					,{ "AmbientSkyCacheX", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, true, true, false,
-						runtimeImage(VansMaterialManager::RT_AMBIENT_SKY_CACHE_X) }
+						runtimeImage(VansVKAmbientSkyCache::TextureX) }
 					,{ "AmbientSkyCacheY", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, true, true, false,
-						runtimeImage(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Y) }
+						runtimeImage(VansVKAmbientSkyCache::TextureY) }
 					,{ "AmbientSkyCacheZ", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, true, true, false,
-						runtimeImage(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Z) }
+						runtimeImage(VansVKAmbientSkyCache::TextureZ) }
 				};
 				appendGBufferImages(giData, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 					VK_ACCESS_SHADER_READ_BIT, false);
@@ -3802,7 +3834,8 @@ namespace VansGraphics
 					VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
 						VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
 				giData.fence = CurrentFrameContext().giDataFence;
-				CurrentFrameSubmitGraph().AddNode(std::move(giData));
+				appendVideoResources(giData, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, false, true);
+                CurrentFrameSubmitGraph().AddNode(std::move(giData));
 
 				VansFrameSubmitNode graphicsScreen;
 				graphicsScreen.name = "GraphicsScreen";
@@ -3877,7 +3910,8 @@ namespace VansGraphics
 					VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
 						VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
 				graphicsScreen.fence = CurrentFrameContext().graphicsScreenFence;
-				CurrentFrameSubmitGraph().AddNode(std::move(graphicsScreen));
+				appendVideoResources(graphicsScreen, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, false, true);
+                CurrentFrameSubmitGraph().AddNode(std::move(graphicsScreen));
 
 				VansFrameSubmitNode graphicsMain;
 				graphicsMain.name = "GraphicsMain";
@@ -3955,13 +3989,13 @@ namespace VansGraphics
                         VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
 					{ "AmbientSkyCacheX", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false,
-						runtimeImage(VansMaterialManager::RT_AMBIENT_SKY_CACHE_X) },
+						runtimeImage(VansVKAmbientSkyCache::TextureX) },
 					{ "AmbientSkyCacheY", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false,
-						runtimeImage(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Y) },
+						runtimeImage(VansVKAmbientSkyCache::TextureY) },
 					{ "AmbientSkyCacheZ", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false,
-						runtimeImage(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Z) },
+						runtimeImage(VansVKAmbientSkyCache::TextureZ) },
 					{ "GTAO", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, false, false, gtaoResultImage },
 					{ "ScreenLightingData", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
@@ -3982,7 +4016,7 @@ namespace VansGraphics
 				graphicsMain.resources.push_back({ "SSGIFilterResult",
 				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 				VK_IMAGE_LAYOUT_GENERAL, true, false, true, false,
-				runtimeImage(VansMaterialManager::RT_SSGI_FILTER_RESULT) });
+				runtimeImage(VansVKSSGI::TextureFilterResult) });
 				graphicsMain.resources.push_back({ "SSRAAResult",
 					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 					VK_IMAGE_LAYOUT_GENERAL, true, false, true, false,
@@ -4025,7 +4059,8 @@ namespace VansGraphics
 					renderPasses->GetFinalDisplayColor().GetImage()) });
 				graphicsMain.fence = CurrentFrameContext().graphicsFence;
 				CurrentFrameSlot().submittedWithAsyncCompute = true;
-				CurrentFrameSubmitGraph().AddNode(std::move(graphicsMain));
+				appendVideoResources(graphicsMain, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, false, true);
+                CurrentFrameSubmitGraph().AddNode(std::move(graphicsMain));
 
 				CurrentFrameSubmitGraph().AddExternalPrerequisite(CurrentFrameSlot().projectPreludeCompletion);
                 CurrentFrameSubmitGraph().AddQueueReadResources(VansQueueRole::Graphics,m_ProjectRenderPassRuntime.ExportedReadResources());
@@ -5060,13 +5095,13 @@ namespace VansGraphics
         auto* sky = materials->m_SkyLighting.DiffuseIrradiance();
         const auto& layout = rayTracingContext.GetGIProbeLayoutBuffer();
         const uint32_t count = rayTracingContext.GetGIRegionCount();
-        auto* skyX = materials->GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_X);
-        auto* skyY = materials->GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Y);
-        auto* skyZ = materials->GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Z);
+        auto* skyX = materials->GetRuntimeRenderTexture(VansVKAmbientSkyCache::TextureX);
+        auto* skyY = materials->GetRuntimeRenderTexture(VansVKAmbientSkyCache::TextureY);
+        auto* skyZ = materials->GetRuntimeRenderTexture(VansVKAmbientSkyCache::TextureZ);
         if (!sky || !skyX || !skyY || !skyZ ||
             (count > 0 && layout.GetNativeBuffer() == VK_NULL_HANDLE) ||
-			materials->m_AmbientSkyCacheInfoCBBuffer[slot].GetNativeBuffer() == VK_NULL_HANDLE) return;
-        if (count > VANS_SSGI_MAX_GI_REGIONS)
+			materials->m_AmbientSkyCache.info[slot].GetNativeBuffer() == VK_NULL_HANDLE) return;
+        if (count > kGIMaximumRegionCount)
             throw std::runtime_error("Hair GI region count exceeds the shared descriptor contract");
         std::vector<VkDescriptorImageInfo> irradiance, visibility;
         std::vector<VkDescriptorBufferInfo> states;
@@ -5086,9 +5121,9 @@ namespace VansGraphics
         descManager->BeginDescriptorUpdate();
         if (count > 0)
         {
-            irradiance.resize(VANS_SSGI_MAX_GI_REGIONS, irradiance.front());
-            visibility.resize(VANS_SSGI_MAX_GI_REGIONS, visibility.front());
-            states.resize(VANS_SSGI_MAX_GI_REGIONS, states.front());
+            irradiance.resize(kGIMaximumRegionCount, irradiance.front());
+            visibility.resize(kGIMaximumRegionCount, visibility.front());
+            states.resize(kGIMaximumRegionCount, states.front());
             descManager->WriteImageDescriptor(m_HairLightingPassSets[slot], HAIR_LIGHTING_BINDING_GI_IRRADIANCE,
                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, irradiance);
             descManager->WriteImageDescriptor(m_HairLightingPassSets[slot], HAIR_LIGHTING_BINDING_GI_VISIBILITY,
@@ -5110,8 +5145,8 @@ namespace VansGraphics
                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 {{cache.second->GetImage().GetSampler(), cache.second->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL}});
         descManager->WriteBufferDescriptor(m_HairLightingPassSets[slot], DEFERRED_BINDING_AMBIENT_SKY_CACHE_PARAMS,
-			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{materials->m_AmbientSkyCacheInfoCBBuffer[slot].GetNativeBuffer(), 0,
-			materials->m_AmbientSkyCacheInfoCBBuffer[slot].GetBufferSize()}});
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{materials->m_AmbientSkyCache.info[slot].GetNativeBuffer(), 0,
+			materials->m_AmbientSkyCache.info[slot].GetBufferSize()}});
 		descManager->CommitDescriptorUpdates();
 		}
 		m_HairLightingDescriptorsReady = true;

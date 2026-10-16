@@ -10,6 +10,9 @@
 #include "../EngineCore/SceneCore/VansSceneDocumentLoader.h"
 #include "../EngineCore/SceneCore/Storage/VansSceneFileStorage.h"
 #include "../EngineCore/EditorCore/VansSceneEditService.h"
+#include "../EngineCore/EditorCore/VansSceneHierarchyService.h"
+#include "../EngineCore/EditorCore/VansSceneObjectReferenceResolver.h"
+#include "../EngineCore/EditorCore/VansEditorRuntimePreviewProjector.h"
 #include "../EngineCore/EditorCore/VansPrefabEditService.h"
 #include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
 #include "../EngineCore/AssetCore/VansAssetDocument.h"
@@ -37,11 +40,199 @@ using namespace Vans;
 using Json = nlohmann::ordered_json;
 void Check(bool value, const std::string& message) { if (!value) throw std::runtime_error(message); }
 Json JsonOf(const VansSerializedValue& value) { return EncodeSerializedValueJson<Json>(value); }
+
+void CheckSceneEditingSafety()
+{
+    const auto a = VansAssetGuid::New().ToString(), b = VansAssetGuid::New().ToString(), c = VansAssetGuid::New().ToString();
+    Json base{{"schemaVersion", VansSceneSchemaVersion}, {"sceneGuid", VansAssetGuid::New().ToString()},
+        {"entities", Json::array({JsonOf(VansSceneEntityFactory::BuildEmptyEntity({}, a)),
+            JsonOf(VansSceneEntityFactory::BuildEmptyEntity({}, b)), JsonOf(VansSceneEntityFactory::BuildEmptyEntity({}, c))})}};
+    auto path = [](const std::string& value) { return MakeDocumentPropertyPath(DocumentPropertySpace::Scene, value); };
+    std::string error;
+    for (bool prefabField : {false, true}) for (std::size_t index = 0; index < 3; ++index)
+    {
+        auto root = base;
+        if (prefabField) root["prefabInstances"] = Json::array();
+        auto document = VansSceneDocument::CreateInMemory(DecodeSerializedValueJson(root), {}, error);
+        Check(document != nullptr, error);
+        VansSceneEditService edits(*document);
+        const auto removed = edits.Remove(path("/entities/" + std::to_string(index)));
+        Check(removed.success && removed.changedEntityGuid == root["entities"][index]["id"],
+            "Remove reported the next entity instead of the deleted identity");
+        const auto after = JsonOf(document->SerializedRootSnapshot());
+        Check(edits.Undo().success && JsonOf(document->SerializedRootSnapshot()) == root,
+            "Array removal undo failed to restore every entity and its order");
+        Check(edits.Redo().success && JsonOf(document->SerializedRootSnapshot()) == after,
+            "Array removal redo changed unrelated entities");
+    }
+    auto document = VansSceneDocument::CreateInMemory(DecodeSerializedValueJson(base), {}, error);
+    Check(document != nullptr, error);
+    VansSceneEditService edits(*document);
+    Check(edits.Set(path("/entities/0/parent"), WriteEntityParentReference(b)).success &&
+        edits.Set(path("/entities/1/parent"), WriteEntityParentReference(a)).success && !document->IsHealthy(),
+        "Invalid authoring draft must remain editable with diagnostics");
+    SceneReparentRequest request;
+    request.childEntityGuid = c;
+    request.transformPolicy = ReparentTransformPolicy::KeepLocal;
+    VansSceneParentReference parent;
+    VansAssetGuid::TryParse(a, parent.entityGuid);
+    request.newParent = parent;
+    const auto beforeRejectedEdit = JsonOf(document->AuthoringRootSnapshot());
+    Check(!VansSceneHierarchyService::Reparent(*document, edits, request).success &&
+        JsonOf(document->AuthoringRootSnapshot()) == beforeRejectedEdit,
+        "Cyclic draft reparent must fail without hanging or mutating authoring state");
+    Check(edits.Undo().success && document->IsHealthy(), "Cycle rejection damaged the previous undo entry");
+
+    auto references = base;
+    const auto first = VansAssetGuid::New().ToString(), second = VansAssetGuid::New().ToString();
+    for (const auto& guid : {first, second}) references["entities"][0]["components"].push_back(
+        {{"id", guid}, {"type", "Script"}, {"version", 1}, {"enabled", false}, {"data", Json::object()}});
+    auto referenceDocument = VansSceneDocument::CreateInMemory(DecodeSerializedValueJson(references), {}, error);
+    Check(referenceDocument != nullptr, error);
+    ObjectReferenceSlotDescriptor slot;
+    slot.expectedDomain = EditorObjectDomain::SceneComponent;
+    slot.expectedComponentType = "Script";
+    EditorObjectHandle handle;
+    handle.domain = EditorObjectDomain::SceneComponent;
+    handle.entityGuid = a; handle.componentGuid = second; handle.componentType = "Script";
+    const auto resolved = ResolveSceneObjectReference(*referenceDocument, slot, handle);
+    Check(resolved.success && resolved.handle.componentGuid == second, "Explicit component GUID was replaced by a type match");
+    handle.componentGuid = VansAssetGuid::New().ToString();
+    Check(!ResolveSceneObjectReference(*referenceDocument, slot, handle).success, "Missing GUID rebound to an unrelated component");
+    handle.componentGuid.clear();
+    Check(!ResolveSceneObjectReference(*referenceDocument, slot, handle).success, "Ambiguous type-only component reference was accepted");
+}
+
+void CheckPrefabPropertyEditScope()
+{
+    const auto assetGuid = VansAssetGuid::New();
+    auto asset = std::make_shared<VansPrefabAsset>();
+    asset->rootEntity = VansAssetGuid::New().ToString();
+    asset->entities = VansSerializedValue::Array({VansSceneEntityFactory::BuildEmptyEntity({}, asset->rootEntity)});
+    const auto localGuid = VansAssetGuid::New().ToString();
+    Json root{{"schemaVersion", VansSceneSchemaVersion}, {"sceneGuid", VansAssetGuid::New().ToString()},
+        {"entities", Json::array({JsonOf(VansSceneEntityFactory::BuildEmptyEntity({}, localGuid))})},
+        {"prefabInstances", Json::array()}};
+    for (int i = 0; i < 128; ++i) root["prefabInstances"].push_back(JsonOf(VansPrefabResolver::MakeInstance(assetGuid)));
+    std::size_t lookups = 0;
+    VansPrefabLookup lookup = [&](const std::string&) -> std::shared_ptr<const VansPrefabAsset> { ++lookups; return asset; };
+    std::string error;
+    auto document = VansSceneDocument::CreateInMemory(DecodeSerializedValueJson(root), lookup, error);
+    Check(document != nullptr, error);
+    VansSceneEditService edits(*document);
+    auto path = [](const char* value) { return MakeDocumentPropertyPath(DocumentPropertySpace::Scene, value); };
+    std::size_t sceneReloads = 0;
+    edits.SetPrefabPreviewRefresh([&] { ++sceneReloads; return true; });
+    lookups = 0;
+    Check(edits.Set(path("/entities/0/name"), VansSerializedValue::String("Local edit")).success,
+        "Local edit failed in a prefab scene");
+    Check(lookups == 0 && JsonOf(document->AuthoringRootSnapshot())["prefabInstances"] == root["prefabInstances"],
+        "Unrelated local edit recaptured or queried prefab templates");
+    Check(edits.Undo().success && edits.Redo().success && lookups == 0 && sceneReloads == 0,
+        "Local property history queried templates or reloaded the scene");
+    lookups = 0;
+    Check(edits.Set(path("/entities/37/name"), VansSerializedValue::String("Instance edit")).success && lookups == 1,
+        "Single instance property edit queried unrelated templates");
+    const auto changed = document->SerializedRootSnapshot();
+    VansSerializedValue resolved;
+    Check(VansPrefabResolver::ResolveScene(document->AuthoringRootSnapshot(), lookup, resolved, error), error);
+    Check(JsonOf(changed) == JsonOf(resolved), "Incremental authoring and full resolution disagree");
+    lookups = 0;
+    VansSerializedValue captured;
+    Check(VansPrefabResolver::CaptureScene(changed, lookup, captured, error), error);
+    Check(lookups == 1 && JsonOf(captured) == JsonOf(document->AuthoringRootSnapshot()),
+        "Full capture repeated template queries or differs from incremental capture");
+    Check(edits.Undo().success && edits.Redo().success && sceneReloads == 0,
+        "Property undo unnecessarily reloaded the runtime scene");
+    SetSerializedObjectField(asset->entities.arrayItems[0], "name", VansSerializedValue::String("Updated template"));
+    Check(document->RefreshPrefabView(error), error);
+    const auto refreshed = JsonOf(document->SerializedRootSnapshot());
+    Check(refreshed["entities"][1]["name"] == "Updated template" && refreshed["entities"][37]["name"] == "Instance edit",
+        "Template refresh lost inheritance or a property override");
+}
+
+void CheckHierarchyTransactionsAndPreviewCoverage()
+{
+    const auto parentGuid = VansAssetGuid::New().ToString(), childGuid = VansAssetGuid::New().ToString();
+    auto parent = JsonOf(VansSceneEntityFactory::BuildEmptyEntity({}, parentGuid));
+    auto child = JsonOf(VansSceneEntityFactory::BuildEmptyEntity({}, childGuid));
+    parent["components"][0]["data"]["position"] = {10, 0, 0};
+    child["components"][0]["data"]["position"] = {2, 0, 0};
+    child["parent"] = JsonOf(WriteEntityParentReference(parentGuid));
+    Json root{{"schemaVersion", VansSceneSchemaVersion}, {"sceneGuid", VansAssetGuid::New().ToString()},
+        {"entities", Json::array({parent, child})}};
+    std::string error;
+    auto document = VansSceneDocument::CreateInMemory(DecodeSerializedValueJson(root), {}, error);
+    Check(document != nullptr, error);
+    VansSceneEditService edits(*document);
+    Check(!edits.Remove(MakeDocumentPropertyPath(DocumentPropertySpace::Scene, "/entities/0")).success &&
+        JsonOf(document->SerializedRootSnapshot()) == root, "Raw property removal orphaned a child");
+    Check(!edits.RemoveEntity(parentGuid, {}).success && !edits.CanUndo(), "Missing child world pose allowed partial deletion");
+    EditorAPI::RuntimeTransformSnapshot world;
+    world.available = true; world.entityGuid = childGuid; world.space = EditorAPI::RuntimeTransformSpace::World;
+    world.position = {12, 0, 0}; world.scale = {1, 1, 1};
+    Check(edits.RemoveEntity(parentGuid, {world}).success && document->IsHealthy(), "Parent deletion left an invalid authoring graph");
+    const auto removed = JsonOf(document->SerializedRootSnapshot());
+    Check(removed["entities"].size() == 1 && removed["entities"][0]["parent"].is_null() &&
+        removed["entities"][0]["components"][0]["data"]["position"][0] == 12,
+        "Promoted child's authoring local pose differs from its runtime world pose");
+    Check(edits.Undo().success && JsonOf(document->SerializedRootSnapshot()) == root, "Parent undo lost child parent or local pose");
+    Check(edits.Redo().success && JsonOf(document->SerializedRootSnapshot()) == removed, "Parent redo changed the promotion policy");
+
+    VansSceneParentReference socket;
+    socket.kind = VansSceneParentKind::Socket;
+    VansAssetGuid::TryParse(parentGuid, socket.entityGuid);
+    socket.animationComponentGuid = VansAssetGuid::New(); socket.anchorGuid = VansAssetGuid::New();
+    socket.poseCheckpoint = "FinalPose";
+    child["parent"] = JsonOf(WriteSceneParentReference(socket));
+    const auto restore = BuildRuntimeEntityHierarchyPreviewChange(DecodeSerializedValueJson(child));
+    Check(restore.hasTransform && restore.transform.space == EditorAPI::RuntimeTransformSpace::Local &&
+        restore.transform.position.x == 2 && restore.parentEdits.size() == 1 &&
+        restore.parentEdits[0].parent.kind == EditorAPI::RuntimeParentKind::Socket &&
+        restore.parentEdits[0].parent.animationComponentGuid == socket.animationComponentGuid.ToString() &&
+        restore.parentEdits[0].parent.anchorGuid == socket.anchorGuid.ToString() &&
+        restore.parentEdits[0].parent.poseCheckpoint == socket.poseCheckpoint,
+        "Hierarchy restoration discarded an anchor identity, checkpoint or authored local transform");
+    auto moved = parent;
+    moved["components"][0]["data"]["position"][0] = 20;
+    Check(!RequiresRuntimeEntityRebuild(DecodeSerializedValueJson(parent), DecodeSerializedValueJson(moved)),
+        "Transform editing unexpectedly requires reconstruction");
+    parent["components"].push_back({{"id", VansAssetGuid::New().ToString()}, {"type", "Camera"},
+        {"version", 1}, {"enabled", true}, {"data", {{"fov", 60}}}});
+    auto lens = parent; lens["components"][1]["data"]["fov"] = 90;
+    Check(RequiresRuntimeEntityRebuild(DecodeSerializedValueJson(parent), DecodeSerializedValueJson(lens)),
+        "Unprojected camera data was reported as an incremental preview success");
+    auto renamed = parent; renamed["name"] = "Renamed camera";
+    Check(!RequiresRuntimeEntityRebuild(DecodeSerializedValueJson(parent), DecodeSerializedValueJson(renamed)),
+        "An unchanged unsupported component forced a name-only edit to rebuild");
+    auto light = parent;
+    light["components"][1]["type"] = "PointLight";
+    light["components"][1]["data"] = {{"intensity", 1}, {"shadowPriority", 1}};
+    auto shadow = light; shadow["components"][1]["data"]["shadowPriority"] = 2;
+    Check(RequiresRuntimeEntityRebuild(DecodeSerializedValueJson(light), DecodeSerializedValueJson(shadow)),
+        "Unprojected shadow settings were silently treated as a light preview");
+    auto reset = light; reset["components"][1]["data"].erase("intensity");
+    Check(RequiresRuntimeEntityRebuild(DecodeSerializedValueJson(light), DecodeSerializedValueJson(reset)),
+        "Removing an optional field failed to request its runtime default");
+
+    auto failedDocument = VansSceneDocument::CreateInMemory(DecodeSerializedValueJson(root), {}, error);
+    VansSceneEditService failedEdits(*failedDocument);
+    int restores = 0;
+    SceneEditLifecycleHooks hooks;
+    hooks.afterExecute = [] { return false; };
+    hooks.afterUndo = [&] { ++restores; return true; };
+    Check(!failedEdits.RemoveEntity(parentGuid, {world}, hooks).success && !failedEdits.CanUndo() &&
+        JsonOf(failedDocument->SerializedRootSnapshot()) == root && restores == 1,
+        "Failed runtime deletion published a partial document or history command");
+}
 }
 
 void RunPrefabContractTests()
 {
     using namespace Vans;
+    CheckSceneEditingSafety();
+    CheckPrefabPropertyEditScope();
+    CheckHierarchyTransactionsAndPreviewCoverage();
     const auto rootId = VansAssetGuid::New().ToString();
     const auto childId = VansAssetGuid::New().ToString();
     auto root = JsonOf(VansSceneEntityFactory::BuildEmptyEntity({}, rootId));

@@ -7,6 +7,7 @@
 
 
 #include "vulkan/vulkan.h"
+#include "VansVKResourceLifetime.h"
 #include <vector>
 
 // Forward declare VMA opaque allocation handle.
@@ -39,6 +40,7 @@ namespace VansGraphics
 
 		// VMA-managed allocation backing the image (replaces raw VkDeviceMemory).
 		VmaAllocation m_VansVKImageAllocation = nullptr;
+		std::shared_ptr<VansVKResourceLifetime> m_ResourceLifetime;
 
 		//defines additional metadata used for accessing the image. Through it, we can
 		//specify the parts of an image that should be accessed by the commands
@@ -80,7 +82,10 @@ namespace VansGraphics
 		bool CreateVulkanImage(VkDevice& logical_device, VkExtent3D size, VkFormat format, uint32_t mip_num, uint32_t layer_num, VkImageType type, VkImageUsageFlags usage, VkSampleCountFlagBits samples, bool isCube = false, bool need_raw_Data = false, bool combined_sampler = false, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, bool comparisonSampler = false, VkCompareOp comparisonOp = VK_COMPARE_OP_LESS_OR_EQUAL);
 
 		void DestroyVulkanImage(VkDevice& logical_device);
+		VansVKResourceLifetime::Lease RetainNativeResources()
+		{ return VansVKResourceLifetime::Retain(m_ResourceLifetime); }
 		bool HasResources() const;
+		VkDeviceSize GetAllocationSize() const;
 
 		void SetRawImageData(VkDevice& logical_device, void* data, int size);
 		

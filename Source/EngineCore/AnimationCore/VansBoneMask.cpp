@@ -1,9 +1,11 @@
 #include "VansBoneMask.h"
 
+#include <glm/gtx/component_wise.hpp>
 #include <algorithm>
 #include <cmath>
 #include <queue>
 #include <utility>
+#include <unordered_set>
 
 namespace VansGraphics
 {
@@ -47,12 +49,37 @@ namespace VansGraphics
 		}
 	}
 
+	bool VansBoneMaskCompiler::ValidateDefinition(const VansBoneMaskAsset& asset, std::string& error)
+	{
+		const auto unit=[](float value){return std::isfinite(value) && value>=0.f && value<=1.f;};
+		if(asset.id.empty() || asset.name.empty() || !unit(asset.defaultWeight))
+		{error="Bone mask requires identity and a finite default weight in [0,1]";return false;}
+		std::unordered_set<std::string> rules;
+		for(const auto& rule:asset.branchRules)
+		{
+			if(rule.id.empty() || rule.rootBone.empty() || !rules.insert(rule.id).second || rule.maxDepth< -1
+				|| !unit(rule.rootWeight) || !unit(rule.endWeight)
+				|| (rule.mode!=VansBoneMaskRuleMode::Include && rule.mode!=VansBoneMaskRuleMode::Exclude)
+				|| (rule.falloff!=VansBoneMaskFalloff::Constant && rule.falloff!=VansBoneMaskFalloff::Linear && rule.falloff!=VansBoneMaskFalloff::SmoothStep))
+			{error="Bone mask contains an invalid branch rule";return false;}
+		}
+		for(const auto& [bone,weight]:asset.explicitWeights)
+			if(bone.empty() || !unit(weight)){error="Bone mask contains an invalid explicit weight";return false;}
+		for(const auto& [bone,channels]:asset.explicitChannelWeights)
+			if(bone.empty() || !unit(channels.x) || !unit(channels.y) || !unit(channels.z))
+			{error="Bone mask contains an invalid T/R/S channel weight";return false;}
+		return true;
+	}
+
 	VansCompiledBoneMask VansBoneMaskCompiler::Compile(const VansBoneMaskAsset& asset,
 	                                                   const Skeleton& skeleton)
 	{
 		VansCompiledBoneMask result;
 		result.assetId = asset.id;
 		result.skeletonSignature = skeleton.ComputeSignature();
+		std::string error;
+		if(!ValidateDefinition(asset,error))
+		{result.diagnostics.push_back({VansBoneMaskDiagnosticSeverity::Error,{},error});return result;}
 		result.weights.assign(skeleton.bones.size(), std::clamp(asset.defaultWeight, 0.0f, 1.0f));
 		bool hasError = false;
 
@@ -98,6 +125,16 @@ namespace VansGraphics
 			result.weights[static_cast<size_t>(boneIndex)] = std::clamp(explicitWeight, 0.0f, 1.0f);
 		}
 
+
+        result.channelWeights.assign(skeleton.bones.size(), glm::vec3(1));
+        for (const auto& [name, channels] : asset.explicitChannelWeights)
+        {
+            const int index=skeleton.FindBoneIndex(name);
+            if(index<0 || !std::isfinite(channels.x) || !std::isfinite(channels.y) || !std::isfinite(channels.z)
+                || glm::any(glm::lessThan(channels,glm::vec3(0))) || glm::any(glm::greaterThan(channels,glm::vec3(1))))
+            { hasError=true; result.diagnostics.push_back({VansBoneMaskDiagnosticSeverity::Error,{},"Invalid channel mask: "+name}); continue; }
+            result.channelWeights[index]=channels;
+        }
 		int rootIndex = -1;
 		for (size_t index = 0; index < skeleton.bones.size(); ++index)
 			if (skeleton.bones[index].parentIndex < 0) { rootIndex = static_cast<int>(index); break; }
@@ -108,12 +145,12 @@ namespace VansGraphics
 		{
 			float& weight = result.weights[index];
 			weight = std::clamp(weight, 0.0f, 1.0f);
-			if (weight > 1.0e-6f)
+			if (weight * glm::compMax(result.channelWeights[index]) > 1.0e-6f)
 			{
 				result.allZero = false;
 				result.activeBones.push_back(static_cast<std::uint32_t>(index));
 			}
-			if (weight < 1.0f - 1.0e-6f)
+			if (weight * glm::compMin(result.channelWeights[index]) < 1.0f - 1.0e-6f)
 				result.allOne = false;
 		}
 		if (result.allZero)

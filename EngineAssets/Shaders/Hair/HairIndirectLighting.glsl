@@ -1,14 +1,15 @@
+#include "../GI/GIRegionCapacity.h"
 #ifndef VANS_HAIR_INDIRECT_LIGHTING_GLSL
 #define VANS_HAIR_INDIRECT_LIGHTING_GLSL
 #include "../BRDF/AmbientSkyTransmittance.glsl"
 #if HAIR_HAS_GI_PROBES
 #include "../GI/GIProbeStateData.glsl"
-layout(set=1, binding=5) uniform sampler2D hairGIIrradiance[8];
-layout(set=1, binding=6) uniform sampler2D hairGIVisibility[8];
+layout(set=1, binding=5) uniform sampler2D hairGIIrradiance[GI_MAX_REGION_COUNT];
+layout(set=1, binding=6) uniform sampler2D hairGIVisibility[GI_MAX_REGION_COUNT];
 layout(set=1, binding=7, std430) readonly buffer HairGIProbeStateBuffer
 {
     GIProbeState states[];
-} hairGIStates[8];
+} hairGIStates[GI_MAX_REGION_COUNT];
 
 #define GI_LOAD_PROBE_STATE(region, probe) hairGIStates[nonuniformEXT(region)].states[probe]
 #define GI_LAYOUT_SET 1
@@ -17,7 +18,7 @@ layout(set=1, binding=7, std430) readonly buffer HairGIProbeStateBuffer
 // Transparent receivers query world-space probe moments. Opaque screen receiver
 // records and SSGI history describe a different surface and cannot be reused.
 #include "../GI/GIProbeCommon.glsl"
-vec4 SampleHairGIRegion(uint region, vec3 position, vec3 normal, float biasScale)
+vec4 SampleHairGIRegion(uint region, vec3 position, GIReceiverNormals normal, float biasScale)
 {
     GIProbeLighting value = GI_SampleProbeIrradianceAtlasVisible(region,
         ivec3(GI_LayoutRegionWord(region, 2u).xyz),
@@ -46,7 +47,7 @@ vec3 SampleHairSkyDiffuse(vec3 position, vec3 direction)
 vec3 SampleHairLowFrequency(vec3 position, vec3 normal)
 {
 #if HAIR_HAS_GI_PROBES
-    return GI_BlendRegionLighting(position, normal, 1.0);
+    return GI_BlendRegionLighting(position, GIReceiverNormals(normal, normal), 1.0);
 #else
     return SampleHairSkyDiffuse(position, normal);
 #endif

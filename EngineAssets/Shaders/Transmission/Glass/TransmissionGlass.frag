@@ -304,7 +304,7 @@ void EvaluateDirectLighting(BRDFData brdf, float transmission, out vec3 diffuse,
     {
         uint lightIndex = tileLightIndices[tileHeader.spotOffset + tileIndex];
         SpotLightData light = GetSpotLight(int(lightIndex));
-        light.color.rgb *= SampleSurfaceLightCookie(65 + int(lightIndex), brdf.positionWS);
+        light.color.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_SPOT_OFFSET + int(lightIndex), brdf.positionWS);
         vec3 L = light.position.xyz - brdf.positionWS;
         float distanceToLight = length(L);
         if (distanceToLight <= 1e-5 || distanceToLight > light.radius) continue;
@@ -329,7 +329,7 @@ void EvaluateDirectLighting(BRDFData brdf, float transmission, out vec3 diffuse,
     {
         uint lightIndex = tileLightIndices[tileHeader.rectOffset + tileIndex];
         RectLightData light = GetRectLight(int(lightIndex));
-        light.color_twoSided.rgb *= SampleSurfaceLightCookie(129 + int(lightIndex), brdf.positionWS);
+        light.color_twoSided.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_RECT_OFFSET + int(lightIndex), brdf.positionWS);
         vec3 rectDiffuse = vec3(0.0);
         vec3 rectSpecular = vec3(0.0);
         EvaluateRectLightLTC(light, brdf.normal, brdf.viewDirection, brdf.positionWS,

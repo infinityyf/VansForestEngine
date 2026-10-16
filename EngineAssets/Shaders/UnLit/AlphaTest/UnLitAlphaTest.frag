@@ -49,6 +49,7 @@ void main()
     normalSample = normalSample * 2.0 - 1.0;
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normalSample);
+    if (!gl_FrontFacing) normal = -normal;
 
     outNormal = vec4(normal, -1.0);
     outGBuffer0 = vec4(albedo, roughness);

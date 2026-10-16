@@ -1802,8 +1802,18 @@ namespace Vans::EditorAPI
 		std::string message;
 	};
 
+	enum class GIRegionPlacementMode { Uniform, Adaptive };
+
+    struct GITraceSettingsSnapshot
+    {
+        float maxDistance = 100.0f;
+        float minVoxelSize = 0.0f;
+        float scatterMinVoxelSize = 0.0f;
+    };
+
 	struct GIRegionSettingsSnapshot
 	{
+		GIRegionPlacementMode mode = GIRegionPlacementMode::Uniform;
 		bool worldOnly = false;
         bool followView = false;
 		std::uint32_t stableId = 0;
@@ -1817,18 +1827,16 @@ namespace Vans::EditorAPI
 		float probeSpacing = 0.5f;
 		bool overrideGridDimensions = false;
 		float normalBias = 0.0f;
-		float maxRayDistance = 0.0f;
+		GITraceSettingsSnapshot trace;
 		float volumeFadeDistance = 0.0f;
 		float priority = 0.0f;
 		std::uint32_t raysPerProbe = 0;
 		std::uint32_t totalProbeCount = 0;
 		std::uint64_t rayCacheEntries = 0;
-		float estimatedMemoryMB = 0.0f;
 	};
 
 	struct GIProbePlacementSettingsSnapshot
 	{
-		bool enabled = false;
 		float minProbeSpacing = 0.5f;
 		float maxProbeSpacing = 4.0f;
 		float parentProbeMaxSize = 5.0f;
@@ -1848,12 +1856,14 @@ namespace Vans::EditorAPI
 	{
 		bool enabled = false;
 		float gridSpacing = 4.0f;
-		std::uint32_t queriesPerFrame = 128u;
+		std::uint32_t cellUpdatesPerFrame = 22u;
 	};
 
 	struct GIInspectorSettingsSnapshot
 	{
 		bool available = false;
+		std::uint32_t maximumRegionCount = 0;
+		std::uint32_t maximumAmbientSkyCellUpdatesPerFrame = 0;
 		GIProbePlacementSettingsSnapshot placement;
 		GIWorldSettingsSnapshot world;
 		GIAmbientSkyCacheSettingsSnapshot ambientSkyCache;
@@ -1872,7 +1882,6 @@ namespace Vans::EditorAPI
 		std::uint32_t gizmoStride = 8;
 		std::uint32_t totalProbeCount = 0;
 		std::uint64_t totalRayCacheEntries = 0;
-		float totalEstimatedMemoryMB = 0.0f;
 		std::uint32_t selectedRegionIndex = 0;
 		std::vector<GIRegionSettingsSnapshot> regions;
 	};

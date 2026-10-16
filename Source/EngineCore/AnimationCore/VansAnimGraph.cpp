@@ -5,6 +5,7 @@
 #include "VansAnimationLayer.h"
 #include "VansPoseMath.h"
 #include "VansPosePayloadMixer.h"
+#include "Storage/VansBoneMaskStorage.h"
 #include "MotionMatching/VansMotionMatching.h"
 #include <../../GLM/gtc/constants.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
@@ -187,6 +188,7 @@ namespace VansGraphics
 		case VansAnimGraphNodeType::SaveCachedPose: return "SaveCachedPose";
 		case VansAnimGraphNodeType::UseCachedPose: return "UseCachedPose";
 		case VansAnimGraphNodeType::PoseSnapshot: return "PoseSnapshot";
+		case VansAnimGraphNodeType::PoseHistoryBlend: return "PoseHistoryBlend";
 		case VansAnimGraphNodeType::LayeredBlendPerBone: return "LayeredBlendPerBone";
 		}
 		return "Unknown";
@@ -280,6 +282,7 @@ namespace VansGraphics
 			clock.previousTime = clock.currentTime;
 			clock.startPositionPending = false;
 		}
+		if (HasExplicitSampleTime()) return;
 		// 上一轮可跨越多个循环；先按上一帧循环语义恢复相位，再应用本帧开关。
 		if ((normalizeTime || !m_LoopParameter.empty()) && duration > 0
 			&& (m_LoopParameter.empty() || clock.currentTime < 0 || clock.currentTime > duration))
@@ -301,6 +304,15 @@ namespace VansGraphics
 		auto it = ctx.clips->find(m_ClipName);
 		if (it == ctx.clips->end()) return pose;
 		VansAnimGraphClipRuntimeState& runtime = ResolveClipState(instance, m_NodeId);
+		bool firstExternalSample = !runtime.externalSampleInitialized;
+		if(!m_SampleEpochParameter.empty())
+		{
+			if(!ctx.parameters)return pose;
+			const auto epoch=ctx.parameters->find(m_SampleEpochParameter);
+			if(epoch==ctx.parameters->end() || epoch->second.type!=AnimatorParamType::Int)return pose;
+			firstExternalSample=firstExternalSample || epoch->second.intVal!=runtime.externalEpoch;
+			runtime.externalEpoch=epoch->second.intVal;
+		}
 		if (runtime.startPositionPending) AdvancePlayback(runtime, 0, ctx);
 		VansAnimationSampleRequest request;
 		request.previousTime = runtime.previousTime;
@@ -321,13 +333,24 @@ namespace VansGraphics
 					|| !std::isfinite(parameter->second.floatVal)) return pose;
 				sampleTime = parameter->second.floatVal;
 			}
-			request.currentTime = std::clamp(sampleTime, 0.0f, it->second.duration);
-			request.previousTime = request.currentTime;
-			request.loop = false;
-			runtime.previousTime = runtime.currentTime = request.currentTime;
+			request.currentTime = m_SampleTimeOutputs && ResolveLoop(ctx)
+				? std::max(0.0f, sampleTime) : std::clamp(sampleTime, 0.0f, it->second.duration);
+			request.previousTime = m_SampleTimeOutputs && !firstExternalSample ? runtime.currentTime : request.currentTime;
+			if(m_SampleFromZeroOnEpoch && firstExternalSample)request.previousTime=0;
+			request.loop = m_SampleTimeOutputs && ResolveLoop(ctx);
+			runtime.previousTime = request.previousTime;
+			runtime.currentTime = request.currentTime;
+			runtime.externalSampleInitialized = true;
 		}
 		request.sourceNodeId = static_cast<std::uint64_t>(m_NodeId);
-		request.extractRootMotion = ctx.extractRootMotion && m_RootMotion && !HasExplicitSampleTime();
+		request.extractRootMotion = ctx.extractRootMotion && m_RootMotion && (!HasExplicitSampleTime() || m_SampleTimeOutputs);
+		request.rootMotionReferenceSpace=m_RootMotionReferenceSpace;
+		if (ctx.characterMotionRootOnly)
+		{
+			pose.valid=true;
+			pose.rootMotion=VansAnimationSampler::ExtractRootMotion(it->second,*ctx.skeleton,request);
+			return pose;
+		}
 		VansAnimationSampler::Sample(it->second, *ctx.skeleton, request, pose);
 		if (m_AdditiveReferenceTime >= 0)
 		{
@@ -346,9 +369,9 @@ namespace VansGraphics
 				else found->value-=curve.value;
 			}
 		}
-		if (!m_RootMotion || HasExplicitSampleTime())
+		if (!m_RootMotion || (HasExplicitSampleTime() && !m_SampleTimeOutputs))
 			pose.rootMotion = {};
-		if (HasExplicitSampleTime())
+		if (HasExplicitSampleTime() && !m_SampleTimeOutputs)
 			pose.events.clear();
 		return pose;
 	}
@@ -1367,6 +1390,14 @@ namespace VansGraphics
 		if (ctx.preparePlayback) return PlaybackPlaceholder();
 		if (!basePose.valid || !additivePose.valid) return basePose;
 		auto result = VansPosePayloadMixer::ApplyAdditive(basePose, additivePose, weight);
+		if(m_UseBoneMask)
+		{
+			if(!ctx.skeleton || m_AdditiveMode!=VansAdditivePoseMode::LocalSphericalLeft)return {};
+			const auto& compiled=instance.ResolveLayeredBlendRuntime(GetNodeId(),m_BoneMask,*ctx.skeleton);
+			if(!compiled.mask.valid)return {};
+			if(!VansPoseMath::ApplyMaskedLocalDeltaPose(basePose.localPose,additivePose.localPose,compiled.mask,weight,result.localPose))return {};
+			return result;
+		}
 		if (m_AdditiveMode!=VansAdditivePoseMode::LocalSpherical && (!ctx.skeleton || !VansPoseMath::ApplyAdditiveDeltaPose(basePose.localPose,
 			additivePose.localPose,weight,*ctx.skeleton,result.localPose,m_AdditiveMode))) return {};
 		return result;
@@ -1393,7 +1424,24 @@ namespace VansGraphics
 		auto pose = EvaluateInputPose(instance, m_NodeId, 0, ctx);
 		auto& state = instance.m_InertializationStates[m_NodeId];
 		if (ctx.preparePlayback) state.deltaTime += std::max(0.0f, ctx.inputDeltaTime);
-		else state.Evaluate(pose, ctx.ownerWorldTransform, m_TeleportDistance);
+		else
+		{
+			if(!m_TriggerParameter.empty() && ctx.parameters)
+			{
+				const auto trigger=ctx.parameters->find(m_TriggerParameter);
+				if(trigger!=ctx.parameters->end() && trigger->second.type==AnimatorParamType::Trigger && trigger->second.boolVal)
+				{
+					float duration=m_Duration;
+					if(!m_DurationParameter.empty())
+					{
+						const auto parameter=ctx.parameters->find(m_DurationParameter);
+						if(parameter!=ctx.parameters->end() && parameter->second.type==AnimatorParamType::Float)duration=parameter->second.floatVal;
+					}
+					if(std::isfinite(duration) && duration>0)state.requests.push_back(duration);
+				}
+			}
+			state.Evaluate(pose, ctx.ownerWorldTransform, m_TeleportDistance);
+		}
 		return pose;
 	}
 
@@ -1873,6 +1921,7 @@ namespace VansGraphics
 			case VansAnimGraphNodeType::SaveCachedPose: return CloneNodeAs<AnimGraphSaveCachedPoseNode>(source);
 			case VansAnimGraphNodeType::UseCachedPose: return CloneNodeAs<AnimGraphUseCachedPoseNode>(source);
 			case VansAnimGraphNodeType::PoseSnapshot: return CloneNodeAs<AnimGraphPoseSnapshotNode>(source);
+			case VansAnimGraphNodeType::PoseHistoryBlend: return CloneNodeAs<AnimGraphPoseHistoryBlendNode>(source);
 			case VansAnimGraphNodeType::LayeredBlendPerBone: return CloneNodeAs<AnimGraphLayeredBlendPerBoneNode>(source);
 			}
 			return nullptr;
@@ -2215,7 +2264,11 @@ namespace VansGraphics
 				const auto* clip = static_cast<const AnimGraphClipNode*>(node.get());
 				if (!std::isfinite(clip->m_SampleTime) || (clip->m_SampleTime < 0 && clip->m_SampleTime != -1))
 				{ outError = "Explicit sample time must be nonnegative or disabled (-1)"; outPlan.clear(); return false; }
-				if (!clip->m_LoopParameter.empty() && clip->HasExplicitSampleTime())
+				if (clip->m_SampleTimeOutputs && !clip->HasExplicitSampleTime())
+				{ outError = "External-time outputs require an explicit sample clock"; outPlan.clear(); return false; }
+				if(clip->m_SampleFromZeroOnEpoch && (!clip->m_SampleTimeOutputs || clip->m_SampleEpochParameter.empty()))
+				{outError="Traversal from zero requires an external output clock and epoch parameter";outPlan.clear();return false;}
+				if (!clip->m_LoopParameter.empty() && clip->HasExplicitSampleTime() && !clip->m_SampleTimeOutputs)
 				{ outError = "Explicit sample Clip cannot bind a loop parameter"; outPlan.clear(); return false; }
 				if (clip->m_SyncGroup.empty()) continue;
 				if (clip->HasExplicitSampleTime() || !std::isfinite(clip->m_Speed) || clip->m_Speed < 0)
@@ -2262,6 +2315,7 @@ namespace VansGraphics
 		// A stateful source may be shared, but every path to it must cross the same
 		// SpeedScale nodes. Otherwise a single playback clock would have two speeds.
 		std::unordered_map<int, std::vector<int>> sourceSpeedPaths;
+		std::set<std::pair<int,std::vector<int>>> validatedSpeedPaths;
 		std::function<bool(int, std::vector<int>)> validateSpeedPath =
 			[&](int nodeId, std::vector<int> speedPath)
 		{
@@ -2270,6 +2324,8 @@ namespace VansGraphics
 				return false;
 			if (node->GetType() == VansAnimGraphNodeType::SpeedScale)
 				speedPath.push_back(nodeId);
+			// 同一 DAG 节点与同一速率路径只需检查一次，仍保留不同路径的冲突检查。
+			if(!validatedSpeedPaths.emplace(nodeId,speedPath).second)return true;
 			const bool statefulSource = node->GetType() == VansAnimGraphNodeType::Clip
 				|| node->GetType() == VansAnimGraphNodeType::StateMachine
 				|| node->GetType() == VansAnimGraphNodeType::MotionMatching;
@@ -2406,6 +2462,25 @@ namespace VansGraphics
 		for (int nodeId : m_ExecutionPlan)
 			m_PreviousActiveNodes[nodeId] = m_EvaluatedNodes[nodeId];
 		return result;
+	}
+
+	bool VansAnimGraph::ValidateCharacterMotionGraph(std::string& error) const
+	{
+		std::vector<int> plan;
+		if (!BuildExecutionPlan(plan,error)) return false;
+		for (const auto& [id,node] : GetNodes())
+		{
+			const auto type=node->GetType();
+			if (type==VansAnimGraphNodeType::Clip)
+			{
+				const auto* clip=static_cast<const AnimGraphClipNode*>(node.get());
+				if ((clip->m_SampleTimeParameter.empty() && clip->m_SampleTime<0) || !clip->m_SampleTimeOutputs)
+				{ error="Character Motion Graph Clips require explicit sample time and sampleTimeOutputs"; return false; }
+			}
+			else if (type!=VansAnimGraphNodeType::Blend && type!=VansAnimGraphNodeType::Switch && type!=VansAnimGraphNodeType::Output)
+			{ error="Character Motion Graph supports only externally timed Clip, Blend, Switch and Output nodes"; return false; }
+		}
+		return true;
 	}
 
 	AnimGraphPose VansAnimGraphInstance::EvaluateFrame(const AnimGraphContext& ctx)
@@ -2943,6 +3018,7 @@ namespace VansGraphics
 		m_SyncGroups.clear(); m_ExternalSyncGroups.clear(); m_SyncFollowers.clear();
 		m_CachedPoses.clear();
 		m_PoseSnapshots.clear();
+		m_PoseHistoryStates.clear();
 		for (int nodeId : m_ExecutionPlan)
 		{
 			m_EvaluationCache[nodeId] = {};
@@ -3261,6 +3337,7 @@ namespace VansGraphics
 		snapshot.updatedNodes = m_UpdatedNodes;
 		snapshot.syncGroups = m_SyncGroups;
 		snapshot.poseSnapshots = m_PoseSnapshots;
+		snapshot.poseHistoryStates = m_PoseHistoryStates;
 		return snapshot;
 	}
 
@@ -3306,6 +3383,17 @@ namespace VansGraphics
 		m_SyncGroups.clear();
 		m_ExternalSyncGroups.clear();
 		m_PoseSnapshots = snapshot.poseSnapshots;
+		m_PoseHistoryStates.clear();
+		for(const auto& [id,state]:snapshot.poseHistoryStates)
+		{
+			const auto* node=m_Definition.GetNode(id);
+			if(!node || node->GetType()!=VansAnimGraphNodeType::PoseHistoryBlend){fullyCompatible=false;continue;}
+			bool finite=true;
+			for(const auto* pose:{&state.cached,&state.previous,&state.origin,&state.damped})for(const auto& bone:*pose)
+				finite &= std::isfinite(bone.translation.x+bone.translation.y+bone.translation.z+bone.rotation.x+bone.rotation.y+bone.rotation.z+bone.rotation.w+bone.scale.x+bone.scale.y+bone.scale.z);
+			for(int c=0;c<4;++c)for(int r=0;r<4;++r)finite &= std::isfinite(state.cachedWorld[c][r]) && std::isfinite(state.previousWorld[c][r]);
+			if(finite)m_PoseHistoryStates.emplace(id,state);else fullyCompatible=false;
+		}
 		for (const auto& [name, group] : snapshot.syncGroups)
 			if (m_Definition.GetNode(group.leaderNode) && std::isfinite(group.previousTime) && std::isfinite(group.currentTime))
 				m_SyncGroups.emplace(name, group);
@@ -3471,6 +3559,7 @@ namespace VansGraphics
 		case VansAnimGraphNodeType::SaveCachedPose: return std::make_unique<AnimGraphSaveCachedPoseNode>();
 		case VansAnimGraphNodeType::UseCachedPose: return std::make_unique<AnimGraphUseCachedPoseNode>();
 		case VansAnimGraphNodeType::PoseSnapshot: return std::make_unique<AnimGraphPoseSnapshotNode>();
+		case VansAnimGraphNodeType::PoseHistoryBlend: return std::make_unique<AnimGraphPoseHistoryBlendNode>();
 		case VansAnimGraphNodeType::LayeredBlendPerBone: return std::make_unique<AnimGraphLayeredBlendPerBoneNode>();
 		}
 		return nullptr;
@@ -3508,6 +3597,7 @@ namespace VansGraphics
 		if (typeName == "SaveCachedPose") return CreateNodeByType(VansAnimGraphNodeType::SaveCachedPose);
 		if (typeName == "UseCachedPose") return CreateNodeByType(VansAnimGraphNodeType::UseCachedPose);
 		if (typeName == "PoseSnapshot") return CreateNodeByType(VansAnimGraphNodeType::PoseSnapshot);
+		if (typeName == "PoseHistoryBlend") return CreateNodeByType(VansAnimGraphNodeType::PoseHistoryBlend);
 		if (typeName == "LayeredBlendPerBone") return CreateNodeByType(VansAnimGraphNodeType::LayeredBlendPerBone);
 		return nullptr;
 	}
@@ -3655,6 +3745,7 @@ namespace VansGraphics
 		{
 		case VansAdditivePoseMode::LocalSpherical:return "LocalSpherical";
 		case VansAdditivePoseMode::LocalLinear:return "LocalLinear";
+		case VansAdditivePoseMode::LocalSphericalLeft:return "LocalSphericalLeft";
 		case VansAdditivePoseMode::MeshRotationLinear:return "MeshRotationLinear";
 		}
 		throw std::invalid_argument("Invalid additive mode");
@@ -3663,6 +3754,7 @@ namespace VansGraphics
 	{
 		if(mode=="LocalSpherical")return VansAdditivePoseMode::LocalSpherical;
 		if(mode=="LocalLinear")return VansAdditivePoseMode::LocalLinear;
+		if(mode=="LocalSphericalLeft")return VansAdditivePoseMode::LocalSphericalLeft;
 		if(mode=="MeshRotationLinear")return VansAdditivePoseMode::MeshRotationLinear;
 		throw std::invalid_argument("Unknown additive mode: "+mode);
 	}
@@ -3682,6 +3774,10 @@ namespace VansGraphics
 			if (!n->m_SampleTimeParameter.empty())
 				props["sampleTimeParameter"] = n->m_SampleTimeParameter;
 			if (n->m_SampleTime >= 0) props["sampleTime"] = n->m_SampleTime;
+			if (n->m_SampleTimeOutputs) props["sampleTimeOutputs"] = true;
+			if(!n->m_SampleEpochParameter.empty())props["sampleEpochParameter"]=n->m_SampleEpochParameter;
+			if(n->m_SampleFromZeroOnEpoch)props["sampleFromZeroOnEpoch"]=true;
+			if(n->m_RootMotionReferenceSpace)props["rootMotionReferenceSpace"]=true;
 			if (n->m_AdditiveReferenceTime >= 0) props["additiveReferenceTime"] = n->m_AdditiveReferenceTime;
 			if (!n->m_AdditiveReferenceClip.empty()) props["additiveReferenceClip"] = n->m_AdditiveReferenceClip;
 			if(n->m_AdditiveMode!=VansAdditivePoseMode::LocalSpherical) props["additiveMode"]=AdditiveModeToString(n->m_AdditiveMode);
@@ -3804,6 +3900,12 @@ namespace VansGraphics
 		case VansAnimGraphNodeType::AdditiveBlend:
 		{
 			auto* n = static_cast<const AnimGraphAdditiveBlendNode*>(node);
+			if(n->m_UseBoneMask)
+			{
+				nlohmann::json mask;std::string error;
+				if(!VansBoneMaskStorage::SerializeToJsonObject(n->m_BoneMask,mask,error))throw std::invalid_argument(error);
+				props["boneMask"]=std::move(mask);
+			}
 			if(n->m_AdditiveMode!=VansAdditivePoseMode::LocalSpherical) props["additiveMode"]=AdditiveModeToString(n->m_AdditiveMode);
 			props["paramName"]   = n->m_ParamName;
 			props["fixedWeight"] = n->m_FixedWeight;
@@ -3811,7 +3913,11 @@ namespace VansGraphics
 			break;
 		}
 		case VansAnimGraphNodeType::Inertialization:
-			props["teleportDistance"] = static_cast<const AnimGraphInertializationNode*>(node)->m_TeleportDistance;
+			{
+				const auto& n=*static_cast<const AnimGraphInertializationNode*>(node);
+				props["teleportDistance"]=n.m_TeleportDistance;
+				if(!n.m_TriggerParameter.empty()){props["triggerParameter"]=n.m_TriggerParameter;props["durationParameter"]=n.m_DurationParameter;props["duration"]=n.m_Duration;}
+			}
 			break;
 		case VansAnimGraphNodeType::SpeedScale:
 		{
@@ -3930,6 +4036,18 @@ namespace VansGraphics
 		case VansAnimGraphNodeType::PoseSnapshot:
 			props["snapshotName"] = static_cast<const AnimGraphPoseSnapshotNode*>(node)->m_SnapshotName;
 			break;
+		case VansAnimGraphNodeType::PoseHistoryBlend:
+		{
+			const auto& n=*static_cast<const AnimGraphPoseHistoryBlendNode*>(node);
+			props={{"revisionParameter",n.m_RevisionParameter},{"alphaParameter",n.m_AlphaParameter},{"modeParameter",n.m_ModeParameter},
+				{"maskIndexParameter",n.m_MaskIndexParameter},{"activeParameter",n.m_ActiveParameter},{"unionMaskCoverage",n.m_UnionMaskCoverage},
+				{"outputWeightParameter",n.m_OutputWeightParameter},{"retainCurrentMaskWeights",n.m_RetainCurrentMaskWeights},
+				{"historySnapshotName",n.m_HistorySnapshotName},{"historySnapshotParameter",n.m_HistorySnapshotParameter},
+				{"alignRootChildren",n.m_AlignRootChildren},{"dampingSeconds",n.m_DampingSeconds},{"masks",nlohmann::json::array()}};
+			std::string error;for(const auto& mask:n.m_Masks){nlohmann::json encoded;if(!VansBoneMaskStorage::SerializeToJsonObject(mask,encoded,error))throw std::invalid_argument(error);props["masks"].push_back(encoded);}
+			if(n.m_DampingSeconds>0){nlohmann::json encoded;if(!VansBoneMaskStorage::SerializeToJsonObject(n.m_DampingMask,encoded,error))throw std::invalid_argument(error);props["dampingMask"]=encoded;}
+			break;
+		}
 		case VansAnimGraphNodeType::LayeredBlendPerBone:
 		{
 			const auto* n = static_cast<const AnimGraphLayeredBlendPerBoneNode*>(node);
@@ -3948,6 +4066,9 @@ namespace VansGraphics
 				{ "branchRules", nlohmann::json::array() },
 				{ "explicitWeights", n->m_Mask.explicitWeights }
 			};
+			if(!n->m_Mask.explicitChannelWeights.empty())
+				for(const auto& [bone,weights]:n->m_Mask.explicitChannelWeights)
+					props["mask"]["explicitChannelWeights"][bone]={weights.x,weights.y,weights.z};
 			for (const auto& rule : n->m_Mask.branchRules)
 				props["mask"]["branchRules"].push_back({
 					{ "id", rule.id },
@@ -3975,7 +4096,8 @@ namespace VansGraphics
 			const auto* n = static_cast<const AnimGraphAimConstraintNode*>(node);
 			props = { { "chain", n->m_ChainId }, { "target", SerializeGoal(n->m_Target) },
 				{ "mode", n->m_Settings.mode == VansAimConstraintMode::LookAtPoint ? "lookAtPoint" :
-					n->m_Settings.mode == VansAimConstraintMode::LookAtDirection ? "lookAtDirection" : "pitchOffset" },
+					n->m_Settings.mode == VansAimConstraintMode::LookAtDirection ? "lookAtDirection" :
+					n->m_Settings.mode == VansAimConstraintMode::WeaponRay ? "weaponRay" : "pitchOffset" },
 				{ "directionParameter", n->m_DirectionParameter },
 				{ "directionWeightParameter", n->m_DirectionWeightParameter },
 				{ "directionIsWorldSpace", n->m_DirectionIsWorldSpace },
@@ -3985,6 +4107,13 @@ namespace VansGraphics
 				{ "targetHalfLife", n->m_TargetHalfLife },
 				{ "maxAngularSpeedDegrees", n->m_Settings.maxAngularSpeedDegrees },
 				{ "weight", n->m_Settings.weight } };
+			if(n->m_TargetIsWorldSpace) props["targetIsWorldSpace"] = true;
+			if (n->m_Settings.mode == VansAimConstraintMode::WeaponRay)
+			{
+				props["geometryBone"] = n->m_GeometryBone;
+				props["muzzleLocal"] = {n->m_Settings.muzzleLocal.x,n->m_Settings.muzzleLocal.y,n->m_Settings.muzzleLocal.z};
+				props["barrelLocal"] = {n->m_Settings.barrelLocal.x,n->m_Settings.barrelLocal.y,n->m_Settings.barrelLocal.z};
+			}
 			break;
 		}
 		case VansAnimGraphNodeType::Grounding:
@@ -4060,7 +4189,7 @@ namespace VansGraphics
 			break;
 		case VansAnimGraphNodeType::Clip:
 		{
-			RequireOnlyFields(props, { "clipName", "speed", "loop", "loopParameter", "rootMotion", "sampleTimeParameter", "sampleTime", "startPosition", "additiveReferenceTime", "additiveReferenceClip", "additiveMode", "syncGroup" });
+			RequireOnlyFields(props, { "clipName", "speed", "loop", "loopParameter", "rootMotion", "rootMotionReferenceSpace", "sampleTimeParameter", "sampleTime", "sampleTimeOutputs", "sampleEpochParameter", "sampleFromZeroOnEpoch", "startPosition", "additiveReferenceTime", "additiveReferenceClip", "additiveMode", "syncGroup" });
 			auto* n = static_cast<AnimGraphClipNode*>(node);
 			if (props.contains("clipName")) n->m_ClipName = props["clipName"].get<std::string>();
 			n->m_SyncGroup = props.value("syncGroup", std::string{});
@@ -4068,6 +4197,10 @@ namespace VansGraphics
 			n->m_StartPosition = props.value("startPosition", 0.0f);
 			if (props.contains("sampleTimeParameter")) n->m_SampleTimeParameter = props["sampleTimeParameter"].get<std::string>();
 			if (props.contains("sampleTime")) n->m_SampleTime = props["sampleTime"].get<float>();
+			n->m_SampleTimeOutputs = props.value("sampleTimeOutputs", false);
+			n->m_SampleEpochParameter=props.value("sampleEpochParameter",std::string{});
+			n->m_SampleFromZeroOnEpoch=props.value("sampleFromZeroOnEpoch",false);
+			n->m_RootMotionReferenceSpace=props.value("rootMotionReferenceSpace",false);
 			n->m_AdditiveReferenceTime = props.value("additiveReferenceTime", -1.0f);
 			n->m_AdditiveReferenceClip = props.value("additiveReferenceClip", std::string{});
 			n->m_AdditiveMode=StringToAdditiveMode(props.value("additiveMode",std::string("LocalSpherical")));
@@ -4232,8 +4365,13 @@ namespace VansGraphics
 		}
 		case VansAnimGraphNodeType::AdditiveBlend:
 		{
-			RequireOnlyFields(props, { "paramName", "fixedWeight", "useParam", "additiveMode" });
+			RequireOnlyFields(props, { "paramName", "fixedWeight", "useParam", "additiveMode", "boneMask" });
 			auto* n = static_cast<AnimGraphAdditiveBlendNode*>(node);
+			n->m_UseBoneMask=props.contains("boneMask");
+			if(n->m_UseBoneMask)
+			{
+				std::string error;if(!VansBoneMaskStorage::DeserializeFromJsonObject(props.at("boneMask"),n->m_BoneMask,error))throw std::invalid_argument(error);
+			}
 			n->m_AdditiveMode=StringToAdditiveMode(props.value("additiveMode",std::string("LocalSpherical")));
 			if (props.contains("paramName"))   n->m_ParamName   = props["paramName"].get<std::string>();
 			if (props.contains("fixedWeight")) n->m_FixedWeight = props["fixedWeight"].get<float>();
@@ -4241,8 +4379,11 @@ namespace VansGraphics
 			break;
 		}
 		case VansAnimGraphNodeType::Inertialization:
-			RequireOnlyFields(props, {"teleportDistance"});
+			RequireOnlyFields(props, {"teleportDistance","triggerParameter","durationParameter","duration"});
 			static_cast<AnimGraphInertializationNode*>(node)->m_TeleportDistance = props.value("teleportDistance", 3.0f);
+			static_cast<AnimGraphInertializationNode*>(node)->m_TriggerParameter=props.value("triggerParameter",std::string{});
+			static_cast<AnimGraphInertializationNode*>(node)->m_DurationParameter=props.value("durationParameter",std::string{});
+			static_cast<AnimGraphInertializationNode*>(node)->m_Duration=props.value("duration",.2f);
 			break;
 		case VansAnimGraphNodeType::SpeedScale:
 		{
@@ -4386,6 +4527,20 @@ namespace VansGraphics
 			if (props.contains("snapshotName")) n->m_SnapshotName = props["snapshotName"].get<std::string>();
 			break;
 		}
+		case VansAnimGraphNodeType::PoseHistoryBlend:
+		{
+			RequireOnlyFields(props,{"revisionParameter","alphaParameter","modeParameter","maskIndexParameter","activeParameter","unionMaskCoverage","alignRootChildren","dampingSeconds","masks","dampingMask","outputWeightParameter","retainCurrentMaskWeights","historySnapshotName","historySnapshotParameter"});
+			auto& n=*static_cast<AnimGraphPoseHistoryBlendNode*>(node);
+			n.m_RevisionParameter=props.at("revisionParameter").get<std::string>();n.m_AlphaParameter=props.at("alphaParameter").get<std::string>();
+			n.m_ModeParameter=props.value("modeParameter","");n.m_MaskIndexParameter=props.value("maskIndexParameter","");n.m_ActiveParameter=props.value("activeParameter","");
+			n.m_OutputWeightParameter=props.value("outputWeightParameter","");n.m_RetainCurrentMaskWeights=props.value("retainCurrentMaskWeights",false);
+			n.m_HistorySnapshotName=props.value("historySnapshotName","");n.m_HistorySnapshotParameter=props.value("historySnapshotParameter","");
+			n.m_UnionMaskCoverage=props.value("unionMaskCoverage",false);n.m_AlignRootChildren=props.value("alignRootChildren",false);n.m_DampingSeconds=props.value("dampingSeconds",0.f);
+			std::string error;
+			if(props.contains("masks")){if(!props["masks"].is_array())throw std::invalid_argument("Pose history masks must be an array");for(const auto& value:props["masks"]){VansBoneMaskAsset mask;if(!VansBoneMaskStorage::DeserializeFromJsonObject(value,mask,error))throw std::invalid_argument(error);n.m_Masks.push_back(std::move(mask));}}
+			if(props.contains("dampingMask") && !VansBoneMaskStorage::DeserializeFromJsonObject(props["dampingMask"],n.m_DampingMask,error))throw std::invalid_argument(error);
+			break;
+		}
 		case VansAnimGraphNodeType::LayeredBlendPerBone:
 		{
 			RequireOnlyFields(props, { "blendMode", "curveBlendMode", "rotationSpace", "linearRotationBlend", "weightParameter",
@@ -4417,11 +4572,26 @@ namespace VansGraphics
 			if (props.contains("mask"))
 			{
 				const auto& mask = props["mask"];
-				RequireOnlyFields(mask, { "id", "name", "defaultWeight", "branchRules", "explicitWeights" });
+				RequireOnlyFields(mask, { "id", "name", "defaultWeight", "branchRules", "explicitWeights", "explicitChannelWeights" });
 				n->m_Mask.id = mask.value("id", "inline-layer-mask");
 				n->m_Mask.name = mask.value("name", "Inline Layer Mask");
 				n->m_Mask.defaultWeight = mask.value("defaultWeight", 0.0f);
 				n->m_Mask.explicitWeights = mask.value("explicitWeights", std::unordered_map<std::string, float>{});
+				if(mask.contains("explicitChannelWeights"))
+				{
+					if(!mask["explicitChannelWeights"].is_object())throw std::invalid_argument("Channel mask must be an object");
+					for(const auto& item:mask["explicitChannelWeights"].items())
+					{
+						if(item.key().empty() || !item.value().is_array() || item.value().size()!=3)throw std::invalid_argument("Invalid channel mask");
+						glm::vec3 weights;
+						for(int axis=0;axis<3;++axis)
+						{
+							weights[axis]=item.value()[axis].get<float>();
+							if(!std::isfinite(weights[axis]) || weights[axis]<0 || weights[axis]>1)throw std::invalid_argument("Invalid channel weight");
+						}
+						n->m_Mask.explicitChannelWeights[item.key()]=weights;
+					}
+				}
 				if (mask.contains("branchRules"))
 					for (const auto& r : mask["branchRules"])
 					{
@@ -4466,13 +4636,27 @@ namespace VansGraphics
 		{
 			RequireOnlyFields(props, { "chain", "target", "yawLimitDegrees",
 				"pitchLimitDegrees", "targetHalfLife", "maxAngularSpeedDegrees", "weight",
-				"mode", "directionParameter", "directionWeightParameter", "directionIsWorldSpace", "pivotBone" });
+				"mode", "directionParameter", "directionWeightParameter", "directionIsWorldSpace", "pivotBone",
+				"geometryBone", "muzzleLocal", "barrelLocal", "targetIsWorldSpace" });
 			auto* n = static_cast<AnimGraphAimConstraintNode*>(node);
+			n->m_TargetIsWorldSpace = props.value("targetIsWorldSpace",false);
 			const auto mode = props.at("mode").get<std::string>();
 			if (mode == "lookAtPoint") n->m_Settings.mode = VansAimConstraintMode::LookAtPoint;
 			else if (mode == "lookAtDirection") n->m_Settings.mode = VansAimConstraintMode::LookAtDirection;
 			else if (mode == "pitchOffset") n->m_Settings.mode = VansAimConstraintMode::PitchOffset;
+			else if (mode == "weaponRay") n->m_Settings.mode = VansAimConstraintMode::WeaponRay;
 			else throw std::invalid_argument("Invalid Aim Constraint mode");
+			if (n->m_Settings.mode == VansAimConstraintMode::WeaponRay)
+			{
+				n->m_GeometryBone = props.at("geometryBone").get<std::string>();
+				const auto& muzzle = props.at("muzzleLocal"); const auto& barrel = props.at("barrelLocal");
+				if (!muzzle.is_array() || muzzle.size()!=3 || !barrel.is_array() || barrel.size()!=3)
+					throw std::invalid_argument("Weapon geometry vectors must contain exactly three numbers");
+				n->m_Settings.muzzleLocal = {muzzle.at(0).get<float>(),muzzle.at(1).get<float>(),muzzle.at(2).get<float>()};
+				n->m_Settings.barrelLocal = {barrel.at(0).get<float>(),barrel.at(1).get<float>(),barrel.at(2).get<float>()};
+			}
+			else if (props.contains("geometryBone") || props.contains("muzzleLocal") || props.contains("barrelLocal"))
+				throw std::invalid_argument("Weapon geometry fields require weaponRay mode");
 			n->m_DirectionParameter = props.at("directionParameter").get<std::string>();
 			n->m_DirectionWeightParameter = props.at("directionWeightParameter").get<std::string>();
 			n->m_DirectionIsWorldSpace = props.at("directionIsWorldSpace").get<bool>();
@@ -4847,6 +5031,115 @@ namespace VansGraphics
 			result.localPose.assign(saved->begin(), saved->end());
 		result.valid = true;
 		return result;
+	}
+
+	AnimGraphPoseHistoryBlendNode::AnimGraphPoseHistoryBlendNode()
+	{m_Type=VansAnimGraphNodeType::PoseHistoryBlend;m_Name="Pose History Blend";}
+
+	std::vector<AnimGraphPin> AnimGraphPoseHistoryBlendNode::GetPins() const
+	{
+		std::vector<AnimGraphPin> pins{{0,"InputPose",AnimGraphPinType::Pose,AnimGraphPinKind::Input},{0,"OutPose",AnimGraphPinType::Pose,AnimGraphPinKind::Output}};
+		if(!m_OutputWeightParameter.empty())pins.push_back({1,"LiveBasePose",AnimGraphPinType::Pose,AnimGraphPinKind::Input});
+		return pins;
+	}
+
+	AnimGraphPose AnimGraphPoseHistoryBlendNode::Evaluate(const AnimGraphContext& ctx,VansAnimGraphInstance& instance) const
+	{
+		auto pose=EvaluateInputPose(instance,GetNodeId(),0,ctx);
+		AnimGraphPose liveBase;
+		if(!m_OutputWeightParameter.empty())liveBase=EvaluateInputPose(instance,GetNodeId(),1,ctx);
+		if(ctx.preparePlayback)return PlaybackPlaceholder();
+		if(!pose.valid || !ctx.skeleton || !ctx.parameters || pose.localPose.size()!=ctx.skeleton->bones.size())return {};
+		float outputWeight=1.f;
+		if(!m_OutputWeightParameter.empty())
+		{
+			const auto value=ctx.parameters->find(m_OutputWeightParameter);
+			if(!liveBase.valid || liveBase.localPose.size()!=pose.localPose.size() || value==ctx.parameters->end() || !std::isfinite(value->second.floatVal))return {};
+			outputWeight=std::clamp(value->second.floatVal,0.f,1.f);
+		}
+		const auto intValue=[&](const std::string& name,int value){if(name.empty())return value;const auto it=ctx.parameters->find(name);return it==ctx.parameters->end()?value:it->second.intVal;};
+		const auto revision=intValue(m_RevisionParameter,0),mode=intValue(m_ModeParameter,0),maskIndex=intValue(m_MaskIndexParameter,0);
+		const auto alphaIt=ctx.parameters->find(m_AlphaParameter);if(alphaIt==ctx.parameters->end() || !std::isfinite(alphaIt->second.floatVal) || mode<0 || mode>2)return {};
+		const float alpha=std::clamp(alphaIt->second.floatVal,0.f,1.f);
+		auto& state=instance.m_PoseHistoryStates[GetNodeId()];const auto signature=ctx.skeleton->ComputeSignature();
+		if(state.skeletonSignature!=signature)
+		{
+			state={};state.skeletonSignature=signature;
+			if(m_Masks.empty()){VansBoneMaskAsset mask;mask.id="pose-history-full";mask.name="Full";mask.defaultWeight=1;state.masks.push_back(VansBoneMaskCompiler::Compile(mask,*ctx.skeleton));}
+			else for(const auto& mask:m_Masks)state.masks.push_back(VansBoneMaskCompiler::Compile(mask,*ctx.skeleton));
+			if(m_DampingSeconds>0)state.dampingMask=VansBoneMaskCompiler::Compile(m_DampingMask,*ctx.skeleton);
+		}
+		if(maskIndex<0 || maskIndex>=static_cast<int>(state.masks.size()) || !state.masks[maskIndex].valid
+			|| (m_DampingSeconds>0 && !state.dampingMask.valid))return {};
+		const auto activeIt=ctx.parameters->find(m_ActiveParameter);
+		if(!m_ActiveParameter.empty() && (activeIt==ctx.parameters->end() || !activeIt->second.boolVal))
+		{state.initialized=false;state.cached.clear();state.previous.clear();state.origin.clear();state.cachedCoverage.clear();state.previousCoverage.clear();state.targetWorldRotations.clear();state.damped.assign(pose.localPose.size(),{});return m_OutputWeightParameter.empty()?pose:liveBase;}
+		if(!state.initialized || state.revision!=revision)
+		{
+			state.previous=state.cached;state.previousCoverage=state.cachedCoverage;state.previousWorld=state.cachedWorld;
+			const auto capture=ctx.parameters->find(m_HistorySnapshotParameter);
+			if(!m_HistorySnapshotName.empty() && (m_HistorySnapshotParameter.empty() || (capture!=ctx.parameters->end() && capture->second.boolVal)))
+				if(const auto* saved=instance.FindPoseSnapshot(m_HistorySnapshotName);saved && saved->size()==pose.localPose.size())state.previous=*saved;
+			state.origin.clear();state.targetWorldRotations.clear();state.revision=revision;state.initialized=true;
+		}
+		const auto& mask=state.masks[maskIndex];std::vector<glm::vec3> coverage(pose.localPose.size());
+		for(std::size_t i=0;i<coverage.size();++i)
+		{
+			coverage[i]=mask.channelWeights[i]*(m_RetainCurrentMaskWeights?1.f:mask.weights[i]);
+			if(m_UnionMaskCoverage && alpha<1 && state.previousCoverage.size()==coverage.size())coverage[i]=glm::max(coverage[i],state.previousCoverage[i]);
+		}
+		if(mode!=2 && alpha<1 && state.previous.size()==pose.localPose.size())
+		{
+			if(mode==1 && state.origin.empty())state.origin.assign(pose.localPose.begin(),pose.localPose.end());
+			for(std::size_t i=0;i<pose.localPose.size();++i)
+			{
+				auto& atom=pose.localPose[i];const auto rate=coverage[i]*((1-alpha)*(m_RetainCurrentMaskWeights?mask.weights[i]:1.f));auto old=state.previous[i];
+				if(mode==1)
+				{
+					atom.translation+=(old.translation-state.origin[i].translation)*rate.x;
+					atom.rotation=glm::normalize(glm::slerp(glm::quat(1,0,0,0),glm::normalize(old.rotation*glm::inverse(state.origin[i].rotation)),rate.y)*atom.rotation);
+					continue;
+				}
+				const int parent=ctx.skeleton->bones[i].parentIndex;
+				const bool rootChild=m_AlignRootChildren && parent>=0 && ctx.skeleton->bones[parent].parentIndex<0;
+				glm::quat worldRotation(1,0,0,0),parentRotation(1,0,0,0);
+				if(rootChild)
+				{
+					const auto priorWorld=state.previousWorld*VansPoseMath::Compose(state.previous[parent])*VansPoseMath::Compose(old);
+					const auto parentWorld=ctx.ownerWorldTransform*VansPoseMath::Compose(pose.localPose[parent]);
+					VansBoneTransform oldWorld,parentAtom;if(!VansPoseMath::TryDecompose(priorWorld,oldWorld) || !VansPoseMath::TryDecompose(parentWorld,parentAtom)
+						|| !VansPoseMath::TryDecompose(glm::inverse(parentWorld)*priorWorld,old))return {};
+					parentRotation=parentAtom.rotation;auto target=glm::normalize(parentRotation*atom.rotation);
+					const auto last=state.targetWorldRotations.find(static_cast<int>(i));const auto reference=last==state.targetWorldRotations.end()?oldWorld.rotation:last->second;
+					if(glm::dot(target,reference)<0)target=-target;state.targetWorldRotations[static_cast<int>(i)]=target;
+					worldRotation=glm::normalize(glm::mix(oldWorld.rotation,target,1-rate.y));
+				}
+				atom.translation=glm::mix(atom.translation,old.translation,rate.x);atom.scale=glm::mix(atom.scale,old.scale,rate.z);
+				if(rootChild)atom.rotation=glm::normalize(glm::inverse(parentRotation)*worldRotation);
+				else {if(glm::dot(atom.rotation,old.rotation)<0)old.rotation=-old.rotation;atom.rotation=glm::normalize(atom.rotation*(1-rate.y)+old.rotation*rate.y);}
+			}
+		}
+		if(m_DampingSeconds>0)
+		{
+			if(state.damped.size()!=pose.localPose.size())state.damped.assign(pose.localPose.size(),{});
+			const float dt=ctx.inputDeltaTime>=0?ctx.inputDeltaTime:ctx.deltaTime,keep=std::exp(-std::max(0.f,dt)/m_DampingSeconds);
+			for(std::size_t i=0;i<pose.localPose.size();++i)
+			{
+				const auto rate=keep*state.dampingMask.weights[i]*state.dampingMask.channelWeights[i];auto old=state.damped[i];auto& atom=pose.localPose[i];
+				atom.translation=glm::mix(atom.translation,old.translation,rate.x);atom.scale=glm::mix(atom.scale,old.scale,rate.z);
+				if(glm::dot(atom.rotation,old.rotation)<0)old.rotation=-old.rotation;atom.rotation=glm::normalize(atom.rotation*(1-rate.y)+old.rotation*rate.y);
+			}
+			state.damped.assign(pose.localPose.begin(),pose.localPose.end());
+		}
+		// 缓存内层已经显示的姿势；外层权重只作用于输出，不能写回历史。
+		state.cached.assign(pose.localPose.begin(),pose.localPose.end());state.cachedCoverage=coverage;state.cachedWorld=ctx.ownerWorldTransform;
+		if(!m_OutputWeightParameter.empty())for(std::size_t i=0;i<pose.localPose.size();++i)
+		{
+			const auto rate=coverage[i]*(outputWeight*(m_RetainCurrentMaskWeights?mask.weights[i]:1.f));auto& atom=pose.localPose[i];auto base=liveBase.localPose[i];
+			atom.translation=glm::mix(base.translation,atom.translation,rate.x);atom.scale=glm::mix(base.scale,atom.scale,rate.z);
+			if(glm::dot(base.rotation,atom.rotation)<0)atom.rotation=-atom.rotation;atom.rotation=glm::normalize(base.rotation*(1-rate.y)+atom.rotation*rate.y);
+		}
+		return pose;
 	}
 
 	AnimGraphLayeredBlendPerBoneNode::AnimGraphLayeredBlendPerBoneNode()

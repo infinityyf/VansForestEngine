@@ -204,6 +204,19 @@ namespace VansGraphics
 			if (!VansPoseMath::TryDecompose(delta, transform))
 				return;
 			outDelta.translation = clip.rootMotion.extractTranslation ? transform.translation : glm::vec3(0.0f);
+			if (request.rootMotionReferenceSpace && clip.rootMotion.extractTranslation)
+			{
+				const auto position=[&](double time)
+				{
+					if (!request.loop) return glm::vec3(SampleRootMatrix(clip,skeleton,rootBoneIndex,std::clamp(static_cast<float>(time),start,end))[3]);
+					const double length=end-start,cycle=std::floor((time-start)/length);
+					const float phase=static_cast<float>(time-cycle*length);
+					return glm::vec3(SampleRootMatrix(clip,skeleton,rootBoneIndex,phase)[3])
+						+static_cast<float>(cycle)*(glm::vec3(SampleRootMatrix(clip,skeleton,rootBoneIndex,end)[3])-glm::vec3(SampleRootMatrix(clip,skeleton,rootBoneIndex,start)[3]));
+				};
+				const auto reference=SampleRootMatrix(clip,skeleton,rootBoneIndex,start);
+				outDelta.translation=glm::inverse(glm::mat3(reference))*(position(current)-position(previous));
+			}
 			outDelta.rotation = clip.rootMotion.extractRotation ? transform.rotation : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 			outDelta.scale = clip.rootMotion.extractScale ? transform.scale : glm::vec3(1.0f);
 			outDelta.valid = true;

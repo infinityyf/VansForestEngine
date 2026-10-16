@@ -1,3 +1,4 @@
+#include "GIRegionCapacity.h"
 #ifndef GI_REGION_BLEND_GLSL
 #define GI_REGION_BLEND_GLSL
 // 调用者提供未乘区域 fade 的 E/pi 查询与相同量纲的天空查询。
@@ -15,13 +16,12 @@
 #ifndef GI_BLEND_NORMALIZE_FEEDBACK
 #define GI_BLEND_NORMALIZE_FEEDBACK false
 #endif
-vec3 GI_BlendRegionLightingMode(vec3 worldPosition, vec3 normal, float normalBiasScale,
-    bool allowSkyForUnpublished)
+vec3 GI_BlendRegionLighting(vec3 worldPosition, GIReceiverNormals normals, float normalBiasScale)
 {
-    uint order[8];
-    float weights[8];
+    uint order[GI_MAX_REGION_COUNT];
+    float weights[GI_MAX_REGION_COUNT];
     uint count = 0u;
-    for (uint region = 0u; region < min(GI_BLEND_REGION_COUNT, 8u); ++region)
+    for (uint region = 0u; region < min(GI_BLEND_REGION_COUNT, GI_MAX_REGION_COUNT); ++region)
     {
         if (!GI_BLEND_REGION_ALLOWED(region)) continue;
         vec3 minimum = GI_BLEND_REGION_MIN(region), size = GI_BLEND_REGION_SIZE(region);
@@ -48,13 +48,7 @@ vec3 GI_BlendRegionLightingMode(vec3 worldPosition, vec3 normal, float normalBia
     float resolvedWeight = 0.0;
     for (uint slot = 0u; slot < count && remaining > 0.0; ++slot)
     {
-        vec4 sampleValue = GI_SAMPLE_REGION(order[slot], worldPosition, normal, normalBiasScale);
-        if (allowSkyForUnpublished && sampleValue.a <= 0.0)
-        {
-            // 叶片可能落在区域范围内但尚未有已发布 probe；保留天空残差，
-            // 避免把“未发布”错误解释成封闭空间的纯黑。
-            continue;
-        }
+        vec4 sampleValue = GI_SAMPLE_REGION(order[slot], worldPosition, normals, normalBiasScale);
         float weight = remaining * weights[slot] * clamp(sampleValue.a, 0.0, 1.0);
         lighting += weight * sampleValue.rgb;
         resolvedWeight += weight;
@@ -66,12 +60,8 @@ vec3 GI_BlendRegionLightingMode(vec3 worldPosition, vec3 normal, float normalBia
     // 没有有效数据时不注入无遮挡天空，合法黑色仍有发布权重。
     if (GI_BLEND_NORMALIZE_FEEDBACK)
         return resolvedWeight > 0.0 ? lighting / resolvedWeight : vec3(0.0);
-    if (remaining > 0.0) lighting += min(remaining, skyWeight) * GI_SAMPLE_SKY(normal);
+    if (remaining > 0.0) lighting += min(remaining, skyWeight) * GI_SAMPLE_SKY(normals.shading);
     return lighting;
 }
 
-vec3 GI_BlendRegionLighting(vec3 worldPosition, vec3 normal, float normalBiasScale)
-{
-    return GI_BlendRegionLightingMode(worldPosition, normal, normalBiasScale, false);
-}
 #endif

@@ -1,3 +1,4 @@
+#include "GIRegionCapacity.h"
 #ifndef GI_RECEIVER_VISIBILITY_DATA_GLSL
 #define GI_RECEIVER_VISIBILITY_DATA_GLSL
 const uint GI_RECEIVER_RAY_BUDGET = 65536u;
@@ -14,6 +15,10 @@ struct GIReceiverVisibilityRecord
     vec4 anchor; // x：锚点建立时的像素世界尺寸；y：地形接收面；z：滚动身份位模式；w 保留。
 };
 uint GI_ReceiverProbe(GIReceiverVisibilityRecord r, uint i) { return r.probes[i >> 2u][i & 3u]; }
+bool GI_ReceiverRegionInvalidated(uint region, uint regionMask)
+{
+    return region >= GI_MAX_REGION_COUNT || (regionMask & (1u << region)) != 0u;
+}
 bool GI_ReceiverSurfaceMatches(vec4 previous, vec4 position, vec3 normal, float material, float footprint)
 {
     float scale = max(max(abs(position.x), abs(position.y)), abs(position.z));

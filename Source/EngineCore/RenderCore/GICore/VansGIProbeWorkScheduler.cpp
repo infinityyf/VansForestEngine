@@ -2,6 +2,7 @@
 
 #include <limits>
 #include <utility>
+#include <stdexcept>
 
 namespace VansGraphics
 {
@@ -48,46 +49,83 @@ namespace VansGraphics
         return true;
     }
 
-    void VansGIProbeWorkScheduler::ResetLighting()
+    void VansGIProbeWorkScheduler::NotifyGlobalLighting(float amount)
     {
-        // 重建历史不重置轮询位置、采样序号和完成统计，反复改灯也不会饿死队尾。
-        for (auto& region : m_Regions)
-            for (size_t slot=0;slot<region.probes.size();++slot)
-            {
-                auto& probe=region.probes[slot];probe.resetLighting=true;probe.awaitingFeedback=false;
-                if(region.description.prewarmSpacing>0.0f && !probe.completedUpdates && !probe.prewarmQueued)
-                {region.prewarm.push_back(slot);probe.prewarmQueued=true;}
-            }
+        if (!std::isfinite(amount) || amount<0.0f || amount>1.0f)
+            throw std::invalid_argument("GI lighting change must be finite and in [0, 1]");
+        for (const auto& region:m_Regions) if (region.awaitingFeedbackCount)
+            throw std::logic_error("GI lighting changed before retiring GPU feedback");
+        if (amount==0.0f) return;
+        for (auto& region:m_Regions)
+        {
+            region.globalLightingChange+=double(amount);
+            region.pendingGlobalLighting=region.probes.size();
+        }
     }
 
-    bool VansGIProbeWorkScheduler::InvalidateLighting(size_t index,const std::vector<uint32_t>& indices,std::string& error)
+    bool VansGIProbeWorkScheduler::HasPendingLightingUpdates() const
+    {
+        for (const auto& region:m_Regions)
+            if (region.pendingGlobalLighting || region.pendingLocalLighting) return true;
+        return false;
+    }
+
+    void VansGIProbeWorkScheduler::ResetGeometry()
+    {
+        for (size_t index = 0; index < m_Regions.size(); ++index) ResetGeometry(index);
+    }
+
+    void VansGIProbeWorkScheduler::ResetGeometry(size_t index)
+    {
+        if (index >= m_Regions.size()) throw std::out_of_range("GI work region is invalid");
+        // 不可信提交只取消在途身份并重建几何；未发布的光源变化仍须保留。
+        auto& region = m_Regions[index];
+        region.awaitingFeedbackCount = 0;
+        for (size_t slot = 0; slot < region.probes.size(); ++slot)
+        {
+            auto& probe = region.probes[slot];
+            probe.pendingReset |= GIWorkResetGeometry;
+            probe.awaitingFeedback = false;
+            if (region.description.prewarmSpacing > 0.0f && !probe.completedUpdates && !probe.prewarmQueued)
+            { region.prewarm.push_back(slot); probe.prewarmQueued = true; }
+        }
+    }
+
+    bool VansGIProbeWorkScheduler::NotifyLocalLighting(size_t index,const std::vector<uint32_t>& indices,float amount,std::string& error)
     {
         error.clear();
         if(index>=m_Regions.size()){error="GI work region is invalid";return false;}
+        if(!std::isfinite(amount) || amount<0.0f || amount>1.0f){error="GI lighting change must be finite and in [0, 1]";return false;}
         auto& region=m_Regions[index];
-        for(const auto& probe:region.probes)if(probe.awaitingFeedback)
-        {error="GI lighting changed before retiring GPU feedback";return false;}
-        std::vector<size_t> slots;slots.reserve(indices.size());
+        if(region.awaitingFeedbackCount){error="GI lighting changed before retiring GPU feedback";return false;}
+        // 复用有界临时空间；先验证整批地址，再修改状态。一个通知中的重复地址只累计一次变化量。
+        auto& slots=region.lightingScratch;slots.clear();slots.reserve(indices.size());
         const auto& placed=region.description.probeIndices;
+        const bool ordered=std::is_sorted(indices.begin(),indices.end());
+        size_t cursor=0;
         for(auto id:indices)
         {
-            const auto found=std::lower_bound(placed.begin(),placed.end(),id);
+            if(ordered)while(cursor<placed.size() && placed[cursor]<id)++cursor;
+            const auto found=ordered?placed.begin()+cursor:std::lower_bound(placed.begin(),placed.end(),id);
             if(found==placed.end() || *found!=id){error="GI lighting references an unplaced probe";return false;}
             slots.push_back(size_t(found-placed.begin()));
         }
-        std::vector<bool> queued(region.probes.size(),false);
-        for(auto slot:region.priority)queued[slot]=true;
+        if(!ordered)std::sort(slots.begin(),slots.end());
+        slots.erase(std::unique(slots.begin(),slots.end()),slots.end());
+        if(amount==0.0f)return true;
         for(auto slot:slots)
         {
-            region.probes[slot].resetLighting=true;
-            if(!queued[slot]){region.priority.push_back(slot);queued[slot]=true;}
+            auto& probe=region.probes[slot];
+            if(probe.localLightingChange.y==0.0f)++region.pendingLocalLighting;
+            probe.localLightingChange=glm::min(probe.localLightingChange+amount,glm::vec2(1.0f));
+            if(!probe.priorityQueued){region.priority.push_back(slot);probe.priorityQueued=true;}
         }
-        if(!slots.empty())region.preferPriority=true;
+        // 连续局部编辑不重启优先/普通交替，远处和未编辑探针仍获得预算。
         return true;
     }
 
     bool VansGIProbeWorkScheduler::UpdatePlacedProbes(size_t index,std::vector<uint32_t> indices,
-        const std::vector<uint32_t>& resetLighting,std::string& error,const std::vector<uint32_t>& recycled)
+        const std::vector<uint32_t>& resetGeometry,std::string& error,const std::vector<uint32_t>& recycled)
     {
         error.clear();
         if(index>=m_Regions.size()){error="GI work region is invalid";return false;}
@@ -96,7 +134,7 @@ namespace VansGraphics
         std::sort(indices.begin(),indices.end());
         if(std::adjacent_find(indices.begin(),indices.end())!=indices.end())
         {error="GI work placement has duplicate addresses";return false;}
-        for(const auto& probe:region.probes)if(probe.awaitingFeedback)
+        if(region.awaitingFeedbackCount)
         {error="GI placement changed before retiring GPU feedback";return false;}
         const auto& old=region.description.probeIndices;
         const uint32_t next=old.empty()?0:old[region.cursor];
@@ -107,12 +145,17 @@ namespace VansGraphics
         {
             while(previous<old.size() && old[previous]<id)++previous;
             if(previous<old.size() && old[previous]==id && !std::binary_search(replaced.begin(),replaced.end(),id))probes.push_back(region.probes[previous]);
-            else{Region::Probe probe;probe.updateSequence=region.nextPlacementSequence++;probe.placedFrame=m_FrameNumber;probes.push_back(probe);}
+            else{Region::Probe probe;probe.updateSequence=region.nextPlacementSequence++;probe.placedFrame=m_FrameNumber;
+                probe.consumedGlobalLighting=glm::dvec2(region.globalLightingChange);probes.push_back(probe);}
         }
-        for(auto id:resetLighting)
+        for(auto id:resetGeometry)
         {
             const auto found=std::lower_bound(indices.begin(),indices.end(),id);
-            if(found!=indices.end() && *found==id)probes[size_t(found-indices.begin())].resetLighting=true;
+            if(found!=indices.end() && *found==id)
+            {
+                auto& probe = probes[size_t(found-indices.begin())];
+                probe.pendingReset |= GIWorkResetGeometry;
+            }
         }
         // 空区域重新加入当前轮转，而不是补偿它空置期间根本不存在的工作。
         if(old.empty() && !indices.empty())
@@ -122,7 +165,14 @@ namespace VansGraphics
             if(current!=(std::numeric_limits<double>::max)())region.sweepProgress=std::max(region.sweepProgress,current);
         }
         std::deque<size_t> prewarm;
-        for(auto& probe:probes)probe.prewarmQueued=false;
+        region.pendingGlobalLighting=0;region.pendingLocalLighting=0;
+        for(auto& probe:probes)
+        {
+            probe.prewarmQueued=false;
+            region.pendingGlobalLighting+=probe.consumedGlobalLighting.y<region.globalLightingChange;
+            region.pendingLocalLighting+=probe.localLightingChange.y>0.0f;
+            probe.priorityQueued=false;
+        }
         if(region.description.prewarmSpacing>0.0f)
         {
             // 保留旧请求顺序；连续滚动不会每帧重新按物理 ID 排队而压住队尾。
@@ -140,8 +190,12 @@ namespace VansGraphics
         region.probes=std::move(probes);region.description.probeIndices=std::move(indices);
         region.prewarm=std::move(prewarm);
         region.priority.clear();
-        for(size_t slot=0;slot<region.probes.size();++slot)if(region.probes[slot].resetLighting)region.priority.push_back(slot);
-        region.preferPriority=true;
+        for(size_t slot=0;slot<region.probes.size();++slot)
+        {
+            auto& probe=region.probes[slot];
+            if(probe.pendingReset || probe.localLightingChange.y>0.0f || probe.consumedGlobalLighting.y<region.globalLightingChange)
+            {region.priority.push_back(slot);probe.priorityQueued=true;}
+        }
         m_Frame[index].entries.clear();return true;
     }
 
@@ -211,12 +265,18 @@ namespace VansGraphics
             // 不能跳过后再让廉价区域耗尽预算，否则昂贵区域可能永久停更。
             if (work.raysPerProbeUpdate > raysLeft) break;
             exhaustedRegions = 0;
-            while(!region.priority.empty() && (!region.probes[region.priority.front()].resetLighting ||
-                region.probes[region.priority.front()].lastIssuedFrame==m_FrameNumber))region.priority.pop_front();
+            while(!region.priority.empty())
+            {
+                auto& candidate=region.probes[region.priority.front()];
+                const bool pending=candidate.pendingReset || candidate.localLightingChange.y>0.0f ||
+                    candidate.consumedGlobalLighting.y<region.globalLightingChange;
+                if(pending && candidate.lastIssuedFrame!=m_FrameNumber)break;
+                candidate.priorityQueued=false;region.priority.pop_front();
+            }
             const bool urgent=!prewarm && region.preferPriority && !region.priority.empty();
             size_t slot;
             if(prewarm){slot=region.prewarm.front();region.prewarm.pop_front();region.probes[slot].prewarmQueued=false;}
-            else if(urgent){slot=region.priority.front();region.priority.pop_front();}
+            else if(urgent){slot=region.priority.front();region.priority.pop_front();region.probes[slot].priorityQueued=false;}
             else
             {
                 while(region.probes[region.cursor].lastIssuedFrame==m_FrameNumber)region.cursor=(region.cursor+1u)%region.probes.size();
@@ -230,9 +290,14 @@ namespace VansGraphics
             entry.elapsedSeconds = float((std::max)(m_TimeSeconds - probe.lastUpdateSeconds, 1.0 / 1000.0));
             entry.cycleIndex = probe.updateSequence++;
             region.nextPlacementSequence=std::max(region.nextPlacementSequence,probe.updateSequence);
-            entry.flags = probe.resetLighting ? GIWorkResetLighting : 0u;
+            entry.flags = probe.pendingReset;
+            const auto lighting=probe.LightingState(region.globalLightingChange,m_TimeSeconds);
+            entry.primaryLightingChange=lighting.x; entry.scatterLightingChange=lighting.y;
+            entry.primaryAgeSeconds=lighting.z; entry.scatterAgeSeconds=lighting.w;
+            if(!probe.awaitingFeedback)++region.awaitingFeedbackCount;
             probe.lastUpdateSeconds = m_TimeSeconds;
-            probe.lastWork = entry; probe.awaitingFeedback = true;
+            probe.issuedElapsedSeconds=entry.elapsedSeconds; probe.issuedCycleIndex=entry.cycleIndex;
+            probe.issuedFlags=entry.flags; probe.awaitingFeedback=true;
             probe.lastIssuedFrame=m_FrameNumber;
             work.entries.push_back(entry);
             if(prewarm)
@@ -249,21 +314,46 @@ namespace VansGraphics
         return m_Frame;
     }
 
-    bool VansGIProbeWorkScheduler::ApplyFeedback(size_t index, const GIProbeWorkEntry& issued,
+    bool VansGIProbeWorkScheduler::RetireFeedback(size_t index, const GIProbeWorkEntry& issued,
         const GIProbeFeedback& feedback, bool allowIncomplete)
     {
-        if (index >= m_Regions.size() || feedback.probeIndex != issued.probeIndex ||
-            feedback.elapsedSeconds != issued.elapsedSeconds || feedback.cycleIndex != issued.cycleIndex ||
-            (feedback.status != GIProbeComplete && (!allowIncomplete || (feedback.status & ~GIProbeFailureMask) != 0u))) return false;
+        if (index >= m_Regions.size()) return false;
         auto& region = m_Regions[index];
         const auto found = std::lower_bound(region.description.probeIndices.begin(), region.description.probeIndices.end(), issued.probeIndex);
         if (found == region.description.probeIndices.end() || *found != issued.probeIndex) return false;
         auto& probe = region.probes[size_t(found - region.description.probeIndices.begin())];
-        const auto& last = probe.lastWork;
-        if (!probe.awaitingFeedback || last.elapsedSeconds != issued.elapsedSeconds || last.cycleIndex != issued.cycleIndex ||
-            last.flags != issued.flags) return false;
+        const auto lighting=probe.LightingState(region.globalLightingChange,probe.lastUpdateSeconds);
+        if (!probe.awaitingFeedback || probe.issuedElapsedSeconds!=issued.elapsedSeconds || probe.issuedCycleIndex!=issued.cycleIndex ||
+            probe.issuedFlags!=issued.flags || lighting.x!=issued.primaryLightingChange || lighting.y!=issued.scatterLightingChange ||
+            lighting.z!=issued.primaryAgeSeconds || lighting.w!=issued.scatterAgeSeconds) return false;
+        // fence 已完成：先确认 CPU 在途身份，再退役；坏 GPU 记录也不能阻塞后续改灯。
         probe.awaitingFeedback = false;
-        // 有效的未完成反馈保留重置请求与更新计数，下一次完整球面重新尝试。
+        --region.awaitingFeedbackCount;
+        const bool primaryOnly = (feedback.status & GIProbePrimaryPublished) != 0u;
+        const uint32_t failures = feedback.status & GIProbeFailureMask;
+        const bool valid = feedback.status != 0u && feedback.probeIndex == issued.probeIndex &&
+            feedback.elapsedSeconds == issued.elapsedSeconds && feedback.cycleIndex == issued.cycleIndex &&
+            (feedback.status == GIProbeComplete || (allowIncomplete && failures != 0u &&
+                (feedback.status & ~(GIProbeFailureMask | GIProbePrimaryPublished)) == 0u)) &&
+            (!primaryOnly || ((failures & GIProbePrimaryFailureMask) == 0u &&
+                (issued.flags & GIWorkResetGeometry) == 0u && probe.completedUpdates != 0u));
+        if ((!valid || feedback.status != GIProbeComplete) && region.description.prewarmSpacing > 0.0f &&
+            !probe.completedUpdates && !probe.prewarmQueued)
+        {region.prewarm.push_back(size_t(found-region.description.probeIndices.begin()));probe.prewarmQueued=true;}
+        if (!valid)
+        {
+            // 无法确认本次发布，保留光照请求与完成统计；仅重建该探针的历史。
+            probe.pendingReset |= GIWorkResetGeometry;
+            return false;
+        }
+        // 只有实际发布的分量消费源变化和年龄；辅助未知时保留散射的完整请求。
+        if(primaryOnly || feedback.status==GIProbeComplete)
+        {
+            probe.consumedGlobalLighting.x=region.globalLightingChange;
+            probe.localLightingChange.x=0.0f;
+            probe.lastPublicationSeconds.x=probe.lastUpdateSeconds;
+        }
+        if(primaryOnly)++region.primaryOnlyPublications;
         if (feedback.status != GIProbeComplete)
         {
             ++probe.incompleteAttempts;
@@ -271,11 +361,18 @@ namespace VansGraphics
             region.pageFailures += (feedback.status & GIProbeVoxelPage) != 0u;
             region.stepFailures += (feedback.status & GIProbeVoxelBudget) != 0u;
             region.coverageFailures += (feedback.status & GIProbeVoxelCoverage) != 0u;
-            if(region.description.prewarmSpacing>0.0f && !probe.completedUpdates && !probe.prewarmQueued)
-            {region.prewarm.push_back(size_t(found-region.description.probeIndices.begin()));probe.prewarmQueued=true;}
+            region.scatterHeightFailures += (feedback.status & GIProbeScatterHeightBudget) != 0u;
+            region.scatterPageFailures += (feedback.status & GIProbeScatterVoxelPage) != 0u;
+            region.scatterStepFailures += (feedback.status & GIProbeScatterVoxelBudget) != 0u;
+            region.scatterCoverageFailures += (feedback.status & GIProbeScatterVoxelCoverage) != 0u;
             return true;
         }
-        probe.resetLighting = false;
+        probe.pendingReset = 0u;
+        if(probe.consumedGlobalLighting.y<region.globalLightingChange)--region.pendingGlobalLighting;
+        if(probe.localLightingChange.y>0.0f)--region.pendingLocalLighting;
+        probe.consumedGlobalLighting.y=region.globalLightingChange;
+        probe.localLightingChange.y=0.0f;
+        probe.lastPublicationSeconds.y=probe.lastUpdateSeconds;
         ++probe.completedUpdates;
         probe.lastCompletedFrame = m_FrameNumber;
         return true;
@@ -298,10 +395,15 @@ namespace VansGraphics
     {
         GIProbeUpdateCoverage coverage;
         if (region >= m_Regions.size()) return coverage;
+        coverage.primaryOnlyPublications=m_Regions[region].primaryOnlyPublications;
         coverage.heightFailures=m_Regions[region].heightFailures;
         coverage.pageFailures=m_Regions[region].pageFailures;
         coverage.stepFailures=m_Regions[region].stepFailures;
         coverage.coverageFailures=m_Regions[region].coverageFailures;
+        coverage.scatterHeightFailures=m_Regions[region].scatterHeightFailures;
+        coverage.scatterPageFailures=m_Regions[region].scatterPageFailures;
+        coverage.scatterStepFailures=m_Regions[region].scatterStepFailures;
+        coverage.scatterCoverageFailures=m_Regions[region].scatterCoverageFailures;
         if(m_Regions[region].probes.empty())return coverage;
         coverage.placed = m_Regions[region].probes.size();
         coverage.minCompletedUpdates = (std::numeric_limits<uint64_t>::max)();

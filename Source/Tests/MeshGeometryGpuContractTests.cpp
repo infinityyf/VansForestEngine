@@ -150,6 +150,11 @@ bool TestMeshGeometryGpuContract(bool deviceOnly)
                     Check(glm::length(mesh.normals[mesh.indices[i]] - vertices[i].normal) < 0.0001f, "Decoded normal mismatch");
                 }
             }
+            const auto withNormals=output;
+            Check(VansMeshGeometryReadback::Read(*device,{&procedural,&imported},output,error,{false,false}),error);
+            for(size_t i=0;i<output.size();++i)
+                Check(output[i].normals.empty()&&output[i].texcoords.empty()&&output[i].positions==withNormals[i].positions&&
+                    output[i].indices==withNormals[i].indices,"Attribute selection changed geometry or retained unused attributes");
             // 再次读取必须反映当前 GPU 内容，不可使用先前导入数据冒充有效快照。
             vertices[0].position.x = -3.0f;
             Check(procedural.GetBLASVertexBuffer().SetBufferData(vertices.data(), 0, sizeof(vertices)), "GPU vertex mutation failed");

@@ -1,5 +1,6 @@
-﻿#include "../SceneRuntime/Transform/VansTransformStore.h"
+#include "../SceneRuntime/Transform/VansTransformStore.h"
 #include "VansScene.h"
+#include "GICore/VansGIWorld.h"
 #include "../SceneRuntime/VansPcgPhysicsInstances.h"
 #include "../PcgCore/VansPcgRuntimePolicy.h"
 #include <new>
@@ -663,6 +664,7 @@ void VansGraphics::VansScene::AddTextureAsset(VansAsset* asset, const std::strin
 void VansGraphics::VansScene::AddMaterialAsset(VansAsset* asset)
 {
 	m_AssetRegistry.AddMaterial(asset);
+    if(auto* pbr=dynamic_cast<VansPBRMaterial*>(asset))m_MaterialManager.RegisterGIVoxelMaterial(*pbr);
 }
 
 void VansGraphics::VansScene::LoadProjectAudioResources(
@@ -1588,7 +1590,7 @@ void VansGraphics::VansScene::UnloadScene(VansVKDevice* device)
 	//  SSGI / GTAO / HZB / SSR 等屏幕空间纹理在 PrepareRenderingData()
 	//  时创建，不依赖场景内容，无需在场景切换时销毁。
 	VANS_UNLOAD_STEP(1, "娓呯悊鍦烘櫙绾ц繍琛屾椂绾圭悊");
-	m_MaterialManager.m_SSGITemporalFrame = 0;
+	m_MaterialManager.m_SSGI.history.Reset();
 	// DDGI region 资源重建后，标记渲染 Feature 的 descriptor set 需要重新写入
 	if (device)
 	{
@@ -2663,11 +2665,13 @@ void VansGraphics::VansScene::PrepareRenderBackendData(
 	}
 	if (vkDevice && sceneSnapshot.gi.settings.world.enabled)
 	{
+		// 来源捕获先取得本帧不可变材质；这里只准备 CPU 值，上传仍在旧 GI 反馈退役后执行。
+		if(auto* world=vkDevice->GetRayTracingContext().GetGIWorld())world->ApplyMaterials(sceneSnapshot.materials.voxelMaterials);
 		// 体素来源管理器是 PCG、地形与具体 GI 实现之间的唯一桥接。
 		m_GIVoxelSourceManager.Bind([vkDevice](GIVoxelSourceChanges changes)
 		{
 			auto& gi=vkDevice->GetRayTracingContext();
-			if (!gi.GetWorldAllocatedBytes()) return false;
+			if (!gi.GetGIWorld()) return false;
 			if (!gi.QueueWorldSourceChanges(std::move(changes)))
 			{
 				gi.InvalidateWorldSources();
@@ -2737,8 +2741,9 @@ void VansGraphics::VansScene::PrepareRenderBackendData(
 }
 
 void VansGraphics::VansScene::RecordFrameUploads(
-	VansVKCommandBuffer& cmd,
-	const VansRenderSceneFrameSnapshot& sceneSnapshot)
+	VansVKCommandBuffer& cmd, uint32_t frameSlot,
+	const VansRenderSceneFrameSnapshot& sceneSnapshot,
+    VansGILightingContentChanges& lightingChanges)
 {
     VANS_PROFILE_SCOPE("Frame::Upload.RecordCommands", Vans::ProfileCategory::RenderPrepare);
 	if (m_SplineFieldResources && !m_SplineFieldResources->RecordUploads(cmd))
@@ -2771,27 +2776,21 @@ void VansGraphics::VansScene::RecordFrameUploads(
 			}
 		}
 	}
-    m_VideoManager.RecordPendingUploads(cmd);
     m_MaterialManager.RecordPendingSkinProfileLUTUploads(cmd);
-
-    // 面光源视频发光：写入 emissive 贴图数组层，合并进当前帧命令缓冲。
+    VansTexture* emissiveArray = m_MaterialManager.GetRuntimeRenderTexture(
+        VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
+    const auto& uploads = m_VideoManager.RecordPendingUploads(cmd, frameSlot, emissiveArray, sceneSnapshot.rectLightVideos);
+    for (const auto& upload : uploads)
     {
-        VANS_PROFILE_SCOPE("RectLightVideo::RecordCopyFrames", Vans::ProfileCategory::Video);
-        VansTexture* emissiveArray = m_MaterialManager.GetRuntimeRenderTexture(
-            VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
-        if (!emissiveArray)
-            return;
-
-		for (const VansRenderRectLightVideoFrameData& binding :
-			sceneSnapshot.rectLightVideos)
-        {
-			VansVideoTexture* vid =
-				m_VideoManager.GetByRuntimeIndex(binding.videoRuntimeIndex);
-            if (!vid || !vid->IsReady()) continue;
-
-            vid->RecordNewFrameToArrayLayer(
-				emissiveArray, cmd, binding.rectLightLayer);
-        }
+        if (upload.result.radianceChange <= 0.0f) continue;
+        const VkImageView image = m_VideoManager.GetByRuntimeIndex(upload.videoRuntimeIndex)->GetImageView();
+        // 只有 RT 实际绑定的动态材质才影响全局 GI；不扫描探针或读取 GPU 像素。
+        if (std::any_of(m_TlasInstanceTextures.begin(), m_TlasInstanceTextures.end(),
+            [image](VansVKImage& texture) { return texture.GetImageView() == image; }))
+            lightingChanges.AddSurface(upload.result.radianceChange);
+        for (uint32_t layer = 0; layer < VANS_MAX_RECT_LIGHTS; ++layer)
+            if (upload.result.arrayLayers & (1u << layer))
+                lightingChanges.AddRectLayer(layer, upload.result.radianceChange);
     }
 }
 
@@ -3976,6 +3975,11 @@ bool VansGraphics::VansScene::CreateInstanceTransformBuffer(
 
 bool VansGraphics::VansScene::SetInstanceTransformData(const ModelDataStruct& data, uint32_t slot)
 {
+    if (slot >= m_TransformSlotAllocator.GetMaxCapacity())
+    {
+        VANS_LOG_ERROR("[Scene] Instance-transform write rejected: invalid slot=" << slot);
+        return false;
+    }
     const VkDeviceSize offset = static_cast<VkDeviceSize>(slot) * sizeof(ModelDataStruct);
     for (VansVKBuffer& buffer : m_InstanceTransformDataBuffers)
         if (!buffer.SetBufferData(&data, offset, sizeof(ModelDataStruct)))
@@ -3985,6 +3989,11 @@ bool VansGraphics::VansScene::SetInstanceTransformData(const ModelDataStruct& da
 
 void VansGraphics::VansScene::UpdateMappedInstanceTransformData(const ModelDataStruct& data, uint32_t slot)
 {
+    if (slot >= m_TransformSlotAllocator.GetMaxCapacity())
+    {
+        VANS_LOG_ERROR("[Scene] Mapped instance-transform write rejected: invalid slot=" << slot);
+        return;
+    }
     const VkDeviceSize offset = static_cast<VkDeviceSize>(slot) * sizeof(ModelDataStruct);
     auto* vkDevice = static_cast<VansVKDevice*>(m_GraphicsDevice);
     m_InstanceTransformDataBuffers.at(vkDevice->GetFrameResourceSlot()).UpdateMapped(
@@ -4205,6 +4214,7 @@ void VansGraphics::VansScene::DiscardRenderNodeBuild(VansRenderNodeBuildResult& 
 		m_AssetRegistry.RemoveSceneSubMesh(subMesh);
 	for (VansMaterial* material : build.createdMaterials)
 	{
+        if(auto* pbr=dynamic_cast<VansPBRMaterial*>(material))m_MaterialManager.UnregisterGIVoxelMaterial(*pbr);
 		m_AssetRegistry.RemoveMaterial(material);
 		delete material;
 	}
@@ -4339,7 +4349,7 @@ bool VansGraphics::VansScene::RemoveLightByIndex(int index, VansLightType type)
 				kBlackPixel,
 				1,
 				1,
-				releasedTextureSlot);
+				releasedTextureSlot, Vans::VansColorEncoding::Linear, VK_FILTER_NEAREST);
 		}
 	}
 	return true;

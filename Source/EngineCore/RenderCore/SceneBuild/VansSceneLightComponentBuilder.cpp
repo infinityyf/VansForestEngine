@@ -159,7 +159,7 @@ void WriteWhiteRectLightEmissiveFallback(VansMaterialManager& materialManager, i
 
 	static const uint8_t kWhitePixel[4] = { 255, 255, 255, 255 };
 	emissiveArray->UpdateArrayLayerFromPixels(
-		texVkDevice->GetCommandBuffer(), kWhitePixel, 1, 1, layer);
+		texVkDevice->GetCommandBuffer(), kWhitePixel, 1, 1, layer, Vans::VansColorEncoding::Linear, VK_FILTER_NEAREST);
 }
 
 bool UploadRectLightEmissive(
@@ -204,7 +204,7 @@ bool UploadRectLightEmissive(
 		sourceImage.pixels.data(),
 		sourceImage.width,
 		sourceImage.height,
-		textureSlot))
+		textureSlot, sourceImage.encoding, VK_FILTER_LINEAR))
 	{
 		VANS_LOG("[LoadSceneObjects] 面光源 '" << objectName
 			<< "' 上传 GUID 发光贴图 slot=" << textureSlot);

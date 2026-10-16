@@ -15,6 +15,17 @@ bool TestGIWorldContract()
     try
     {
         auto check=[](bool valid,const char* message){if(!valid)throw std::runtime_error(message);};
+        auto checkOccupancy=[&](const GIWorldBrick& brick)
+        {
+            uint32_t group=0;
+            for(int z=0;z<8;z+=2)for(int y=0;y<8;y+=2)for(int x=0;x<8;x+=2,++group)
+            {
+                bool occupied=false;
+                for(int dz=0;dz<2;++dz)for(int dy=0;dy<2;++dy)for(int dx=0;dx<2;++dx)
+                    occupied=occupied || (brick.voxels[x+dx+8*(y+dy+8*(z+dz))].optical&0x1ffffu)!=0;
+                check(bool(brick.occupancy[group/32]&(1u<<(group%32)))==occupied,"Brick occupancy differs from published voxel contents");
+            }
+        };
         VansGISettings off, edited;edited.world.maxBricks=123;
         check(!off.world.enabled,"World GI must be opt-in");
         check(GISettingsResourceLayoutEquals(off,edited),"Disabled tuning must not trigger allocation");
@@ -28,8 +39,9 @@ bool TestGIWorldContract()
             "Disabled world region entered allocation or reordered the ordinary region");
         scoped.world.enabled=true;
         auto active=BuildActiveGIRegionOrder(scoped);
-        check(active.size()==2 && ResolveGIRegion(*active[0]).worldOnly && !ResolveGIRegion(*active[1]).worldOnly,
-            "World participation did not survive region ordering and resolution");
+        check(active.size()==2 && active[0]->stableId==1 && active[1]->stableId==2 &&
+            !ResolveGIRegion(*active[0]).worldOnly && ResolveGIRegion(*active[1]).worldOnly,
+            "World participation or author order changed under diagnostic selection");
         auto changed=scoped;changed.regions[0].worldOnly=true;
         check(!GISettingsResourceLayoutEquals(scoped,changed),"Changing region transport domain did not rebuild resources");
         VansGIWorldBuilder builder;builder.Reset(off.world,{},glm::vec3(0));
@@ -150,13 +162,32 @@ bool TestGIWorldContract()
             check(entries<1024,"Small edit rebuilt the whole height hierarchy");
             std::cout<<"GI height patch min/max entries: "<<entries<<" / "<<incremental.ranges.size()<<'\n';
         }
-        GIWorldTriangle triangle;triangle.positions={glm::vec3(0,0,0),glm::vec3(1,0,0),glm::vec3(0,1,0)};
+        GIWorldMesh triangle;triangle.positions={glm::vec3(0,0,0),glm::vec3(1,0,0),glm::vec3(0,1,0)};
         triangle.uvs={glm::vec2(0,0),glm::vec2(1,0),glm::vec2(0,1)};
+        triangle.indices={0,1,2};
         triangle.alpha=[](glm::vec2){return 0.f;};
         GIWorldTemplate result;
         check(BakeGIWorldTemplate({triangle},.25f,1024,result,error)&&result.cells.empty(),"Transparent cards must not become walls");
         triangle.alpha=[](glm::vec2){return 1.f;};
         check(BakeGIWorldTemplate({triangle},.25f,1024,result,error)&&!result.cells.empty(),"Whole-model opaque surface was lost");
+        {
+            GIWorldMesh indexed=triangle;indexed.positions.push_back({1,1,0});indexed.uvs.push_back({1,1});indexed.indices={0,1,2,1,3,2};
+            GIWorldMesh second=triangle;second.positions={indexed.positions[1],indexed.positions[3],indexed.positions[2]};
+            second.uvs={indexed.uvs[1],indexed.uvs[3],indexed.uvs[2]};
+            GIWorldTemplate shared,expanded;
+            check(BakeGIWorldTemplate({indexed},.25f,1024,shared,error)&&BakeGIWorldTemplate({triangle,second},.25f,1024,expanded,error),"Indexed geometry bake failed");
+            auto equal=[](const GIWorldTemplateLevel& a,const GIWorldTemplateLevel& b)
+            {
+                if(a.cells.size()!=b.cells.size())return false;
+                for(const auto& entry:a.cells){const auto it=b.cells.find(entry.first);if(it==b.cells.end()||it->second.optical!=entry.second.optical||it->second.surface!=entry.second.surface)return false;}
+                return true;
+            };
+            check(equal(shared,expanded)&&shared.coarseLevels.size()==expanded.coarseLevels.size(),"Shared vertices changed optical cells");
+            for(size_t level=0;level<shared.coarseLevels.size();++level)check(equal(shared.coarseLevels[level],expanded.coarseLevels[level]),"Shared vertices changed optical mips");
+            indexed.indices.back()=999;
+            check(!BakeGIWorldTemplate({indexed},.25f,1024,shared,error)&&equal(shared,expanded),"Invalid indices partially published a template");
+            indexed.indices={0,1};check(!BakeGIWorldTemplate({indexed},.25f,1024,shared,error),"Incomplete triangle was accepted");
+        }
         for(const auto& c:result.cells)check((c.second.optical&0x10000u)!=0 && !(c.second.optical&0x20000u),"Surface shell was classified as interior");
         triangle.porous=true;
         check(BakeGIWorldTemplate({triangle},.25f,1024,result,error),"Porous voxel bake failed");
@@ -173,7 +204,7 @@ bool TestGIWorldContract()
             {
                 VansGIWorldBuilder current;current.Reset(settings,instances,glm::vec3(0));
                 Bricks output;GIWorldBrick brick;
-                while(current.BuildNext(brick))output.emplace(brick.key,brick.voxels);
+                while(current.BuildNext(brick)){checkOccupancy(brick);output.emplace(brick.key,brick.voxels);}
                 return output;
             };
             const auto near=MakeGIWorldInstance(model,glm::translate(glm::mat4(1),glm::vec3(-1,0,-1)));
@@ -430,11 +461,45 @@ bool TestGIWorldContract()
         fine.voxelSize=.25f;
 
         check(base>0&&std::abs(scaled/base-16)<.1,"Scaled vegetation has holes or does not preserve optical mass");
-        GIWorldTriangle splitA=triangle,splitB=triangle;auto midpoint=(triangle.positions[1]+triangle.positions[2])*.5f;
+        GIWorldMesh splitA=triangle,splitB=triangle;auto midpoint=(triangle.positions[1]+triangle.positions[2])*.5f;
         splitA.positions[2]=midpoint;splitB.positions[1]=midpoint;
         GIWorldTemplate tessellated;check(BakeGIWorldTemplate({splitA,splitB},.25f,1024,tessellated,error),"Split triangle bake failed");
         double originalMass=0,splitMass=0;for(const auto& v:model->cells)originalMass+=glm::unpackHalf1x16(uint16_t(v.second.optical));for(const auto& v:tessellated.cells)splitMass+=glm::unpackHalf1x16(uint16_t(v.second.optical));
         check(std::abs(originalMass-splitMass)<.01,"Leaf extinction changes with mesh tessellation");
+        {
+            // 同一叶面细分不能改变消光。所有三角形落入同格，暴露逐项 half 舍入损失。
+            auto bakeLeaf=[&](uint32_t divisions)
+            {
+                GIWorldMesh mesh;mesh.porous=true;mesh.material=7;
+                for(uint32_t y=0;y<=divisions;++y)for(uint32_t x=0;x<=divisions;++x)
+                {
+                    const glm::vec2 uv(float(x)/divisions,float(y)/divisions);
+                    mesh.positions.push_back({.125f+.75f*uv.x,.5f,.125f+.75f*uv.y});mesh.uvs.push_back(uv);
+                }
+                for(uint32_t y=0;y<divisions;++y)for(uint32_t x=0;x<divisions;++x)
+                {
+                    const uint32_t a=y*(divisions+1)+x,b=a+1,c=a+divisions+1,d=c+1;
+                    mesh.indices.insert(mesh.indices.end(),{a,c,b,b,c,d});
+                }
+                GIWorldTemplate baked;
+                check(BakeGIWorldTemplate({mesh},1.f,64,baked,error),"Dense leaf template bake failed");
+                return baked;
+            };
+            const auto reference=bakeLeaf(1),dense=bakeLeaf(64);
+            const double expected=.35*.75*.75;
+            auto mass=[](const GIWorldTemplateLevel& level)
+            {
+                double sum=0;for(const auto& cell:level.cells)sum+=glm::unpackHalf1x16(uint16_t(cell.second.optical));
+                return sum*std::pow(double(level.voxelSize),3);
+            };
+            std::cout<<"GI leaf tessellation: 2 triangles="<<mass(reference)<<", 8192 triangles="<<mass(dense)
+                <<", expected="<<expected<<'\n';
+            check(std::abs(mass(reference)-expected)<expected*.001 && std::abs(mass(dense)-expected)<expected*.001,
+                "Dense leaf tessellation loses optical mass during template accumulation");
+            for(size_t mip=0;mip<3;++mip)
+                check(std::abs(mass(dense.coarseLevels.at(mip))-mass(reference.coarseLevels.at(mip)))<expected*.001,
+                    "Dense leaf template mip inherited tessellation-dependent extinction");
+        }
         // 分段构建不能提前发布半砖，恢复后必须逐字节等价于不中断构建。
         auto collect=[&](uint32_t work)
         {
@@ -445,7 +510,7 @@ bool TestGIWorldContract()
             while(builder.PendingCount())
             {
                 GIWorldBrick brick;const auto pending=builder.PendingCount();
-                if(builder.BuildNext(brick,work))bricks.emplace(brick.key,brick.voxels);
+                if(builder.BuildNext(brick,work)){checkOccupancy(brick);bricks.emplace(brick.key,brick.voxels);}
                 else
                 {
                     paused=true;check(builder.PendingCount()==pending,"Partial brick was published before completion");
@@ -462,7 +527,7 @@ bool TestGIWorldContract()
         for(const auto& page:full)for(size_t i=0;i<512;++i)
         {const auto& b=sliced.at(page.first)[i];check(page.second[i].optical==b.optical && page.second[i].surface==b.surface,"Resumed build differs from uninterrupted build");}
         // 密集模板的粗场必须使用 mip；验证实际访问量和光学总量，而非仅存在 LOD 字段。
-        GIWorldTriangle large=triangle;for(auto& p:large.positions)p*=16.f;
+        GIWorldMesh large=triangle;for(auto& p:large.positions)p*=16.f;
         auto detailed=std::make_shared<GIWorldTemplate>();check(BakeGIWorldTemplate({large},.25f,65536,*detailed,error),"Large mip template failed");
         check(!detailed->coarseLevels.empty() && detailed->CellCount()>detailed->cells.size(),"Template mip chain is missing");
         auto buildMass=[&](std::shared_ptr<const GIWorldTemplate> source)
@@ -479,7 +544,7 @@ bool TestGIWorldContract()
         check(std::abs(optimized.first/reference.first-1)<.02,"Template mip filtering loses optical mass");
         std::cout<<"GI mip samples: "<<reference.second<<" -> "<<optimized.second<<"; mass ratio="<<optimized.first/reference.first<<'\n';
         // 同格木质与叶片的材质不能取决于三角形提交顺序。
-        GIWorldTriangle wood=triangle,leaf=triangle;wood.porous=false;wood.material=3;leaf.material=7;
+        GIWorldMesh wood=triangle,leaf=triangle;wood.porous=false;wood.material=3;leaf.material=7;
         GIWorldTemplate firstOrder,secondOrder;
         check(BakeGIWorldTemplate({wood,leaf},.25f,1024,firstOrder,error) && BakeGIWorldTemplate({leaf,wood},.25f,1024,secondOrder,error),"Mixed optical template failed");
         for(const auto& cell:firstOrder.cells)

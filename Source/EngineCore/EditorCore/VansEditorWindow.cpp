@@ -1561,6 +1561,8 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 			: animationAPI.GetAnimationAssetBinding(selectedEntityGuid);
 		const bool canOpenSelectedAnimationGraph = selectedAnimationBinding.available
 			&& !selectedAnimationBinding.animatorAssetPath.empty();
+		// 在首个作者态消费者之前推进一次预览；查询次数不再决定更新次数。
+		pcgAPI.UpdatePcgSplineAuthoring();
 		Vans::VansEditorHistoryService editorHistory = VansEditorHistoryAdapter::Compose(
 			runtimeHistoryAPI,
 			pcgAPI,

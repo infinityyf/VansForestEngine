@@ -81,7 +81,7 @@ namespace VansGraphics
 		{
 			static const std::unordered_set<std::string> allowed = {
 				"magic", "id", "name", "previewSkeleton", "defaultWeight",
-				"branchRules", "explicitWeights", "editor"
+				"branchRules", "explicitWeights", "explicitChannelWeights", "editor"
 			};
 			if (!root.is_object()) { error = "Bone mask root must be an object"; return false; }
 			for (const char* forbidden : { "version", "schemaVersion", "formatVersion" })
@@ -178,6 +178,24 @@ namespace VansGraphics
 				}
 				asset.explicitWeights[item.key()] = weight;
 			}
+
+            if(root.contains("explicitChannelWeights"))
+            {
+                if(!root["explicitChannelWeights"].is_object()){error="Channel weights must be an object";return false;}
+                for(const auto& item:root["explicitChannelWeights"].items())
+                {
+                    if(item.key().empty() || !item.value().is_array() || item.value().size()!=3)
+                    {error="Channel weights require bone names and three T/R/S weights";return false;}
+                    glm::vec3 channels;
+                    for(int axis=0;axis<3;++axis)
+                    {
+                        if(!item.value()[axis].is_number() || !IsUnitWeight(item.value()[axis].get<float>()))
+                        {error="Channel weight must be in [0,1]";return false;}
+                        channels[axis]=item.value()[axis].get<float>();
+                    }
+                    asset.explicitChannelWeights[item.key()]=channels;
+                }
+            }
 			if (root.contains("editor"))
 			{
 				const json& editor = root["editor"];
@@ -265,6 +283,14 @@ namespace VansGraphics
 			}
 			root["explicitWeights"][bone] = weight;
 		}
+
+        if(!asset.explicitChannelWeights.empty())root["explicitChannelWeights"]=json::object();
+        for(const auto& [bone,channels]:asset.explicitChannelWeights)
+        {
+            if(bone.empty() || !IsUnitWeight(channels.x)||!IsUnitWeight(channels.y)||!IsUnitWeight(channels.z))
+            {error="Invalid channel weights";return false;}
+            root["explicitChannelWeights"][bone]={channels.x,channels.y,channels.z};
+        }
 		std::vector<std::string> expandedBones = asset.editorExpandedBones;
 		std::sort(expandedBones.begin(), expandedBones.end());
 		if (std::adjacent_find(expandedBones.begin(), expandedBones.end()) != expandedBones.end()

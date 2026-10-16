@@ -77,6 +77,7 @@ namespace Vans
 		const VansCharacterMotionIntent& intent)
 	{
 		m_Intent = intent;
+		if (m_Intent.rootMotionReferenceYaw && !std::isfinite(*m_Intent.rootMotionReferenceYaw)) m_Intent.rootMotionReferenceYaw.reset();
 		const float inputLength = glm::length(m_Intent.moveInputLocal);
 		if (inputLength > 1.0f)
 			m_Intent.moveInputLocal /= inputLength;
@@ -207,6 +208,9 @@ namespace Vans
 					currentFacingYaw,
 					animationToWorldScale);
 			rootWorldDelta = ownerDelta.translationWorld;
+			if (m_Intent.valid && m_Intent.rootMotionReferenceYaw)
+				rootWorldDelta = ResolveAnimationRootMotionOwnerDelta(animationRootDelta,animationRootRotation,
+					*m_Intent.rootMotionReferenceYaw,animationToWorldScale).translationWorld;
 			rootYawDelta = ownerDelta.yawDegrees;
 		}
 

@@ -47,12 +47,16 @@ public:
     bool Release(VansGenerationHandle resource,std::string& error) override;
     void Tick(double deltaSeconds) override;
 private:
-    struct SurfaceCell { VansGraphics::VansParticleEmissionPoint point; std::uint32_t parent=0; };
+    struct SurfaceCell { VansGraphics::VansParticleEmissionPoint point; std::uint32_t parent=0,depth=0;
+        float interval=.1f,nextSpawn=0; };
     struct SurfaceField
     {
         glm::vec3 origin{0}; std::uint32_t mask=0;
         float radius=0,spacing=1,probeHeight=1,maxDrop=2,minNormalY=0.25f;
         float duration=1,spreadDuration=1,spawnInterval=0.1f,age=0,nextSpawn=0;
+        float spreadSpeed=1,childIntervalMultiplier=1,maxChildInterval=.5f;
+        std::uint32_t maxDepth=4,randomState=1;
+        bool connected=false;
         std::uint32_t maximum=16,candidate=0;
         bool stopped=false;
         std::string stopReason="Completed";
@@ -72,7 +76,8 @@ private:
     void PublishSurfaceField(VansGenerationHandle handle,const Effect& effect);
     void NotifySurfaceFieldStopped(VansGenerationHandle handle,Effect& effect);
     void SampleExtinguishingVolumes(const std::vector<VansGenerationHandle>& volumes);
-    bool PlaceSurfaceCell(SurfaceField& field,glm::vec3 candidate,std::uint32_t& queryBudget);
+    bool PlaceSurfaceCell(SurfaceField& field,glm::vec3 candidate,std::uint32_t& queryBudget,float bornTime,
+        std::optional<std::uint32_t> requestedParent=std::nullopt);
     void ExtendSurfaceField(Effect& effect,float seconds,std::uint32_t& queryBudget);
     IVansGameplayServiceRuntime& m_Runtime;
     VansVFXSceneBackend m_Backend;

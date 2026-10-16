@@ -8,6 +8,14 @@
 
 namespace Vans
 {
+class VansSceneDocument;
+namespace EditorAPI { class ISceneInteractionEditorAPI; }
+
+EditorAPI::RuntimeEntityPreviewChange BuildRuntimeEntityHierarchyPreviewChange(const VansSerializedValue& entity);
+bool RestoreRuntimeChildHierarchy(EditorAPI::ISceneInteractionEditorAPI& api,
+    const VansSceneDocument& document, const std::string& parentGuid);
+bool RequiresRuntimeEntityRebuild(const VansSerializedValue& before, const VansSerializedValue& after);
+
 EditorAPI::RuntimeMaterialPreviewChange BuildRuntimeMaterialPreviewChange(
     const std::filesystem::path& assetPath,
     const VansSerializedValue& assetRoot,

@@ -48,7 +48,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 	Vans::EditorAPI::IGAFEditorAPI& gafAPI = editorAPI;
     m_GameCursorViewportInteractive = false;
 	const auto pcgBrush = pcgAPI.GetPcgBrushSnapshot();
-	const auto splineEditor = pcgAPI.GetPcgSplineSnapshot();
+	const auto splineEditor = pcgAPI.GetPcgSplineStatus();
 	const bool splineToolActive=splineEditor.editable && splineEditor.toolEnabled;
 	if (m_SplineGizmoDragging && (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::GetIO().AppFocusLost ||
 		ImGui::IsKeyPressed(ImGuiKey_Escape) || !splineToolActive))
@@ -67,7 +67,25 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
     // -------------------------------------------------------------------------
     {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-        ImGui::Begin("Scene");
+        if (!ImGui::Begin("Scene"))
+        {
+            // 笔画收尾与相机取景计时仍执行，隐藏视口不准备绘制和拾取数据。
+            if (m_TerrainBrushDragging && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            {
+                Vans::EditorAPI::TerrainBrushInput finish;
+                finish.phase = Vans::EditorAPI::TerrainBrushInputPhase::End;
+                terrainAPI.ApplyTerrainBrushInput(finish);
+                m_TerrainBrushDragging = false;
+            }
+            VansEditorCameraInputState cameraInput;
+            cameraInput.editMode = playModeAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
+            cameraInput.deltaTime = static_cast<float>(VansTimer::GetEditorDeltaTime());
+            m_CameraController.Update(m_Camera, cameraInput);
+            m_ObjectPickPressed = false;
+            ImGui::End();
+            ImGui::PopStyleVar();
+            return;
+        }
 		Vans::EditorAPI::UpscalerSettingsSnapshot upscalerSettings =
 			renderAPI.GetUpscalerSettings();
 
@@ -770,7 +788,8 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 
 			if (splineToolActive && m_Camera)
 			{
-				DrawSplineTools(pcgAPI,splineEditor,{imageScreenPos.x,imageScreenPos.y},{drawSize.x,drawSize.y},mouseInsideSceneImage);
+				const auto snapshot=pcgAPI.GetPcgSplineSnapshot();
+				DrawSplineTools(pcgAPI,*snapshot,{imageScreenPos.x,imageScreenPos.y},{drawSize.x,drawSize.y},mouseInsideSceneImage);
 				if (mouseInsideSceneImage && ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGuizmo::IsOver())
 					pcgAPI.AppendPcgSplinePoint(buildTerrainRay());
 			}

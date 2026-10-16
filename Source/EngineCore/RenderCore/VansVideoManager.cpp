@@ -1,4 +1,6 @@
 #include "VansVideoManager.h"
+#include "VansRenderRuntimeConfig.h"
+#include "VansRenderSceneSnapshot.h"
 #include "../SceneCore/VansSceneResourcePlan.h"
 #include "../Util/VansLog.h"
 #include <algorithm>
@@ -119,13 +121,72 @@ void VansVideoManager::TickAll(double deltaTime)
 // ===========================================================================
 // RecordPendingUploads — 录制所有视频的待上传帧，不做独立提交或 fence 等待
 // ===========================================================================
-void VansVideoManager::RecordPendingUploads(VansVKCommandBuffer& cmd)
+const std::vector<VansVideoFrameUpload>& VansVideoManager::RecordPendingUploads(
+    VansVKCommandBuffer& cmd, uint32_t frameSlot, VansTexture* rectArray,
+    const std::vector<VansRenderRectLightVideoFrameData>& bindings)
 {
-    for (auto& [name, videoTex] : m_Videos)
+    if (frameSlot >= VansCommandRecordingConfig::MaximumFramesInFlight)
+        throw std::invalid_argument("Video upload frame slot exceeds the engine ring");
+    // 先校验整个有界目标集合，再录制；同一视频一次发布到所有目标层。
+    uint32_t assignedLayers = 0;
+    for (const auto& binding : bindings)
     {
-        if (videoTex && videoTex->IsReady())
-            videoTex->RecordPendingUpload(cmd);
+        if (!GetByRuntimeIndex(binding.videoRuntimeIndex) || binding.rectLightLayer < 0 ||
+            binding.rectLightLayer >= VANS_MAX_RECT_LIGHTS)
+            throw std::invalid_argument("Invalid rect-light video binding");
+        const uint32_t bit = 1u << binding.rectLightLayer;
+        if (assignedLayers & bit)
+            throw std::invalid_argument("Multiple video bindings write one rect-light layer");
+        assignedLayers |= bit;
     }
+    m_RecordedFrameUploads.clear();
+    m_RecordedFrameUploads.reserve(m_RuntimeVideos.size());
+    for (uint32_t i = 0; i < m_RuntimeVideos.size(); ++i)
+    {
+        auto* video = m_RuntimeVideos[i];
+        if (!video || !video->IsReady()) continue;
+        uint32_t layers = 0;
+        for (const auto& binding : bindings)
+            if (binding.videoRuntimeIndex == i) layers |= 1u << binding.rectLightLayer;
+        const auto result = video->RecordPendingUploads(cmd, frameSlot, rectArray, layers);
+        if (result.recorded) m_RecordedFrameUploads.push_back({ i, result });
+    }
+    return m_RecordedFrameUploads;
+}
+
+void VansVideoManager::AppendFrameResources(VansFrameSubmitNode& node, VansTexture* rectArray,
+    VkPipelineStageFlags stages, bool includeUploads) const
+{
+    const auto append = [&](const std::string& name, VkImage image, bool upload)
+    {
+        if (!image) return;
+        const bool write = includeUploads && upload;
+        node.resources.push_back({ name, stages | (write ? VK_PIPELINE_STAGE_TRANSFER_BIT : 0u),
+            VK_ACCESS_SHADER_READ_BIT | (write ? VK_ACCESS_TRANSFER_WRITE_BIT : 0u),
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, write, true, false,
+            VansPhysicalResourceIdentity::ForImage(image) });
+    };
+    uint32_t writtenLayers = 0;
+    for (const auto& upload : m_RecordedFrameUploads) writtenLayers |= upload.result.arrayLayers;
+    size_t uploadIndex = 0;
+    for (uint32_t i = 0; i < m_RuntimeVideos.size(); ++i)
+    {
+        auto* video = m_RuntimeVideos[i];
+        if (!video || !video->IsReady()) continue;
+        const bool written = uploadIndex < m_RecordedFrameUploads.size() &&
+            m_RecordedFrameUploads[uploadIndex].videoRuntimeIndex == i;
+        if (written) ++uploadIndex;
+        append("VideoTexture" + std::to_string(i), video->GetTexture()->GetImage().GetImage(), written);
+    }
+    if (rectArray) append("RectLightVideoArray", rectArray->GetImage().GetImage(), writtenLayers != 0);
+}
+
+void VansVideoManager::ResolveRecordedUploads(bool submitted)
+{
+    // 包括中途录制失败、尚未来得及加入结果表的视频。
+    for (auto* video : m_RuntimeVideos)
+        if (video) video->ResolveRecordedUploads(submitted);
+    m_RecordedFrameUploads.clear();
 }
 
 // ===========================================================================
@@ -164,6 +225,7 @@ void VansVideoManager::Clear()
 {
     // unique_ptr 析构时会自动调用 ~VansVideoTexture() → Close()，
     // 无需在此处显式调用 Close()，避免双重关闭。
+    m_RecordedFrameUploads.clear();
     m_VideosByAssetGuid.clear();
 	m_RuntimeVideos.clear();
     m_Videos.clear();

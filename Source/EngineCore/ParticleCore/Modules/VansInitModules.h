@@ -61,6 +61,7 @@ namespace VansGraphics
     {
     public:
         VansFloatCurve m_Size;
+        VansFloatCurve m_CollectionAgeScale; // 出生时按发射点的集合秒钟采样；默认倍率 1。
 
         VansInitSizeModule()
         {

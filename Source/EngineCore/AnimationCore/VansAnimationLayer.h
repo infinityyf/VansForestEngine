@@ -93,6 +93,8 @@ namespace VansGraphics
 		std::string id;
 		std::string name;
 		std::vector<VansAnimationGraphBindingDefinition> bindings;
+		// Optional externally timed root graph; CCT consumes it before the pose is evaluated.
+		std::string characterMotionGraphId;
 	};
 
 	struct VansGraphSetTransitionPolicy

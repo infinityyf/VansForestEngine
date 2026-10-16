@@ -64,9 +64,9 @@ VansActionCommandResult VansAnimationEventActionService::Execute(const VansActio
     auto* storage = m_World.FindStorage<VansRuntimeAnimationComponent>(
         VansRuntimeComponentType_Animation);
     const auto* animation = storage ? storage->Get(subscription.animation) : nullptr;
-    const auto* controller = animation && animation->animationNode
-        ? animation->animationNode->GetCharacterMotionController() : nullptr;
-    if (!controller || !controller->GetClip(subscription.clip) || !subscription.action)
+    const auto* clip = animation && animation->animationNode
+        ? animation->animationNode->FindClipByAlias(subscription.clip) : nullptr;
+    if (!clip || !subscription.action)
         return { VansActionError::Rejected, {}, {}, "AnimationEvents.Subscribe requires a live Action and an owner Clip" };
     return { VansActionError::None, m_Subscriptions.Emplace(std::move(subscription)), VansSerializedValue::Object({}), {} };
 }
@@ -89,8 +89,7 @@ void VansAnimationEventActionService::PublishEvaluatedEvents()
         if (!animation || !animation->animationNode ||
             !m_Runtime.IsActionActive(subscription.owner, subscription.action)
             || !m_World.IsComponentEffectivelyEnabled(subscription.animation)) return;
-        const auto* controller = animation->animationNode->GetCharacterMotionController();
-        const auto* clip = controller ? controller->GetClip(subscription.clip) : nullptr;
+        const auto* clip = animation->animationNode->FindClipByAlias(subscription.clip);
         if (!clip) return;
         const auto clipId = clip->stableId ? clip->stableId : VansGraphics::VansAnimationStableId(clip->clipName);
         std::unordered_set<std::string> frameOccurrences;

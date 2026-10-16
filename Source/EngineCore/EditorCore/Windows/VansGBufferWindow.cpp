@@ -49,20 +49,24 @@ void VansGraphics::VansGBufferWindow::ShowWindow(Vans::EditorAPI::IEngineEditorA
 
 	if (VansGraphics::VansEditorWindow::IsWindowOpen(VansGraphics::VansEditorWindowId::GBuffer))
 	{
-		ImGui::Begin("GBuffer Visualization");
+		if (ImGui::Begin("GBuffer Visualization"))
+		{
 		Vans::EditorAPI::RenderTextureFilter filter;
 		filter.category = "gbuffer";
 		DrawPreviewTable("GBufferTable", renderAPI.QueryRenderTexturePreviews(filter));
+		}
 		ImGui::End();
 	}
 
 	if (!VansGraphics::VansEditorWindow::IsWindowOpen(VansGraphics::VansEditorWindowId::WaterGBuffer))
 		return;
 
-	ImGui::Begin("Water GBuffer Visualization");
+	if (ImGui::Begin("Water GBuffer Visualization"))
+	{
 	ImGui::TextWrapped("Water-specific GBuffer outputs used to confirm water pixels are isolated from the scene GBuffer.");
 	Vans::EditorAPI::RenderTextureFilter filter;
 	filter.category = "water_gbuffer";
 	DrawPreviewTable("WaterGBufferTable", renderAPI.QueryRenderTexturePreviews(filter));
+	}
 	ImGui::End();
 }

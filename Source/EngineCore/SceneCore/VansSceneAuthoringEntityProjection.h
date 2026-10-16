@@ -25,6 +25,8 @@ struct VansSceneAuthoringComponentProjection
 	bool enabled = true;
 	std::optional<VansSerializedValue> localVolumetricFogComponent;
 	std::optional<VansSerializedValue> navigationData;
+    // Residual authoring data not consumed by this incremental projection.
+    VansSerializedValue unprojectedData;
 };
 
 using VansSceneAuthoringLightConfig = std::variant<

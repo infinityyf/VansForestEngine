@@ -40,6 +40,7 @@ void main()
     normalSample = normalSample * 2.0 - 1.0;
     mat3 tbn = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(tbn * normalSample);
+    if (!gl_FrontFacing) normal = -normal;
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
 
     outNormal = vec4(normal, -1.0);

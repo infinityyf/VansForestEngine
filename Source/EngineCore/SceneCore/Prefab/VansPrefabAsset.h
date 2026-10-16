@@ -20,6 +20,12 @@ struct VansPrefabAsset
 
 using VansPrefabLookup = std::function<std::shared_ptr<const VansPrefabAsset>(const std::string&)>;
 
+// Derived from a resolved immutable scene; indices address its authoring instance records.
+struct VansPrefabSceneIndex
+{
+    std::unordered_map<std::string, std::size_t> instanceByEntity;
+};
+
 struct VansPrefabExtraction
 {
     VansPrefabAsset asset;
@@ -41,9 +47,11 @@ class VansPrefabResolver
 public:
     static VansPrefabLookup FromRepository(const VansAssetObjectRepository& repository);
     static bool ResolveScene(const VansSerializedValue& authoring, const VansPrefabLookup& lookup,
-        VansSerializedValue& resolved, std::string& error);
+        VansSerializedValue& resolved, std::string& error, VansPrefabSceneIndex* index = nullptr);
     static bool CaptureScene(const VansSerializedValue& resolved, const VansPrefabLookup& lookup,
         VansSerializedValue& authoring, std::string& error);
+    static bool CaptureInstance(const VansPrefabAsset& asset, const VansSerializedValue& instance,
+        const VansSerializedValue& entities, VansSerializedValue& capturedInstance, std::string& error);
     static bool Instantiate(const VansPrefabAsset& asset, const VansSerializedValue& instance,
         VansSerializedValue& entities, std::string& error);
     static bool Extract(const VansSerializedValue& resolvedScene, const std::string& rootEntity,

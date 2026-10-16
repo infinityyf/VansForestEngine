@@ -1,4 +1,4 @@
-﻿#include "../SceneRuntime/Transform/VansTransform.h"
+#include "../SceneRuntime/Transform/VansTransform.h"
 #include "Particles/VansSceneParticleDiagnostics.h"
 #pragma once
 #include <optional>
@@ -34,7 +34,7 @@ namespace Vans { struct VansProjectileSpawnRequest; struct VansProjectileSceneBa
 namespace Vans { struct VansDecalSceneBackend; }
 namespace Vans { struct VansCombatSceneBackend; }
 namespace Vans { struct VansVFXSceneBackend; }
-namespace VansGraphics { class VansSceneSurfaceQuery; }
+namespace VansGraphics { class VansSceneSurfaceQuery; struct VansGILightingContentChanges; }
 namespace VansGraphics { class VansImpactDecalSystem; }
 namespace VansGraphics { class VansSceneAssembly; }
 
@@ -1250,8 +1250,9 @@ namespace VansGraphics
 
 
 		void RecordFrameUploads(
-			VansVKCommandBuffer& cmd,
-			const VansRenderSceneFrameSnapshot& sceneSnapshot);
+			VansVKCommandBuffer& cmd, uint32_t frameSlot,
+			const VansRenderSceneFrameSnapshot& sceneSnapshot,
+            VansGILightingContentChanges& lightingChanges);
 		void QueueTerrainRegionUpload(VansRenderTerrainRegionUpload upload);
 
 

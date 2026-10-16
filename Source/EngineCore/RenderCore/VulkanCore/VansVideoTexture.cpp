@@ -1,4 +1,5 @@
 #include "VansVideoTexture.h"
+#include "../BRDFData/VansTextureRadianceChange.h"
 #include "../../MediaCore/VansMediaDecodeSession.h"
 #include "../../Util/VansLog.h"
 #include "../../Util/VansProfiler.h"
@@ -91,9 +92,11 @@ bool VansVideoTexture::Open(VansVKDevice* device,
             m_VkDevice->GetCommandBuffer(),
             firstPixels.data(), static_cast<size_t>(firstFrameSize),
             m_Width, m_Height, gpuFormat,
-            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
     }
 
+    if (m_GpuTexture.GetImage().GetImageView() == VK_NULL_HANDLE)
+        return false;
     CreateFrameUploadBuffer(firstFrameSize);
 
     m_IsReady.store(true);
@@ -119,7 +122,6 @@ void VansVideoTexture::Close()
     m_ShouldStop.store(true);
     m_Playing.store(false);
     m_ProducerCv.notify_all();
-    m_ConsumerCv.notify_all();
 
     if (m_DecodeThread.joinable())
         m_DecodeThread.join();
@@ -132,9 +134,7 @@ void VansVideoTexture::Close()
         while (!m_FrameQueue.empty())
             m_FrameQueue.pop();
 		RecycleFramePixelsLocked(m_LastFramePixels);
-		RecycleUploadSlotLocked(m_LastFrameUploadSlot);
         ClearFramePixelPoolLocked();
-        ClearUploadSlotsLocked();
     }
 
     m_DecodeSession.reset();
@@ -144,9 +144,8 @@ void VansVideoTexture::Close()
     m_Height       = 0;
     m_VideoDuration = 0.0;
     m_PlayTime     = 0.0;
-    m_HasNewFrame = false;
     m_HasPendingUpload = false;
-    m_LastFrameUploadSlot = -1;
+    m_UploadRecorded = false; m_PendingRadianceChange = m_RecordedRadianceChange = 0.0f;
     std::vector<uint8_t>().swap(m_LastFramePixels);
 
     if (m_FrameUploadBufferReady && m_VkDevice)
@@ -185,16 +184,14 @@ void VansVideoTexture::Stop()
             VideoFrameData frame = std::move(m_FrameQueue.front());
             m_FrameQueue.pop();
             RecycleFramePixelsLocked(frame.pixels);
-            RecycleUploadSlotLocked(frame.uploadSlot);
         }
         RecycleFramePixelsLocked(m_LastFramePixels);
-        RecycleUploadSlotLocked(m_LastFrameUploadSlot);
     }
 
     // 4. 重置播放时间（仅主线程写）
     m_PlayTime = 0.0;
-    m_HasNewFrame = false;
     m_HasPendingUpload = false;
+    m_PendingRadianceChange = 0.0f;
 }
 
 bool VansVideoTexture::Seek(double seconds)
@@ -209,14 +206,12 @@ bool VansVideoTexture::Seek(double seconds)
 			VideoFrameData frame = std::move(m_FrameQueue.front());
 			m_FrameQueue.pop();
 			RecycleFramePixelsLocked(frame.pixels);
-			RecycleUploadSlotLocked(frame.uploadSlot);
 		}
 		RecycleFramePixelsLocked(m_LastFramePixels);
-		RecycleUploadSlotLocked(m_LastFrameUploadSlot);
 	}
 	m_PlayTime = target;
-	m_HasNewFrame = false;
 	m_HasPendingUpload = false;
+	m_PendingRadianceChange = 0.0f;
 	m_SeekRequestSeconds.store(target);
 	m_ProducerCv.notify_all();
 	return true;
@@ -244,7 +239,6 @@ bool VansVideoTexture::Tick(double deltaTime)
             if (hasFrame)
             {
                 RecycleFramePixelsLocked(frameToUpload.pixels);
-                RecycleUploadSlotLocked(frameToUpload.uploadSlot);
             }
             frameToUpload = std::move(m_FrameQueue.front());
             m_FrameQueue.pop();
@@ -258,19 +252,17 @@ bool VansVideoTexture::Tick(double deltaTime)
         // 通知后台线程队列有空位
         m_ProducerCv.notify_one();
 
-		std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
+        std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
+        m_PendingRadianceChange=std::min(1.0f,m_PendingRadianceChange+
+            MeasureTextureRadianceChange(m_LastFramePixels,frameToUpload.pixels,m_Width,m_Height,m_IsSrgb));
         {
             std::lock_guard<std::mutex> lock(m_QueueMutex);
             RecycleFramePixelsLocked(m_LastFramePixels);
-            RecycleUploadSlotLocked(m_LastFrameUploadSlot);
         }
 
         // 缓存本帧像素：供后续图形命令录制阶段上传，也供面光源 emissive 数组层复用。
         // 使用 std::move 避免逐字节拷贝整个帧缓冲（1080p ≈ 8 MB）
         m_LastFramePixels = std::move(frameToUpload.pixels);
-        m_LastFrameUploadSlot = frameToUpload.uploadSlot;
-        frameToUpload.uploadSlot = -1;
-        m_HasNewFrame = true;
         m_HasPendingUpload = true;
 
         return true;
@@ -279,41 +271,57 @@ bool VansVideoTexture::Tick(double deltaTime)
     return false;
 }
 
-// ===========================================================================
-// RecordPendingUpload — 将待显示视频帧记录到当前帧图形命令缓冲
-// ===========================================================================
-bool VansVideoTexture::RecordPendingUpload(VansVKCommandBuffer& cmd)
+VansVideoUploadResult VansVideoTexture::RecordPendingUploads(VansVKCommandBuffer& cmd, uint32_t frameSlot,
+    VansTexture* targetArray, uint32_t layerMask)
 {
-	std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
-	return RecordPendingUploadLocked(cmd);
+    if (frameSlot >= VansCommandRecordingConfig::MaximumFramesInFlight)
+        throw std::invalid_argument("Video upload frame slot exceeds the engine ring");
+    std::unique_lock<std::mutex> pendingLock(m_PendingFrameMutex);
+    if (m_UploadRecorded)
+        throw std::logic_error("Video upload must be resolved before recording again");
+    if (!m_IsReady.load() || !m_HasPendingUpload || m_LastFramePixels.empty())
+        return {};
+    if (layerMask && (!targetArray || targetArray->GetSlice() <= 0 ||
+        (targetArray->GetSlice() < 32 && (layerMask >> targetArray->GetSlice()) != 0u)))
+        throw std::invalid_argument("Video array target does not contain every requested layer");
+
+    // 将待上传请求移交给本次录制；任何失败都由提交结果恢复一次。
+    m_UploadRecorded = true;
+    m_RecordedRadianceChange = m_PendingRadianceChange;
+    m_HasPendingUpload = false;
+    m_PendingRadianceChange = 0.0f;
+    const int bytes = m_Width * m_Height * 4;
+    if (!RecordFrameUpload(cmd, frameSlot, m_LastFramePixels.data(), bytes))
+        throw std::runtime_error("Video texture upload recording failed");
+    const VansVideoUploadResult result{true,m_RecordedRadianceChange,layerMask};
+    // 后续仅访问稳定的 GPU 资源，Main 可立即发布下一帧像素。
+    pendingLock.unlock();
+    for (uint32_t layer = 0; layer < 32; ++layer)
+    {
+        if ((layerMask & (1u << layer)) == 0u) continue;
+        VANS_PROFILE_SCOPE("RectLightVideo::RecordGpuFrameCopy", Vans::ProfileCategory::Video);
+        if (!targetArray->RecordArrayLayerCopyFromTexture(cmd, &m_GpuTexture, int(layer)))
+            throw std::runtime_error("Video rect-light layer upload recording failed");
+    }
+    return result;
 }
 
-bool VansVideoTexture::RecordPendingUploadLocked(VansVKCommandBuffer& cmd)
+void VansVideoTexture::ResolveRecordedUploads(bool submitted)
 {
-    if (!m_IsReady.load() || !m_HasPendingUpload ||
-        (m_LastFrameUploadSlot < 0 && m_LastFramePixels.empty()))
-        return false;
-
-    VANS_PROFILE_SCOPE("Video::Upload.RecordMainTexture", Vans::ProfileCategory::Video);
-    const int dataSize = m_Width * m_Height * 4;
-    if (m_LastFrameUploadSlot >= 0)
+    std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
+    if(!m_UploadRecorded)return;
+    if(!submitted && !m_LastFramePixels.empty())
     {
-        if (!RecordFrameUploadFromSlot(cmd, m_LastFrameUploadSlot, dataSize))
-            return false;
+        m_HasPendingUpload=true;
+        m_PendingRadianceChange=std::min(1.0f,m_PendingRadianceChange+m_RecordedRadianceChange);
     }
-    else if (!RecordFrameUpload(cmd, m_LastFramePixels.data(), dataSize))
-    {
-        return false;
-    }
-
-    m_HasPendingUpload = false;
-    return true;
+    m_UploadRecorded=false; m_RecordedRadianceChange=0.0f;
 }
 
 // ===========================================================================
 // RecordFrameUpload — 将 RGBA8 像素写入本帧 staging，并记录 GPU copy 命令
 // ===========================================================================
-bool VansVideoTexture::RecordFrameUpload(VansVKCommandBuffer& cmd, const uint8_t* pixels, int dataSize)
+bool VansVideoTexture::RecordFrameUpload(VansVKCommandBuffer& cmd, uint32_t frameSlot, const uint8_t* pixels, int dataSize)
 {
     VANS_PROFILE_SCOPE("Video::Upload.RecordFrameUpload", Vans::ProfileCategory::Video);
     VkOffset3D offset = { 0, 0, 0 };
@@ -323,37 +331,24 @@ bool VansVideoTexture::RecordFrameUpload(VansVKCommandBuffer& cmd, const uint8_t
         1u
     };
 
+    // 当前帧槽已等待上一轮 GPU fence；解码线程不再写入 GPU 在用的 staging。
+    if (m_FrameUploadBufferReady)
+    {
+        const VkDeviceSize sourceOffset = static_cast<VkDeviceSize>(frameSlot) * dataSize;
+        {
+            VANS_PROFILE_SCOPE("Video::Upload.FrameSlotMemcpy", Vans::ProfileCategory::Video);
+            m_FrameUploadBuffer.UpdateMapped(pixels, sourceOffset, dataSize);
+        }
+        return m_VkDevice->RecordDeviceImageBufferData(
+            m_GpuTexture.GetImage(), cmd, m_FrameUploadBuffer, sourceOffset, offset, extent, 0, 0);
+    }
     return m_VkDevice->RecordDeviceImageData(
         m_GpuTexture.GetImage(),
         cmd,
         pixels,
         dataSize,
         offset, extent,
-        0, 0);
-}
-
-bool VansVideoTexture::RecordFrameUploadFromSlot(VansVKCommandBuffer& cmd, int uploadSlot, int dataSize)
-{
-    VANS_PROFILE_SCOPE("Video::Upload.RecordFrameUploadStaged", Vans::ProfileCategory::Video);
-    if (!m_FrameUploadBufferReady || uploadSlot < 0 || uploadSlot >= MAX_UPLOAD_SLOTS)
-        return false;
-
-    VkOffset3D offset = { 0, 0, 0 };
-    VkExtent3D extent = {
-        static_cast<uint32_t>(m_Width),
-        static_cast<uint32_t>(m_Height),
-        1u
-    };
-
-    const VkDeviceSize sourceOffset =
-        static_cast<VkDeviceSize>(uploadSlot) * static_cast<VkDeviceSize>(dataSize);
-    return m_VkDevice->RecordDeviceImageBufferData(
-        m_GpuTexture.GetImage(),
-        cmd,
-        m_FrameUploadBuffer,
-        sourceOffset,
-        offset, extent,
-        0, 0);
+        0, 0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 }
 
 // ===========================================================================
@@ -381,11 +376,13 @@ void VansVideoTexture::RecycleFramePixelsLocked(std::vector<uint8_t>& pixels)
         return;
 
     const size_t expectedSize = static_cast<size_t>(m_Width) * static_cast<size_t>(m_Height) * 4u;
-    if (expectedSize > 0 && pixels.capacity() >= expectedSize &&
+    if (expectedSize > 0 && pixels.size() == expectedSize &&
         static_cast<int>(m_FreeFrameBuffers.size()) < MAX_FREE_FRAME_BUFFERS)
     {
-        pixels.clear();
+        // 池中保留完整尺寸，避免下次 resize 在队列锁内将整帧再次清零。
+        // MediaCore 仅发布完整转换的帧；调用者在移交后不再持有这些像素。
         m_FreeFrameBuffers.push_back(std::move(pixels));
+        pixels.clear();
         return;
     }
 
@@ -407,7 +404,7 @@ bool VansVideoTexture::CreateFrameUploadBuffer(int dataSize)
         return m_FrameUploadBufferReady;
 
     const VkDeviceSize bufferSize =
-        static_cast<VkDeviceSize>(dataSize) * static_cast<VkDeviceSize>(MAX_UPLOAD_SLOTS);
+        static_cast<VkDeviceSize>(dataSize) * static_cast<VkDeviceSize>(VansCommandRecordingConfig::MaximumFramesInFlight);
     const bool bufferCreated = m_FrameUploadBuffer.CreatVulkanBuffer(
             m_VkDevice->GetLogicDevice(),
             bufferSize,
@@ -422,95 +419,8 @@ bool VansVideoTexture::CreateFrameUploadBuffer(int dataSize)
         return false;
     }
 
-    {
-        std::lock_guard<std::mutex> lock(m_QueueMutex);
-        m_FreeUploadSlots.clear();
-        m_FreeUploadSlots.reserve(MAX_UPLOAD_SLOTS);
-        for (int i = MAX_UPLOAD_SLOTS - 1; i >= 0; --i)
-            m_FreeUploadSlots.push_back(i);
-    }
     m_FrameUploadBufferReady = true;
     return true;
-}
-
-int VansVideoTexture::AcquireUploadSlotLocked()
-{
-    if (!m_FrameUploadBufferReady || m_FreeUploadSlots.empty())
-        return -1;
-
-    int slot = m_FreeUploadSlots.back();
-    m_FreeUploadSlots.pop_back();
-    return slot;
-}
-
-void VansVideoTexture::RecycleUploadSlotLocked(int& uploadSlot)
-{
-    if (uploadSlot < 0)
-        return;
-
-    if (m_FrameUploadBufferReady &&
-        static_cast<int>(m_FreeUploadSlots.size()) < MAX_UPLOAD_SLOTS)
-    {
-        m_FreeUploadSlots.push_back(uploadSlot);
-    }
-    uploadSlot = -1;
-}
-
-void VansVideoTexture::ClearUploadSlotsLocked()
-{
-    m_FreeUploadSlots.clear();
-    m_FreeUploadSlots.shrink_to_fit();
-}
-
-// ===========================================================================
-// CopyNewFrameToArrayLayer — 将本帧新像素写入目标贴图数组的指定层（主线程）
-// 统一接口：消费方（面光源等）无需直接访问内部 CPU 像素缓存。
-// 若无新帧则立即返回 false，不产生任何 GPU 操作。
-// ===========================================================================
-bool VansVideoTexture::CopyNewFrameToArrayLayer(VansTexture* targetArray,
-                                                 VansVKCommandBuffer& cmd,
-                                                 int layerIndex)
-{
-	std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
-    if (!targetArray || !m_HasNewFrame || m_LastFramePixels.empty())
-        return false;
-
-    bool ok = targetArray->UpdateArrayLayerFromPixels(
-        cmd, m_LastFramePixels.data(), m_Width, m_Height, layerIndex);
-    ConsumeNewFrame();
-    return ok;
-}
-
-// ===========================================================================
-// RecordNewFrameToArrayLayer — 将本帧新像素记录写入目标贴图数组层
-// ===========================================================================
-bool VansVideoTexture::RecordNewFrameToArrayLayer(VansTexture* targetArray,
-                                                   VansVKCommandBuffer& cmd,
-                                                   int layerIndex)
-{
-	std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
-    if (!targetArray || !m_HasNewFrame || m_LastFramePixels.empty())
-        return false;
-
-    // 面光源视频优先复用已经上传到 GPU 的主视频纹理，避免同一帧再次走 CPU staging。
-    // 若外部调用顺序未提前上传主视频纹理，这里补录一次主纹理上传。
-    if (m_HasPendingUpload && !RecordPendingUploadLocked(cmd))
-        return false;
-
-    bool ok = false;
-    {
-        VANS_PROFILE_SCOPE("RectLightVideo::RecordGpuFrameCopy", Vans::ProfileCategory::Video);
-        ok = targetArray->RecordArrayLayerCopyFromTexture(cmd, &m_GpuTexture, layerIndex);
-    }
-
-    if (!ok)
-    {
-        ok = targetArray->RecordArrayLayerUploadFromPixels(
-            cmd, m_LastFramePixels.data(), m_Width, m_Height, layerIndex);
-    }
-
-    ConsumeNewFrame();
-    return ok;
 }
 
 // ===========================================================================
@@ -563,7 +473,6 @@ void VansVideoTexture::DecodeThreadFunc()
                     VideoFrameData oldFrame = std::move(m_FrameQueue.front());
                     m_FrameQueue.pop();
                     RecycleFramePixelsLocked(oldFrame.pixels);
-                    RecycleUploadSlotLocked(oldFrame.uploadSlot);
                 }
             }
             ptsOffset = 0.0;
@@ -592,7 +501,6 @@ void VansVideoTexture::DecodeThreadFunc()
         {
             std::lock_guard<std::mutex> lock(m_QueueMutex);
             frame.pixels = AcquireFramePixelsLocked(rgbaBufSize);
-            frame.uploadSlot = AcquireUploadSlotLocked();
         }
 
         std::string error;
@@ -608,7 +516,6 @@ void VansVideoTexture::DecodeThreadFunc()
             {
                 std::lock_guard<std::mutex> lock(m_QueueMutex);
                 RecycleFramePixelsLocked(frame.pixels);
-                RecycleUploadSlotLocked(frame.uploadSlot);
                 if (!m_Loop || m_ShouldStop.load())
                     break;
 
@@ -624,7 +531,6 @@ void VansVideoTexture::DecodeThreadFunc()
             {
                 std::lock_guard<std::mutex> lock(m_QueueMutex);
                 RecycleFramePixelsLocked(frame.pixels);
-                RecycleUploadSlotLocked(frame.uploadSlot);
                 VANS_LOG_ERROR("[VansVideoTexture] 视频帧解码失败: " << error);
                 break;
             }
@@ -635,24 +541,14 @@ void VansVideoTexture::DecodeThreadFunc()
         {
             std::lock_guard<std::mutex> lock(m_QueueMutex);
             RecycleFramePixelsLocked(frame.pixels);
-            RecycleUploadSlotLocked(frame.uploadSlot);
             continue;
         }
 
         frame.pts = ptsOffset + presentationTime;
-        if (frame.uploadSlot >= 0)
-        {
-            VANS_PROFILE_SCOPE("Video::Decode.StageUploadMemcpy", Vans::ProfileCategory::Video);
-            const VkDeviceSize uploadOffset =
-                static_cast<VkDeviceSize>(frame.uploadSlot) * static_cast<VkDeviceSize>(rgbaBufSize);
-            m_FrameUploadBuffer.UpdateMapped(frame.pixels.data(), uploadOffset, rgbaBufSize);
-        }
-
         {
             VANS_PROFILE_SCOPE("Video::Decode.QueuePush", Vans::ProfileCategory::Video);
             std::lock_guard<std::mutex> lock(m_QueueMutex);
             m_FrameQueue.push(std::move(frame));
-            m_ConsumerCv.notify_one();
         }
     }
 }

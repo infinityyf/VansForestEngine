@@ -1,6 +1,9 @@
 #pragma once
 
 #include "EngineDTOs.h"
+#include "../../RenderCore/GICore/VansGIFrameCost.h"
+#include "../../RenderCore/GICore/VansGIFrameWork.h"
+#include "../../RenderCore/GICore/VansGIMemorySnapshot.h"
 
 #include <cstdint>
 #include <memory>
@@ -13,6 +16,9 @@ namespace Vans::EditorAPI
 	public:
 		virtual ~IGIEditorAPI() = default;
 		virtual GIInspectorSettingsSnapshot GetGISettings() const = 0;
+		virtual VansGraphics::GIFrameCostSnapshot GetGIFrameCost() const = 0;
+		virtual VansGraphics::VansGIFrameWork GetGIFrameWork() const = 0;
+		virtual VansGraphics::VansGIMemorySnapshot GetGIMemorySnapshot() const = 0;
 		virtual bool ApplyGISettings(const GIInspectorSettingsSnapshot& settings) = 0;
 		virtual void SaveGIConfiguration() = 0;
 		virtual void SetGIProbeVisualization(

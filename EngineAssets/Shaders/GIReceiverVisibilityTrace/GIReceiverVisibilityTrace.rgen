@@ -2,17 +2,18 @@
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_nonuniform_qualifier : require
+#include "../GI/GIRegionCapacity.h"
 #include "../Common/Common.glsl"
 #include "../SSGI/SSGISurface.glsl"
 #include "../GI/GIReceiverVisibilityData.glsl"
 #include "../GI/GIProbeStateData.glsl"
 layout(set=0,binding=0) uniform accelerationStructureEXT tlas;
 struct Region { vec4 minimum; vec4 sizeBias; vec4 trace; vec4 countsPriority; };
-layout(set=1,binding=4) uniform Info { vec4 screenSize; vec4 regionInfo; Region regions[8]; vec4 debug; };
+layout(set=1,binding=4) uniform Info { vec4 screenSize; vec4 regionInfo; Region regions[GI_MAX_REGION_COUNT]; vec4 debug; };
 #define GI_LAYOUT_SET 1
 #define GI_LAYOUT_BINDING 6
 #include "../GI/GIProbeLayoutData.glsl"
-layout(set=1,binding=7,std430) readonly buffer State { GIProbeState states[]; } currentStates[8];
+layout(set=1,binding=7,std430) readonly buffer State { GIProbeState states[]; } currentStates[GI_MAX_REGION_COUNT];
 layout(set=1,binding=10,std430) buffer Output { uvec4 header; GIReceiverVisibilityRecord records[]; };
 layout(set=1,binding=11,std430) readonly buffer Work { uvec4 counters; uvec2 tasks[]; };
 layout(location=0) rayPayloadEXT uint visible;

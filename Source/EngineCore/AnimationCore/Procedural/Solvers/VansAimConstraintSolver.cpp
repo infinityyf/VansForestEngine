@@ -68,7 +68,8 @@ namespace VansGraphics
 		float deltaTime,
 		VansAimConstraintState& state,
 		const VansAimConstraintSettings& settings,
-		int pivotBoneIndex)
+		int pivotBoneIndex,
+		int geometryBoneIndex)
 	{
 		VansProceduralSolverResult result;
 		if (chain.solver != VansRigSolverKind::Aim || chain.boneIndices.empty()
@@ -77,7 +78,8 @@ namespace VansGraphics
 			|| !Finite(goal.valueModel) || !std::isfinite(goal.weight)
 			|| goal.weight < 0.0f || goal.weight > 1.0f
 			|| (settings.mode != VansAimConstraintMode::LookAtPoint &&
-				settings.mode != VansAimConstraintMode::LookAtDirection && settings.mode != VansAimConstraintMode::PitchOffset)
+				settings.mode != VansAimConstraintMode::LookAtDirection && settings.mode != VansAimConstraintMode::PitchOffset
+				&& settings.mode != VansAimConstraintMode::WeaponRay)
 			|| (pivotBoneIndex != -1 && (settings.mode != VansAimConstraintMode::PitchOffset
 				|| !workspace.IsValidBone(pivotBoneIndex)))
 			|| (state.valid && (!std::isfinite(state.rotation.w) || !std::isfinite(state.rotation.x)
@@ -101,6 +103,40 @@ namespace VansGraphics
 		{
 			state = {};
 			result.status = VansProceduralSolverStatus::NoEffect;
+			return result;
+		}
+		if (settings.mode == VansAimConstraintMode::WeaponRay)
+		{
+			if (chain.boneIndices.size() != 1 || !workspace.IsValidBone(geometryBoneIndex)
+				|| !Finite(settings.muzzleLocal) || !Finite(settings.barrelLocal)
+				|| glm::length(settings.barrelLocal) <= kEpsilon)
+				return result;
+			const int pivotBone = chain.boneIndices.front();
+			if (!workspace.IsValidBone(pivotBone)) return result;
+			int ancestor = geometryBoneIndex;
+			while (ancestor >= 0 && ancestor != pivotBone)
+				ancestor = workspace.GetSkeleton()->bones[static_cast<std::size_t>(ancestor)].parentIndex;
+			if (ancestor < 0) return result;
+			const auto pivot = workspace.GetComponentPosition(pivotBone);
+			const auto handRotation = workspace.GetComponentRotation(geometryBoneIndex);
+			const auto offset = workspace.GetComponentPosition(geometryBoneIndex)
+				+ handRotation * (workspace.GetComponentScale(geometryBoneIndex) * settings.muzzleLocal) - pivot;
+			const auto forward = glm::normalize(handRotation * settings.barrelLocal);
+			const auto toTarget = goal.valueModel - pivot;
+			const double along = glm::dot(offset, forward);
+			const double discriminant = along*along + glm::dot(toTarget, toTarget) - glm::dot(offset, offset);
+			if (discriminant <= 0 || !std::isfinite(discriminant) || glm::length(toTarget) <= kEpsilon)
+			{ result.status = VansProceduralSolverStatus::NoEffect; return result; }
+			const double distance = -along + std::sqrt(discriminant);
+			if (distance <= 0)
+			{ result.status = VansProceduralSolverStatus::NoEffect; return result; }
+			const auto correction = glm::slerp(glm::quat(1,0,0,0), VansShortestArc(
+				offset + forward * static_cast<float>(distance), toTarget), totalWeight);
+			// 与几何视差方程一致，不额外分摊肩部、限制角速度或重写双手。
+			if (!workspace.ApplyComponentRotationDelta(pivotBone, correction)) return result;
+			state = {correction, true};
+			result.status = VansProceduralSolverStatus::Solved;
+			result.iterations = 1;
 			return result;
 		}
 		std::array<VansBoneTransform, VansMaxProceduralChainBones> original{};

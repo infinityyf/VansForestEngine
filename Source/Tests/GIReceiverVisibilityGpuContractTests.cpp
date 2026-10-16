@@ -54,6 +54,7 @@ struct Fixture
     VkDescriptorSetLayout rootLayout{},passLayout{};
     void TestBias();
     void TestZeroSupportFallback();
+    void TestResourceOwner();
     std::vector<VkDescriptorSet> rootSets,passSets;
     VansRayTracingShader* trace{};
     VansComputeShader *prepare{}, *reproject{}, *worldShader{};
@@ -63,7 +64,7 @@ struct Fixture
     static constexpr VkDeviceSize CacheBytes=16+Count*sizeof(Record);
     struct State { glm::vec4 next{},published{};glm::uvec4 metadata{1,0,256,0}; };
     std::array<State,32> probeStates{};
-    SSGIParamsGPU params{};
+    VansSSGIParameters params{};
     glm::mat4 viewProjection{0.0f};
     VkQueryPool timing{};
     double lastGpuMilliseconds = 0.0;
@@ -170,12 +171,14 @@ struct Fixture
         viewProjection[3] = glm::vec4((.5f - shift.x) * 2.0f / Width,
             (shift.y - .5f) * 2.0f / Height, .5f, 1.0f);
     }
-    void WorldPhase(uint32_t frame, bool enabled, uint32_t operation)
+    void WorldPhase(uint32_t frame, bool enabled, uint32_t operation, const VansGIReceiverInvalidation& invalidation = {})
     {
-        struct Push { glm::uvec4 frame, operation; } push{
-            glm::uvec4(CacheWidth, CacheHeight, frame, enabled ? 1u : 0u), glm::uvec4(operation, 0, 0, 0)};
+        struct Push { glm::uvec4 frame, operation; VansGIReceiverInvalidation invalidation; } push{
+            glm::uvec4(CacheWidth, CacheHeight, frame, enabled ? 1u : 0u), glm::uvec4(operation, 0, 0, 0), invalidation};
+        static_assert(sizeof(Push) == 112);
         Command().EnsureComputeShader(*worldShader, {rootLayout, passLayout});
         uint32_t count = operation == 1u ? Count : VansGIReceiverVisibility::WorldCapacity;
+        if(operation == 0u && invalidation.Any()) count = std::max(count, Count);
         Command().DispatchCompute(*worldShader, (count + 63) / 64, 1, 1,
             {rootSets[0], passSets[0]}, &push, sizeof(push));
         Barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -198,7 +201,7 @@ struct Fixture
     }
     // 阶段控制仅供契约测试隔离贡献；正式管线通过独立调用接入，不提供运行期开关。
     uint32_t Frame(uint32_t frame,bool enabled=true,bool stable=true,bool persistent=true,
-        bool traceRays=true,glm::vec2 jitter=glm::vec2(0))
+        bool traceRays=true,glm::vec2 jitter=glm::vec2(0),const VansGIReceiverInvalidation& invalidation={})
     {
         Begin();
         vkCmdResetQueryPool(Command().GetVKCommandBuffer(), timing, 0, 2);
@@ -212,7 +215,9 @@ struct Fixture
         if (!persistent) Command().FillBuffer(world->GetNativeBuffer(),0,16,0);
         Barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT|VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             VK_ACCESS_MEMORY_WRITE_BIT|VK_ACCESS_HOST_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT);
-        struct Push { glm::uvec4 frame;glm::vec4 jitter; } push{glm::uvec4(CacheWidth,CacheHeight,frame,enabled?1:0),glm::vec4(jitter,0,0)};
+        struct Push { glm::uvec4 frame;glm::vec4 jitter; } push{
+            glm::uvec4(CacheWidth,CacheHeight,frame,enabled?1:0),glm::vec4(jitter,0,0)};
+        static_assert(sizeof(Push)==32);
         if (stable)
         {
             struct ReprojectPush { glm::uvec4 frame; glm::mat4 matrix; } project{push.frame, viewProjection};
@@ -222,7 +227,7 @@ struct Fixture
             Barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
         }
-        if (persistent) WorldPhase(frame, enabled, 0);
+        if (persistent || invalidation.Any()) WorldPhase(frame, enabled, 0, invalidation);
         Command().EnsureComputeShader(*prepare,{rootLayout,passLayout});
         Command().DispatchCompute(*prepare,CacheWidth/8,CacheHeight/8,1,{rootSets[0],passSets[0]},&push,sizeof(push));
         Barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
@@ -272,7 +277,7 @@ void Fixture::Initialize()
     shaders.RegisterRayTracingShader("GIReceiverVisibilityTrace","EngineAssets/Shaders/GIReceiverVisibilityTrace");
     shaders.RegisterComputeShader("GIReceiverVisibilityPrepare","EngineAssets/Shaders/GIReceiverVisibilityPrepare",32);
     shaders.RegisterComputeShader("GIReceiverVisibilityReproject","EngineAssets/Shaders/GIReceiverVisibilityReproject",80);
-    shaders.RegisterComputeShader("GIReceiverVisibilityWorldCache","EngineAssets/Shaders/GIReceiverVisibilityWorldCache",32);
+    shaders.RegisterComputeShader("GIReceiverVisibilityWorldCache","EngineAssets/Shaders/GIReceiverVisibilityWorldCache",112);
     shaders.RegisterRayTracingShader("GIReceiverBias","EngineAssets/Shaders/GIReceiverBias");
     Check(shaders.LoadAll(std::filesystem::current_path().generic_string()+"/",
         std::filesystem::current_path()/"Library/Artifacts/Shaders",device->GetLogicDevice()),"production visibility shaders");
@@ -341,7 +346,7 @@ void Fixture::Initialize()
     anchors=Buffer(Count*4);world=Buffer(VansGIReceiverVisibility::WorldBytes);
     claims=Buffer(VansGIReceiverVisibility::WorldCapacity*4);
     states=Buffer(sizeof(probeStates),probeStates.data());previous=Buffer(sizeof(probeStates),probeStates.data());
-    info=Buffer(sizeof(params));layout=Buffer(256);
+    info=Buffer(sizeof(params));layout=Buffer(1024);
     const auto ah=VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
     Check(VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom({
         {0,VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1,VK_SHADER_STAGE_RAYGEN_BIT_KHR,nullptr},
@@ -353,7 +358,7 @@ void Fixture::Initialize()
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     for(uint32_t i=0;i<4;++i) bindings.push_back({i,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,stages,nullptr});
     bindings.push_back({4,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,stages,nullptr});
-    for(uint32_t i:{6u,7u,8u,9u,10u,11u,12u,13u,14u,15u}) bindings.push_back({i,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,(i==7||i==8)?8u:1u,stages,nullptr});
+    for(uint32_t i:{6u,7u,8u,9u,10u,11u,12u,13u,14u,15u}) bindings.push_back({i,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,(i==7||i==8)?kGIMaximumRegionCount:1u,stages,nullptr});
     Check(VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(bindings,passLayout,passSets),"pass descriptors");
     auto* descriptors=VansVKDescriptorManager::GetInstance();descriptors->BeginDescriptorUpdate();
     VkWriteDescriptorSetAccelerationStructureKHR asInfo{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};asInfo.accelerationStructureCount=1;asInfo.pAccelerationStructures=&tlas;
@@ -364,8 +369,8 @@ void Fixture::Initialize()
         {{transparent->GetImage().GetSampler(),transparent->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
          {halfCoverage->GetImage().GetSampler(),halfCoverage->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
          {clothCoverage->GetImage().GetSampler(),clothCoverage->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
-    BindBuffer(passSets[0],4,info,1,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);BindBuffer(passSets[0],6,layout);BindBuffer(passSets[0],7,states,8);
-    BindBuffer(passSets[0],8,previous,8);BindBuffer(passSets[0],9,history);BindBuffer(passSets[0],10,current);BindBuffer(passSets[0],11,work);
+    BindBuffer(passSets[0],4,info,1,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);BindBuffer(passSets[0],6,layout);BindBuffer(passSets[0],7,states,kGIMaximumRegionCount);
+    BindBuffer(passSets[0],8,previous,kGIMaximumRegionCount);BindBuffer(passSets[0],9,history);BindBuffer(passSets[0],10,current);BindBuffer(passSets[0],11,work);
     glm::uvec4 biasMeshLayout[2]={glm::uvec4(12,0,~0u,~0u),glm::uvec4(1,0,0,0)};
     BindBuffer(rootSets[0],14,Buffer(sizeof(biasMeshLayout),biasMeshLayout));
     BindBuffer(passSets[0],15,bias);
@@ -577,11 +582,86 @@ void Fixture::TestBias()
 
 
 }
+void Fixture::TestResourceOwner()
+{
+    VansVKGIReceiverVisibility receiver;
+    const auto before = device->QueryGpuMemorySnapshot();
+    try
+    {
+        for (const glm::uvec2 extent : {glm::uvec2(5, 3), glm::uvec2(9, 7)})
+        {
+            receiver.Initialize(*device, Command(), extent.x, extent.y);
+            const auto memory = device->GetGIMemorySnapshot();
+            Check(memory.receiver.AllocationBytes() == device->QueryGpuMemorySnapshot().allocationBytes - before.allocationBytes &&
+                memory.receiver.bufferCapacityBytes > 0 && memory.receiver.imageAllocationBytes == 0,
+                "receiver memory snapshot differs from actual allocations");
+            const uint64_t pixels = uint64_t(extent.x) * extent.y;
+            Check(receiver.current.GetBufferSize() == 16 + pixels * sizeof(Record) &&
+                receiver.history.GetBufferSize() == receiver.current.GetBufferSize() &&
+                receiver.bias.GetBufferSize() == 16 + pixels * 32 &&
+                receiver.anchors.GetBufferSize() == pixels * 4 &&
+                receiver.world.GetBufferSize() == VansGIReceiverVisibility::WorldBytes &&
+                receiver.worldClaims.GetBufferSize() == uint64_t(VansGIReceiverVisibility::WorldCapacity) * 4 &&
+                receiver.work.GetBufferSize() == VansGIReceiverVisibility::WorkBytes,
+                "receiver owner changed native buffer capacities");
+            Check(receiver.layout && receiver.sets.size() == VansCommandRecordingConfig::MaximumFramesInFlight &&
+                receiver.prepareShader == prepare && receiver.reprojectShader == reproject &&
+                receiver.worldShader == worldShader && receiver.state.frame == 0,
+                "receiver owner changed descriptor, shader or history initialization");
+            uint32_t resourceCount = 0;
+            receiver.ForEachMutableBuffer([&](const char*, VkBuffer handle) {
+                Check(handle != VK_NULL_HANDLE, "receiver owner omitted a mutable buffer");
+                ++resourceCount;
+            });
+            Check(resourceCount == 7, "receiver submission inventory differs from owned resources");
+            // 从真实设备资源读回头尾，确认历史清零仍经生产创建入口执行。
+            auto* readback = Buffer(128);
+            std::memset(readback->GetMappedPtr(), 0xff, 128);
+            Begin();
+            Barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            uint64_t offset = 0;
+            for (auto* buffer : {&receiver.current, &receiver.history, &receiver.world, &receiver.bias})
+            {
+                Command().CopyBuffer(buffer->GetNativeBuffer(), readback->GetNativeBuffer(), 0, offset, 16);
+                Command().CopyBuffer(buffer->GetNativeBuffer(), readback->GetNativeBuffer(), buffer->GetBufferSize()-16, offset+16, 16);
+                offset += 32;
+            }
+            Barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+            End();
+            const auto* values = static_cast<const uint32_t*>(readback->GetMappedPtr());
+            for (uint32_t i = 0; i < 32; ++i) Check(values[i] == 0, "receiver history was not cleared");
+            readback->DestroyVulkanBuffer(device->GetLogicDevice());
+            receiver.state.frame = 37;
+            receiver.Destroy(device->GetLogicDevice());
+            receiver.Destroy(device->GetLogicDevice());
+            Check(device->GetGIMemorySnapshot().receiver.AllocationBytes() == 0,
+                "receiver release retained published memory");
+            Check(receiver.state.frame == 0 && receiver.layout == VK_NULL_HANDLE && receiver.sets.empty(),
+                "receiver release retained descriptor or frame state");
+            receiver.ForEachMutableBuffer([&](const char*, VkBuffer handle) {
+                Check(handle == VK_NULL_HANDLE, "receiver release retained a native buffer");
+            });
+        }
+    }
+    catch (...)
+    {
+        device->WaitForDevice();
+        receiver.Destroy(device->GetLogicDevice());
+        throw;
+    }
+    const auto after = device->QueryGpuMemorySnapshot();
+    Check(after.allocationCount == before.allocationCount && after.allocationBytes == before.allocationBytes,
+        "receiver create/release retained native allocations");
+    std::cout << "[GIReceiverOwnerGPU] PASS: seven buffers, descriptor ownership, clear, resize, repeated release and zero retained allocation" << std::endl;
+}
+
 bool TestGIReceiverVisibilityGpuContract()
 {
     try
     {
-        Fixture gpu;gpu.Initialize();
+        Fixture gpu;gpu.Initialize();gpu.TestResourceOwner();
         struct Case { glm::vec3 P,N,Q; bool visible; };
         const std::vector<Case> cases={
             {{-1,0,0},{-1,0,0},{1,0,0},false},{{1,0,0},{1,0,0},{-1,0,0},false},
@@ -674,6 +754,110 @@ bool TestGIReceiverVisibilityGpuContract()
             std::memcpy(gpu.previous->GetMappedPtr(), gpu.probeStates.data(), sizeof(gpu.probeStates));
         };
         seedHistory();
+        VansGIReceiverInvalidation otherRegion;otherRegion.regions.x=2u;
+        VansGIReceiverInvalidation thisRegion;thisRegion.regions.x=1u;
+        gpu.Frame(20, true, true, true, false, glm::vec2(0), otherRegion);
+        Check(records[target].metadata.z == 255u && records[target].metadata.y == 10u,
+            "another region's geometry publication must preserve screen history and its trace age");
+        seedHistory();
+        gpu.Frame(20, true, true, true, false, glm::vec2(0), thisRegion);
+        Check(records[target].metadata.z == 0u,
+            "changed region must not recover stale visibility through stable or neighboring history");
+        seedHistory();
+        auto* worldRecords = reinterpret_cast<Record*>(static_cast<char*>(gpu.world->GetMappedPtr()) + 16);
+        worldRecords[0] = baseline[target]; worldRecords[0].metadata.x = 0; worldRecords[0].metadata.y = 10;
+        worldRecords[1] = baseline[target]; worldRecords[1].metadata.x = 1; worldRecords[1].metadata.y = 10;
+        gpu.Begin();
+        gpu.Barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+        gpu.WorldPhase(20, true, 0, otherRegion);
+        gpu.Barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+        gpu.End();
+        Check(worldRecords[0].metadata.z == 255u && worldRecords[0].metadata.y == 10u &&
+            worldRecords[1].metadata.z == 0u && worldRecords[1].metadata.w == 0u,
+            "off-screen maintenance must invalidate only the changed region without washing other trace ages");
+        std::cout << "[GIReceiverVisibilityGPU] provider-scoped screen and off-screen invalidation passed\n";
+        // 真实 RT 历史的半数线段经过正 X 区间；局部变化只应撤销这些候选。
+        auto* layoutWords=static_cast<glm::uvec4*>(gpu.layout->GetMappedPtr());
+        auto regularLayout=[&]()
+        {
+            std::memset(layoutWords,0,1024);
+            layoutWords[0]=glm::uvec4(0,1,4,0);
+            layoutWords[4]=glm::floatBitsToUint(glm::vec4(-2,-2,-2,2));
+            layoutWords[5]=glm::floatBitsToUint(glm::vec4(4,4,4,0));
+            layoutWords[6]=glm::uvec4(2,2,2,0);
+            layoutWords[7]=glm::uvec4(0,0,0,8);
+        };
+        auto expectedMask=[&](bool reversed)
+        {
+            uint32_t keep=0;
+            for(uint32_t i=0;i<8;++i)
+                if(((baseline[target].probes[i/4][i%4]&1u)==0u)!=reversed)keep|=1u<<i;
+            return keep;
+        };
+        auto maintain=[&](const VansGIReceiverInvalidation& change)
+        {
+            gpu.Begin();
+            gpu.Barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT|VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_ACCESS_MEMORY_WRITE_BIT|VK_ACCESS_HOST_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT);
+            gpu.WorldPhase(20,true,0,change);
+            gpu.Barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_HOST_READ_BIT);
+            gpu.End();
+        };
+        VansGIReceiverInvalidation local;local.regions.y=1;
+        local.geometryMin=glm::vec4(.5f,-2,-2,1);local.geometryMax=glm::vec4(1.1f,2,2,0);
+        seedHistory();regularLayout();
+        gpu.Frame(20,true,true,false,false,glm::vec2(0),local);
+        Check(records[target].metadata.z==expectedMask(false) && records[target].metadata.y==10,
+            "local content invalidation must preserve unaltered candidate rays and real trace age through screen search");
+        for(bool residency:{false,true})
+        {
+            seedHistory();regularLayout();
+            worldRecords[0]=historyRecords[target];
+            auto change=local;
+            if(residency)
+            {
+                change.residencyMin=change.geometryMin;change.residencyMax=change.geometryMax;
+                change.geometryMin=change.geometryMax=glm::vec4(0);
+            }
+            maintain(change);
+            Check(historyRecords[target].metadata.z==expectedMask(false) && worldRecords[0].metadata.z==expectedMask(false) &&
+                worldRecords[0].metadata.w==(baseline[target].metadata.w&expectedMask(false)) && worldRecords[0].metadata.y==10,
+                "geometry and residency bounds must consistently filter screen and off-screen candidate masks");
+        }
+        seedHistory();regularLayout();
+        auto distantChange=local;distantChange.geometryMin=glm::vec4(100,100,100,1);distantChange.geometryMax=glm::vec4(101,101,101,0);
+        gpu.Frame(20,true,true,false,false,glm::vec2(0),distantChange);
+        Check(records[target].metadata.z==255 && records[target].metadata.y==10,
+            "publication outside all receiver segments must retain complete history");
+        seedHistory();regularLayout();
+        worldRecords[0]=historyRecords[target];worldRecords[0].anchor.y=1;
+        distantChange=local;distantChange.geometryMin.y=100;distantChange.geometryMax.y=101;
+        maintain(distantChange);
+        Check(historyRecords[target].metadata.z==255 && worldRecords[0].metadata.z==expectedMask(false),
+            "height-corrected terrain query must use conservative vertical bounds without invalidating ordinary surfaces");
+        for(bool scrolling:{false,true})
+        {
+            seedHistory();regularLayout();worldRecords[0]=historyRecords[target];
+            if(scrolling)
+            {
+                layoutWords[3].w=25;layoutWords[25]=glm::uvec4(1,0,0,1);
+            }
+            else
+            {
+                layoutWords[0].x=1;layoutWords[1].z=9;
+                for(uint32_t p=0;p<8;++p)
+                    layoutWords[9+p*2]=glm::floatBitsToUint(glm::vec4((p&1u)?-1.f:1.f,(p&2u)?1.f:-1.f,(p&4u)?1.f:-1.f,2));
+            }
+            maintain(local);
+            Check(historyRecords[target].metadata.z==expectedMask(true) && worldRecords[0].metadata.z==expectedMask(true),
+                "spatial invalidation must use adaptive positions and scrolling physical identities");
+        }
+        std::memset(layoutWords,0,1024);
+        std::cout << "[GIReceiverVisibilityGPU] spatial content/residency, preserved rays, terrain, adaptive and scrolling invalidation passed\n";
+        seedHistory();
         for (uint32_t i = 0; i < 8; ++i)
             historyRecords[target].probes[i / 4][i % 4] = 7u - i;
         historyRecords[target].metadata.w = 0xaau;
@@ -747,7 +931,6 @@ bool TestGIReceiverVisibilityGpuContract()
         Check(partialRecovered > Fixture::Count / 2, "offscreen relocation must preserve unaffected cached probes");
         gpu.BindInput(0, std::vector<glm::vec4>(Fixture::Width * Fixture::Height, glm::vec4(0)));
         gpu.Frame(0); // 模拟几何/场景 reset；清除持久缓存，且无表面可重新发布。
-        auto* worldRecords = reinterpret_cast<Record*>(static_cast<char*>(gpu.world->GetMappedPtr()) + 16);
         for (uint32_t i = 0; i < VansGIReceiverVisibility::WorldCapacity; ++i)
             Check(worldRecords[i].metadata.z == 0u, "geometry reset must invalidate offscreen cache");
         std::memcpy(gpu.world->GetMappedPtr(), persistentSnapshot.data(), persistentSnapshot.size());

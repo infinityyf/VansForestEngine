@@ -6,12 +6,14 @@
 #include "VansRenderPass.h"
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "../../Util/VansProfiler.h"
+#include "../GICore/VansGIFrameCost.h"
 #include "../../Util/VansLog.h"
 #include <stdexcept>
 
 namespace VansGraphics
 {
-	bool VansVKDevice::ApplyGISettingsAtSafePoint(const VansGISettings& settings, bool forceRebuild)
+	bool VansVKDevice::ApplyGISettingsAtSafePoint(const VansGISettings& settings,
+        const std::shared_ptr<const VansGIVoxelMaterialInputs>& materials, bool forceRebuild)
 	{
 		if (!m_Scene) return false;
 		try
@@ -20,21 +22,21 @@ namespace VansGraphics
 				!GISettingsResourceLayoutEquals(rayTracingContext.GetAppliedSettings(), settings);
 			if (rebuild)
 			{
-				if (!rayTracingContext.CreateRayTracingResource(this, &m_MaintenanceGraphicsCommandBuffer, m_Scene, settings))
+				if (!rayTracingContext.CreateRayTracingResource(this, &m_MaintenanceGraphicsCommandBuffer, m_Scene, settings, materials))
 					return false;
 				if (auto* materials = m_Scene->GetMaterialManager())
 				{
-					materials->ClearAmbientSkyCacheRenderData(m_VansVKLogicDevice);
+					materials->m_AmbientSkyCache.Destroy(m_VansVKLogicDevice, materials->m_RuntimeRenderTextureManager);
 				}
 				PrepareAmbientSkyCacheRenderData();
 				SetupHairLightingDescriptors(VansRenderPassManager::GetInstance());
 				// 新资源发布后才废弃消费者绑定；失败时旧光照和预览仍然有效。
 				m_Scene->GetReflectionProbeSystem()->ReleaseGILightingBindings();
-				if (auto* materials = m_Scene->GetMaterialManager()) materials->m_SSGITemporalFrame = 0;
+				if (auto* materials = m_Scene->GetMaterialManager()) materials->m_SSGI.history.Reset();
 				ResetFeatureDescriptorSets();
 				m_Scene->MarkRenderNodeDescriptorSetsDirty();
 			}
-			else rayTracingContext.UpdateGISettings(settings);
+			else rayTracingContext.UpdateGISettings(this, &m_MaintenanceGraphicsCommandBuffer, settings);
 			UploadSSGIParams(settings);
 			return true;
 		}
@@ -64,7 +66,7 @@ namespace VansGraphics
 			throw std::runtime_error("Failed to retire GPU work before GI settings update");
 		// 帧内仍只消费本帧快照。Inspector 的显式应用在渲染事务中报告失败；
 		// 非交互场景准备失败必须显式终止，不能让新配置配上旧资源继续渲染。
-		if (!ApplyGISettingsAtSafePoint(giFrame.settings, rebuildProbeResources))
+		if (!ApplyGISettingsAtSafePoint(giFrame.settings, m_CurrentRenderSceneSnapshot.materials.voxelMaterials, rebuildProbeResources))
 			throw std::runtime_error("Failed to apply the GI render snapshot");
 	}
 
@@ -75,7 +77,7 @@ namespace VansGraphics
         if (const VkFence feedbackFence = rayTracingContext.GetPendingGIProbeFeedbackFence();
             feedbackFence != VK_NULL_HANDLE)
         {
-            VANS_PROFILE_WAIT("Vulkan::WaitFence.GIProbeFeedback");
+            VANS_PROFILE_WAIT(GIProfileScope(GICostStage::FeedbackWait));
             if (VansGraphics::vkWaitForFences(m_VansVKLogicDevice, 1, &feedbackFence,
                     VK_TRUE, UINT64_MAX) != VK_SUCCESS)
                 throw std::runtime_error("Failed to wait for previous GI probe feedback");
@@ -84,18 +86,20 @@ namespace VansGraphics
         rayTracingContext.SetWorldViewCenter(m_CurrentRenderView.position);
 		VansMaterialManager* materialManager = m_Scene->GetMaterialManager();
 		rayTracingContext.PrepareGIProbeUpdate(
-			m_CurrentRenderSceneSnapshot.light, materialManager,
-            m_AsyncComputeEnabled ? CurrentFrameContext().rayTracingFence : CurrentFrameContext().graphicsFence);
+			m_CurrentRenderSceneSnapshot.light, materialManager->m_SSGI.history,
+            m_AsyncComputeEnabled ? CurrentFrameContext().rayTracingFence : CurrentFrameContext().graphicsFence,
+            m_GILightingContentChanges);
+        m_GILightingContentChanges = {};
 		const VkCommandBuffer commandBuffer = computeCmd.GetVKCommandBuffer();
 		const Vans::VansGpuQueueLane queueLane = m_AsyncComputeEnabled
 			? Vans::VansGpuQueueLane::Compute
 			: Vans::VansGpuQueueLane::Graphics;
 		{
-			VANS_GPU_SCOPE_LANE(commandBuffer, "DDGI.RayTrace", queueLane);
+			VANS_GPU_SCOPE_LANE(commandBuffer, GIProfileScope(GICostStage::ProbeTrace), queueLane);
 			rayTracingContext.DispatchRayTracing(this, &computeCmd, m_Scene);
 		}
 		{
-			VANS_GPU_SCOPE_LANE(commandBuffer, "DDGI.Update", queueLane);
+			VANS_GPU_SCOPE_LANE(commandBuffer, GIProfileScope(GICostStage::ProbeUpdate), queueLane);
 			rayTracingContext.UpdateGIProbe(this, &computeCmd, materialManager);
 		}
 	}

@@ -600,6 +600,7 @@ namespace VansGraphics
 		GIPL_BINDING_GI_VISIBILITY    = 11,
 		GIPL_BINDING_IRRADIANCE_ATLAS = 12,
 		GIPL_BINDING_PROBE_STATE      = 13,
+        GIPL_BINDING_RECT_EMISSIVE    = 16,
 	};
 
 	// --- GI Visibility Atlas Update Compute Pass ---
@@ -612,6 +613,8 @@ namespace VansGraphics
 		GI_VISIBILITY_BINDING_PROBE_STATE  = 4,
 		GI_VISIBILITY_BINDING_WORK = 5,
 		GI_VISIBILITY_BINDING_LAYOUT = 6,
+        GI_VISIBILITY_BINDING_RADIANCE_HISTORY = 7,
+        GI_VISIBILITY_BINDING_SCATTER = 8,
 	};
 
 	// --- Water GBuffer Pass（Set 1）---

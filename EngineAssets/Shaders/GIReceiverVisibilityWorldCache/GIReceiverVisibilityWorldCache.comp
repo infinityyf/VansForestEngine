@@ -1,30 +1,83 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_nonuniform_qualifier : require
+#include "../GI/GIRegionCapacity.h"
 #include "../SSGI/SSGISurface.glsl"
 #include "../GI/GIReceiverVisibilityData.glsl"
 #include "../GI/GIReceiverVisibilityWorld.glsl"
 #include "../GI/GIProbeStateData.glsl"
+#define GI_LAYOUT_SET 1
+#define GI_LAYOUT_BINDING 6
+#include "../GI/GIProbeLayoutData.glsl"
 layout(local_size_x=64) in;
-layout(set=1,binding=7,std430) readonly buffer State { GIProbeState states[]; } currentStates[8];
-layout(set=1,binding=8,std430) readonly buffer PreviousState { GIProbeState states[]; } previousStates[8];
+layout(set=1,binding=7,std430) readonly buffer State { GIProbeState states[]; } currentStates[GI_MAX_REGION_COUNT];
+layout(set=1,binding=8,std430) readonly buffer PreviousState { GIProbeState states[]; } previousStates[GI_MAX_REGION_COUNT];
+layout(set=1,binding=9,std430) buffer History { uvec4 historyHeader; GIReceiverVisibilityRecord history[]; };
 layout(set=1,binding=10,std430) readonly buffer Current { uvec4 header; GIReceiverVisibilityRecord records[]; };
 layout(set=1,binding=13,std430) buffer World { uvec4 worldHeader; GIReceiverVisibilityRecord worldRecords[]; };
 layout(set=1,binding=14,std430) buffer Claims { uint claims[]; };
-layout(push_constant) uniform Params { uvec4 frame; uvec4 operation; };
+// 与 VansGIReceiverInvalidation 对齐；在维护阶段一次处理，历史搜索不重复计算范围。
+struct GIReceiverInvalidation
+{
+    uvec4 regions;
+    vec4 geometryMin, geometryMax, residencyMin, residencyMax;
+};
+layout(push_constant) uniform Params { uvec4 frame; uvec4 operation; GIReceiverInvalidation invalidation; };
+bool GI_ReceiverQueryIntersects(vec3 lo, vec3 hi, vec4 changedMin, vec4 changedMax, bool terrain)
+{
+    if (changedMin.w == 0.0) return false;
+    bvec3 overlap = lessThanEqual(lo, changedMax.xyz);
+    bvec3 opposite = greaterThanEqual(hi, changedMin.xyz);
+    // 地形接收者的实际起点会抬到当前高度场；历史未保存修正高度，保守检查整个竖直柱。
+    return overlap.x && overlap.z && opposite.x && opposite.z && (terrain || (overlap.y && opposite.y));
+}
+void GI_InvalidateReceiverQueries(inout GIReceiverVisibilityRecord record)
+{
+    uint region = record.metadata.x;
+    if (GI_ReceiverRegionInvalidated(region, invalidation.regions.x))
+    { record.metadata.zw = uvec2(0u); return; }
+    if ((invalidation.regions.y & (1u << region)) == 0u || record.metadata.z == 0u) return;
+    if (region >= GI_LayoutRegionCount()) { record.metadata.zw = uvec2(0u); return; }
+    ivec3 counts = ivec3(GI_LayoutRegionWord(region, 2u).xyz);
+    vec3 minimum = GI_LayoutRegionMin(region).xyz;
+    vec3 spacing = GI_LayoutRegionSize(region).xyz / vec3(counts);
+    for (uint i = 0u; i < 16u; ++i)
+    {
+        uint bit = 1u << i;
+        if ((record.metadata.z & bit) == 0u) continue;
+        uint probe = GI_ReceiverProbe(record, i);
+        if (probe >= GI_LayoutProbeCount(region)) { record.metadata.zw &= uvec2(~bit); continue; }
+        vec3 Q = GI_LayoutProbePosition(region, probe, counts, minimum, spacing)
+            + currentStates[nonuniformEXT(region)].states[probe].traceOffsetAndBackface.xyz;
+        vec3 magnitude = max(abs(record.surface.xyz), abs(Q));
+        float epsilon = 2.0 * max(0.0001, max(magnitude.x, max(magnitude.y, magnitude.z)) * 2.3841858e-7);
+        vec3 lo = min(record.surface.xyz, Q) - epsilon, hi = max(record.surface.xyz, Q) + epsilon;
+        if (GI_ReceiverQueryIntersects(lo, hi, invalidation.geometryMin, invalidation.geometryMax, record.anchor.y > 0.5) ||
+            GI_ReceiverQueryIntersects(lo, hi, invalidation.residencyMin, invalidation.residencyMax, record.anchor.y > 0.5))
+            record.metadata.zw &= uvec2(~bit);
+    }
+}
 void main()
 {
     uint index = gl_GlobalInvocationID.x;
     if (operation.x == 0u)
     {
+        if (any(notEqual(invalidation.regions.xy, uvec2(0u))) && frame.z != 0u && frame.w != 0u && index < frame.x * frame.y)
+        {
+            GIReceiverVisibilityRecord screen = history[index];
+            GI_InvalidateReceiverQueries(screen);
+            history[index].metadata.zw = screen.metadata.zw;
+        }
         if (index >= GI_RECEIVER_WORLD_CAPACITY) return;
         if (index == 0u) worldHeader = uvec4(frame.w, 0u, 0u, 0u);
         // 即使表面已离屏，也逐 Probe 检查位置变化，不能只比较重新入屏那一帧的状态。
         GIReceiverVisibilityRecord record = worldRecords[index];
-        if (frame.z == 0u || frame.w == 0u || frame.z - record.metadata.y > GI_RECEIVER_WORLD_MAX_AGE)
+        if (frame.z == 0u || frame.w == 0u ||
+            frame.z - record.metadata.y > GI_RECEIVER_WORLD_MAX_AGE)
             record.metadata.zw = uvec2(0u);
         else if (record.metadata.z != 0u)
         {
+            GI_InvalidateReceiverQueries(record);
             for (uint i = 0u; i < 16u; ++i)
             {
                 uint bit = 1u << i;

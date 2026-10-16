@@ -6,12 +6,15 @@
 #include "../../Util/VansLog.h"
 #include <iostream>
 
+VkDeviceSize VansGraphics::VansVKBuffer::GetAllocationSize() const
+{
+	return VansVKMemoryAllocator::Get().GetAllocationSize(m_VansVKBufferAllocation);
+}
+
 namespace
 {
-	// Translate the legacy VkMemoryPropertyFlags + buffer usage combo (which
-	// is how callers historically expressed their intent) into a VansMemoryUsage
-	// suitable for VMA. This bridge keeps the 30+ existing call sites unchanged.
-	VansGraphics::VansMemoryUsage TranslateLegacyProps(
+	// 根据 CPU 访问方向选择 VMA 策略；读回需要随机读取，不能分配成顺序写入的上传内存。
+	VansGraphics::VansMemoryUsage SelectMemoryUsage(
 		VkMemoryPropertyFlags props, VkBufferUsageFlags usage)
 	{
 		const bool deviceLocal = (props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
@@ -19,6 +22,8 @@ namespace
 
 		if (hostVisible)
 		{
+			if (props & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+				return VansGraphics::VansMemoryUsage::GpuToCpu;
 			// Frequently-updated small buffers (UBO/SSBO) read by the GPU each frame
 			// are best served by a persistent mapping.
 			const bool persistentCandidate =
@@ -56,7 +61,7 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 		 concurrentSharing ? sharingFamilies.data() : nullptr
 	};
 
-	const VansMemoryUsage vu = TranslateLegacyProps(memory_properties, usage);
+	const VansMemoryUsage vu = SelectMemoryUsage(memory_properties, usage);
 	const bool wantPersistent = (vu == VansMemoryUsage::PersistentUpload);
 
 	if (!VansVKMemoryAllocator::Get().CreateBuffer(
@@ -95,23 +100,18 @@ bool VansGraphics::VansVKBuffer::CreatVulkanBuffer(VkDevice& logical_device, VkD
 
 void VansGraphics::VansVKBuffer::DestroyVulkanBuffer(VkDevice& logical_device)
 {
-	// 若调用过 PersistentMap()（vmaMapMemory），VMA 内部映射引用计数 >0，
-	// 必须先 vmaUnmapMemory，否则 vmaDestroyBuffer 会触发断言/崩溃。
-	// 持久映射 (VMA_ALLOCATION_CREATE_MAPPED_BIT) 由 vmaDestroyBuffer 自动释放。
-	if (m_ExplicitlyMapped && m_VansVKBufferAllocation != nullptr)
+	// Preserve the allocation and explicit mapping until submitted readers finish.
+	// The public wrapper becomes empty immediately and can own a new allocation.
+	auto release=[device=logical_device,buffer=m_VansVKBuffer,allocation=m_VansVKBufferAllocation,
+		view=m_VansVKBufferView,explicitlyMapped=m_ExplicitlyMapped]() mutable
 	{
-		VansVKMemoryAllocator::Get().UnmapAllocation(m_VansVKBufferAllocation);
-		m_ExplicitlyMapped = false;
-	}
-	m_MappedPtr = nullptr;
-
-	if (VK_NULL_HANDLE != m_VansVKBufferView)
-	{
-		VansGraphics::vkDestroyBufferView(logical_device, m_VansVKBufferView, nullptr);
-		m_VansVKBufferView = VK_NULL_HANDLE;
-	}
-
-	VansVKMemoryAllocator::Get().DestroyBuffer(m_VansVKBuffer, m_VansVKBufferAllocation);
+		if(explicitlyMapped && allocation)VansVKMemoryAllocator::Get().UnmapAllocation(allocation);
+		if(view)VansGraphics::vkDestroyBufferView(device,view,nullptr);
+		VansVKMemoryAllocator::Get().DestroyBuffer(buffer,allocation);
+	};
+	VansVKResourceLifetime::Retire(m_ResourceLifetime,std::move(release));
+	m_VansVKBuffer=VK_NULL_HANDLE;m_VansVKBufferAllocation=nullptr;m_VansVKBufferView=VK_NULL_HANDLE;
+	m_MappedPtr=nullptr;
 	// 释放后容量也必须失效，否则按容量复用的调用者会跳过重新分配。
 	m_BufferSize = 0;
 	m_BufferFormat = VK_FORMAT_UNDEFINED;

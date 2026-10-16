@@ -44,6 +44,11 @@ namespace VansGraphics
 
 		std::string                    name;
 		std::string                    animationRigGuid;
+		bool normalizeRootPose = true;
+		bool finalCompositionAfterProcedural = false;
+		bool composeBeforeRetarget = false;
+		bool externalPoseTargetAllowsGraphSets = false;
+		std::string externalPoseLayerGraphSetId;
 		std::vector<AnimatorParameter> parameters;
 		std::vector<AnimatorClipRef>   clipRefs;
 

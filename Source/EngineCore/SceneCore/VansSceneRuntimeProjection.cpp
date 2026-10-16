@@ -1652,11 +1652,14 @@ bool VansSceneRuntimeProjection::ProjectAuthoringEntity(
 		state.guid = ReadSerializedStringField(component, "id");
 		state.type = type;
 		state.enabled = enabled;
+		state.unprojectedData = component;
+		EraseSerializedObjectField(state.unprojectedData, "enabled");
 		if (type == "LocalVolumetricFog")
 			state.localVolumetricFogComponent = component;
 		if (type=="NavigationSurface" || type=="NavigationSource" || type=="NavigationModifier" || type=="NavigationAgent" || type=="NavigationObstacle" || type=="NavigationLink")
 			if(const auto* navigationData=FindSerializedObjectField(component,"data")) state.navigationData=*navigationData;
-		outProjection.components.push_back(std::move(state));
+		if (state.localVolumetricFogComponent || state.navigationData)
+			EraseSerializedObjectField(state.unprojectedData, "data");
 
 		const VansSerializedValue* data = FindSerializedObjectField(component, "data");
 		if (type == "Transform" && enabled && data)
@@ -1691,6 +1694,12 @@ bool VansSceneRuntimeProjection::ProjectAuthoringEntity(
 			}
 			if (transform.position || transform.rotationDegrees || transform.scale)
 				outProjection.transform = std::move(transform);
+			if (auto* residual = FindObjectField(state.unprojectedData, "data"))
+			{
+				EraseSerializedObjectField(*residual, "position");
+				EraseSerializedObjectField(*residual, "rotation");
+				EraseSerializedObjectField(*residual, "scale");
+			}
 		}
 
 		if (enabled && IsLightComponentType(type) && data)
@@ -1708,6 +1717,16 @@ bool VansSceneRuntimeProjection::ProjectAuthoringEntity(
 			else
 				light.config = VansSceneLightComponentReader::ReadRectLight(*data);
 			outProjection.lights.push_back(std::move(light));
+			if (auto* residual = FindObjectField(state.unprojectedData, "data"))
+			{
+				for (const char* field : {"color", "intensity", "cookie"}) EraseSerializedObjectField(*residual, field);
+				if (type == "PointLight" || type == "SpotLight") EraseSerializedObjectField(*residual, "radius");
+				if (type == "SpotLight")
+					for (const char* field : {"innercutoff", "outerCutoff"}) EraseSerializedObjectField(*residual, field);
+				if (type == "RectLight")
+					for (const char* field : {"width", "height", "range", "two_sided", "castShadows"})
+						EraseSerializedObjectField(*residual, field);
+			}
 		}
 
 		if (type == "ModelRenderer" && enabled && data)
@@ -1725,7 +1744,13 @@ bool VansSceneRuntimeProjection::ProjectAuthoringEntity(
 			};
 			appendOverrides("materialOverrides");
 			appendOverrides("submeshMaterialOverrides");
+			if (auto* residual = FindObjectField(state.unprojectedData, "data"))
+			{
+				EraseSerializedObjectField(*residual, "materialOverrides");
+				EraseSerializedObjectField(*residual, "submeshMaterialOverrides");
+			}
 		}
+		outProjection.components.push_back(std::move(state));
 	}
 	return true;
 }

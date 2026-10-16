@@ -6,7 +6,6 @@ layout(set = GI_LAYOUT_SET, binding = GI_LAYOUT_BINDING, std430) readonly buffer
 } giLayout;
 const uint GI_INVALID_ADDRESS = 0xffffffffu;
 const uint GI_PARENT_CELL_BIT = 0x80000000u;
-bool GI_LayoutIsSparse() { return giLayout.words[0].x != 0u; }
 uint GI_LayoutRegionCount() { return giLayout.words[0].y; }
 uvec4 GI_LayoutRegionWord(uint region, uint slot)
 { return giLayout.words[giLayout.words[0].z + region * 5u + slot]; }
@@ -17,7 +16,8 @@ bool GI_LayoutRegionUsesWorld(uint region) { return GI_LayoutRegionTrace(region)
 uint GI_LayoutProbeCount(uint region) { return GI_LayoutRegionWord(region, 3u).w; }
 bool GI_LayoutRegionScrolls(uint region)
 { return region < GI_LayoutRegionCount() && giLayout.words[3].w != 0u && giLayout.words[giLayout.words[3].w + region * 2u].w != 0u; }
-bool GI_LayoutRegionIsSparse(uint region) { return GI_LayoutIsSparse() && !GI_LayoutRegionScrolls(region); }
+bool GI_LayoutRegionIsSparse(uint region)
+{ return region < GI_LayoutRegionCount() && (giLayout.words[0].x & (1u << region)) != 0u; }
 uvec3 GI_LayoutRingOffset(uint region) { return giLayout.words[giLayout.words[3].w + region * 2u].xyz; }
 uint GI_LayoutScrollEpoch(uint region)
 { return GI_LayoutRegionScrolls(region) ? giLayout.words[giLayout.words[3].w + region * 2u + 1u].w : 0u; }

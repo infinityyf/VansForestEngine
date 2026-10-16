@@ -2,8 +2,12 @@
 #include "AmbientOcclusionCore/VansGTAO.h"
 #include "../MaterialCore/VansHairMaterialParameters.h"
 #include "../MaterialCore/VansClothMaterialParameters.h"
-#include "GICore/VansGIReceiverVisibility.h"
+#include "../MaterialCore/VansTreeLeafMaterialParameters.h"
+#include "VulkanCore/VansVKGIReceiverVisibility.h"
+#include "VulkanCore/VansVKAmbientSkyCache.h"
+#include "VulkanCore/VansVKSSGI.h"
 #include "SkyLightingCore/VansSkyLighting.h"
+#include "GICore/VansGIVoxelMaterial.h"
 
 #include "VulkanCore/VansShader.h"
 
@@ -49,87 +53,6 @@ using namespace VansGraphics;
 namespace VansGraphics
 
 {
-	struct VansGISettings;
-
-	static constexpr uint32_t VANS_SSGI_MAX_GI_REGIONS = 8u;
-	static constexpr uint32_t VANS_SSGI_PROBE_CACHE_TILE_SIZE = 4u;
-
-	struct alignas(16) SSGIRegionParamsGPU
-	{
-		// volumeMin.w = immutable DDGI atlas probe tiles per row.
-		glm::vec4 volumeMin;
-		glm::vec4 volumeSizeAndBias;
-		// traceParams.w = immutable DDGI atlas probe tile row count.
-		glm::vec4 traceParams;
-		glm::vec4 gridDimensionsAndPriority;
-	};
-	static_assert(sizeof(SSGIRegionParamsGPU) == 64, "SSGI region parameter layout must match GLSL");
-
-	struct alignas(16) SSGIParamsGPU
-
-	{
-
-		glm::vec4 screenSize;
-
-		// x = active region count, y = reduced maximum SSGI trace distance,
-		// z = reduced minimum SSGI fade-start ratio, w = reserved.
-		glm::vec4 regionInfo;
-		std::array<SSGIRegionParamsGPU, VANS_SSGI_MAX_GI_REGIONS> regions{};
-		// x = output DDGI probe irradiance directly in Deferred, y = display exposure.
-		// This is shared GI consumer state, not an editor-side render override.
-		glm::vec4 deferredProbeDebug;
-
-	};
-
-	static_assert(sizeof(SSGIParamsGPU) == 560, "SSGI parameter layout must match GLSL");
-
-	// Single construction path for scene creation and later GI setting updates.
-	// Keeping the immutable DDGI atlas tile dimensions here prevents either path
-	// from silently falling back to per-cache-texel texture queries/divisions.
-	SSGIParamsGPU BuildSSGIParamsFromGISettings(
-		const VansGISettings& gi,
-		uint32_t renderWidth,
-		uint32_t renderHeight);
-
-	struct alignas(16) SSGITemporalParamsGPU
-
-	{
-
-		glm::vec4 screenSize;
-
-		glm::vec4 frameParams; // x = 历史帧号，yz = previous jitter UV - current jitter UV，w = reserved
-
-	};
-
-	static_assert(sizeof(SSGITemporalParamsGPU) == 32, "SSGI temporal parameter layout must match GLSL");
-
-	struct alignas(16) AmbientSkyCacheParamsGPU
-	{
-		glm::vec4 originAndSpacing;
-		glm::uvec4 gridAndQuery;
-		// Physical 3D texture offset for the logical cache origin.  The offset
-		// makes camera recentering a toroidal shift instead of a full clear.
-		glm::ivec4 ringOffset;
-	};
-	static_assert(sizeof(AmbientSkyCacheParamsGPU) == 48, "Ambient sky cache parameter layout must match GLSL");
-	using AmbientSkyCacheInfoGPU = AmbientSkyCacheParamsGPU;
-
-	struct alignas(16) AmbientSkyCachePushConstants
-	{
-		// control.x = frame offset, control.y = 0 for trace / 1 for clearing
-		glm::uvec4 control{};
-		glm::vec4 previousOriginAndSpacing{};
-	};
-	static_assert(sizeof(AmbientSkyCachePushConstants) == 32, "Ambient sky cache push constant layout must match GLSL");
-
-	struct alignas(16) SSGIAtrousPushConstants
-	{
-		uint32_t stepWidth = 1;
-		float planeToleranceScale = 1.0f;
-		float normalPower = 32.0f;
-		float materialWeight = 0.0f;
-	};
-	static_assert(sizeof(SSGIAtrousPushConstants) == 16, "SSGI A-Trous push constant layout must match GLSL");
 
 
 
@@ -314,8 +237,16 @@ namespace VansGraphics
 
 	struct alignas(16) VansTreeLeafParamsGPU
 	{
-		glm::vec4 subsurfaceColorAndStrength = glm::vec4(0.70f, 1.00f, 0.32f, 0.75f);
-		glm::vec4 scattering = glm::vec4(0.50f, 0.60f, 0.45f, 0.50f);
+		VansTreeLeafParamsGPU(const Vans::VansTreeLeafMaterialParameters& value = {})
+			: subsurfaceColorAndStrength(value.subsurfaceColor[0], value.subsurfaceColor[1], value.subsurfaceColor[2], value.transmission),
+			  scattering(value.wrap, value.scatterRoughness, value.specularScale, value.alphaClip) {}
+		Vans::VansTreeLeafMaterialParameters Parameters() const
+		{
+			return {{subsurfaceColorAndStrength.x, subsurfaceColorAndStrength.y, subsurfaceColorAndStrength.z},
+				subsurfaceColorAndStrength.w, scattering.x, scattering.y, scattering.z, scattering.w};
+		}
+		glm::vec4 subsurfaceColorAndStrength;
+		glm::vec4 scattering;
 		glm::vec4 reserved = glm::vec4(0.0f);
 	};
 
@@ -393,6 +324,7 @@ namespace VansGraphics
 		std::vector<int> m_FreeRuntimeCustomIndices;
 		bool m_GlobalBindlessDescriptorsDirty = false;
 		uint64_t m_ClothLightingRevision = 0;
+        std::shared_ptr<VansGIVoxelMaterialInputs> m_GIVoxelMaterials;
 
 		struct SkinProfileLUTCacheEntry
 		{
@@ -425,23 +357,10 @@ namespace VansGraphics
         static constexpr const char* RT_GTAO_DEPTH = "Runtime.GTAO.Depth";
         static constexpr const char* RT_GTAO_EDGES = "Runtime.GTAO.Edges";
 
-		static constexpr const char* RT_SSGI_RESULT = "Runtime.SSGI.Result";
-		static constexpr const char* RT_SSGI_PROBE_CACHE_RADIANCE = "Runtime.SSGI.ProbeCacheRadiance";
-		static constexpr const char* RT_SSGI_PROBE_CACHE_SURFACE = "Runtime.SSGI.ProbeCacheSurface";
-
-		static constexpr const char* RT_SSGI_TEMPORAL_A = "Runtime.SSGI.TemporalA";
-
-		static constexpr const char* RT_SSGI_TEMPORAL_B = "Runtime.SSGI.TemporalB";
-
 		// Luminance first/second moments are ping-ponged with the temporal GI
 		// history. They provide an explicit variance estimate for rejection and
 		// clamping instead of deriving it only from the current 3x3 neighborhood.
-		static constexpr const char* RT_SSGI_MOMENTS_A = "Runtime.SSGI.MomentsA";
-		static constexpr const char* RT_SSGI_MOMENTS_B = "Runtime.SSGI.MomentsB";
 		// RGBA32F：xyz 世界坐标；w 为 SSGISurface.glsl 定义的法线/材质整数数值。
-		static constexpr const char* RT_SSGI_SURFACE_HISTORY_A = "Runtime.SSGI.SurfaceHistoryA";
-		static constexpr const char* RT_SSGI_SURFACE_HISTORY_B = "Runtime.SSGI.SurfaceHistoryB";
-		static constexpr const char* RT_SSGI_ATROUS_A = "Runtime.SSGI.AtrousA";
 
 		static constexpr const char* RT_HZB_RESULT = "Runtime.HZB.Result";
 
@@ -463,11 +382,6 @@ namespace VansGraphics
 		static constexpr const char* RT_SSRAA_RESULT_B = "Runtime.SSR.AA.ResultB";
 
 		static constexpr const char* RT_SSRAA_RESULT = "Runtime.SSR.AA.Result";
-
-	static constexpr const char* RT_SSGI_FILTER_RESULT = "Runtime.SSGI.FilterResult";
-		static constexpr const char* RT_AMBIENT_SKY_CACHE_X = "Runtime.AmbientSkyCache.X";
-		static constexpr const char* RT_AMBIENT_SKY_CACHE_Y = "Runtime.AmbientSkyCache.Y";
-		static constexpr const char* RT_AMBIENT_SKY_CACHE_Z = "Runtime.AmbientSkyCache.Z";
 
 		static constexpr const char* RT_GTAO_RESULT = "Runtime.GTAO.Result";
         VkDescriptorSetLayout m_GTAODepthSetLayout = VK_NULL_HANDLE;
@@ -551,7 +465,6 @@ namespace VansGraphics
 
 		// Releases the ambient-sky cache resources without disturbing other
 		// resolution-dependent GI and post-process resources.
-		void ClearAmbientSkyCacheRenderData(VkDevice device);
 
 
 
@@ -564,6 +477,10 @@ namespace VansGraphics
 
 		// Main-only CPU staging; GPU buffers are uploaded from the published frame on RT.
 		bool FlushMaterialPayload(VansMaterial& material);
+        void RegisterGIVoxelMaterial(const VansPBRMaterial& material);
+        void UnregisterGIVoxelMaterial(const VansPBRMaterial& material);
+        // 只在 Main 或 Main 已暂停的场景/维护事务中取作者快照；普通 RT 帧使用发布的 frame data。
+        std::shared_ptr<const VansGIVoxelMaterialInputs> GetGIVoxelMaterialInputs() const {return m_GIVoxelMaterials;}
 		VansRenderMaterialFrameData CaptureRenderMaterialFrameData(
 			const std::vector<VansMaterial*>& activeMaterials);
 		bool UploadRenderMaterialFrameData(
@@ -614,13 +531,6 @@ namespace VansGraphics
 
 
 
-		//SSGI
-
-		VkDescriptorSetLayout m_SSGITexSetLayout = VK_NULL_HANDLE;
-
-		std::vector<VkDescriptorSet> m_SSGIDescriptorSets;
-		VkDescriptorSetLayout m_SSGIProbeCacheSetLayout = VK_NULL_HANDLE;
-		std::vector<VkDescriptorSet> m_SSGIProbeCacheDescriptorSets;
 
 		//HIZ
 
@@ -761,10 +671,6 @@ namespace VansGraphics
 
 
 
-		uint32_t     m_SSGITemporalFrame = 0;
-
-
-
 		VansMaterialManager();
 
 
@@ -774,40 +680,12 @@ namespace VansGraphics
 
 
 	public:
+		VansVKSSGI m_SSGI;
+		VansVKGIReceiverVisibility m_GIReceiverVisibility;
 
 
 
-		VansComputeShader* m_SSGIShader = nullptr;
-		VansComputeShader* m_SSGIProbeCacheShader = nullptr;
-		VansGIReceiverVisibility m_GIReceiverVisibility;
-
-
-
-		// SSGI temporal accumulation shader & descriptors
-
-		VansComputeShader* m_SSGITemporalShader;
-		VansComputeShader* m_SSGIAtrousShader = nullptr;
-		VansComputeShader* m_AmbientSkyCacheShader = nullptr;
-		VkDescriptorSetLayout m_AmbientSkyCacheSetLayout = VK_NULL_HANDLE;
-		std::vector<VkDescriptorSet> m_AmbientSkyCacheDescriptorSets;
-		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_AmbientSkyCacheParamsCBBuffer;
-		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_AmbientSkyCacheInfoCBBuffer;
-		glm::vec3 m_AmbientSkyCacheOrigin{0.0f};
-		glm::ivec3 m_AmbientSkyCacheRingOffset{0};
-		bool m_AmbientSkyCacheInitialized = false;
-		uint32_t m_AmbientSkyCacheFrameOffset = 0u;
-
-		VkDescriptorSetLayout m_SSGITemporalSetLayout = VK_NULL_HANDLE;
-
-		std::vector<VkDescriptorSet> m_SSGITemporalDescriptorSets; // frame slot * 2 + history write target
-		VkDescriptorSetLayout m_SSGIAtrousSetLayout = VK_NULL_HANDLE;
-		std::vector<VkDescriptorSet> m_SSGIAtrousDescriptorSets;
-
-		std::array<VansVKBuffer, VansCommandRecordingConfig::MaximumFramesInFlight> m_SSGITemporalCBBuffer;
-
-
-
-		VansVKBuffer m_SSGICBBuffer;
+		VansVKAmbientSkyCache m_AmbientSkyCache;
 
 
 

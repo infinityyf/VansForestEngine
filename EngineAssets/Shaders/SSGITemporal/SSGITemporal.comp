@@ -10,11 +10,8 @@ layout(set = 1, binding = 1) uniform sampler2D inputMotionVector;
 layout(set = 1, binding = 2) uniform sampler2D inputHistoryGI;
 layout(set = 1, binding = 3, rgba16f) readonly uniform image2D inputCurrentGI;
 layout(set = 1, binding = 4, rgba16f) writeonly uniform image2D outputAccumulatedGI;
-layout(set = 1, binding = 5) uniform ssgiTemporalInfo
-{
-    vec4 screenSize;
-    vec4 frameParams; // x = 历史帧号（0 重置），yz = previous jitter UV - current jitter UV
-};
+#define SSGI_HISTORY_BINDING 5
+#include "../SSGI/SSGIHistory.glsl"
 layout(set = 1, binding = 6) uniform sampler2D inputHistoryMoments;
 layout(set = 1, binding = 7, rg16f) writeonly uniform image2D outputMoments;
 layout(set = 1, binding = 8) uniform sampler2D inputHistorySurface;
@@ -75,7 +72,7 @@ void main()
     mean /= max(totalWeight, 1e-5);
     vec2 uv = (vec2(id) + 0.5) / vec2(size);
     vec2 motion = texelFetch(inputMotionVector, id, 0).xy;
-    vec2 previousUV = uv - motion + frameParams.yz;
+    vec2 previousUV = uv - motion + historyFrameParams.yz;
     vec4 previousClip = LastVPMatrix * vec4(position.xyz, 1.0);
     vec2 historyPixel = previousUV * vec2(size) - 0.5;
     ivec2 base = ivec2(floor(historyPixel));
@@ -83,7 +80,7 @@ void main()
     vec3 historyColor = vec3(0.0);
     vec2 historyMoments = vec2(0.0);
     float historyLength = 0.0, historyWeight = 0.0;
-    if (frameParams.x >= 0.5 && previousClip.w > 0.0 &&
+    if (historyFrameParams.x >= 0.5 && previousClip.w > 0.0 &&
         all(greaterThanEqual(previousUV, vec2(0.0))) && all(lessThan(previousUV, vec2(1.0))))
     {
         // 先验证各 tap 的世界表面，再插值颜色；禁止插值打包的法线/材质。
@@ -112,16 +109,18 @@ void main()
         historyMoments /= historyWeight;
     }
     float confidence = clamp(tileGI[center].a, 0.0, 1.0);
-    float motionPenalty = clamp(length(motion * screenSize.xy) / 8.0, 0.0, 1.0);
+    float motionPenalty = clamp(length(motion * historyScreenSize.xy) / 8.0, 0.0, 1.0);
     float blend = valid ? max(1.0 / (historyLength + 1.0),
         mix(0.06, 0.04, confidence) + motionPenalty * 0.06) : 1.0;
+    if (valid && SSGI_LightingResponseAt(position.xyz))
+        blend = max(blend, lightingMinimum.w);
     // Moments 来自尚未时域积累的输入，避免对降噪输出再估计一次方差。
     float luminance = min(Luminance(max(tileGI[center].rgb, vec3(0.0))), 255.0);
     vec2 moments = vec2(luminance, luminance * luminance);
     if (valid) moments = mix(historyMoments, moments, blend);
     // Raw 来自低采样缓存，同一亮块的邻域不是独立样本。按当前邻域裁剪
     // 历史会把偶发高亮写入整块历史，产生偏亮的马赛克。表面验证通过后
-    // 使用原有权重累计；显露/材质变化由历史验证拒绝，灯光突变由帧重置处理。
+    // 静止光照使用原有权重；显露/材质变化由表面验证拒绝，改灯只调整受影响区域的响应。
     vec3 accumulated = valid ? mix(historyColor, mean, blend) : mean;
     float newLength = valid ? min(historyLength + 1.0, 255.0) : 1.0;
     imageStore(outputAccumulatedGI, id, vec4(accumulated, newLength / 255.0));

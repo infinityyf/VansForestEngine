@@ -65,7 +65,11 @@ void VansGraphics::VansScriptorWindow::DrawScriptorContents(
     if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::Scriptor))
         return;
 
-    ImGui::Begin("Scripts");
+    if (!ImGui::Begin("Scripts"))
+    {
+        ImGui::End();
+        return;
+    }
 
     // Toolbar
     if (ImGui::Button("Refresh"))

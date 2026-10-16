@@ -29,7 +29,7 @@ namespace VansGraphics
                 throw std::runtime_error(std::string("Unsupported GTAO storage/sampled format: ") + name);
             auto texture = std::make_unique<VansTexture>();
             if (!texture->InitTextureWithoutData(m_MaintenanceGraphicsCommandBuffer,
-                m_RenderWidth, m_RenderHeight, 1, format, false, mipLimit > 1, true,
+                m_RenderWidth, m_RenderHeight, 1, format, VK_IMAGE_VIEW_TYPE_2D, mipLimit > 1, true,
                 VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, mipLimit))
                 throw std::runtime_error(std::string("GTAO texture allocation failed: ") + name);
             const uint32_t levels = texture->GetImage().GetImageCreateInfo().mipLevels;

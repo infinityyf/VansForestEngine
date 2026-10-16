@@ -29,7 +29,7 @@ void VansUIEditorWindow::DrawUIEditorContents(Vans::EditorAPI::IUIEditorAPI& api
         return;
 
     ImGui::SetNextWindowSize(ImVec2(720.0f, 520.0f), ImGuiCond_FirstUseEver);
-    ImGui::Begin("UI Editor");
+    const bool contentVisible = ImGui::Begin("UI Editor");
 
     ImGui::Text("UI Document:");
     ImGui::SameLine();
@@ -56,6 +56,12 @@ void VansUIEditorWindow::DrawUIEditorContents(Vans::EditorAPI::IUIEditorAPI& api
         LoadPreview(api);
     }
     m_ReloadKeyWasDown = reloadKeyDown;
+
+    if (!contentVisible)
+    {
+        ImGui::End();
+        return;
+    }
 
     if (!m_LastStatus.empty())
     {

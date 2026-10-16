@@ -49,6 +49,8 @@ namespace VansGraphics
             uint32_t stride = 0, vertexCount = 0, indexCount = 0;
             VkIndexType indexType = VK_INDEX_TYPE_UINT32;
             VkVertexInputAttributeDescription position{}, normal{}, uv{};
+            VkBuffer vertices=VK_NULL_HANDLE,indices=VK_NULL_HANDLE;
+            VansVKResourceLifetime::Lease vertexLease,indexLease;
         };
         bool Finite(const glm::vec3& v)
         {
@@ -56,14 +58,23 @@ namespace VansGraphics
         }
     }
 
-    bool VansMeshGeometryReadback::Read(VansVKDevice& device, const std::vector<VansMesh*>& meshes,
-        std::vector<VansMeshGeometryData>& output, std::string& error, bool includeTexcoords)
+    struct VansMeshGeometryReadback::State
     {
-        output.clear(); error.clear();
-        if (meshes.empty()) return true;
-        std::vector<MeshCopy> copies(meshes.size());
-        VkDeviceSize bytes = 0;
-        auto fail = [&](const std::string& message) { output.clear(); error = message; return false; };
+        std::vector<MeshCopy> copies;
+        VkDeviceSize bytes=0;
+        bool includeTexcoords=false;
+    };
+    VansMeshGeometryReadback::VansMeshGeometryReadback():m_State(std::make_unique<State>()){}
+    VansMeshGeometryReadback::~VansMeshGeometryReadback()=default;
+    VansMeshGeometryReadback::VansMeshGeometryReadback(VansMeshGeometryReadback&&) noexcept=default;
+    VansMeshGeometryReadback& VansMeshGeometryReadback::operator=(VansMeshGeometryReadback&&) noexcept=default;
+    uint64_t VansMeshGeometryReadback::ByteSize() const {return m_State->bytes;}
+    bool VansMeshGeometryReadback::Prepare(const std::vector<VansMesh*>& meshes,std::string& error,VansMeshGeometryReadbackAttributes attributes)
+    {
+        const bool includeTexcoords=attributes.texcoords;
+        error.clear();m_State=std::make_unique<State>();m_State->includeTexcoords=includeTexcoords;
+        auto& copies=m_State->copies;copies.resize(meshes.size());auto& bytes=m_State->bytes;
+        auto fail=[&](const std::string& message){error=message;return false;};
         for (size_t i = 0; i < meshes.size(); ++i)
         {
             auto* mesh = meshes[i];
@@ -74,7 +85,7 @@ namespace VansGraphics
             for (const auto& attribute : mesh->m_VertexInputAttributeDescriptions)
             {
                 if (attribute.location == 0) copy.position = attribute;
-                if (attribute.location == 2) copy.normal = attribute;
+                if (attributes.normals && attribute.location == 2) copy.normal = attribute;
                 if (includeTexcoords && attribute.location == 1) copy.uv = attribute;
             }
             if (copy.stride == 0 || copy.vertexCount == 0 || !AttributeBytes(copy.position.format)
@@ -100,42 +111,42 @@ namespace VansGraphics
             copy.indexOffset = bytes; bytes = (bytes + copy.indexBytes + 3u) & ~VkDeviceSize(3u);
             // 显式失败并保留调用方旧布局，不截断几何并把遗漏物体当成空地。
             if (bytes > (VkDeviceSize(2) << 30)) return fail("Geometry readback exceeds the 2 GiB staging budget");
+            copy.vertices=mesh->GetBLASVertexBuffer().GetNativeBuffer();
+            copy.indices=mesh->GetIndexBuffer().GetNativeBuffer();
+            copy.vertexLease=mesh->GetBLASVertexBuffer().RetainNativeResources();
+            if(copy.indexBytes)copy.indexLease=mesh->GetIndexBuffer().RetainNativeResources();
         }
 
-        ReadbackScope readback{ device.GetLogicDevice() };
-        if (!readback.buffer.CreatVulkanBuffer(device.GetLogicDevice(), bytes, VK_FORMAT_UNDEFINED,
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-            || !readback.buffer.PersistentMap()) return fail("Geometry readback allocation failed");
-        auto& commandBuffer = device.GetImmediateGraphicsCommandBuffer();
-        if (!commandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
-            return fail("Geometry readback command recording failed");
-        VkMemoryBarrier toCopy{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
-        toCopy.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-        toCopy.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        commandBuffer.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, { toCopy }, {}, {});
-        for (size_t i = 0; i < meshes.size(); ++i)
+        return true;
+    }
+    void VansMeshGeometryReadback::Record(VansVKCommandBuffer& command,VansVKBuffer& destination) const
+    {
+        const auto& copies=m_State->copies;
+        for (size_t i = 0; i < copies.size(); ++i)
         {
             const auto& copy = copies[i];
-            commandBuffer.CopyBuffer(meshes[i]->GetBLASVertexBuffer().GetNativeBuffer(), readback.buffer.GetNativeBuffer(),
+            command.CopyBuffer(copy.vertices, destination.GetNativeBuffer(),
                 0, copy.vertexOffset, copy.vertexBytes);
-            if (copy.indexBytes) commandBuffer.CopyBuffer(meshes[i]->GetIndexBuffer().GetNativeBuffer(), readback.buffer.GetNativeBuffer(),
+            if (copy.indexBytes) command.CopyBuffer(copy.indices, destination.GetNativeBuffer(),
                 0, copy.indexOffset, copy.indexBytes);
         }
-        VkMemoryBarrier toHost{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
-        toHost.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; toHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-        commandBuffer.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, { toHost }, {}, {});
-        const bool ended = commandBuffer.EndCommandBufferRecord();
-        const bool submitted = ended && VansVKCommandBuffer::SubmitCommands(device.GetGraphicsQueue(), device.GetLogicDevice(),
-            { commandBuffer.GetVKCommandBuffer() }, {}, {}, commandBuffer.m_CommandBufferFinishSubmitFence);
-        commandBuffer.ResetCommandBuffer(false);
-        if (!submitted) return fail("Geometry readback GPU submission failed");
-        readback.buffer.InvalidateMappedRange(0, bytes);
-        const auto* data = static_cast<const uint8_t*>(readback.buffer.GetMappedPtr());
+    }
+    void VansMeshGeometryReadback::ReleaseSourcesAfterGpuCompletion()
+    {
+        for(auto& copy:m_State->copies){copy.vertexLease.reset();copy.indexLease.reset();}
+    }
+    bool VansMeshGeometryReadback::Decode(const void* bytes,std::vector<VansMeshGeometryData>& output,std::string& error) const
+    {
+        output.clear();error.clear();const auto& copies=m_State->copies;
+        if(copies.empty())return true;
+        const bool includeTexcoords=m_State->includeTexcoords;
+        const auto* data=static_cast<const uint8_t*>(bytes);
+        auto fail=[&](const std::string& message){output.clear();error=message;return false;};
+        if(!data)return fail("Geometry decode requires completed host bytes");
         try
         {
-            output.resize(meshes.size());
-            for (size_t i = 0; i < meshes.size(); ++i)
+            output.resize(copies.size());
+            for (size_t i = 0; i < copies.size(); ++i)
             {
                 const auto& copy = copies[i]; auto& geometry = output[i];
                 geometry.positions.resize(copy.vertexCount);
@@ -176,5 +187,36 @@ namespace VansGraphics
         }
         catch (const std::exception& exception) { return fail(exception.what()); }
         return true;
+    }
+    bool VansMeshGeometryReadback::Read(VansVKDevice& device,const std::vector<VansMesh*>& meshes,
+        std::vector<VansMeshGeometryData>& output,std::string& error,VansMeshGeometryReadbackAttributes attributes)
+    {
+        output.clear();error.clear();VansMeshGeometryReadback snapshot;
+        if(!snapshot.Prepare(meshes,error,attributes))return false;
+        const auto bytes=snapshot.ByteSize();if(!bytes)return true;
+        auto fail=[&](const std::string& message){output.clear();error=message;return false;};
+        ReadbackScope readback{ device.GetLogicDevice() };
+        if (!readback.buffer.CreatVulkanBuffer(device.GetLogicDevice(), bytes, VK_FORMAT_UNDEFINED,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+            || !readback.buffer.PersistentMap()) return fail("Geometry readback allocation failed");
+        auto& commandBuffer = device.GetImmediateGraphicsCommandBuffer();
+        if (!commandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+            return fail("Geometry readback command recording failed");
+        VkMemoryBarrier toCopy{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+        toCopy.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        toCopy.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        commandBuffer.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, { toCopy }, {}, {});
+        snapshot.Record(commandBuffer,readback.buffer);
+        VkMemoryBarrier toHost{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+        toHost.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; toHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        commandBuffer.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, { toHost }, {}, {});
+        const bool ended = commandBuffer.EndCommandBufferRecord();
+        const bool submitted = ended && VansVKCommandBuffer::SubmitCommands(device.GetGraphicsQueue(), device.GetLogicDevice(),
+            { commandBuffer.GetVKCommandBuffer() }, {}, {}, commandBuffer.m_CommandBufferFinishSubmitFence);
+        commandBuffer.ResetCommandBuffer(false);
+        if (!submitted) return fail("Geometry readback GPU submission failed");
+        readback.buffer.InvalidateMappedRange(0, bytes);
+        return snapshot.Decode(readback.buffer.GetMappedPtr(),output,error);
     }
 }

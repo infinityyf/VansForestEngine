@@ -9,6 +9,11 @@
 
 namespace VansGraphics
 {
+	VkDeviceSize VansVKImage::GetAllocationSize() const
+	{
+		return VansVKMemoryAllocator::Get().GetAllocationSize(m_VansVKImageAllocation);
+	}
+
 	VkImageView VansVKImage::CreateLayerMipView(VkDevice device, uint32_t arrayLayer, uint32_t mipLevel, VkComponentMapping components, VkImageAspectFlags aspect)
 	{
 		if (arrayLayer >= m_ImageCreateInfo.arrayLayers || mipLevel >= m_ImageCreateInfo.mipLevels)
@@ -313,35 +318,19 @@ namespace VansGraphics
 
     void VansVKImage::DestroyVulkanImage(VkDevice& logical_device)
     {
-        if (VK_NULL_HANDLE != m_DepthStencilView)
+        auto release=[device=logical_device,image=m_VansVKImage,allocation=m_VansVKImageAllocation,
+            view=m_VansVKImageView,depthView=m_DepthStencilView,mips=std::move(m_VansVKImageMipViews),sampler=m_Sampler]() mutable
         {
-            VansGraphics::vkDestroyImageView(logical_device, m_DepthStencilView, nullptr);
-            m_DepthStencilView = VK_NULL_HANDLE;
-        }
-        if (VK_NULL_HANDLE != m_VansVKImageView)
-        {
-            VansGraphics::vkDestroyImageView(logical_device, m_VansVKImageView, nullptr);
-            m_VansVKImageView = VK_NULL_HANDLE;
-        }
-
-        for (auto& view : m_VansVKImageMipViews)
-        {
-            if (VK_NULL_HANDLE != view)
-            {
-                VansGraphics::vkDestroyImageView(logical_device, view, nullptr);
-                view = VK_NULL_HANDLE;
-            }
-        }
+            if(depthView)VansGraphics::vkDestroyImageView(device,depthView,nullptr);
+            if(view)VansGraphics::vkDestroyImageView(device,view,nullptr);
+            for(auto mip:mips)if(mip)VansGraphics::vkDestroyImageView(device,mip,nullptr);
+            VansVKMemoryAllocator::Get().DestroyImage(image,allocation);
+            if(sampler)VansVKSampler::DestroySampler(device,sampler);
+        };
+        VansVKResourceLifetime::Retire(m_ResourceLifetime,std::move(release));
+        m_VansVKImage=VK_NULL_HANDLE;m_VansVKImageAllocation=nullptr;
+        m_VansVKImageView=m_DepthStencilView=VK_NULL_HANDLE;m_Sampler=VK_NULL_HANDLE;
         m_VansVKImageMipViews.clear();
-
-        // VMA owns both the VkImage and the VkDeviceMemory.
-        VansVKMemoryAllocator::Get().DestroyImage(m_VansVKImage, m_VansVKImageAllocation);
-
-        if (VK_NULL_HANDLE != m_Sampler)
-        {
-            VansVKSampler::DestroySampler(logical_device, m_Sampler);
-            m_Sampler = VK_NULL_HANDLE;
-        }
     }
 
     void VansVKImage::SetRawImageData(VkDevice& logical_device, void* data, int size)

@@ -33,6 +33,9 @@ namespace Vans
 	class VansSceneHierarchyService
 	{
 	public:
+		static SceneHierarchyEditResult ValidateReparent(
+			const VansSceneDocument& document,
+			const SceneReparentRequest& request);
 		static SceneHierarchyEditResult Reparent(
 			const VansSceneDocument& document,
 			VansSceneEditService& editService,

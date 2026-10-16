@@ -82,6 +82,7 @@ bool VansGraphics::VansVKDevice::InitializeLightFrameResources()
 
 void VansGraphics::VansVKDevice::DestroyLightFrameResources()
 {
+    m_GILightingContentChanges = {};
 	if (!m_LightFrameResourcesReady)
 		return;
 
@@ -289,7 +290,10 @@ VansGraphics::VansVKDevice::PrepareRenderSubmission(
 	if (resetHistory)
 	{
         if (m_Scene && m_Scene->GetMaterialManager())
-            m_Scene->GetMaterialManager()->m_GIReceiverVisibility.frame = 0;
+        {
+            m_Scene->GetMaterialManager()->m_GIReceiverVisibility.state.frame = 0;
+            m_Scene->GetMaterialManager()->m_SSGI.history.Invalidate();
+        }
 		m_CameraData.lastPreviousViewMatrix = view.view;
 		m_CameraData.lastPreviousProjectionMatrix = jitteredProjection;
 		m_CameraData.lastPreviousViewProjectionMatrix = viewProjection;
@@ -417,6 +421,11 @@ bool VansGraphics::VansVKDevice::UploadLightCookies(const VansLightCookieFrame& 
             manager->WriteImageDescriptor(set, GLOBAL_BINDING_LIGHT_COOKIE_TEXTURES,
                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, infos);
         manager->CommitDescriptorUpdates();
+        for (size_t i = 0; i < infos.size(); ++i)
+            if (i >= m_LightCookieDescriptors.size() ||
+                infos[i].imageView != m_LightCookieDescriptors[i].imageView ||
+                infos[i].sampler != m_LightCookieDescriptors[i].sampler)
+                m_GILightingContentChanges.AddCookie(i, 1.0f);
         m_LightCookieDescriptors = std::move(infos);
         m_LightCookieDescriptorSets = sets;
     }

@@ -22,7 +22,13 @@ namespace VansGraphics
     {
         std::vector<uint8_t> pixels; // RGBA8，大小 = width * height * 4
         double               pts    = 0.0; // 显示时间戳（秒，循环时已加偏移）
-        int                  uploadSlot = -1;
+    };
+
+    struct VansVideoUploadResult
+    {
+        bool recorded=false;
+        float radianceChange=0.0f;
+        uint32_t arrayLayers=0;
     };
 
     // ===========================================================================
@@ -31,14 +37,14 @@ namespace VansGraphics
     // 使用方式：
     //   1. Open()        — 打开文件，解码首帧初始化 GPU 纹理，启动后台解码线程
     //   2. Tick(dt)      — 每帧调用：推进播放时间，挑选本帧应显示的新帧
-    //   3. RecordPendingUpload(cmd) — 在渲染命令录制阶段将新帧上传到 GPU
+    //   3. RecordPendingUploads(cmd, frameSlot, targets, layers) — 在渲染命令录制阶段将新帧上传到 GPU
     //   4. GetTexture()  — 获取底层 VansTexture*（可用于绑定到 PBR 材质）
     //   5. Close()       — 停止后台线程，释放媒体会话和 GPU 资源
     //
     // 线程模型：
     //   - 后台解码线程从 MediaCore 取得 RGBA 帧，写入 m_FrameQueue（mutex 保护）。
     //   - 主线程 Tick() 从 m_FrameQueue 取帧并缓存像素，GPU 上传延迟到
-    //     RecordPendingUpload()，合并进当前帧图形命令缓冲，避免同步 submit/wait。
+    //     RecordPendingUploads()，合并进当前帧图形命令缓冲，避免同步 submit/wait。
     // ===========================================================================
     class VansVideoTexture
     {
@@ -61,7 +67,7 @@ namespace VansGraphics
 
         // ── 每帧驱动 ─────────────────────────────────────────────────────────
         // deltaTime : 本帧耗时（秒），与 VansTimer::GetLastFrameDelta() 一致
-        // 返回 true 表示本帧选中了新像素，等待后续 RecordPendingUpload() 上传到 GPU
+        // 返回 true 表示本帧选中了新像素，等待后续 RecordPendingUploads() 上传到 GPU
         bool Tick(double deltaTime);
 
         // ── 播放控制 ─────────────────────────────────────────────────────────
@@ -88,44 +94,24 @@ namespace VansGraphics
         int GetWidth()  const { return m_Width;  }
         int GetHeight() const { return m_Height; }
 
-        // 在已 Begin 的图形 command buffer 中记录待上传视频帧。
-        // 返回 true 表示本次记录了 GPU 上传命令。
-        bool RecordPendingUpload(VansVKCommandBuffer& cmd);
-
-        // ── 统一 GPU 数据接口（供面光源等消费方使用）────────────────────────────
-        // 若本帧有新像素，将其写入目标贴图数组的指定层并消费新帧标志。
-        // 返回 true 表示本次执行了写入；消费方无需直接访问内部 CPU 像素缓存。
-        bool CopyNewFrameToArrayLayer(VansTexture* targetArray,
-                                      VansVKCommandBuffer& cmd,
-                                      int layerIndex);
-
-		// 在当前帧图形命令缓冲中记录新帧写入数组层，不独立提交或等待 fence。
-		bool RecordNewFrameToArrayLayer(VansTexture* targetArray,
-			VansVKCommandBuffer& cmd,
-			int layerIndex);
+        // 主纹理与全部目标层在同一命令缓冲内发布；frameSlot 必须由渲染器退役后传入。
+        // 交接锁只保护像素上传，后续数组 GPU 命令不占用 Main 交接锁。
+        VansVideoUploadResult RecordPendingUploads(VansVKCommandBuffer& cmd, uint32_t frameSlot,
+            VansTexture* targetArray, uint32_t layerMask);
+        // 只有实际上传节点被提交才确认；取消保留最新选中帧，且不覆盖 Main 已发布的新请求。
+        void ResolveRecordedUploads(bool submitted);
 
     private:
-        // ── 后台解码线程函数 ─────────────────────────────────────────────────
-		bool RecordPendingUploadLocked(VansVKCommandBuffer& cmd);
-
         void DecodeThreadFunc();
 
-        // ── 将像素数据上传到 GPU（仅主线程录制阶段调用）────────────────────
-        bool RecordFrameUpload(VansVKCommandBuffer& cmd, const uint8_t* pixels, int dataSize);
-        bool RecordFrameUploadFromSlot(VansVKCommandBuffer& cmd, int uploadSlot, int dataSize);
+        // ── 将像素数据上传到 GPU（仅渲染命令录制阶段调用）────────────────────
+        bool RecordFrameUpload(VansVKCommandBuffer& cmd, uint32_t frameSlot, const uint8_t* pixels, int dataSize);
 
         // ── CPU 像素缓存池（必须在 m_QueueMutex 保护下调用）───────────────
         std::vector<uint8_t> AcquireFramePixelsLocked(int dataSize);
         void RecycleFramePixelsLocked(std::vector<uint8_t>& pixels);
         void ClearFramePixelPoolLocked();
         bool CreateFrameUploadBuffer(int dataSize);
-        int AcquireUploadSlotLocked();
-        void RecycleUploadSlotLocked(int& uploadSlot);
-        void ClearUploadSlotsLocked();
-
-        // ── 最后一帧 CPU 像素缓存内部访问器（仅供 CopyNewFrameToArrayLayer 使用）──
-        bool HasNewFrame() const { return m_HasNewFrame; }
-        void ConsumeNewFrame()   { m_HasNewFrame = false; }
 
     private:
         // ── MediaCore 解码会话 ─────────────────────────────────────────────
@@ -151,23 +137,20 @@ namespace VansGraphics
         // ── 帧队列（生产者：解码线程 → 消费者：主线程）──────────────────────
         static constexpr int     MAX_QUEUE_SIZE = 4;
         static constexpr int     MAX_FREE_FRAME_BUFFERS = MAX_QUEUE_SIZE + 2;
-        static constexpr int     MAX_UPLOAD_SLOTS = MAX_QUEUE_SIZE + 2;
         std::queue<VideoFrameData> m_FrameQueue;
         std::vector<std::vector<uint8_t>> m_FreeFrameBuffers;
         VansVKBuffer               m_FrameUploadBuffer;
         bool                       m_FrameUploadBufferReady = false;
-        std::vector<int>           m_FreeUploadSlots;
         std::mutex                 m_QueueMutex;
         std::condition_variable    m_ProducerCv; // 生产者等待队列有空位
-        std::condition_variable    m_ConsumerCv; // 消费者等待队列有帧（预留）
 
-        // ── 最后一帧像素缓存（主线程专用）────────────────────────────────────
+        // ── 最后一帧像素缓存（由交接锁保护）────────────────────────────────────
 		// Main 发布、RT 消费的待上传帧交接锁；不覆盖 present 或 GPU 等待。
 		std::mutex m_PendingFrameMutex;
         std::vector<uint8_t> m_LastFramePixels;
-        int                  m_LastFrameUploadSlot = -1;
-        bool                 m_HasNewFrame = false;
         bool                 m_HasPendingUpload = false;
+        bool                 m_UploadRecorded = false;
+        float                m_PendingRadianceChange = 0.0f, m_RecordedRadianceChange = 0.0f;
 
         // ── 后台线程 ─────────────────────────────────────────────────────────
         std::thread       m_DecodeThread;

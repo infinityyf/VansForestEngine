@@ -504,7 +504,7 @@ namespace VansEngine
 			// Do not advance simulation while the physics system is paused.
 			if (m_IsPaused.load())
 			{
-				VANS_PROFILE_SCOPE("PhysicsThread::SleepPaused", Vans::ProfileCategory::Wait);
+				VANS_PROFILE_WAIT("PhysicsThread::SleepPaused");
 				lastTime = Clock::now(); // Prevent a large accumulated step after resume.
 				std::this_thread::sleep_for(std::chrono::milliseconds(5));
 				continue;
@@ -556,7 +556,7 @@ namespace VansEngine
 
 			// Sleep to avoid spinning
 			{
-				VANS_PROFILE_SCOPE("PhysicsThread::IdleSleep", Vans::ProfileCategory::Wait);
+				VANS_PROFILE_WAIT("PhysicsThread::IdleSleep");
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
 		}

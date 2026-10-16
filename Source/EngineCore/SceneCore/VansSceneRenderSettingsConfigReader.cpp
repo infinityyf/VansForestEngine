@@ -282,7 +282,7 @@ std::optional<std::array<uint32_t, 3>> ReadOptionalUInt3Field(const VansSerializ
 	return values;
 }
 
-std::optional<VansSceneGIRegionSettingsConfig> DecodeGIRegionSettings(const VansSerializedValue& regionNode)
+std::optional<VansSceneGIRegionSettingsConfig> DecodeGIRegionSettings(const VansSerializedValue& regionNode, std::string& error)
 {
 	if (regionNode.kind != VansSerializedValue::Kind::Object)
 	{
@@ -290,18 +290,46 @@ std::optional<VansSceneGIRegionSettingsConfig> DecodeGIRegionSettings(const Vans
 	}
 
 	VansSceneGIRegionSettingsConfig config;
+	const auto mode = ReadOptionalStringField(regionNode, "mode");
+	if (!mode || (*mode != "uniform" && *mode != "adaptive"))
+	{
+		error = "GI region mode must be uniform or adaptive";
+		return std::nullopt;
+	}
+	config.mode = *mode;
 	config.stableId = ReadOptionalUIntField(regionNode, "stableId");
 	config.name = ReadOptionalStringField(regionNode, "name");
 	config.enabled = ReadOptionalBoolField(regionNode, "enabled");
 	config.worldOnly = ReadOptionalBoolField(regionNode, "worldOnly");
     config.followView = ReadOptionalBoolField(regionNode, "followView");
+    if (config.mode == "adaptive" && config.followView.value_or(false))
+    {
+        error = "Adaptive GI regions require fixed bounds; Follow View uses a uniform grid";
+        return std::nullopt;
+    }
 	config.center = ReadOptionalFloat3Field(regionNode, "center");
 	config.size = ReadOptionalFloat3Field(regionNode, "size");
 	config.gridDimensions = ReadOptionalUInt3Field(regionNode, "gridDimensions");
 	config.probeSpacing = ReadOptionalFloatField(regionNode, "probeSpacing");
 	config.probeSpacingAxes = ReadOptionalFloat3Field(regionNode, "probeSpacingAxes");
 	config.raysPerProbe = ReadOptionalUIntField(regionNode, "raysPerProbe");
-	config.maxRayDistance = ReadOptionalFloatField(regionNode, "maxRayDistance");
+	const auto* trace = ReadObjectField(regionNode, "trace");
+    if (FindObjectField(regionNode, "maxRayDistance") || !trace)
+    {
+        error = "GI region requires trace settings; maxRayDistance is not a current region field";
+        return std::nullopt;
+    }
+    if (!RequireFloatField(*trace, "maxDistance", "GI region/trace", config.trace.maxDistance, error) ||
+        !RequireFloatField(*trace, "minVoxelSize", "GI region/trace", config.trace.minVoxelSize, error) ||
+        !RequireFloatField(*trace, "scatterMinVoxelSize", "GI region/trace", config.trace.scatterMinVoxelSize, error))
+        return std::nullopt;
+    if (!std::isfinite(config.trace.maxDistance) || config.trace.maxDistance <= 0.0f ||
+        !std::isfinite(config.trace.minVoxelSize) || config.trace.minVoxelSize < 0.0f ||
+        !std::isfinite(config.trace.scatterMinVoxelSize) || config.trace.scatterMinVoxelSize < 0.0f)
+    {
+        error = "GI trace settings require a finite positive distance and finite nonnegative voxel sizes";
+        return std::nullopt;
+    }
 	config.normalBias = ReadOptionalFloatField(regionNode, "normalBias");
 	config.volumeFadeDistance = ReadOptionalFloatField(regionNode, "volumeFadeDistance");
 	config.priority = ReadOptionalFloatField(regionNode, "priority");
@@ -834,7 +862,7 @@ std::optional<VansScenePostProcessSettingsConfig> DecodePostProcess(
 	return config;
 }
 
-std::optional<VansSceneGISettingsConfig> DecodeGISettings(const VansSerializedValue& sceneSettings)
+std::optional<VansSceneGISettingsConfig> DecodeGISettings(const VansSerializedValue& sceneSettings, std::string& error)
 {
 	const VansSerializedValue* gi = ReadObjectField(sceneSettings, "globalIllumination");
 	if (!gi)
@@ -856,7 +884,11 @@ std::optional<VansSceneGISettingsConfig> DecodeGISettings(const VansSerializedVa
 	}
 	if (const VansSerializedValue* placement = ReadObjectField(*gi, "placement"))
 	{
-		config.placement.enabled = ReadOptionalBoolField(*placement, "enabled");
+		if (FindObjectField(*placement, "enabled"))
+		{
+			error = "GI placement.enabled is not supported; configure mode on each region";
+			return std::nullopt;
+		}
 		config.placement.minProbeSpacing = ReadOptionalFloatField(*placement, "minProbeSpacing");
 		config.placement.maxProbeSpacing = ReadOptionalFloatField(*placement, "maxProbeSpacing");
 		config.placement.parentProbeMaxSize = ReadOptionalFloatField(*placement, "parentProbeMaxSize");
@@ -866,17 +898,34 @@ std::optional<VansSceneGISettingsConfig> DecodeGISettings(const VansSerializedVa
 	}
 	if (const VansSerializedValue* ambientSkyCache = ReadObjectField(*gi, "ambientSkyCache"))
 	{
+		if (FindObjectField(*ambientSkyCache, "queriesPerFrame"))
+		{
+			error = "GI ambientSkyCache.queriesPerFrame is not supported; configure cellUpdatesPerFrame";
+			return std::nullopt;
+		}
+		const auto* cellUpdates = FindObjectField(*ambientSkyCache, "cellUpdatesPerFrame");
+		if (!cellUpdates || cellUpdates->kind != VansSerializedValue::Kind::Int ||
+			cellUpdates->intValue <= 0 || cellUpdates->intValue > UINT32_MAX)
+		{
+			error = "GI ambientSkyCache.cellUpdatesPerFrame requires a positive uint32 cell count";
+			return std::nullopt;
+		}
 		config.ambientSkyCache.enabled = ReadOptionalBoolField(*ambientSkyCache, "enabled");
 		config.ambientSkyCache.gridSpacing = ReadOptionalFloatField(*ambientSkyCache, "gridSpacing");
-		config.ambientSkyCache.queriesPerFrame = ReadOptionalUIntField(*ambientSkyCache, "queriesPerFrame");
+		config.ambientSkyCache.cellUpdatesPerFrame = static_cast<uint32_t>(cellUpdates->intValue);
 	}
 	if (const VansSerializedValue* regions = ReadArrayField(*gi, "regions"))
 	{
 		for (const VansSerializedValue& regionNode : regions->arrayItems)
 		{
-			if (std::optional<VansSceneGIRegionSettingsConfig> region = DecodeGIRegionSettings(regionNode))
+			if (std::optional<VansSceneGIRegionSettingsConfig> region = DecodeGIRegionSettings(regionNode, error))
 			{
 				config.regions.push_back(*region);
+			}
+			else
+			{
+				if (error.empty()) error = "GI region must be an object";
+				return std::nullopt;
 			}
 		}
 	}
@@ -939,7 +988,8 @@ bool VansSceneRenderSettingsConfigReader::Read(
 		return false;
 	}
 	config.postProcess = DecodePostProcess(sceneSettings);
-	config.globalIllumination = DecodeGISettings(sceneSettings);
+	config.globalIllumination = DecodeGISettings(sceneSettings, error);
+	if (!error.empty()) return false;
 	config.mainCameraHiZCulling = DecodeMainCameraHiZCulling(sceneSettings);
 	return true;
 }

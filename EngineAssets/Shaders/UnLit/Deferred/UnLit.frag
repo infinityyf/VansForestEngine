@@ -51,6 +51,8 @@ void main()
     normal_sample = normal_sample * 2.0 - 1.0;
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normal_sample);
+    // Material-owned two-sided passes must shade the visible side of thin surfaces.
+    if (!gl_FrontFacing) normal = -normal;
     float puddleAmount = -1.0;
     uint groundWeatherEffects = uint(max(drawData.passUser0, 0));
     if (groundWeatherEffects != 0u)

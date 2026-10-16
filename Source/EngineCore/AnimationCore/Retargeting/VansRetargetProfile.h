@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <glm/gtc/quaternion.hpp>
 
 namespace VansGraphics
 {
@@ -21,7 +22,18 @@ namespace VansGraphics
 	enum class VansRetargetModelSpaceAlignment
 	{
 		None,
-		SourceBindPose
+		SourceBindPose,
+		TargetBindPose
+	};
+
+	// 显式模型空间旋转映射；参考骨用于不同段数链的累计旋转插值。
+	struct VansRetargetBoneMappingDesc
+	{
+		std::string sourceBone;
+		std::string targetBone;
+		std::string rotationReferenceBone;
+		float rotationBlend = 1.0f;
+		bool copyTranslationDelta = false;
 	};
 
 	struct VansRetargetLimbChainDesc
@@ -52,5 +64,7 @@ namespace VansGraphics
 		std::vector<VansRetargetLimbChainDesc> limbChains;
 		// 重映射结束后从目标参考骨重建控制帧，供目标程序化图使用。
 		std::vector<VansRetargetControlBoneDesc> controlBones;
+		std::vector<VansRetargetBoneMappingDesc> boneMappings;
+		glm::quat outputModelRotation{1.0f, 0.0f, 0.0f, 0.0f};
 	};
 }

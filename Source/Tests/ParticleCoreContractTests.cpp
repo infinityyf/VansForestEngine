@@ -354,6 +354,13 @@ bool TestParticleInitializationAge()
         if (!check(near(pool.m_LifeTime[0],anchor.y),"Looped replacement missed source cycle or seam"))return false;
     }
     VansInitColorModule tint;tint.m_Color={.2f,.4f,.6f,1};VansFloatCurve factor;factor.m_Value=2;
+    VansInitSizeModule size;size.m_Size.m_Mode=FloatCurveMode::Constant;size.m_Size.m_Value=2;
+    pool.m_InitializationCollectionAge=6;pool.m_SeedRandom[0]=197;
+    expectedSeed=197;RandFloat(expectedSeed);size.ExecuteInit(pool,0,1,glm::mat4(1));
+    if (!check(pool.m_Size[0]==2 && pool.m_SeedRandom[0]==expectedSeed,"Default size scale changed size or RNG"))return false;
+    size.m_CollectionAgeScale.m_Mode=FloatCurveMode::Curve;size.m_CollectionAgeScale.m_Keys={{0,1},{2,.35f}};
+    pool.m_InitializationCollectionAge=1;size.ExecuteInit(pool,0,1,glm::mat4(1));
+    if (!check(near(pool.m_Size[0],1.35f),"Size did not sample collection seconds at birth"))return false;
     tint.m_AlphaScales={factor};const auto seedBefore=pool.m_SeedRandom[0];tint.ExecuteInit(pool,0,1,glm::mat4(1));
     if (!check(pool.m_Color[0].a==2 && glm::vec3(pool.m_Color[0])==glm::vec3(tint.m_Color)
         && pool.m_SeedRandom[0]==seedBefore,"Detail multiplier was clamped, changed RGB or consumed RNG"))return false;
@@ -372,6 +379,11 @@ bool TestParticleInitializationAge()
             emitter->m_RendererConfig.m_LightingMode=VansParticleLightingMode::SpriteCard;
             auto& card=emitter->m_RendererConfig.m_Card;card.alphaClock=VansParticleCardAlphaClock::EffectSeconds;
             card.alphaOverEffect.m_Mode=FloatCurveMode::Curve;card.alphaOverEffect.m_Keys={{0,1},{.5f,0}};
+        }
+        else {
+            auto size=std::make_unique<VansInitSizeModule>();size->m_Size.m_Mode=FloatCurveMode::Constant;size->m_Size.m_Value=2;
+            size->m_CollectionAgeScale.m_Mode=FloatCurveMode::Curve;size->m_CollectionAgeScale.m_Keys={{0,1},{2,.35f}};
+            emitter->m_InitModules.push_back(std::move(size));
         }
         asset->m_Emitters.push_back(std::move(emitter));return asset;
     };
@@ -397,6 +409,8 @@ bool TestParticleInitializationAge()
                 const float age=runtime.GetPlayTime()-particles.m_Age[i]-(late ? .35f : 0.f);
                 const float expected=.75f+.75f*(age-std::floor(age));
                 if (!check(near(particles.m_LifeTime[i],expected),"Birth used particle age, frame end, global point age or frozen emission time"))return false;
+                if (!check(near(particles.m_InitialSize[i],2*(1-.325f*std::clamp(age,0.f,2.f))),
+                    "Size initializer used global age, render age or the end of the frame"))return false;
             }
             return check(particles.m_AliveCount>0 && foundLater,"Actual point births missing");
         };
@@ -475,28 +489,43 @@ bool TestDustV3SmokeEnvelope()
             }
             previous=target;
             const double envelope=smooth((target-.1)/1.4)*smooth((22-target)/5);
-            const auto& pool=runtime.GetEmitter(0)->ParticlePool();
+            uint32_t alive=0;
+            for (uint32_t e=0;e<asset->m_Emitters.size();++e) alive+=runtime.GetEmitter(e)->AliveCount();
             if (target<22) {
-                if (!check(pool.m_AliveCount==48,"Finite smoke burst changed particle count")) return false;
+                if (!check(alive==48,"Finite smoke burst changed particle count")) return false;
+                for (uint32_t e=0;e<asset->m_Emitters.size();++e) {
+                const auto& pool=runtime.GetEmitter(e)->ParticlePool();
                 for (uint32_t i=0;i<pool.m_AliveCount;++i)
                     if (!check(std::abs(pool.m_Color[i].a-.85*envelope)<.0002 &&
                         glm::length(glm::vec3(pool.m_Color[i])-glm::vec3(.68f,.69f,.7f))<1.e-5f,
                         "Source deployment envelope or preserved RGB differs across frame partitions")) return false;
+                }
                 const auto& medium=runtime.GetVolumetricRenderBuffer();
                 if (envelope>0) {
                     if (!check(medium.size()==48,"Positive envelope did not reach published medium")) return false;
                     for (const auto& point : medium)
-                        if (!check(std::abs(point.m_ScatteringAlbedoExtinction.a-1.7*envelope)<.0004,
+                        if (!check(std::abs(point.m_ScatteringAlbedoExtinction.a-.85*envelope)<.0004,
                             "Rendered medium did not carry CPU density fade")) return false;
                     if (!check(runtime.SampleVolumetricExtinction(glm::vec3(medium[0].m_WorldPositionRadius))>0,
                         "Extinguish consumer could not sample published smoke")) return false;
                 } else if (!check(medium.empty() && runtime.SampleVolumetricExtinction({0,0,0})==0,
                     "Smoke had extinction before fade-in")) return false;
                 if (target==5) {
+                    glm::vec3 lower(1.e6f),upper(-1.e6f);float minCenterY=1.e6f,maxCenterY=-1.e6f;
+                    for (const auto& p : medium) {
+                        const auto center=glm::vec3(p.m_WorldPositionRadius);const float radius=p.m_WorldPositionRadius.w;
+                        lower=glm::min(lower,center-glm::vec3(radius));upper=glm::max(upper,center+glm::vec3(radius));
+                        minCenterY=std::min(minCenterY,center.y);maxCenterY=std::max(maxCenterY,center.y);
+                    }
+                    if (!check(upper.y>3.3f && upper.y<4.6f && upper.x-lower.x>6.f && upper.x-lower.x<8.8f
+                        && upper.z-lower.z>6.f && upper.z-lower.z<8.8f && maxCenterY-minCenterY>1.2f,
+                        "Smoke is too low, too narrow, unbounded or still uses planar kernel centers"))return false;
+                    std::cout<<"[DustV3SmokeShape] kernels="<<medium.size()<<" width="<<upper.x-lower.x
+                        <<" depth="<<upper.z-lower.z<<" top="<<upper.y<<" centerHeightRange="<<maxCenterY-minCenterY<<'\n';
                     runtime.Pause();runtime.Update(10);runtime.SwapBuffers();runtime.Play();
                     if (!check(std::abs(runtime.GetPlayTime()-5)<.001,"Pause advanced or restarted smoke time")) return false;
                 }
-            } else if (!check(pool.m_AliveCount==0 && runtime.GetVolumetricRenderBuffer().empty() && runtime.IsFinished(),
+            } else if (!check(alive==0 && runtime.GetVolumetricRenderBuffer().empty() && runtime.IsFinished(),
                 "Smoke medium or particles survived the 22-second density window")) return false;
         }
     }

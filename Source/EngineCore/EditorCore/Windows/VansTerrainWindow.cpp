@@ -50,12 +50,16 @@ void VansTerrainWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
     if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::Terrain))
         return;
 
+    if (!ImGui::Begin("Terrain"))
+    {
+        ImGui::End();
+        return;
+    }
     const Vans::EditorAPI::TerrainEditorSnapshot terrain =
 		terrainAPI.GetTerrainEditorSnapshot();
     const Vans::EditorAPI::TerrainSettingsSnapshot currentSettings =
 		terrainAPI.GetTerrainSettings();
 
-    ImGui::Begin("Terrain");
     if (!terrain.available || !currentSettings.available)
     {
 		ImGui::TextDisabled("No editable terrain asset is loaded.");

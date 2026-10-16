@@ -1264,6 +1264,12 @@ int LuaComponentSetMotionIntent(lua_State* L)
 		const auto model = ReadMotionDynamics(L, 10);
 		intent.accelerationModel = model;
 	}
+	if (lua_gettop(L)>=11 && !lua_isnil(L,11))
+	{
+		const float yaw=static_cast<float>(luaL_checknumber(L,11));
+		if (!std::isfinite(yaw)) return luaL_error(L,"root motion reference yaw must be finite");
+		intent.rootMotionReferenceYaw=yaw;
+	}
 	intent.valid = true;
 	cct->m_ControllerNode->SetMotionIntent(intent);
 	return 0;
@@ -1462,6 +1468,18 @@ int LuaComponentResizeCapsule(lua_State* L)
 	return 1;
 }
 
+int LuaComponentCanResizeCapsule(lua_State* L)
+{
+    auto* cct=dynamic_cast<VansScriptCharacterControllerComponent*>(CheckComponent(L,1)->component);
+    const float height=static_cast<float>(luaL_checknumber(L,2));
+    bool allowed=false;
+    if (cct && cct->m_ControllerNode) {
+        std::lock_guard<std::mutex> lock(VansEngine::VansPhysicsSystem::GetInstance().GetSimulationMutex());
+        allowed=cct->m_ControllerNode->CanResizeCapsule(height);
+    }
+    lua_pushboolean(L,allowed);return 1;
+}
+
 int LuaComponentIsGrounded(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
@@ -1558,7 +1576,14 @@ int LuaComponentAnimSavePoseSnapshot(lua_State* L)
 	const char* name = luaL_checkstring(L, 2);
 	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
 	lua_pushboolean(L, anim && anim->m_AnimNode
-		&& anim->m_AnimNode->SavePoseSnapshot(name));
+		&& anim->m_AnimNode->SavePoseSnapshot(name, luaL_optstring(L, 3, "")));
+	return 1;
+}
+
+int LuaComponentAnimSaveActivePoseSnapshot(lua_State* L)
+{
+	auto* anim=dynamic_cast<VansScriptAnimationComponent*>(CheckComponent(L,1)->component);
+	lua_pushboolean(L,anim && anim->m_AnimNode && anim->m_AnimNode->SaveActivePoseSnapshot(luaL_checkstring(L,2)));
 	return 1;
 }
 
@@ -2865,6 +2890,18 @@ int LuaComponentGetResolvedViewForward(lua_State* L)
 			std::sin(angles.y) * std::cos(angles.x));
 	}
 	PushVec3(L, forward);
+	lua_pushboolean(L, resolved);
+	return 2;
+}
+
+int LuaComponentGetResolvedViewPosition(lua_State* L)
+{
+	auto* camera = dynamic_cast<VansScriptCameraComponent*>(CheckComponent(L, 1)->component);
+	auto* scene = Scene();
+	Vans::VansCameraViewSnapshot view;
+	const bool resolved = camera && camera->m_Camera && scene && scene->GetCamera() == camera->m_Camera &&
+		scene->CameraControlArbiter().GetLastResolvedView(view);
+	PushVec3(L, resolved ? view.pose.position : glm::vec3(0));
 	lua_pushboolean(L, resolved);
 	return 2;
 }
@@ -5531,6 +5568,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "get_position", LuaComponentGetPosition },
 		{ "get_capsule_state", LuaComponentGetCapsuleState },
 		{ "resize_capsule", LuaComponentResizeCapsule },
+        { "can_resize_capsule", LuaComponentCanResizeCapsule },
 		{ "set_position", LuaComponentSetPosition },
 		{ "sync_from_transform", LuaComponentSyncControllerFromTransform },
 		{ "is_grounded", LuaComponentIsGrounded },
@@ -5544,6 +5582,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "is_follow_ragdoll_enabled", LuaComponentIsFollowRagdollEnabled },
 		{ "play_state", LuaComponentAnimPlayState },
 		{ "save_pose_snapshot", LuaComponentAnimSavePoseSnapshot },
+		{ "save_active_pose_snapshot", LuaComponentAnimSaveActivePoseSnapshot },
 		{ "set_bool", LuaComponentAnimSetBool },
 		{ "set_root_motion_enabled", LuaComponentAnimSetRootMotionEnabled },
 		{ "set_float", LuaComponentAnimSetFloat },
@@ -5613,6 +5652,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "is_user_look_suppressed", LuaComponentIsUserLookSuppressed },
 		{ "get_resolved_forward", LuaComponentGetResolvedForward },
 		{ "get_resolved_view_forward", LuaComponentGetResolvedViewForward },
+		{ "get_resolved_view_position", LuaComponentGetResolvedViewPosition },
 		{ "world_to_viewport", LuaComponentWorldToViewport },
 		{ "load_asset", LuaComponentLoadParticle },
 		{ "set_asset_guid", LuaComponentSetAssetGuid },
@@ -6005,9 +6045,14 @@ void VansScriptContext::PublishAnimationEvents(const std::vector<VansGraphics::V
 	std::vector<PendingEvent> pending;
 	// Snapshot before calling scripts: callbacks may replace controllers or register scripts.
 	for (auto* node : nodes)
-		if (node && node->ClaimSampledEventPublication() && m_EventSubscribers.count(node->GetTransformID()))
-			for (const auto& event : node->GetSampledEvents())
-				pending.push_back({node->GetTransformID(), std::string(event.name), event});
+	{
+		if (!node) continue;
+		const auto range=node->ClaimSampledEventPublicationRange();
+		if (!m_EventSubscribers.count(node->GetTransformID())) continue;
+		const auto& events=node->GetSampledEvents();
+		for (std::size_t index=range.begin;index<range.end;++index)
+			pending.push_back({node->GetTransformID(),std::string(events[index].name),events[index]});
+	}
 	for (auto& event : pending)
 	{
 		event.sample.name = event.name;

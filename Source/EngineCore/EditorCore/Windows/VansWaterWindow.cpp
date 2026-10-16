@@ -123,19 +123,22 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
     if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::Water))
         return;
 
+    if (!ImGui::Begin("Water"))
+    {
+        ImGui::End();
+        return;
+    }
     Vans::EditorAPI::WaterSettingsSnapshot settings = waterAPI.GetWaterSettings();
     Vans::EditorAPI::WaterRuntimeStats stats = waterAPI.GetWaterRuntimeStats();
 
     if (!settings.available)
     {
-        ImGui::Begin("Water");
         ImGui::TextDisabled("Scene has no water config. Add a water block to Scene JSON and reload.");
         ImGui::End();
         return;
     }
 
     bool changed = false;
-    ImGui::Begin("Water");
 
     if (ImGui::BeginTabBar("WaterTabs"))
     {

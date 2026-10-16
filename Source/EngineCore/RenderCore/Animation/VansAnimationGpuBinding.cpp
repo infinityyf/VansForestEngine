@@ -1,6 +1,7 @@
 #include "VansAnimationGpuBinding.h"
 
 #include "../../Util/VansLog.h"
+#include <cmath>
 
 namespace VansGraphics
 {
@@ -48,6 +49,17 @@ namespace VansGraphics
 		return true;
 	}
 
+	bool VansAnimationGpuBinding::ValidateSkinWeights(const std::vector<std::vector<VertexBoneData>>& perSubmeshBoneData,std::string& error)
+	{
+		for(const auto& submesh:perSubmeshBoneData)for(const auto& vertex:submesh)for(std::uint32_t influence=0;influence<MAX_BONE_INFLUENCE;++influence)
+		{
+			const float weight=vertex.weights[influence];const int bone=vertex.boneIDs[influence];
+			if(!std::isfinite(weight) || weight<0 || (weight>0 && (bone<0 || bone>=static_cast<int>(MAX_BONES))))
+			{error="Skinned vertex has invalid weights or references a bone outside the GPU palette";return false;}
+		}
+		return true;
+	}
+
 	bool VansAnimationGpuBinding::UploadSkinWeights(
 		const std::vector<std::vector<VertexBoneData>>& perSubmeshBoneData,
 		const std::string& debugName)
@@ -56,6 +68,9 @@ namespace VansGraphics
 			return false;
 		if (perSubmeshBoneData.empty())
 			return true;
+		std::string error;
+		if(!ValidateSkinWeights(perSubmeshBoneData,error))
+		{VANS_LOG_ERROR("[AnimationGpuBinding] " << debugName << ": " << error);return false;}
 
 		m_BoneIdBuffers.resize(perSubmeshBoneData.size());
 		m_BoneWeightBuffers.resize(perSubmeshBoneData.size());

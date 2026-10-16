@@ -22,8 +22,9 @@ namespace VansGraphics
     {
     public:
         static constexpr uint32_t INVALID_SLOT = UINT32_MAX;
+        static constexpr uint32_t DEFAULT_CAPACITY = 8192;
 
-        explicit TransformSlotAllocator(uint32_t maxCapacity = 4096)
+        explicit TransformSlotAllocator(uint32_t maxCapacity = DEFAULT_CAPACITY)
             : m_MaxCapacity(maxCapacity)
         {
         }
@@ -86,7 +87,7 @@ namespace VansGraphics
         }
 
     private:
-        uint32_t                     m_MaxCapacity = 4096;
+        uint32_t                     m_MaxCapacity = DEFAULT_CAPACITY;
         uint32_t                     m_NextIndex   = 0;
         std::queue<uint32_t>         m_FreeSlots;
         std::unordered_set<uint32_t> m_ActiveSlots;

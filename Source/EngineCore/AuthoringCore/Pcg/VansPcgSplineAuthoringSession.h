@@ -66,6 +66,8 @@ public:
 	const std::string& SelectedPoint() const { return m_SelectedPoint; }
 	const std::string& Message() const { return m_Message; }
 	std::uint64_t RequestId() const { return m_RequestId; }
+	// 工作副本替换时推进，供不可变 CPU 投影失效使用；不参与资产格式或构建请求编号。
+	std::uint64_t WorkingStateId() const { return m_WorkingStateId; }
 	std::shared_ptr<VansOpenAssetDocument> Document() const { return m_Document; }
 	const VansPcgSplineAsset& WorkingAsset() const { return m_Working; }
 	bool ToolEnabled() const { return m_ToolEnabled; }
@@ -92,6 +94,7 @@ private:
 	std::string m_SelectedPoint;
 	std::string m_Message;
 	std::uint64_t m_RequestId = 0;
+	std::uint64_t m_WorkingStateId = 0;
 	std::uint64_t m_ObservedDocumentState = 0;
 	std::shared_ptr<VansOpenAssetDocument> m_Document;
 	bool m_ToolEnabled = false;

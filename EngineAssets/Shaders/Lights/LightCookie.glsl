@@ -1,7 +1,10 @@
 #ifndef VANS_LIGHT_COOKIE_GLSL
 #define VANS_LIGHT_COOKIE_GLSL
 #extension GL_EXT_nonuniform_qualifier : require
+#include "LightCapacity.h"
+#ifdef VANS_SURFACE_COOKIES
 #include "../Common/CameraData.glsl"
+#endif
 struct LightCookieData
 {
     mat4 worldToLight;
@@ -9,13 +12,14 @@ struct LightCookieData
     vec4 projection;
     vec4 options;
 };
-layout(set=0, binding=38) uniform sampler2D lightCookieTextures[161];
+layout(set=0, binding=38) uniform sampler2D lightCookieTextures[LIGHT_COOKIE_COUNT];
 layout(set=0, binding=39, std430) readonly buffer LightCookieBuffer
 {
-    LightCookieData lightCookies[161];
+    LightCookieData lightCookies[LIGHT_COOKIE_COUNT];
 };
 
-float SampleSurfaceLightCookie(int slot, vec3 positionWS)
+// 调用方给出世界空间足迹；离屏 GI 不依赖相机深度或分辨率。
+float SampleLightCookie(int slot, vec3 positionWS, float footprintMeters)
 {
     LightCookieData c = lightCookies[slot];
     if (c.options.x <= 0.0) return 1.0;
@@ -39,12 +43,9 @@ float SampleSurfaceLightCookie(int slot, vec3 positionWS)
     vec2 centered = (uv - 0.5) * c.scaleOffset.xy;
     uv = vec2(c.projection.z * centered.x - c.projection.w * centered.y,
               c.projection.w * centered.x + c.projection.z * centered.y) + 0.5 + c.scaleOffset.zw;
-    // 使用世界像素足迹估算显式 LOD，Tile 灯列表和材质分支内不调用屏幕导数。
-    float viewDepth = abs((ViewMatrix * vec4(positionWS,1)).z);
-    float pixelMeters = 2.0 * viewDepth / max(abs(ProjectionMatrix[1][1]) * ScreenParams.y, 1.0);
-    vec2 footprint = vec2(pixelMeters) / c.projection.xy;
+    vec2 footprint = vec2(footprintMeters) / c.projection.xy;
     if (kind == 2) footprint /= max(-q.z, 1e-5);
-    if (kind == 1) { footprint = vec2(pixelMeters / max(length(q),1e-5) / 3.14159265); uv.x = fract(uv.x); }
+    if (kind == 1) { footprint = vec2(footprintMeters / max(length(q),1e-5) / 3.14159265); uv.x = fract(uv.x); }
     vec2 resolution = vec2(textureSize(lightCookieTextures[nonuniformEXT(slot)],0));
     float lod = log2(max(max(footprint.x * abs(c.scaleOffset.x) * resolution.x,
                             footprint.y * abs(c.scaleOffset.y) * resolution.y), 1.0));
@@ -56,4 +57,12 @@ float SampleSurfaceLightCookie(int slot, vec3 positionWS)
     float mask = c.options.w > 0.5 ? texel.a : texel.r;
     return mix(1.0, clamp(mask,0.0,1.0), c.options.x);
 }
+#ifdef VANS_SURFACE_COOKIES
+float SampleSurfaceLightCookie(int slot, vec3 positionWS)
+{
+    float viewDepth = abs((ViewMatrix * vec4(positionWS,1)).z);
+    float pixelMeters = 2.0 * viewDepth / max(abs(ProjectionMatrix[1][1]) * ScreenParams.y, 1.0);
+    return SampleLightCookie(slot, positionWS, pixelMeters);
+}
+#endif
 #endif

@@ -1022,9 +1022,9 @@ namespace VansGraphics
 			{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
 			{ 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
 			{ 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
-			{ 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
-			{ 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
-			{ 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+			{ 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kGIMaximumRegionCount, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+			{ 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kGIMaximumRegionCount, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+			{ 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kGIMaximumRegionCount, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
             { 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }
 		};
 		std::vector<VkDescriptorSet> captureSets;
@@ -1045,7 +1045,7 @@ namespace VansGraphics
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
         std::vector<VkDescriptorImageInfo> irradianceInfos, visibilityInfos;
         std::vector<VkDescriptorBufferInfo> stateInfos;
-        for (uint32_t slot = 0; slot < VANS_SSGI_MAX_GI_REGIONS; ++slot)
+        for (uint32_t slot = 0; slot < kGIMaximumRegionCount; ++slot)
         {
             const uint32_t index = slot < rayTracing.GetGIRegionCount() ? slot : 0u;
             auto* irradiance = rayTracing.GetGIRegionIrradianceAtlas(index);

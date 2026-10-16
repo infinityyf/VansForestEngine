@@ -1,0 +1,22 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#define GI_WORLD_SET 0
+#include "../../../EngineAssets/Shaders/GIWorld/GIWorldQuery.glsl"
+layout(local_size_x=8) in;
+layout(set=0,binding=7,std430) buffer Output { vec4 results[]; };
+void main()
+{
+    uint i=gl_GlobalInvocationID.x;
+    if(i>=8u)return;
+    vec3 origin=vec3(-7,-.5,-7.5+float(i)),direction=vec3(1,0,0);
+    float maximum=i==4u?.5:(i==5u?1.0:15.0);
+    float opticalDepth=i==4u?.75:.5;
+    GIWorldHit terrain=GIWorldTraceHeight(origin,direction,0,maximum);
+    GIWorldHit plants=GIWorldTraceVoxels(origin,direction,0,maximum,true,0,opticalDepth,256u);
+    GIWorldHit combined=GIWorldTrace(origin,direction,0,maximum,true,0,opticalDepth,256u);
+    results[i*5]=vec4(terrain.t,terrain.valid?1:0,float(terrain.failure),0);
+    results[i*5+1]=vec4(plants.t,plants.transmission,plants.valid?1:0,float(plants.failure));
+    results[i*5+2]=vec4(combined.t,combined.transmission,combined.valid?1:0,float(combined.failure));
+    results[i*5+3]=combined.scattering;
+    results[i*5+4]=combined.material;
+}

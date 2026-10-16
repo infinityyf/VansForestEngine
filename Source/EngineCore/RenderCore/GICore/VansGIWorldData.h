@@ -25,10 +25,11 @@ namespace VansGraphics
         bool operator<(const GIWorldCell& b) const;
         bool operator==(const GIWorldCell& b) const;
     };
-    struct GIWorldTriangle
+    struct GIWorldMesh
     {
-        std::array<glm::vec3, 3> positions;
-        std::array<glm::vec2, 3> uvs;
+        std::vector<glm::vec3> positions;
+        std::vector<glm::vec2> uvs;
+        std::vector<uint32_t> indices;
         uint32_t material = 0;
         bool porous = false;
         float alphaCutoff = 0.5f;
@@ -59,6 +60,8 @@ namespace VansGraphics
     {
         GIWorldCell key;
         std::array<GIWorldVoxel, 512> voxels{};
+        // 每位对应 2×2×2 个体素；只在完整砖烘焙完成后发布。
+        glm::uvec2 occupancy{0};
     };
     struct GIWorldBounds { glm::vec3 minimum{0},maximum{0}; };
     // 比较实例多重集合，包含增删、移动、重复实例和光学 mip 的保守范围。
@@ -71,6 +74,8 @@ namespace VansGraphics
         GIWorldDirtyRegions() = default;
         explicit GIWorldDirtyRegions(std::vector<GIWorldBounds> regions);
         bool Empty() const { return m_Nodes.empty(); }
+        std::optional<GIWorldBounds> Bounds() const
+        { return Empty() ? std::nullopt : std::optional<GIWorldBounds>(m_Nodes.front().bounds); }
         // radius=0 为闭合 AABB 相交；正值为到 AABB 集合的欧氏距离。
         bool Intersects(const GIWorldBounds& bounds,float radius=0) const;
         bool IntersectsPage(const GIWorldCell& page,float voxelSize) const;
@@ -113,7 +118,7 @@ namespace VansGraphics
         float Sample(glm::vec2 world) const;
     };
 
-    bool BakeGIWorldTemplate(const std::vector<GIWorldTriangle>& triangles, float voxelSize,
+    bool BakeGIWorldTemplate(const std::vector<GIWorldMesh>& meshes, float voxelSize,
         uint32_t maxCells, GIWorldTemplate& output, std::string& error);
     GIWorldInstance MakeGIWorldInstance(std::shared_ptr<const GIWorldTemplate> model, const glm::mat4& transform);
     uint32_t GIWorldHash(const GIWorldCell& cell);

@@ -1,4 +1,5 @@
 #include "../Common/Common.glsl"
+#include "LightCapacity.h"
 #ifdef VANS_SURFACE_COOKIES
 #include "LightCookie.glsl"
 #else
@@ -95,10 +96,10 @@ struct LightResult
     vec3 ambientSpecular;
 };
 
-#define MAX_DIRECTION_LIGHTS 1
-#define MAX_POINT_LIGHTS 64
-#define MAX_SPOT_LIGHTS  64
-#define MAX_RECT_LIGHTS  32
+#define MAX_DIRECTION_LIGHTS LIGHT_MAX_DIRECTION_COUNT
+#define MAX_POINT_LIGHTS LIGHT_MAX_POINT_COUNT
+#define MAX_SPOT_LIGHTS LIGHT_MAX_SPOT_COUNT
+#define MAX_RECT_LIGHTS LIGHT_MAX_RECT_COUNT
 #define MAX_PUNCTUAL_SHADOWS 160
 #define MAX_PUNCTUAL_SHADOW_VIEWS 480
 
@@ -962,145 +963,6 @@ float SampleCascadeShadow(vec3 positionWS, vec3 normalWS, sampler2DArray cascade
     return mix(1.0, shadow, lastCascadeFade);
 }
 
-float FetchGICascadeDepth(sampler2D shadowMap, ivec2 texel)
-{
-    ivec2 size = textureSize(shadowMap, 0);
-    return texelFetch(shadowMap, clamp(texel, ivec2(0), size - ivec2(1)), 0).r;
-}
-
-float CompareGICascadeDepthBilinear(sampler2D shadowMap, vec2 texelPosition, float receiverDepth)
-{
-    ivec2 base = ivec2(floor(texelPosition - vec2(0.5)));
-    vec2 f = fract(texelPosition - vec2(0.5));
-    float c00 = FetchGICascadeDepth(shadowMap, base) < receiverDepth ? 0.0 : 1.0;
-    float c10 = FetchGICascadeDepth(shadowMap, base + ivec2(1, 0)) < receiverDepth ? 0.0 : 1.0;
-    float c01 = FetchGICascadeDepth(shadowMap, base + ivec2(0, 1)) < receiverDepth ? 0.0 : 1.0;
-    float c11 = FetchGICascadeDepth(shadowMap, base + ivec2(1, 1)) < receiverDepth ? 0.0 : 1.0;
-    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
-}
-
-// The GI pass binds one cascade layer as sampler2D.  Use a compact, stable PCF
-// here instead of filtering R32 depth and comparing the interpolated value.
-float SampleGICascadeShadow(vec3 positionWS, vec3 normalWS, sampler2D shadowMap)
-{
-    const int cascadeIdx = RAYTRACING_CASCADE_INDEX;
-    CascadeProjection p = ProjectCascade(positionWS, cascadeIdx);
-    if (p.valid <= 0.0)
-        return 1.0;
-
-    ivec2 size = textureSize(shadowMap, 0);
-    float receiverDepth = p.depth - ComputeCascadeReceiverBias(normalWS, cascadeIdx);
-    float radiusTexels = min(max(uDirectionLight.cascadeFilterRadius[cascadeIdx] * 0.1, 1.0), 2.0);
-    float confidence = CascadeFootprintConfidence(p.uv, size, radiusTexels);
-    if (confidence <= 0.0)
-        return 1.0;
-
-    const int sampleCount = 8;
-    float visibility = 0.0;
-    for (int i = 0; i < sampleCount; ++i)
-    {
-        vec2 disk = RotateCascadeDiskSample(CascadeDiskSample(i, sampleCount, true), cascadeIdx);
-        vec2 texelPosition = p.uv * vec2(size) + disk * radiusTexels;
-        visibility += CompareGICascadeDepthBilinear(shadowMap, texelPosition, receiverDepth);
-    }
-    return mix(1.0, visibility / float(sampleCount), confidence);
-}
-
-void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT], vec4 surfaceAlbedoRoughness, inout vec3 diffuseResult)
-{
-    diffuseResult = vec3(0.0);
-    vec3 albedo = clamp(surfaceAlbedoRoughness.rgb, vec3(0.0), vec3(1.0));
-    vec3 samplePos = positionWS;
-
-    // GI stores outgoing diffuse radiance, including the Lambert albedo / PI term.
-    float dirNoL = max(dot(normalWS, uDirectionLight.direction.xyz), 0.0);
-    float dirShadow = SampleGICascadeShadow(samplePos, normalWS, shadowMap);
-#ifdef GI_WORLD_ENABLED
-    // 合并可见性而非重复乘两次植被阴影；未完成的场不注入无依据的直射亮度。
-    GIWorldHit worldSun=GIWorldTrace(samplePos+normalWS*max(gwGrid.x*.75,0.01),normalize(uDirectionLight.direction.xyz),0.001,gwGrid.y*2.0,true);
-    dirShadow=min(dirShadow,worldSun.valid?(worldSun.t<gwGrid.y*2.0?0.0:worldSun.transmission):0.0);
-#endif
-    vec3 directionalIrradiance =
-        uDirectionLight.color.rgb * uDirectionLight.intensity;
-    diffuseResult += dirNoL * directionalIrradiance * dirShadow * albedo * INV_PI;
-
-    for (uint lightIndex = 0u; lightIndex < uPointLightCount; ++lightIndex)
-    {
-        PointLightData pointLight = GetPointLight(int(lightIndex));
-        vec3 lightDirection = pointLight.position.xyz - samplePos;
-        float distance = length(lightDirection);
-        if (pointLight.radius <= 1e-5 || distance >= pointLight.radius)
-            continue;
-
-        lightDirection /= max(distance, 1e-5);
-        float attenuation = 1.0 - (distance / pointLight.radius);
-        attenuation *= attenuation;
-        attenuation *= SamplePointShadowMapBRDF(
-            samplePos, normalWS, lightDirection, punctualShadowMap, int(lightIndex));
-
-        float noL = max(dot(normalWS, lightDirection), 0.0);
-        diffuseResult += noL * pointLight.color.rgb * pointLight.intensity * attenuation * albedo * INV_PI;
-    }
-
-    for (uint lightIndex = 0u; lightIndex < uSpotLightCount; ++lightIndex)
-    {
-        SpotLightData spotLight = GetSpotLight(int(lightIndex));
-        vec3 lightDirection = spotLight.position.xyz - samplePos;
-        float distance = length(lightDirection);
-        if (spotLight.radius <= 1e-5 || distance >= spotLight.radius)
-            continue;
-
-        lightDirection /= max(distance, 1e-5);
-        float attenuation = 1.0 - (distance / spotLight.radius);
-        attenuation *= attenuation;
-
-        float coneAngle = dot(normalize(spotLight.direction.xyz), lightDirection);
-        if (coneAngle < cos(spotLight.outerConeAngle))
-            continue;
-
-        attenuation *= SampleSpotShadowMapBRDF(
-            samplePos, normalWS, lightDirection, punctualShadowMap, int(lightIndex));
-
-        float innerConeAngle = cos(spotLight.innerConeAngle);
-        float outerConeAngle = cos(spotLight.outerConeAngle);
-        float coneAttenuation = clamp((coneAngle - outerConeAngle) / max(innerConeAngle - outerConeAngle, 1e-5), 0.0, 1.0);
-
-        float noL = max(dot(normalWS, lightDirection), 0.0);
-        diffuseResult += noL * spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation * albedo * INV_PI;
-    }
-
-    // Probe-hit shading has no camera direction, so it uses a diffuse-only
-    // solid-angle approximation for rectangular emitters instead of the
-    // view-dependent LTC BRDF path.  This keeps area lights in the DDGI
-    // transport graph and uses the same punctual shadow atlas as raster.
-    for (uint lightIndex = 0u; lightIndex < GetRectLightCount(); ++lightIndex)
-    {
-        RectLightData rectLight = GetRectLight(int(lightIndex));
-        vec3 toLight = rectLight.position_halfW.xyz - samplePos;
-        float distanceSquared = dot(toLight, toLight);
-        float range = rectLight.right_range.w;
-        if (distanceSquared >= range * range || distanceSquared <= 1e-6)
-            continue;
-
-        float distance = sqrt(distanceSquared);
-        vec3 lightDirection = toLight / distance;
-        float lightFacing = dot(rectLight.normal_halfH.xyz, -lightDirection);
-        if (rectLight.color_twoSided.w > 0.5)
-            lightFacing = abs(lightFacing);
-        if (lightFacing <= 0.0)
-            continue;
-
-        float area = 4.0 * rectLight.position_halfW.w * rectLight.normal_halfH.w;
-        float rangeFade = 1.0 - distance / max(range, 1e-4);
-        rangeFade *= rangeFade;
-        float solidAngle = area * lightFacing / max(distanceSquared, 1e-4);
-        float shadow = SampleRectShadowMapBRDF(samplePos, normalWS, lightDirection,
-            punctualShadowMap, int(lightIndex));
-        diffuseResult += max(dot(normalWS, lightDirection), 0.0) *
-            rectLight.color_twoSided.rgb * rectLight.up_intensity.w * solidAngle *
-            rangeFade * shadow * albedo * INV_PI;
-    }
-}
 // Cascade shadow map version of CalculateDirectLight
 // Forward declaration: EvaluateRectLightLTC is defined in Lighting/RectLightLTC.glsl,
 // which downstream shaders include AFTER this file (RectLightLTC depends on
@@ -1191,7 +1053,7 @@ void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
     {
         uint i = tileLightIndices[_tileLightHdr.spotOffset + _spk];
         SpotLightData spotLight = GetSpotLight(int(i));
-        spotLight.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdfData.positionWS);
+        spotLight.color.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_SPOT_OFFSET + int(i), brdfData.positionWS);
         vec3 lightDirection = spotLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > spotLight.radius) continue;
@@ -1246,7 +1108,7 @@ void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
         {
             uint i = tileLightIndices[_tileLightHdr.rectOffset + _rck];
             RectLightData rl = GetRectLight(int(i));
-        rl.color_twoSided.rgb *= SampleSurfaceLightCookie(129 + int(i), brdfData.positionWS);
+        rl.color_twoSided.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_RECT_OFFSET + int(i), brdfData.positionWS);
             vec3 rectD = vec3(0.0);
             vec3 rectS = vec3(0.0);
             EvaluateRectLightLTC(
@@ -1314,7 +1176,7 @@ void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
     for (uint i = 0; i < uSpotLightCount; ++i)
     {
         SpotLightData spotLight = GetSpotLight(int(i));
-        spotLight.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdfData.positionWS);
+        spotLight.color.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_SPOT_OFFSET + int(i), brdfData.positionWS);
         vec3 lightDirection = spotLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > spotLight.radius) continue;
@@ -1365,7 +1227,7 @@ void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
             for (uint i = 0u; i < rectCount && i < uint(MAX_RECT_LIGHTS); ++i)
             {
                 RectLightData rl = GetRectLight(int(i));
-        rl.color_twoSided.rgb *= SampleSurfaceLightCookie(129 + int(i), brdfData.positionWS);
+        rl.color_twoSided.rgb *= SampleSurfaceLightCookie(LIGHT_COOKIE_RECT_OFFSET + int(i), brdfData.positionWS);
                 vec3 rectD = vec3(0.0);
                 vec3 rectS = vec3(0.0);
                 EvaluateRectLightLTC(

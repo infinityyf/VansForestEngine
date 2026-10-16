@@ -1199,6 +1199,7 @@ bool TryDrawSerializedLuaNumericField(
 
 bool RebuildRuntimeEntityFromSceneDocument(
     Vans::EditorAPI::IRuntimeSceneEditorAPI& runtimeSceneAPI,
+    Vans::EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI,
     const Vans::VansSceneDocument& document,
     const std::string& entityGuid,
     const char* logPrefix)
@@ -1213,15 +1214,11 @@ bool RebuildRuntimeEntityFromSceneDocument(
         return false;
 
     const Vans::VansSerializedValue* entityToRebuild = nullptr;
-    std::vector<std::string> childGuids;
     for (const Vans::VansSerializedValue& entity : entities->arrayItems)
     {
         const std::string id = Vans::ReadSerializedStringField(entity, "id");
         if (id == entityGuid)
             entityToRebuild = &entity;
-		const Vans::VansSerializedValue* parentValue = Vans::FindObjectField(entity, "parent");
-		if (parentValue && Vans::ReadSceneParentEntityGuid(*parentValue) == entityGuid)
-            childGuids.push_back(id);
     }
     if (!entityToRebuild)
         return false;
@@ -1245,27 +1242,7 @@ bool RebuildRuntimeEntityFromSceneDocument(
         return false;
     }
 
-    bool reparentedAll = true;
-    for (const std::string& childGuid : childGuids)
-    {
-        if (childGuid.empty())
-            continue;
-        Vans::EditorAPI::RuntimeEntityReparentRequest reparentRequest;
-        reparentRequest.childEntityGuid = childGuid;
-		reparentRequest.newParent.kind = Vans::EditorAPI::RuntimeParentKind::Entity;
-		reparentRequest.newParent.entityGuid = entityGuid;
-		reparentRequest.transformPolicy =
-			Vans::EditorAPI::RuntimeReparentTransformPolicy::KeepLocal;
-        const Vans::EditorAPI::RuntimeEntityReparentResult reparentResult =
-            runtimeSceneAPI.ReparentRuntimeEntity(reparentRequest);
-        if (!reparentResult.applied && !reparentResult.message.empty())
-        {
-            VANS_LOG_WARN(logPrefix << " runtime child reparent failed: "
-                << reparentResult.message);
-        }
-        reparentedAll = reparentResult.applied && reparentedAll;
-    }
-    return reparentedAll;
+    return Vans::RestoreRuntimeChildHierarchy(sceneInteractionAPI, document, entityGuid);
 }
 
 const Vans::VansSerializedValue* ReadLocalFogObjectField(
@@ -1586,6 +1563,14 @@ struct VansInspectorWindow::Impl
     bool m_PendingVehicleRebuild = false;
     std::string m_PendingVehicleRebuildEntityGuid;
     std::optional<Vans::ObjectReferenceAssignment> m_PendingObjectReferenceEdit;
+    struct SceneEntityDraft
+    {
+        const Vans::VansSceneDocument* document = nullptr;
+        Vans::SceneDocumentSnapshot origin;
+        std::string entityGuid;
+        Vans::VansSerializedValue value;
+    };
+    std::optional<SceneEntityDraft> m_SceneEntityDraft;
 };
 
 VansInspectorWindow::VansInspectorWindow()
@@ -2912,7 +2897,7 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
         const Vans::VansSerializedValue& selectedEntity = entities->arrayItems[index];
         if (Vans::ReadSerializedStringField(selectedEntity, "id") != selected) continue;
         m_PendingObjectReferenceEdit.reset();
-        Vans::VansSerializedValue editedEntity = selectedEntity;
+        Vans::VansSerializedValue editedEntity = m_SceneEntityDraft ? m_SceneEntityDraft->value : selectedEntity;
         const std::string pointer = "/entities/" + std::to_string(index);
         bool changed = false;
         bool structuralRuntimeRebuild = false;
@@ -2936,6 +2921,18 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
             Vans::FindObjectField(editedEntity, "components");
         if (editedComponents && editedComponents->kind == Vans::VansSerializedValue::Kind::Array)
         {
+            const bool needsNavigationSchema = std::any_of(
+                editedComponents->arrayItems.begin(), editedComponents->arrayItems.end(),
+                [](const Vans::VansSerializedValue& component)
+                {
+                    return Vans::VansComponentTypeCatalog::HasTrait(
+                        Vans::ReadSerializedStringField(component, "type"),
+                        Vans::VansComponentTypeTrait::Navigation);
+                });
+            Vans::EditorAPI::INavigationEditorAPI& navigationAPI = api;
+            m_NavigationSchema = needsNavigationSchema
+                ? navigationAPI.GetNavigationAuthoringSchema()
+                : Vans::EditorAPI::NavigationAuthoringSchema{};
             std::set<std::string> liveNavigationIds;
             for(const auto& component:editedComponents->arrayItems) liveNavigationIds.insert(Vans::ReadSerializedStringField(component,"id"));
             for(auto it=m_NavigationDrafts.begin();it!=m_NavigationDrafts.end();)
@@ -3047,8 +3044,34 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
             }
             ImGui::EndPopup();
         }
+        if (m_SceneEntityDraft && (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || !ImGui::IsAnyItemActive() ||
+            !ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))) changed = true;
         if (changed)
         {
+            const bool discreteStructureEdit = structuralRuntimeRebuild;
+            if (!m_PendingVehicleRebuild)
+                structuralRuntimeRebuild |= Vans::RequiresRuntimeEntityRebuild(selectedEntity, editedEntity);
+            if (!discreteStructureEdit && !m_PendingObjectReferenceEdit && ImGui::IsAnyItemActive() &&
+                ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::GetIO().WantTextInput &&
+                ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+            {
+                if (!m_SceneEntityDraft)
+                    m_SceneEntityDraft = SceneEntityDraft{document, sceneSnapshot, selected, editedEntity};
+                else m_SceneEntityDraft->value = editedEntity;
+                if (!structuralRuntimeRebuild && !m_PendingVehicleRebuild)
+                {
+                    const auto preview = Vans::BuildRuntimeEntityPreviewChange(editedEntity);
+                    if (preview.Empty() || !sceneInteractionAPI.ApplyRuntimeEntityPreviewChange(preview))
+                    {
+                        m_SceneEntityDraft.reset();
+                        if (!sceneInteractionAPI.ApplyRuntimeEntityPreviewChange(Vans::BuildRuntimeEntityPreviewChange(selectedEntity)))
+                            VansEditorWindow::ReloadCurrentSceneForEditing();
+                        VANS_LOG_WARN("[Inspector] Property preview failed; restored the authoring value");
+                    }
+                }
+                return;
+            }
+            m_SceneEntityDraft.reset();
             Vans::SceneEditResult result;
             if (m_PendingObjectReferenceEdit)
             {
@@ -3068,6 +3091,8 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
             if (!result)
             {
                 VANS_LOG_ERROR("[Inspector] " << result.message);
+                if (!sceneInteractionAPI.ApplyRuntimeEntityPreviewChange(Vans::BuildRuntimeEntityPreviewChange(selectedEntity)))
+                    VansEditorWindow::ReloadCurrentSceneForEditing();
                 m_PendingVehicleRebuild = false;
                 m_PendingVehicleRebuildEntityGuid.clear();
             }
@@ -3079,6 +3104,7 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
                     m_PendingVehicleRebuildEntityGuid.clear();
                     if (!RebuildRuntimeEntityFromSceneDocument(
                         runtimeSceneAPI,
+                        sceneInteractionAPI,
                         *document,
                         selected,
                         "[InspectorComponent]"))
@@ -3479,11 +3505,32 @@ void VansInspectorWindow::Impl::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ap
 	Vans::EditorAPI::ISceneInteractionEditorAPI& sceneInteractionAPI = api;
 	Vans::EditorAPI::IParticleEditorAPI& particleAPI = api;
     m_AudioPreview.Tick();
-    ImGui::Begin("Inspector");
+    const bool contentVisible = ImGui::Begin("Inspector");
     m_ActiveAPI = &api;
+    if (m_SceneEntityDraft)
+    {
+        const auto* document = VansEditorWindow::GetSceneDocument();
+        const auto current = document ? document->CreateSnapshot() : Vans::SceneDocumentSnapshot{};
+        if (document != m_SceneEntityDraft->document || &current.Root() != &m_SceneEntityDraft->origin.Root() ||
+            Vans::VansEditorSelectionService::Get().EntityGuid() != m_SceneEntityDraft->entityGuid ||
+            ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        {
+            if (document == m_SceneEntityDraft->document)
+            {
+                const auto restore = Vans::BuildRuntimeEntityPreviewChangeFromSceneRoot(current.Root(), m_SceneEntityDraft->entityGuid);
+                if (!restore.Empty() && !sceneInteractionAPI.ApplyRuntimeEntityPreviewChange(restore))
+                    VansEditorWindow::ReloadCurrentSceneForEditing();
+            }
+            m_SceneEntityDraft.reset();
+            m_PendingVehicleRebuild = false;
+            m_PendingVehicleRebuildEntityGuid.clear();
+        }
+    }
+    // 隐藏时仍允许已有拖拽草稿沿原路径提交或恢复，不构建闲置属性内容。
+    if (contentVisible || m_SceneEntityDraft)
+    {
     if (m_ParticleSchema.fields.empty()) m_ParticleSchema = particleAPI.GetParticleAuthoringSchema();
     m_CollisionLayerNames = sceneInteractionAPI.GetRuntimeCollisionLayerNames();
-    m_NavigationSchema=api.GetNavigationAuthoringSchema();
     const auto selectedNavigationEntity=Vans::VansEditorSelectionService::Get().EntityGuid();
     if(m_NavigationDraftEntity!=selectedNavigationEntity)
     { m_NavigationDrafts.clear(); m_NavigationDraftEntity=selectedNavigationEntity; }
@@ -3496,10 +3543,11 @@ void VansInspectorWindow::Impl::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ap
     else if (!Vans::VansEditorSelectionService::Get().EntityGuid().empty()) DrawSceneEntity(api);
     else if (!Vans::VansEditorSelectionService::Get().AssetPath().empty()) DrawAsset(api);
     else ImGui::TextDisabled("Select an entity or project asset");
+    }
     ImGui::End();
     m_ActiveAPI = nullptr;
 
-    if (m_PendingVehicleRebuild && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+    if (m_PendingVehicleRebuild && !m_SceneEntityDraft && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
     {
         m_PendingVehicleRebuild = false;
         const std::string entityGuid = m_PendingVehicleRebuildEntityGuid;
@@ -3508,6 +3556,7 @@ void VansInspectorWindow::Impl::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ap
         if (!document ||
             !RebuildRuntimeEntityFromSceneDocument(
                 runtimeSceneAPI,
+                sceneInteractionAPI,
                 *document,
                 entityGuid,
                 "[InspectorVehicle]"))

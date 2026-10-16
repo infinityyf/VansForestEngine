@@ -741,20 +741,17 @@ bool VansGraphics::VansMaterialManager::UnregisterRuntimeRenderTexture(const std
 void VansGraphics::VansMaterialManager::ClearRuntimeRenderTextures()
 {
 	m_RuntimeRenderTextureManager.Clear();
-	m_SSGITemporalFrame = 0;
+    m_SSGI.RefreshMemory(m_RuntimeRenderTextureManager);
+    m_AmbientSkyCache.RefreshMemory(m_RuntimeRenderTextureManager);
+	m_SSGI.history.Reset();
 }
 
 void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDevice device)
 {
+	m_SSGI.Destroy(device, m_RuntimeRenderTextureManager);
 	const char* transientTextures[] =
 	{
 		RT_GTAO_RAW, RT_GTAO_RESULT, RT_GTAO_DEPTH, RT_GTAO_EDGES,
-		RT_SSGI_RESULT, RT_SSGI_FILTER_RESULT,
-		RT_SSGI_PROBE_CACHE_RADIANCE, RT_SSGI_PROBE_CACHE_SURFACE,
-		RT_SSGI_TEMPORAL_A, RT_SSGI_TEMPORAL_B,
-		RT_SSGI_MOMENTS_A, RT_SSGI_MOMENTS_B,
-		RT_SSGI_SURFACE_HISTORY_A, RT_SSGI_SURFACE_HISTORY_B,
-		RT_SSGI_ATROUS_A,
 		RT_HZB_RESULT, RT_HZB_OCCLUSION_RESULT,
 		RT_SCREEN_SPACE_SHADOW_RESULT, RT_CASCADE_SHADOW_MIN_MAX,
 		RT_SSR_HIT_INFO, RT_SSR_RAY_PDF, RT_SSR_RESULT,
@@ -769,9 +766,6 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 		RemoveRuntimeRenderTexture(name);
 
 	m_ScreenSpaceShadowParamsCBBuffer.DestroyVulkanBuffer(device);
-	for (VansVKBuffer& buffer : m_SSGITemporalCBBuffer)
-		buffer.DestroyVulkanBuffer(device);
-	m_SSGICBBuffer.DestroyVulkanBuffer(device);
 	for (TileLightFrameBuffers& frame : m_TileLightFrames)
 	{
 		frame.header.DestroyVulkanBuffer(device);
@@ -790,20 +784,7 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 		buffer.DestroyVulkanBuffer(device);
 
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
-	descMgr->DestroyDescriptorSet(m_SSGIDescriptorSets);
-	descMgr->ReleaseDescriptorSetLayout(m_SSGITexSetLayout);
-	descMgr->DestroyDescriptorSet(m_SSGIProbeCacheDescriptorSets);
-	descMgr->ReleaseDescriptorSetLayout(m_SSGIProbeCacheSetLayout);
-    descMgr->DestroyDescriptorSet(m_GIReceiverVisibility.sets);
-    descMgr->ReleaseDescriptorSetLayout(m_GIReceiverVisibility.layout);
-    m_GIReceiverVisibility.bias.DestroyVulkanBuffer(device);
-    m_GIReceiverVisibility.current.DestroyVulkanBuffer(device);
-    m_GIReceiverVisibility.history.DestroyVulkanBuffer(device);
-    m_GIReceiverVisibility.work.DestroyVulkanBuffer(device);
-    m_GIReceiverVisibility.anchors.DestroyVulkanBuffer(device);
-    m_GIReceiverVisibility.world.DestroyVulkanBuffer(device);
-    m_GIReceiverVisibility.worldClaims.DestroyVulkanBuffer(device);
-    m_GIReceiverVisibility.frame = 0;
+    m_GIReceiverVisibility.Destroy(device);
 
 	for (VkDescriptorSetLayout& layout : m_HZBTexSetLayouts)
 		descMgr->ReleaseDescriptorSetLayout(layout);
@@ -832,10 +813,6 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
     descMgr->ReleaseDescriptorSetLayout(m_GTAOMainSetLayout);
     descMgr->DestroyDescriptorSet(m_GTAODenoiseDescriptorSets);
 	descMgr->ReleaseDescriptorSetLayout(m_GTAODenoiseSetLayout);
-	descMgr->DestroyDescriptorSet(m_SSGITemporalDescriptorSets);
-	descMgr->ReleaseDescriptorSetLayout(m_SSGITemporalSetLayout);
-	descMgr->DestroyDescriptorSet(m_SSGIAtrousDescriptorSets);
-	descMgr->ReleaseDescriptorSetLayout(m_SSGIAtrousSetLayout);
 	descMgr->DestroyDescriptorSet(m_HIZSeedDescriptorSets);
 	descMgr->ReleaseDescriptorSetLayout(m_HIZSeedSetLayout);
 	descMgr->DestroyDescriptorSet(m_OcclusionHIZSeedDescriptorSets);
@@ -858,28 +835,6 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 	descMgr->ReleaseDescriptorSetLayout(m_DepthOfFieldSetLayout);
 
 	m_HIZMipCount = 0;
-	m_SSGITemporalFrame = 0;
-}
-
-void VansGraphics::VansMaterialManager::ClearAmbientSkyCacheRenderData(VkDevice device)
-{
-	RemoveRuntimeRenderTexture(RT_AMBIENT_SKY_CACHE_X);
-	RemoveRuntimeRenderTexture(RT_AMBIENT_SKY_CACHE_Y);
-	RemoveRuntimeRenderTexture(RT_AMBIENT_SKY_CACHE_Z);
-	for (VansVKBuffer& buffer : m_AmbientSkyCacheParamsCBBuffer)
-		buffer.DestroyVulkanBuffer(device);
-	for (VansVKBuffer& buffer : m_AmbientSkyCacheInfoCBBuffer)
-		buffer.DestroyVulkanBuffer(device);
-	if (auto* descriptorManager = VansVKDescriptorManager::GetInstance())
-	{
-		descriptorManager->DestroyDescriptorSet(m_AmbientSkyCacheDescriptorSets);
-		descriptorManager->ReleaseDescriptorSetLayout(m_AmbientSkyCacheSetLayout);
-	}
-	m_AmbientSkyCacheShader = nullptr;
-	m_AmbientSkyCacheOrigin = glm::vec3(0.0f);
-	m_AmbientSkyCacheRingOffset = glm::ivec3(0);
-	m_AmbientSkyCacheInitialized = false;
-	m_AmbientSkyCacheFrameOffset = 0u;
 }
 
 void VansGraphics::VansMaterialManager::ReleaseSkinProfileLUTLayerForMaterial(int materialIndex)
@@ -1002,7 +957,7 @@ bool VansGraphics::VansMaterialManager::ResolveSkinProfileLUTForMaterial(
 				pixels.data(),
 				VANS_SKIN_PROFILE_LUT_SIZE,
 				VANS_SKIN_PROFILE_LUT_SIZE,
-				layer);
+				layer, Vans::VansColorEncoding::Linear, VK_FILTER_NEAREST);
 		}
 
 		for (auto& pending : m_PendingSkinProfileLUTUploads)
@@ -1126,7 +1081,7 @@ bool VansGraphics::VansMaterialManager::RecordPendingSkinProfileLUTUploads(
 			pending.pixels.data(),
 			VANS_SKIN_PROFILE_LUT_SIZE,
 			VANS_SKIN_PROFILE_LUT_SIZE,
-			pending.layer);
+			pending.layer, Vans::VansColorEncoding::Linear, VK_FILTER_NEAREST);
 	}
 	m_PendingSkinProfileLUTUploads.clear();
 	return uploadedAll;
@@ -1209,6 +1164,7 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 
 	// Clear CPU PBR arrays. Material objects are owned by VansScene.
 	m_GlobalPBRMaterial.clear();
+    m_GIVoxelMaterials.reset();
 	m_GlobalPBRParamData.clear();
 	m_GlobalClothParamData.clear();
     m_GlobalHairParamData.clear();
@@ -1217,7 +1173,7 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	m_GlobalCustomMaterialParamData.clear();
 	m_GlobalBindlessDescriptorsDirty = false;
 	m_GlobalPBRTextures.clear();
-	ClearAmbientSkyCacheRenderData(device);
+	m_AmbientSkyCache.Destroy(device, m_RuntimeRenderTextureManager);
 	ClearResolutionDependentRenderData(device);
 	ClearRuntimeRenderTextures();
 	m_RectLightEmissiveArray = nullptr;
@@ -1250,8 +1206,36 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	descMgr->ReleaseDescriptorSetLayout(m_PunctualShadowDebugSetLayout);
 }
 
+void VansGraphics::VansMaterialManager::RegisterGIVoxelMaterial(const VansPBRMaterial& material)
+{
+    const auto& p=material.m_BasePBRParam;
+    const VansGIVoxelMaterial next{p.m_albedo,p.m_metallic,p.m_roughness,
+        material.m_AlphaTestEnabled,material.m_AlphaCutoff,material.m_BaseColorTexture,
+        std::clamp(material.m_TreeLeafParams.scattering.w,0.f,1.f)};
+    if(m_GIVoxelMaterials)
+    {
+        const auto found=m_GIVoxelMaterials->find(&material);
+        if(found!=m_GIVoxelMaterials->end() && found->second==next)return;
+        if(!m_GIVoxelMaterials.unique())
+            m_GIVoxelMaterials=std::make_shared<VansGIVoxelMaterialInputs>(*m_GIVoxelMaterials);
+    }
+    else m_GIVoxelMaterials=std::make_shared<VansGIVoxelMaterialInputs>();
+    (*m_GIVoxelMaterials)[&material]=next;
+}
+
+void VansGraphics::VansMaterialManager::UnregisterGIVoxelMaterial(const VansPBRMaterial& material)
+{
+    if(!m_GIVoxelMaterials || !m_GIVoxelMaterials->count(&material))return;
+    if(!m_GIVoxelMaterials.unique())
+        m_GIVoxelMaterials=std::make_shared<VansGIVoxelMaterialInputs>(*m_GIVoxelMaterials);
+    m_GIVoxelMaterials->erase(&material);
+}
+
 bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& material)
 {
+    // 仅跟踪场景注册资产；临时 renderer instance 不进入体素材质表。
+    if(auto* pbr=dynamic_cast<VansPBRMaterial*>(&material))
+        if(m_GIVoxelMaterials && m_GIVoxelMaterials->count(pbr))RegisterGIVoxelMaterial(*pbr);
 	const int index = material.GetGlobalMaterialIndex();
 	if (index < 0)
 		return false;
@@ -1272,7 +1256,11 @@ bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& mater
 	};
 
 	if (auto* pbr = dynamic_cast<VansPBRMaterial*>(&material))
+	{
+		if (index < static_cast<int>(m_GlobalTreeLeafParamData.size()))
+			m_GlobalTreeLeafParamData[index] = pbr->m_TreeLeafParams;
 		return stagePbrPayload(pbr->m_BasePBRParam);
+	}
 	if (auto* emissive = dynamic_cast<VansEmissiveMaterial*>(&material))
 		return stagePbrPayload(emissive->m_BasePBRParam);
 
@@ -1345,6 +1333,7 @@ VansGraphics::VansMaterialManager::CaptureRenderMaterialFrameData(
 	frameData.rewriteBindlessTextures = m_GlobalBindlessDescriptorsDirty;
 	// 累积修订号随快照发布；跳过中间帧也不会丢失布料光照失效事件。
 	frameData.clothLightingRevision = m_ClothLightingRevision;
+    frameData.voxelMaterials = m_GIVoxelMaterials;
 	m_GlobalBindlessDescriptorsDirty = false;
 	frameData.prepared = true;
 	return frameData;
@@ -1526,6 +1515,23 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 	}
 	if (auto* pbr = dynamic_cast<VansPBRMaterial*>(&material))
 	{
+		if (key.rfind("leaf/", 0) == 0)
+		{
+			Vans::VansSerializedValue input;
+			glm::vec3 color;
+			float scalar;
+			if (key == "leaf/subsurfaceColor" && ReadMaterialVec3(value, color))
+				input = Vans::VansSerializedValue::Array({Vans::VansSerializedValue::Float(color.x),
+					Vans::VansSerializedValue::Float(color.y), Vans::VansSerializedValue::Float(color.z)});
+			else if (ReadMaterialFloat(value, scalar)) input = Vans::VansSerializedValue::Float(scalar);
+			else return false;
+			auto parameters = pbr->m_TreeLeafParams.Parameters();
+			std::string error;
+			if (!Vans::ApplyTreeLeafMaterialParameter(parameters, key.substr(5), input, error)) return false;
+			pbr->m_TreeLeafParams = VansTreeLeafParamsGPU(parameters);
+			FlushMaterialPayload(material);
+			return true;
+		}
 		if (material.m_MaterialType == VansMaterialType::VAN_PBR)
 		{
 			bool alphaTestEnabled = false;

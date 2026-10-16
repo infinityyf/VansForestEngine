@@ -120,7 +120,10 @@ namespace VansGraphics
         {
 			uint32_t& seed = pool.m_SeedRandom[i];
             float r         = RandFloat(seed);
-            pool.m_Size[i]  = m_Size.Evaluate(0.f, r);
+            const bool random = m_CollectionAgeScale.m_Mode == FloatCurveMode::RandomBetween
+                || m_CollectionAgeScale.m_Mode == FloatCurveMode::RandomBetweenCurves;
+            pool.m_Size[i] = m_Size.Evaluate(0.f, r) * m_CollectionAgeScale.Evaluate(
+                pool.m_InitializationCollectionAge, random ? RandFloat(seed) : 0.f);
         }
     }
 

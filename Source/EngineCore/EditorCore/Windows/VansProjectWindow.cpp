@@ -189,7 +189,7 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(
     // Project 窗口 (资源浏览器)
     // -------------------------------------------------------------------------
     {
-        ImGui::Begin("Project");
+        const bool contentVisible = ImGui::Begin("Project");
 
         // Determine the browsing root: project directory when loaded,
         // otherwise fall back to the engine's EngineAssets directory.
@@ -202,6 +202,17 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(
         {
             m_CachedRootPath = rootPath;
             m_CurrentDirectory = root.projectLoaded ? root.assetsRootPath : rootPath;
+        }
+
+        if (!contentVisible)
+        {
+            // 保持创建对话框原有 RightPanel ID 上下文，隐藏时仍消费菜单命令。
+            ImGui::BeginChild("RightPanel", ImVec2(0, 0), true);
+            ProcessAssetCreation(assetAuthoringAPI, root);
+            DrawTimelineCreationPopup(assetAuthoringAPI);
+            ImGui::EndChild();
+            ImGui::End();
+            return;
         }
 
         auto acceptPrefabCreation = [&](const std::filesystem::path& directory)

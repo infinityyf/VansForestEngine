@@ -22,39 +22,31 @@ layout(set = 0, binding = 11, std430) buffer hitEmissionBuffer { f16vec4 emissio
 #include "../GI/GIProbeStateData.glsl"
 layout(set = 0, binding = 9, std430) readonly buffer ProbeStateBuffer { GIProbeState states[]; } probeStates;
 
-layout(push_constant) uniform PushConstants
-{
-    vec4 gridParams;
-    vec4 dispatchParams;
-    vec4 frameParams;
-    vec4 regionParams;
-    vec4 lightingParams;
-    vec4 temporalParams;
-} pushConstants;
+#include "../GI/GIProbeDispatch.glsl"
 
 void main()
 {
-    ivec3 probeCounts = ivec3(pushConstants.dispatchParams.xyz);
+    ivec3 probeCounts = ivec3(giDispatch.dispatchParams.xyz);
     uint raysPerUpdate = giProbeWork.header.y;
     uint activeProbeLinear = gl_LaunchIDEXT.x / raysPerUpdate;
     if (activeProbeLinear >= giProbeWork.header.x) return;
     uint localRay = gl_LaunchIDEXT.x % raysPerUpdate;
-    uvec4 work = giProbeWork.entries[activeProbeLinear];
+    uvec4 work = giProbeWork.entries[activeProbeLinear].scheduling;
     ivec3 probeIndex = GI_WorkProbeCoordinate(work.x, probeCounts);
 
-    vec3 volumeMin = pushConstants.regionParams.xyz - vec3(probeCounts) * pushConstants.gridParams.xyz * 0.5;
+    vec3 volumeMin = giDispatch.regionParams.xyz - vec3(probeCounts) * giDispatch.gridParams.xyz * 0.5;
     uint probeLinear = work.x;
-    vec3 probeWorld = GI_LayoutProbePosition(giProbeWork.header.z, work.x, probeCounts, volumeMin, pushConstants.gridParams.xyz) +
+    vec3 probeWorld = GI_LayoutProbePosition(giProbeWork.header.z, work.x, probeCounts, volumeMin, giDispatch.gridParams.xyz) +
         probeStates.states[probeLinear].relocationAndConfidence.xyz;
     GIProbeRayDirectionContext context = GI_BuildProbeRayDirectionContext(
-        probeIndex, probeCounts, uint(pushConstants.dispatchParams.w), work.z);
+        probeIndex, probeCounts, uint(giDispatch.dispatchParams.w), work.z);
     bool fixedGeometryRay;
     vec3 rayDirection = GI_ProbeRayDirectionPrepared(context, localRay, fixedGeometryRay);
     hitResult.geometryOnly = fixedGeometryRay ? 1u : 0u;
     // Alpha-tested surfaces use the program's any-hit stage.  Fully transparent
     // materials are excluded from the GI TLAS during scene construction.
     traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, probeWorld, 0.001,
-        rayDirection, pushConstants.gridParams.w, 0);
+        rayDirection, giDispatch.traceParams.x, 0);
 
     uint bufferIndex = GI_WorkRayOffset(activeProbeLinear) + localRay;
     hitPositionInfoBuffer.hitDistance[bufferIndex] = hitResult.hitDistance;

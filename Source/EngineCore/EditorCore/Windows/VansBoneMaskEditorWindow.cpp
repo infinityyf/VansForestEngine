@@ -511,6 +511,7 @@ void VansBoneMaskEditorWindow::ApplyTemplate(const char* templateName)
 	m_Asset.defaultWeight = 0.0f;
 	m_Asset.branchRules.clear();
 	m_Asset.explicitWeights.clear();
+	m_Asset.explicitChannelWeights.clear();
 	VansBoneMaskBranchRule include;
 	include.id = Vans::VansAssetGuid::New().ToString();
 	include.mode = VansBoneMaskRuleMode::Include;
@@ -667,6 +668,13 @@ void VansBoneMaskEditorWindow::DrawRulesPanel()
 				m_Asset.explicitWeights[m_Skeleton.bones[index].name] = value;
 			MarkEdited();
 		}
+
+        std::array<float,3> channels{1,1,1};
+        if(const auto found=m_Asset.explicitChannelWeights.find(firstBone);found!=m_Asset.explicitChannelWeights.end())channels=found->second;
+        if(ImGui::SliderFloat3("Translation / Rotation / Scale",channels.data(),0,1))
+        {for(int index:m_SelectedBones)m_Asset.explicitChannelWeights[m_Skeleton.bones[index].name]=channels;MarkEdited();}
+        if(ImGui::Button("Clear Channel Weights"))
+        {for(int index:m_SelectedBones)m_Asset.explicitChannelWeights.erase(m_Skeleton.bones[index].name);MarkEdited();}
 		if (ImGui::Button("Clear Explicit Weight"))
 		{
 			for (int index : m_SelectedBones)

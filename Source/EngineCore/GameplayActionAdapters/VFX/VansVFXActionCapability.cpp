@@ -24,6 +24,11 @@ const VansActionServiceCapability& VansVFXActionCapability()
             VansActionCommandNumberField("duration",V::Float,true,VansSerializedValue::Float(5.5),0.01,60),
             VansActionCommandNumberField("spreadDuration",V::Float,true,VansSerializedValue::Float(3),0.01,60),
             VansActionCommandNumberField("spawnInterval",V::Float,false,VansSerializedValue::Float(0.12),0.02,1),
+            VansActionCommandField("connectedPropagation",V::Bool,false,VansSerializedValue::Bool(false)),
+            VansActionCommandNumberField("spreadSpeed",V::Float,false,VansSerializedValue::Float(1),.1,100),
+            VansActionCommandNumberField("childIntervalMultiplier",V::Float,false,VansSerializedValue::Float(1),.001,10),
+            VansActionCommandNumberField("maxChildInterval",V::Float,false,VansSerializedValue::Float(.5),.001,1),
+            VansActionCommandNumberField("maxDepth",V::Int,false,VansSerializedValue::Int(4),1,16),
             VansActionCommandNumberField("maxSurfaces",V::Int,false,VansSerializedValue::Int(16),1,16),
             VansActionCommandField("maxConcurrentPerSource",V::Int,false,VansSerializedValue::Int(8))}),
         VansActionCommandCapability("VFX.Spawn",R::Create,{

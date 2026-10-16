@@ -87,6 +87,7 @@ namespace VansGraphics
 		void* GetPersistentMappedPtr(VmaAllocation allocation) const;
 
 		// Diagnostics --------------------------------------------------
+		VkDeviceSize GetAllocationSize(VmaAllocation allocation) const;
 		VansGpuMemorySnapshot QueryMemorySnapshot() const;
 		void LogMemoryStats() const;
 

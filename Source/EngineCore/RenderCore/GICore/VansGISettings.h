@@ -1,5 +1,6 @@
 #pragma once
 #include "VansGIWorldSettings.h"
+#include "../../../../EngineAssets/Shaders/GI/GIRegionCapacity.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -12,17 +13,42 @@
 
 namespace VansGraphics
 {
+    inline constexpr uint32_t kGIMaximumRegionCount = GI_MAX_REGION_COUNT;
+    static_assert(kGIMaximumRegionCount < 32u && kGIMaximumRegionCount % 4u == 0u);
+
 	enum class GIProbeRegionMode : uint32_t
 	{
 		RegularGrid = 0,
+		Adaptive = 1,
 	};
+
+    // 查询距离与体素精度独立于 Probe 摆放密度；0 表示不额外抬高世界场最细层。
+    struct GIProbeTraceSettings
+    {
+        float maxDistance = 100.0f;
+        float minVoxelSize = 0.0f;
+        float scatterMinVoxelSize = 0.0f;
+    };
+
+    inline void NormalizeGIProbeTraceSettings(GIProbeTraceSettings& trace)
+    {
+        trace.maxDistance = std::isfinite(trace.maxDistance) ? std::max(trace.maxDistance, 0.001f) : 100.0f;
+        trace.minVoxelSize = std::isfinite(trace.minVoxelSize) ? std::max(trace.minVoxelSize, 0.0f) : 0.0f;
+        trace.scatterMinVoxelSize = std::isfinite(trace.scatterMinVoxelSize) ? std::max(trace.scatterMinVoxelSize, 0.0f) : 0.0f;
+    }
+
+    inline bool GIProbeTraceSettingsEqual(const GIProbeTraceSettings& a, const GIProbeTraceSettings& b)
+    {
+        return a.maxDistance == b.maxDistance && a.minVoxelSize == b.minVoxelSize &&
+            a.scatterMinVoxelSize == b.scatterMinVoxelSize;
+    }
 
 	struct GIProbeRegionDesc
 	{
 		uint32_t stableId = 1;
 		std::string name = "Default";
 		bool enabled = true;
-		// 世界场专属区域；主开关关闭时不进入布局、分配或调度。
+		// 在硬件场景几何之外查询地形与 PCG；世界场关闭时该区域不参与 GI。
 		bool worldOnly = false;
 		GIProbeRegionMode mode = GIProbeRegionMode::RegularGrid;
         bool followView = false; // 世界场区域使用固定容量的滚动网格。
@@ -35,7 +61,7 @@ namespace VansGraphics
 
 		uint32_t raysPerProbe = 256;
 
-		float maxRayDistance = 100.0f;
+		GIProbeTraceSettings trace;
 		float normalBias = 0.25f;
 		float volumeFadeDistance = 1.0f;
 		float priority = 0.0f;
@@ -43,6 +69,7 @@ namespace VansGraphics
 
 	struct GIResolvedRegion
 	{
+		GIProbeRegionMode mode = GIProbeRegionMode::RegularGrid;
 		uint32_t stableId = 1;
 		std::string name = "Default";
 		bool enabled = true;
@@ -56,7 +83,7 @@ namespace VansGraphics
 
 		uint32_t raysPerProbe = 256;
 
-		float maxRayDistance = 100.0f;
+		GIProbeTraceSettings trace;
 		float normalBias = 0.25f;
 		float volumeFadeDistance = 1.0f;
 		float priority = 0.0f;
@@ -72,7 +99,7 @@ namespace VansGraphics
 
 	struct GIProbePlacementSettings
 	{
-		bool enabled = false;
+		// Shared refinement limits and frame budgets; each region owns its placement mode.
 		// 可配置的细分终止间距；0.5 m 仅为默认值，不是算法硬下限。
 		float minProbeSpacing = 0.5f;
 		float maxProbeSpacing = 4.0f;
@@ -88,14 +115,16 @@ namespace VansGraphics
 	{
 		bool enabled = false;
 		float gridSpacing = 4.0f;
-		uint32_t queriesPerFrame = 128u;
+		static constexpr uint32_t MaxCellUpdatesPerFrame = 43u;
+		// One cell evaluates all six axis directions together.
+		uint32_t cellUpdatesPerFrame = 22u;
 	};
 
 	inline void NormalizeGIAmbientSkyCacheSettings(GIAmbientSkyCacheSettings& settings)
 	{
 		settings.gridSpacing = std::isfinite(settings.gridSpacing)
 			? std::clamp(settings.gridSpacing, 2.0f, 16.0f) : 4.0f;
-		settings.queriesPerFrame = std::clamp(settings.queriesPerFrame, 1u, 256u);
+		settings.cellUpdatesPerFrame = std::clamp(settings.cellUpdatesPerFrame, 1u, GIAmbientSkyCacheSettings::MaxCellUpdatesPerFrame);
 	}
 
 	inline void NormalizeGIProbePlacementSettings(GIProbePlacementSettings& settings)
@@ -114,10 +143,8 @@ namespace VansGraphics
 	inline bool GIProbePlacementResourceLayoutEquals(
 		const GIProbePlacementSettings& left, const GIProbePlacementSettings& right)
 	{
-		if (left.enabled != right.enabled) return false;
 		if (left.maxProbeUpdatesPerFrame != right.maxProbeUpdatesPerFrame ||
             left.maxRaysPerFrame != right.maxRaysPerFrame) return false;
-        if (!left.enabled) return true;
 		return left.minProbeSpacing == right.minProbeSpacing && left.maxProbeSpacing == right.maxProbeSpacing &&
 			left.parentProbeMaxSize == right.parentProbeMaxSize &&
 			left.maxProbeCount == right.maxProbeCount && left.maxProbeUpdatesPerFrame == right.maxProbeUpdatesPerFrame &&
@@ -130,7 +157,7 @@ namespace VansGraphics
 		GIProbePlacementSettings placement;
 		GIAmbientSkyCacheSettings ambientSkyCache;
 		std::vector<GIProbeRegionDesc> regions = { GIProbeRegionDesc{} };
-		uint32_t selectedRegionIndex = 0;
+		uint32_t selectedRegionIndex = 0; // 仅诊断选择，不参与持久化或渲染布局身份。
 		// 高亮及反馈保护上限；天光强度由统一 Sky Lighting 数据源控制。
 		float maxIndirectRadiance = 2.0f;
 		float maxProbeRadiance = 8.0f;
@@ -172,6 +199,7 @@ namespace VansGraphics
 		resolved.name = region.name;
 		resolved.enabled = region.enabled;
 		resolved.worldOnly = region.worldOnly;
+		resolved.mode = region.mode;
         resolved.scrolling = region.worldOnly && region.followView;
 		resolved.center = region.center;
 		resolved.probeSpacing = std::max(region.probeSpacing, 0.001f);
@@ -180,7 +208,8 @@ namespace VansGraphics
 		resolved.volumeSize = glm::vec3(resolved.gridDimensions) * resolved.probeSpacing;
 		resolved.volumeMin = resolved.center - resolved.volumeSize * 0.5f;
 		resolved.raysPerProbe = std::clamp(region.raysPerProbe, 2u, 4096u);
-		resolved.maxRayDistance = std::max(region.maxRayDistance, 0.001f);
+		resolved.trace = region.trace;
+        NormalizeGIProbeTraceSettings(resolved.trace);
 		resolved.normalBias = std::max(region.normalBias, 0.0f);
 		resolved.volumeFadeDistance = std::max(region.volumeFadeDistance, 0.0f);
 		resolved.priority = region.priority;
@@ -189,12 +218,25 @@ namespace VansGraphics
 		return resolved;
 	}
 
+	inline bool IsAdaptiveGIRegion(const GIResolvedRegion& region)
+	{
+		return region.mode == GIProbeRegionMode::Adaptive;
+	}
+
+	inline bool HasAdaptiveGIRegions(const VansGISettings& settings)
+	{
+		return std::any_of(settings.regions.begin(), settings.regions.end(), [&settings](const auto& region) {
+			return region.enabled && (!region.worldOnly || settings.world.enabled) &&
+				region.mode == GIProbeRegionMode::Adaptive;
+		});
+	}
+
     // 固定几何射线独立于调度；小样本配置也必须保留动态光照方向。
     inline uint32_t GIProbeFixedRayCount(uint32_t rays) { return std::min(32u, rays / 2u); }
     inline uint64_t GIProbeRayCapacity(uint64_t probes, uint32_t rays, const GIProbePlacementSettings& budget)
     { return std::min(uint64_t(budget.maxRaysPerFrame), std::min(probes, uint64_t(budget.maxProbeUpdatesPerFrame)) * rays); }
 
-	inline const GIProbeRegionDesc& GetPrimaryGIRegionDesc(const VansGISettings& settings)
+	inline const GIProbeRegionDesc& GetSelectedGIRegionDesc(const VansGISettings& settings)
 	{
 		static const GIProbeRegionDesc fallback{};
 		if (settings.regions.empty())
@@ -209,15 +251,11 @@ namespace VansGraphics
 		std::vector<const GIProbeRegionDesc*> ordered;
 		if (settings.regions.empty())
 			return ordered;
-		const uint32_t selected = std::min<uint32_t>(
-			settings.selectedRegionIndex,
-			static_cast<uint32_t>(settings.regions.size() - 1u));
-		if (settings.regions[selected].enabled && (!settings.regions[selected].worldOnly || settings.world.enabled))
-			ordered.push_back(&settings.regions[selected]);
-		for (uint32_t index = 0; index < settings.regions.size(); ++index)
+		// 物理区域顺序只由作者数组决定；调试选择不能移动 Shader 数组索引。
+		for (const auto& region : settings.regions)
 		{
-			if (index != selected && settings.regions[index].enabled && (!settings.regions[index].worldOnly || settings.world.enabled))
-				ordered.push_back(&settings.regions[index]);
+			if (region.enabled && (!region.worldOnly || settings.world.enabled))
+				ordered.push_back(&region);
 		}
 		return ordered;
 	}
@@ -247,7 +285,7 @@ namespace VansGraphics
 				? glm::vec3(region.gridDimensions) * region.probeSpacing
 				: glm::max(region.size, glm::vec3(region.probeSpacing));
 			region.raysPerProbe = std::clamp(region.raysPerProbe, 2u, 4096u);
-			region.maxRayDistance = std::max(region.maxRayDistance, 0.001f);
+			NormalizeGIProbeTraceSettings(region.trace);
 			region.normalBias = std::max(region.normalBias, 0.0f);
 			region.volumeFadeDistance = std::max(region.volumeFadeDistance, 0.0f);
 		}
@@ -269,6 +307,7 @@ namespace VansGraphics
 		const GIResolvedRegion leftResolved = ResolveGIRegion(left);
 		const GIResolvedRegion rightResolved = ResolveGIRegion(right);
 		return leftResolved.enabled == rightResolved.enabled &&
+			leftResolved.mode == rightResolved.mode &&
 			leftResolved.worldOnly == rightResolved.worldOnly &&
             leftResolved.scrolling == rightResolved.scrolling &&
 			leftResolved.center == rightResolved.center &&
@@ -276,8 +315,7 @@ namespace VansGraphics
 			leftResolved.gridDimensions == rightResolved.gridDimensions &&
 			leftResolved.probeSpacing == rightResolved.probeSpacing &&
 			leftResolved.stableId == rightResolved.stableId &&
-			leftResolved.raysPerProbe == rightResolved.raysPerProbe &&
-			leftResolved.maxRayDistance == rightResolved.maxRayDistance;
+			leftResolved.raysPerProbe == rightResolved.raysPerProbe;
 	}
 
 	inline bool GISettingsResourceLayoutEquals(
@@ -290,18 +328,15 @@ namespace VansGraphics
 		if (!GIProbePlacementResourceLayoutEquals(left.placement, right.placement))
 			return false;
 		if (left.ambientSkyCache.enabled != right.ambientSkyCache.enabled ||
-			left.ambientSkyCache.gridSpacing != right.ambientSkyCache.gridSpacing ||
-			left.ambientSkyCache.queriesPerFrame != right.ambientSkyCache.queriesPerFrame)
+			left.ambientSkyCache.gridSpacing != right.ambientSkyCache.gridSpacing)
 			return false;
 		if (left.regions.size() != right.regions.size())
-			return false;
-		if (left.selectedRegionIndex != right.selectedRegionIndex)
 			return false;
 		for (size_t index = 0; index < left.regions.size(); ++index)
 		{
 			if (!GIRegionResourceLayoutEquals(left.regions[index], right.regions[index]))
 				return false;
-			if (left.placement.enabled && !ResolveGIRegion(left.regions[index]).scrolling &&
+			if (left.regions[index].mode == GIProbeRegionMode::Adaptive &&
 				(left.regions[index].normalBias != right.regions[index].normalBias ||
 				 left.regions[index].priority != right.regions[index].priority))
 				return false;

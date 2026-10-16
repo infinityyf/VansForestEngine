@@ -18,43 +18,52 @@ layout(set = 0, binding = 1, std430) readonly buffer HitNormalBuffer { f16vec4 h
 layout(set = 0, binding = 2, std430) buffer ProbeStateBuffer { GIProbeState states[]; } probeStates;
 
 layout(set = 0, binding = 5, std430) writeonly buffer ProbeFeedbackBuffer { uvec4 records[]; } feedback;
+#ifdef GI_WORLD_ENABLED
+layout(set = 0, binding = 6, std430) readonly buffer RadianceBuffer { f16vec4 values[]; } radiance;
+#endif
 
-layout(push_constant) uniform PushConstants
-{
-    vec4 gridParams;
-    vec4 dispatchParams;
-    vec4 frameParams;
-    vec4 regionParams;
-    vec4 lightingParams;
-    vec4 temporalParams;
-} pushConstants;
+#include "../GI/GIProbeDispatch.glsl"
 
 
 void main()
 {
     uint activeLinear = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * gl_NumWorkGroups.x;
     if (activeLinear >= giProbeWork.header.x) return;
-    uvec4 work = giProbeWork.entries[activeLinear];
+    uvec4 work = giProbeWork.entries[activeLinear].scheduling;
     uint rays = giProbeWork.header.y;
     uint fixedCount = GI_FixedRayCount(rays);
     uint offset = GI_WorkRayOffset(activeLinear);
-#ifdef GI_WORLD_ENABLED
-    for(uint ray=0u;ray<rays;++ray)
-        if(hitPositions.hitDistance[offset+ray]<-1.5)
-        {feedback.records[activeLinear]=uvec4(work.x,GI_TraceFailureStatus(hitPositions.hitDistance[offset+ray]),work.y,work.z);return;}
-#endif
-    ivec3 counts = ivec3(pushConstants.dispatchParams.xyz);
-    ivec3 coordinate = GI_WorkProbeCoordinate(work.x, counts);
     GIProbeState state = probeStates.states[work.x];
-    vec3 traceOffset = state.relocationAndConfidence.xyz;
     float cell = giProbeWork.header.w != 0u ? GI_LayoutPosition(giProbeWork.header.z, work.x).w :
-        min(pushConstants.gridParams.x, min(pushConstants.gridParams.y, pushConstants.gridParams.z));
+        min(giDispatch.gridParams.x, min(giDispatch.gridParams.y, giDispatch.gridParams.z));
+#ifdef GI_WORLD_ENABLED
+    uint failures=0u;
+    bool incomplete=false,primaryIncomplete=false;
+    for(uint ray=0u;ray<rays;++ray)
+    {
+        if(hitPositions.hitDistance[offset+ray]<-1.5)
+        {
+            incomplete=true;primaryIncomplete=true;
+            failures|=GI_TraceFailureStatus(hitPositions.hitDistance[offset+ray]);
+        }
+        float validity=float(radiance.values[offset+ray].w);
+        incomplete=incomplete || validity<0.0;
+        uint lightingFailure=GI_LightingFailureStatus(validity);
+        primaryIncomplete=primaryIncomplete || (lightingFailure&GI_FEEDBACK_PRIMARY_FAILURE_MASK)!=0u;
+        failures|=lightingFailure;
+    }
+    if(primaryIncomplete || (incomplete && !GI_ProbeCanRetainScattering(state,cell,(work.w&GI_WORK_RESET_GEOMETRY)!=0u)))
+    {feedback.records[activeLinear]=uvec4(work.x,failures,work.y,work.z);return;}
+#endif
+    ivec3 counts = ivec3(giDispatch.dispatchParams.xyz);
+    ivec3 coordinate = GI_WorkProbeCoordinate(work.x, counts);
+    vec3 traceOffset = state.relocationAndConfidence.xyz;
     // 只修正局部表面间隙。远处几何不能驱动采样原点持续漂移。
     float clearance = cell * 0.1;
-    vec3 spacing = giProbeWork.header.w != 0u ? vec3(cell) : pushConstants.gridParams.xyz;
+    vec3 spacing = giProbeWork.header.w != 0u ? vec3(cell) : giDispatch.gridParams.xyz;
     float localReach = length(spacing * 0.45);
     GIProbeRayDirectionContext context = GI_BuildProbeRayDirectionContext(coordinate, counts,
-        uint(pushConstants.dispatchParams.w), work.z);
+        uint(giDispatch.dispatchParams.w), work.z);
     uint closeBackfaces = 0u, backfaces = 0u;
     float closestFront = localReach, closestBack = localReach;
     vec3 frontDirection = vec3(0.0), backDirection = vec3(0.0);
@@ -85,12 +94,17 @@ void main()
     float normalizedDistance = length(target / spacing);
     if (normalizedDistance > 0.45) target *= 0.45 / normalizedDistance;
     bool moved = length(target - traceOffset) > cell * 0.002;
-    uint updates = (work.w & 1u) != 0u || GI_ProbeTraceOriginChanged(state, cell) ? 0u : state.metadata.z;
+    // 这里只累计几何采样历史；改灯不能重新预热距离可见性。
+    uint updates = (work.w & GI_WORK_RESET_GEOMETRY) != 0u || GI_ProbeTraceOriginChanged(state, cell) ? 0u : state.metadata.z;
     // 图集发布在本次实际追踪位置，目标偏移仅供下一批射线使用。
-    // 所有已放置 probe 完整更新后都发布；背面统计仅用于偏移校正与诊断。
+    // 主几何完整、散射沿用同位置历史时也能发布；背面统计仅用于偏移校正与诊断。
     state.traceOffsetAndBackface = vec4(traceOffset, ratio);
     state.relocationAndConfidence = vec4(moved ? target : traceOffset, 1.0);
-    state.metadata = uvec4(1u, uint(pushConstants.frameParams.x), min(updates + 1u, 128u), closeBackfaces);
+    state.metadata = uvec4(1u, uint(giDispatch.frameParams.x), min(updates + 1u, 128u), closeBackfaces);
     probeStates.states[work.x] = state;
-    feedback.records[activeLinear] = uvec4(work.x, GI_FEEDBACK_COMPLETE, work.y, work.z);
+    uint status=GI_FEEDBACK_COMPLETE;
+#ifdef GI_WORLD_ENABLED
+    if(incomplete)status=GI_FEEDBACK_PRIMARY_PUBLISHED|failures;
+#endif
+    feedback.records[activeLinear] = uvec4(work.x, status, work.y, work.z);
 }

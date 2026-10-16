@@ -10,5 +10,5 @@ void main()
     uint i=gl_GlobalInvocationID.x;
     GIWorldHit h=GIWorldTraceVoxels(originAndDistance.xyz,directionAndFootprint.xyz,0,
         originAndDistance.w,i==0u,directionAndFootprint.w);
-    results[i]=vec4(h.t,h.transmission,h.valid?1:0,float(h.failure));
+    results[i]=i==2u?h.material:vec4(h.t,h.transmission,h.valid?1:0,float(h.failure));
 }

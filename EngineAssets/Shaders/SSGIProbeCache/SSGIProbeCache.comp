@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_nonuniform_qualifier : require
+#include "../GI/GIRegionCapacity.h"
 
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
@@ -30,29 +31,26 @@ layout(set = 1, binding = 7) uniform SSGIProbeCacheInfo
 {
     vec4 screenSize;
     vec4 regionInfo;
-    SSGIRegionParams regions[8];
+    SSGIRegionParams regions[GI_MAX_REGION_COUNT];
     vec4 deferredProbeDebug;
 };
 
-layout(set = 1, binding = 8) uniform sampler2D irradianceAtlas[8];
-layout(set = 1, binding = 9) uniform sampler2D visibilityAtlas[8];
+layout(set = 1, binding = 8) uniform sampler2D irradianceAtlas[GI_MAX_REGION_COUNT];
+layout(set = 1, binding = 9) uniform sampler2D visibilityAtlas[GI_MAX_REGION_COUNT];
 
 #include "../GI/GIProbeStateData.glsl"
 layout(set = 1, binding = 10, std430) readonly buffer ProbeStateBuffer
 {
     GIProbeState states[];
-} probeStateBuffers[8];
+} probeStateBuffers[GI_MAX_REGION_COUNT];
 
 // 屏幕辐亮度和当前 Hi-Z 输入。
 layout(set = 1, binding = 18) uniform sampler2D inputColor;
 layout(set = 1, binding = 19) uniform sampler2D hizDepth;
 layout(set = 1, binding = 21) uniform sampler2D inputHistorySurface;
 layout(set = 1, binding = 22) uniform sampler2D inputMotionVector;
-layout(set = 1, binding = 23) uniform SSGIHistoryInfo
-{
-    vec4 historyScreenSize;
-    vec4 historyFrameParams; // 与 Temporal 共用帧号及 previous-current jitter UV
-};
+#define SSGI_HISTORY_BINDING 23
+#include "../SSGI/SSGIHistory.glsl"
 
 GIProbeState LoadScreenCacheProbeState(uint regionIndex, uint probeLinearIndex)
 {
@@ -135,7 +133,7 @@ vec3 ComputeCacheGeometricNormal(
     return SSGI_NormalFromDerivatives(dx, dy, fallback);
 }
 
-vec4 SampleRegionDDGI(uint regionIndex, vec3 worldPosition, vec3 normal, float normalBiasScale)
+vec4 SampleRegionDDGI(uint regionIndex, vec3 worldPosition, GIReceiverNormals normal, float normalBiasScale)
 {
     SSGIRegionParams region = regions[regionIndex];
     GIProbeLighting value = GI_SampleProbeIrradianceAtlas(regionIndex, ivec3(region.gridDimensionsAndPriority.xyz),
@@ -151,13 +149,7 @@ vec4 SampleRegionDDGI(uint regionIndex, vec3 worldPosition, vec3 normal, float n
 #undef GI_SAMPLE_REGION
 #undef GI_SAMPLE_SKY
 
-vec3 EvaluateCachedFallback(vec3 worldPosition, vec3 normal, float vegetationTranslucency)
-{
-    vec3 front = GI_BlendRegionLighting(worldPosition, normal, 1.0);
-    if (vegetationTranslucency <= 0.001) return front;
-    vec3 back = GI_BlendRegionLighting(worldPosition, -normal, 1.0);
-    return mix(front, max(front, back), clamp(vegetationTranslucency * 0.7, 0.0, 0.7));
-}
+#include "../SSGI/SSGIFallback.glsl"
 
 void main()
 {
@@ -185,6 +177,7 @@ void main()
     }
 
     vec4 normalData = texelFetch(inputNormal, anchorCoord, 0);
+    vec3 shadingNormal = normalize(normalData.xyz);
     vec4 positionData = texelFetch(inputPosition, anchorCoord, 0);
     vec3 worldPosition = positionData.xyz;
     float anchorFootprint;
@@ -196,14 +189,13 @@ void main()
         ? clamp(normalData.w, 0.0, 1.0)
         : 0.0;
     GI_SetReceiverVisibility(anchorCoord, positionData, geometricNormal, float(materialId), anchorFootprint);
-    vec3 fallbackIrradiance = EvaluateCachedFallback(
-        worldPosition, geometricNormal, vegetationTranslucency);
+    vec3 fallbackIrradiance = SSGI_EvaluateFallback(
+        worldPosition, GIReceiverNormals(geometricNormal, shadingNormal), vegetationTranslucency);
     vec3 accumulatedIrradiance = vec3(0.0);
     float screenHitConfidence = 0.0;
 
     // Lumen 风格的屏幕查询缓存：昂贵的 Hi-Z trace 只在每个 4x4 screen
     // probe 的代表像素执行一次；全分辨率阶段仅做法线/深度引导重建。
-    vec3 shadingNormal = normalize(normalData.xyz);
     vec3 startPosition = worldPosition + shadingNormal * GI_ReceiverScreenBias();
     vec3 tangent;
     vec3 bitangent;

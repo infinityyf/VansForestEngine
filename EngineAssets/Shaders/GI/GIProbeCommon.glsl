@@ -9,6 +9,13 @@
 #define GI_IRRADIANCE_OCTA_RES 8
 #define GI_ATLAS_BORDER 1
 
+// 两个单位法线分别描述接收几何和材质积分半球；不能用 Normal Map 改变候选偏移/遮挡。
+struct GIReceiverNormals
+{
+    vec3 geometric;
+    vec3 shading;
+};
+
 float GI_VolumeFade(vec3 worldPos, vec3 volumeMin, vec3 volumeSize, float fadeDistance)
 {
     if (fadeDistance <= 1e-4)
@@ -129,20 +136,20 @@ float GI_EvaluateProbeVisibilityTile(sampler2D visibilityAtlas, ivec2 tileIndex,
 #ifdef GI_LOAD_PROBE_STATE
 // 两类布局共用完全相同的单 probe 贡献规则：空间权重 × 朝向 × DDGI 可见性。
 bool GI_AccumulateProbeIrradiance(uint region, uint probe, sampler2D irradiance, sampler2D visibility,
-    vec3 probePosition, vec3 samplePos, vec3 N, float spatialWeight, ivec2 tileGrid,
+    vec3 probePosition, vec3 samplePos, GIReceiverNormals normals, float spatialWeight, ivec2 tileGrid,
     inout vec3 sum, inout float weightSum)
 {
     if (spatialWeight <= 0.0) return false;
     GIProbeState state = GI_LOAD_PROBE_STATE(region, probe);
     if (state.metadata.x != 1u) return false; // 首次完整发布之前，图集尚无可读数据。
     ivec2 tile = GI_AtlasTileIndex(probe, tileGrid.x);
-    vec2 irradianceTexel = GI_OctahedralEncode(N) * float(GI_IRRADIANCE_INTERIOR_RES) + float(GI_ATLAS_BORDER);
+    vec2 irradianceTexel = GI_OctahedralEncode(normals.shading) * float(GI_IRRADIANCE_INTERIOR_RES) + float(GI_ATLAS_BORDER);
     vec3 value = textureLod(irradiance, GI_AtlasUVFromTileIndex(tile, irradianceTexel,
         GI_IRRADIANCE_OCTA_RES, 1.0 / vec2(tileGrid * GI_IRRADIANCE_OCTA_RES)), 0.0).rgb;
     vec3 delta = samplePos - (probePosition + state.traceOffsetAndBackface.xyz);
     float distance = length(delta);
-    vec3 direction = distance > 0.0 ? delta / distance : -N;
-    float facing = clamp(dot(-direction, N) * 0.5 + 0.5, 0.0, 1.0);
+    vec3 direction = distance > 0.0 ? delta / distance : -normals.geometric;
+    float facing = clamp(dot(-direction, normals.geometric) * 0.5 + 0.5, 0.0, 1.0);
     float visibilityWeight = GI_EvaluateProbeVisibilityTile(
         visibility, tile, direction, distance, 1.0 / vec2(tileGrid * GI_VISIBILITY_OCTA_RES));
 #ifdef GI_RECEIVER_VISIBILITY
@@ -163,12 +170,12 @@ bool GI_AccumulateProbeIrradiance(uint region, uint probe, sampler2D irradiance,
 struct GIProbeLighting { vec3 irradiance; float support; float published; };
 // 空间权重、朝向、图集积分约定不变；可见性来源由调用者明确选择。
 GIProbeLighting GI_SampleProbeIrradianceAtlas(uint region, ivec3 counts,
-    sampler2D irradiance, sampler2D visibility, vec3 worldPos, vec3 N,
+    sampler2D irradiance, sampler2D visibility, vec3 worldPos, GIReceiverNormals normals,
     vec3 volumeMin, vec3 volumeSize, float normalBias, float volumeWeight,
     int columns, int rows)
 {
     GIProbeCandidates candidates = GI_GatherProbeCandidates(
-        region, counts, worldPos, N, volumeMin, volumeSize, normalBias);
+        region, counts, worldPos, normals.geometric, volumeMin, volumeSize, normalBias);
     vec3 sum = vec3(0.0);
     float weightSum = 0.0;
     float spatialSum = 0.0, publishedSum = 0.0;
@@ -177,13 +184,13 @@ GIProbeLighting GI_SampleProbeIrradianceAtlas(uint region, ivec3 counts,
         if (candidates.probes[i] == 0xffffffffu) continue;
         spatialSum += candidates.weights[i];
         bool published = GI_AccumulateProbeIrradiance(region, candidates.probes[i], irradiance, visibility,
-            candidates.positions[i], candidates.samplePosition, N, candidates.weights[i],
+            candidates.positions[i], candidates.samplePosition, normals, candidates.weights[i],
             ivec2(columns, rows), sum, weightSum);
         if (published) publishedSum += candidates.weights[i];
     }
 #ifdef GI_RECEIVER_VISIBILITY
     // 独立回退入口；注释此调用可恢复严格的接收点 RT 剔除。
-    GI_ApplyReceiverZeroSupportFallback(region, irradiance, visibility, candidates, N,
+    GI_ApplyReceiverZeroSupportFallback(region, irradiance, visibility, candidates, normals,
         ivec2(columns, rows), sum, weightSum);
 #endif
     return GIProbeLighting(weightSum > 0.0 ? sum / weightSum * volumeWeight * INV_PI : vec3(0.0),
@@ -191,7 +198,7 @@ GIProbeLighting GI_SampleProbeIrradianceAtlas(uint region, ivec3 counts,
 }
 
 GIProbeLighting GI_SampleProbeIrradianceAtlasVisible(uint region, ivec3 counts,
-    sampler2D irradiance, sampler2D visibility, vec3 worldPos, vec3 normal,
+    sampler2D irradiance, sampler2D visibility, vec3 worldPos, GIReceiverNormals normals,
     vec3 volumeMin, vec3 volumeSize, float normalBias, float fadeDistance)
 {
 #ifdef GI_PROBE_LAYOUT_DATA_GLSL
@@ -200,7 +207,7 @@ GIProbeLighting GI_SampleProbeIrradianceAtlasVisible(uint region, ivec3 counts,
     if (!GI_IsInsideVolume(worldPos, volumeMin, volumeSize)) return GIProbeLighting(vec3(0), 0, 0);
     ivec2 grid = textureSize(irradiance, 0) / GI_IRRADIANCE_OCTA_RES;
     return GI_SampleProbeIrradianceAtlas(region, counts, irradiance, visibility,
-        worldPos, normalize(normal), volumeMin, volumeSize, normalBias,
+        worldPos, GIReceiverNormals(normalize(normals.geometric), normalize(normals.shading)), volumeMin, volumeSize, normalBias,
         GI_VolumeFade(worldPos, volumeMin, volumeSize, fadeDistance), grid.x, grid.y);
 }
 #endif

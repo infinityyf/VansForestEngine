@@ -265,6 +265,9 @@ bool VansAnimationController::SetAnimationGraphSets(
 				+ "' must explicitly bind every Layer exactly once";
 			return false;
 		}
+		if (graphSet.definition.characterMotionGraphId.empty() != !graphSet.characterMotionGraph)
+		{ error="Character Motion Graph ID and definition must be supplied together"; return false; }
+		if (graphSet.characterMotionGraph && !graphSet.characterMotionGraph->ValidateCharacterMotionGraph(error)) return false;
 		for (size_t index = 0; index < layers.size(); ++index)
 		{
 			const VansAnimationGraphBindingSetup& binding = graphSet.bindings[index];
@@ -457,6 +460,9 @@ bool VansAnimationController::SetAnimationGraphSets(
 		GraphSetRuntime runtime;
 		runtime.definition = std::move(setup.definition);
 		runtime.bindings.reserve(setup.bindings.size());
+		runtime.characterMotionGraph=std::move(setup.characterMotionGraph);
+		if (runtime.characterMotionGraph)
+			runtime.characterMotionInstance=std::make_unique<VansAnimGraphInstance>(*runtime.characterMotionGraph);
 		for (VansAnimationGraphBindingSetup& bindingSetup : setup.bindings)
 		{
 			GraphBindingRuntime binding;
@@ -686,6 +692,18 @@ bool VansAnimationController::ApplyGraphSetPhaseHandoff(
 	return fullyMatched || !policy.requireStateMatch;
 }
 
+void VansAnimationController::BeginDisplayedPoseHandoff(const Skeleton& skeleton,const std::string& from,const std::string& to)
+{
+	m_DisplayedHandoffPose.clear();m_DisplayedHandoffElapsed=0;
+	m_DisplayedHandoffPolicy=ResolveGraphSetTransitionPolicy(from,to);
+	if(m_DisplayedHandoffPolicy.duration>0 && m_FinalPoseRevision>0 && m_CachedLocalTransforms.size()==skeleton.bones.size())
+	{
+		m_DisplayedHandoffPose.resize(m_CachedLocalTransforms.size());
+		for(std::size_t i=0;i<m_CachedLocalTransforms.size();++i)
+			if(!VansPoseMath::TryDecompose(m_CachedLocalTransforms[i],m_DisplayedHandoffPose[i])){m_DisplayedHandoffPose.clear();break;}
+	}
+}
+
 VansGraphSetSwitchResult VansAnimationController::SwitchGraphSet(
 	const std::string& graphSetId)
 {
@@ -758,11 +776,34 @@ bool VansAnimationController::RestartLayer(const std::string& layerId)
 	{
 		if (layerIndex >= graphSet.bindings.size())
 			continue;
+		if (layer->definition.kind==VansAnimationLayerKind::Base && graphSet.characterMotionInstance) graphSet.characterMotionInstance->Reset();
 		GraphBindingRuntime& binding = graphSet.bindings[layerIndex];
 		if (binding.instance)
 			binding.instance->Reset();
 	}
 	return true;
+}
+
+bool VansAnimationController::SetExternalPoseLayerGraphSet(const std::string& id,std::string& error)
+{
+	error.clear();
+	if(!id.empty() && !HasGraphSet(id)){error="External pose layer Graph Set is missing";return false;}
+	m_ExternalPoseLayerGraphSetId=id;return true;
+}
+
+bool VansAnimationController::HasExternalPoseOverlay(const std::string& layerId) const
+{
+	const auto set=m_GraphSetById.find(m_ExternalPoseLayerGraphSetId);
+	if(set==m_GraphSetById.end())return false;
+	const auto& bindings=m_GraphSetRuntimes[set->second].bindings;
+	for(std::size_t i=1;i<m_LayerRuntimes.size();++i)
+		if(m_LayerRuntimes[i].definition.id==layerId)return i<bindings.size() && bindings[i].definition.enabled;
+	return false;
+}
+
+void VansAnimationController::AppendComposedEvents(const VansAnimationFrameVector<VansAnimationEventSample>& events,std::size_t begin)
+{
+	if(begin<events.size())m_SampledEvents.insert(m_SampledEvents.end(),events.begin()+begin,events.end());
 }
 
 void VansAnimationController::CompleteGraphSetTransition()
@@ -810,7 +851,7 @@ bool VansAnimationController::SetTargetPostProcessGraph(
 }
 
 bool VansAnimationController::SetFinalCompositionGraph(
-	std::unique_ptr<VansAnimGraph> graph, std::string& error)
+	std::unique_ptr<VansAnimGraph> graph, std::string& error, bool afterProcedural)
 {
 	error.clear();
 	if (!graph)
@@ -824,6 +865,7 @@ bool VansAnimationController::SetFinalCompositionGraph(
 		return false;
 	m_FinalCompositionGraph = std::move(graph);
 	m_FinalCompositionInstance = std::make_unique<VansAnimGraphInstance>(*m_FinalCompositionGraph);
+	m_FinalCompositionAfterProcedural = afterProcedural;
 	return true;
 }
 
@@ -901,6 +943,7 @@ void VansAnimationController::ClearFinalCompositionGraph()
 {
 	m_FinalCompositionInstance.reset();
 	m_FinalCompositionGraph.reset();
+	m_FinalCompositionAfterProcedural = false;
 }
 
 bool VansAnimationController::SetSlots(
@@ -982,6 +1025,9 @@ bool VansAnimationController::TransferRuntimeStateFrom(
 		}
 	}
 	m_ExternalInput = previous.m_ExternalInput;
+	m_DisplayedHandoffPose=previous.m_DisplayedHandoffPose;
+	m_DisplayedHandoffElapsed=previous.m_DisplayedHandoffElapsed;
+	m_DisplayedHandoffPolicy=previous.m_DisplayedHandoffPolicy;
 	if (m_ProceduralRuntime)
 		m_ProceduralRuntime->Reset(m_ExternalInput.resetToken);
 
@@ -1024,6 +1070,12 @@ bool VansAnimationController::TransferRuntimeStateFrom(
 			fullyCompatible = false;
 			continue;
 		}
+		if (graphSet.characterMotionInstance && sourceSet->characterMotionInstance
+			&& graphSet.definition.characterMotionGraphId==sourceSet->definition.characterMotionGraphId)
+		{
+			if (!graphSet.characterMotionInstance->RestoreRuntimeState(sourceSet->characterMotionInstance->CaptureRuntimeState())) fullyCompatible=false;
+		}
+		else if (graphSet.characterMotionInstance || sourceSet->characterMotionInstance) fullyCompatible=false;
 		for (std::size_t index = 0; index < graphSet.bindings.size(); ++index)
 		{
 			GraphBindingRuntime& binding = graphSet.bindings[index];
@@ -1069,13 +1121,13 @@ bool VansAnimationController::TransferRuntimeStateFrom(
 	m_RootMotionEnabled = previous.m_RootMotionEnabled;
 	m_ExtractGraphRootMotion = previous.m_ExtractGraphRootMotion;
 	m_RootMotionApplyToOwner = previous.m_RootMotionApplyToOwner;
-	m_NormalizeRootPose = previous.m_NormalizeRootPose;
+	// Root reference policy is authored by the new definition / Scene compile options.
 	m_RootBoneIndex = previous.m_RootBoneIndex;
 	m_OwnerWorldTransform = previous.m_OwnerWorldTransform;
 	m_LastRootMotionDelta = glm::vec3(0.0f);
 	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 	m_SampledEvents.clear();
-	m_SampledEventsPublished = true;
+	m_PublishedSampledEventCount = 0;
 	m_SampledCurves.clear();
 	m_SyncState = {};
 	if (!fullyCompatible)
@@ -1579,6 +1631,18 @@ bool VansAnimationController::SubmitExternalModelPose(
 			pose.curves.push_back(curve);
 		}
 	}
+	if(ComposesExternalPoseLayers())
+	{
+		const auto selected=m_GraphSetById.find(m_ExternalPoseLayerGraphSetId);
+		if(selected==m_GraphSetById.end())return false;
+		const float layerDelta=m_PlaybackState==AnimationState::Playing?deltaTime:0.f;
+		m_SlotRuntime.Update(layerDelta*m_GlobalSpeed,m_Clips,skeleton,m_SlotPayloads);
+		if(!PrepareLayerStack(layerDelta,skeleton))return false;
+		VansPosePayload layered;
+		if(!EvaluateGraphSet(m_GraphSetRuntimes[selected->second],nullptr,layerDelta,skeleton,layered,&pose))return false;
+		pose=std::move(layered);
+		for(auto& [name,parameter]:m_Parameters)if(parameter.type==AnimatorParamType::Trigger)parameter.boolVal=false;
+	}
 	VansPosePayload processed;
 	if (!EvaluateTargetPostProcess(deltaTime, skeleton, pose, processed))
 		return false;
@@ -1587,7 +1651,24 @@ bool VansAnimationController::SubmitExternalModelPose(
 		return false;
 	m_SampledCurves.assign(composed.curves.begin(), composed.curves.end());
 	return FinalizeLocalPose(
-		deltaTime, skeleton, std::move(composed), false, false, prepareWorldQueries);
+		deltaTime, skeleton, std::move(composed), false, ComposesExternalPoseLayers(), prepareWorldQueries);
+}
+
+bool VansAnimationController::SaveLayerPoseSnapshot(const std::string& name,
+	const std::string& layerId, const Skeleton& skeleton)
+{
+	if (name.empty() || layerId.empty()) return false;
+	const auto layer = std::find_if(m_LayerRuntimes.begin(), m_LayerRuntimes.end(),
+		[&](const auto& value) { return value.definition.id == layerId; });
+	if (layer == m_LayerRuntimes.end() || layer->state.previousPose.size() != skeleton.bones.size()) return false;
+	auto pose = layer->state.previousPose;
+	if (m_NormalizeRootPose && m_RootBoneIndex >= 0 && m_RootBoneIndex < static_cast<int>(pose.size()))
+		RestoreRootReference(pose[m_RootBoneIndex], skeleton.bones[m_RootBoneIndex].localTransform);
+	bool saved = false;
+	for (auto& graphSet : m_GraphSetRuntimes)
+		for (auto& binding : graphSet.bindings)
+			if (binding.instance) saved = binding.instance->SetPoseSnapshot(name, pose) || saved;
+	return saved;
 }
 
 bool VansAnimationController::SavePoseSnapshot(
@@ -1684,8 +1765,11 @@ void VansAnimationController::Play()
 	for (LayerRuntime& layer : m_LayerRuntimes)
 		layer.state = {};
 	for (GraphSetRuntime& graphSet : m_GraphSetRuntimes)
+	{
+		if (graphSet.characterMotionInstance) graphSet.characterMotionInstance->Reset();
 		for (GraphBindingRuntime& binding : graphSet.bindings)
 			if (binding.instance) binding.instance->Reset();
+	}
 	m_IncomingGraphSetIndex = static_cast<std::size_t>(-1);
 	m_IncomingMotionMatching.reset();
 	m_GraphSetTransitionElapsed = 0.0f;
@@ -1735,8 +1819,11 @@ void VansAnimationController::Stop()
 	for (LayerRuntime& layer : m_LayerRuntimes)
 		layer.state = {};
 	for (GraphSetRuntime& graphSet : m_GraphSetRuntimes)
+	{
+		if (graphSet.characterMotionInstance) graphSet.characterMotionInstance->Reset();
 		for (GraphBindingRuntime& binding : graphSet.bindings)
 			if (binding.instance) binding.instance->Reset();
+	}
 	m_IncomingGraphSetIndex = static_cast<std::size_t>(-1);
 	m_IncomingMotionMatching.reset();
 	m_GraphSetTransitionElapsed = 0.0f;
@@ -1752,7 +1839,7 @@ void VansAnimationController::Stop()
 	m_LastRootMotionDelta   = glm::vec3(0.0f);
 	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 	m_SampledEvents.clear();
-	m_SampledEventsPublished = true;
+	m_PublishedSampledEventCount = 0;
 	m_SampledCurves.clear();
 	m_SyncState = {};
 }
@@ -2083,7 +2170,8 @@ bool VansAnimationController::EvaluateGraphSet(
 	VansMotionMatchingRuntime* motionMatching,
 	float deltaTime,
 	const Skeleton& skeleton,
-	VansPosePayload& outPayload)
+	VansPosePayload& outPayload,
+	const VansPosePayload* externalBase)
 {
 	outPayload = {};
 	if (graphSet.bindings.size() != m_LayerRuntimes.size())
@@ -2106,6 +2194,17 @@ bool VansAnimationController::EvaluateGraphSet(
 		if (!binding.definition.enabled)
 		{
 			binding.lastEvaluationMilliseconds = 0.0f;
+			continue;
+		}
+		if(layerIndex==0 && externalBase)
+		{
+			// 外部姿态只替代基础播放器，其余遮罩、激活、动态加性和惯性仍使用同一 Layer Stack。
+			if(!externalBase->valid || externalBase->localPose.size()!=skeleton.bones.size())return false;
+			outPayload=*externalBase;evaluatedSync[0]=outPayload.sync;
+			layer.state.previousPose.assign(outPayload.localPose.begin(),outPayload.localPose.end());
+			layer.state.activationRisePending=false;binding.lastEvaluationMilliseconds=0;
+			if(graphSet.poseSourceUsed[0])graphSet.cachedSourcePoses[0]=outPayload;
+			if(graphSet.composedPoseUsed[0])graphSet.cachedComposedPoses[0]=outPayload;
 			continue;
 		}
 
@@ -2351,11 +2450,11 @@ bool VansAnimationController::EvaluateFinalComposition(
 	float deltaTime,
 	const Skeleton& skeleton,
 	const VansPosePayload& input,
-	VansPosePayload& output)
+	VansPosePayload& output, bool afterProcedural)
 {
 	if (!input.valid || input.localPose.size() != skeleton.bones.size())
 		return false;
-	if (!m_FinalCompositionInstance)
+	if (!m_FinalCompositionInstance || afterProcedural != m_FinalCompositionAfterProcedural)
 	{
 		output = input;
 		return true;
@@ -2374,6 +2473,24 @@ bool VansAnimationController::EvaluateFinalComposition(
 	context.ownerWorldTransform = m_OwnerWorldTransform;
 	output = m_FinalCompositionInstance->Evaluate(context);
 	return output.valid && output.localPose.size() == skeleton.bones.size();
+}
+
+bool VansAnimationController::ComposeAfterProceduralLocalPose(float deltaTime, const Skeleton& skeleton,
+	std::vector<glm::mat4>& localTransforms)
+{
+	if (!m_FinalCompositionAfterProcedural || !m_FinalCompositionInstance) return true;
+	VansPosePayload input, output;
+	if (!VansPoseMath::FromMatrices(localTransforms,input.localPose)) return false;
+	input.valid = true;
+	if (!EvaluateFinalComposition(deltaTime,skeleton,input,output,true)) return false;
+	VansPoseMath::ToMatrices(output.localPose,localTransforms);
+	m_SampledEvents.insert(m_SampledEvents.end(),output.events.begin(),output.events.end());
+	for (const auto& curve : output.curves)
+	{
+		const auto found = std::find_if(m_SampledCurves.begin(),m_SampledCurves.end(),[&](const auto& value){return value.id==curve.id;});
+		if (found==m_SampledCurves.end()) m_SampledCurves.push_back(curve); else *found=curve;
+	}
+	return true;
 }
 
 bool VansAnimationController::ConvertModelPoseToLocalPayload(
@@ -2418,7 +2535,7 @@ bool VansAnimationController::FinalizeLocalPose(
 		// Slot 范围通知属于播放队列，不受姿态图分支权重或骨骼掩码二次过滤。
 		const auto& notifyStates = m_SlotRuntime.GetNotifyStateEvents();
 		m_SampledEvents.insert(m_SampledEvents.end(), notifyStates.begin(), notifyStates.end());
-		m_SampledEventsPublished = false;
+		m_PublishedSampledEventCount = 0;
 		m_SampledCurves = std::move(pose.curves);
 		m_SyncState = pose.sync;
 		if (m_RootBoneIndex < 0)
@@ -2436,6 +2553,19 @@ bool VansAnimationController::FinalizeLocalPose(
 		return true;
 	if (pose.localPose.size() != boneCount)
 		return false;
+	if(m_DisplayedHandoffPose.size()==boneCount)
+	{
+		m_DisplayedHandoffElapsed+=std::max(0.f,deltaTime);
+		const float alpha=EvaluateGraphSetBlendCurve(m_DisplayedHandoffPolicy.curve,m_DisplayedHandoffElapsed/m_DisplayedHandoffPolicy.duration);
+		for(std::size_t i=0;i<pose.localPose.size();++i)
+		{
+			auto& atom=pose.localPose[i];const auto& prior=m_DisplayedHandoffPose[i];
+			atom.translation=glm::mix(prior.translation,atom.translation,alpha);atom.scale=glm::mix(prior.scale,atom.scale,alpha);
+			const auto rotation=glm::dot(prior.rotation,atom.rotation)<0?-atom.rotation:atom.rotation;
+			atom.rotation=glm::normalize(prior.rotation*(1-alpha)+rotation*alpha);
+		}
+		if(m_DisplayedHandoffElapsed>=m_DisplayedHandoffPolicy.duration)m_DisplayedHandoffPose.clear();
+	}
 
 	auto& localTransforms = m_LocalTransformScratch;
 	VansPoseMath::ToMatrices(pose.localPose, localTransforms);
@@ -2468,6 +2598,7 @@ bool VansAnimationController::FinalizeLocalPose(
 			ResolvePreparedWorldQueries({}, skeleton);
 		return true;
 	}
+	if (!ComposeAfterProceduralLocalPose(deltaTime,skeleton,localTransforms)) return false;
 	std::string topologyError;
 	if (!VansPoseMath::BuildModelTransforms(
 		localTransforms, skeleton, localTransforms, &topologyError))
@@ -2493,6 +2624,30 @@ void VansAnimationController::PrepareFrame(float deltaTime, const Skeleton& skel
 
 {
 	UpdateInternal(deltaTime, skeleton, true);
+}
+
+bool VansAnimationController::PrepareIndependentCharacterMotion(float deltaTime, const Skeleton& skeleton)
+{
+	auto* active=GetActiveGraphSetRuntime();
+	if (!active || !active->characterMotionInstance || IsGraphSetTransitioning() || m_MotionMatching || HasActiveRootMotionSlot()) return false;
+	m_LastRootMotionDelta=glm::vec3(0);m_LastRootRotationDelta=glm::quat(1,0,0,0);m_LastRootMotionValid=false;
+	if (m_PlaybackState==AnimationState::Stopped || m_PlaybackState==AnimationState::Paused) return true;
+	auto& parameters=active->characterMotionParameters;
+	if (parameters.size()!=m_Parameters.size()) parameters=m_Parameters;
+	else for (const auto& [name,value] : m_Parameters) parameters[name]=value;
+	AnimGraphContext context;
+	context.deltaTime=deltaTime*m_GlobalSpeed;context.skeleton=&skeleton;
+	context.parameters=&parameters;context.clips=&m_Clips;
+	context.extractRootMotion=m_ExtractGraphRootMotion;context.ownerWorldTransform=m_OwnerWorldTransform;
+	context.characterMotionRootOnly=true;
+	const auto motion=active->characterMotionInstance->EvaluateFrame(context);
+	if (m_RootMotionEnabled && motion.valid && motion.rootMotion.valid)
+	{
+		m_LastRootMotionDelta=motion.rootMotion.translation;
+		m_LastRootRotationDelta=motion.rootMotion.rotation;
+		m_LastRootMotionValid=true;
+	}
+	return true;
 }
 
 bool VansAnimationController::GatherPreparedWorldQueries(const Skeleton& skeleton)
@@ -2540,6 +2695,7 @@ bool VansAnimationController::GatherPreparedWorldQueries(const Skeleton& skeleto
 		m_LocalTransformScratch.resize(completedPose.size());
 		for (std::size_t index = 0; index < completedPose.size(); ++index)
 			m_LocalTransformScratch[index] = VansPoseMath::Compose(completedPose[index]);
+		if (!ComposeAfterProceduralLocalPose(m_PreparedDeltaTime,skeleton,m_LocalTransformScratch)) return false;
 		if (!VansPoseMath::BuildModelTransforms(
 			m_LocalTransformScratch, skeleton, m_LocalTransformScratch, &error))
 		{
@@ -2584,6 +2740,7 @@ bool VansAnimationController::ResolvePreparedWorldQueries(
 			VANS_LOG_WARN("[AnimController] Target Procedural transaction rolled back: " << error);
 		}
 	}
+	if (!ComposeAfterProceduralLocalPose(m_PreparedDeltaTime,skeleton,m_LocalTransformScratch)) return false;
 	std::string topologyError;
 	if (!VansPoseMath::BuildModelTransforms(
 		m_LocalTransformScratch, skeleton, m_LocalTransformScratch, &topologyError))
@@ -2635,7 +2792,7 @@ void VansAnimationController::UpdateInternal(
 
 	m_SampledNodeTransforms.clear();
 	m_SampledEvents.clear();
-	m_SampledEventsPublished = true;
+	m_PublishedSampledEventCount = 0;
 	m_SampledCurves.clear();
 	m_SyncState = {};
 	m_LastRootMotionDelta = glm::vec3(0.0f);

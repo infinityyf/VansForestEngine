@@ -231,6 +231,8 @@ bool VansAnimationNode::ConfigureRetargetSource(
 {
 	error.clear();
 	m_RetargetEnabled = false;
+	m_TargetGraphSetActive = false;
+	m_TargetSlotPlaybackId.clear();
 	m_SourceSkeleton = sourceController && sourceController->GetRuntimeSkeleton()
 		? *sourceController->GetRuntimeSkeleton() : sourceSkeleton;
 	m_SourceController = std::move(sourceController);
@@ -463,20 +465,59 @@ void VansAnimationNode::Stop()
 
 VansGraphSetSwitchResult VansAnimationNode::SwitchGraphSet(const std::string& graphSetId)
 {
-	VansAnimationController* controller = GetCharacterMotionController();
-	return controller ? controller->SwitchGraphSet(graphSetId)
-		: VansGraphSetSwitchResult::UnknownGraphSet;
+	VansAnimationController* controller = m_RetargetEnabled && m_SourceController && m_SourceController->HasGraphSet(graphSetId)
+		? m_SourceController.get() : m_Controller.get();
+	if(!controller || !controller->HasGraphSet(graphSetId)) return VansGraphSetSwitchResult::UnknownGraphSet;
+	const auto result=controller->SwitchGraphSet(graphSetId);
+	if(result==VansGraphSetSwitchResult::Started || result==VansGraphSetSwitchResult::Completed
+		|| result==VansGraphSetSwitchResult::AlreadyActive || result==VansGraphSetSwitchResult::Queued)
+	{
+		const bool target=controller==m_Controller.get();
+		if(target!=m_TargetGraphSetActive && m_RetargetEnabled)
+			m_Controller->BeginDisplayedPoseHandoff(m_Skeleton,GetActiveGraphSetId(),graphSetId);
+		m_TargetGraphSetActive=target;
+		m_TargetSlotPlaybackId.clear();
+	}
+	return result;
+}
+
+VansAnimationController* VansAnimationNode::ResolveSlotPlaybackController(const std::string& slotId)
+{
+	auto* current=GetCharacterMotionController();
+	if(current && current->FindSlotDefinition(slotId))return current;
+	if(!m_RetargetEnabled || !m_Controller || !m_Controller->FindSlotDefinition(slotId))return nullptr;
+	m_Controller->BeginDisplayedPoseHandoff(m_Skeleton,GetActiveGraphSetId(),m_Controller->GetActiveGraphSetId());
+	m_TargetGraphSetActive=true;m_TargetSlotPlaybackId=slotId;
+	return m_Controller.get();
 }
 
 bool VansAnimationNode::RestartLayer(const std::string& layerId)
 {
 	VansAnimationController* controller = GetCharacterMotionController();
-	return controller && controller->RestartLayer(layerId);
+	if(controller && controller->RestartLayer(layerId))return true;
+	return UsesRetargetSource() && m_Controller && m_Controller->HasExternalPoseOverlay(layerId) && m_Controller->RestartLayer(layerId);
+}
+
+const VansAnimationClip* VansAnimationNode::FindClipByAlias(const std::string& alias) const
+{
+	const auto* active=GetCharacterMotionController();
+	if(active)if(const auto* clip=active->GetClip(alias))return clip;
+	if(!m_RetargetEnabled)return nullptr;
+	const auto* other=UsesRetargetSource()?m_Controller.get():m_SourceController.get();
+	return other?other->GetClip(alias):nullptr;
+}
+
+void VansAnimationNode::ForwardTargetOverlayEvents()
+{
+	if(!m_TargetOverlayEventsPrepared || !UsesRetargetSource() || !m_Controller || !m_Controller->ComposesExternalPoseLayers())return;
+	const auto& events=m_Controller->GetSampledEvents();
+	m_SourceController->AppendComposedEvents(events,m_ForwardedTargetEventCount);
+	m_ForwardedTargetEventCount=events.size();
 }
 
 const std::string& VansAnimationNode::GetActiveGraphSetId() const
 {
-	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController
+	const VansAnimationController* controller = UsesRetargetSource()
 		? m_SourceController.get() : m_Controller.get();
 	static const std::string empty;
 	return controller ? controller->GetActiveGraphSetId() : empty;
@@ -484,7 +525,7 @@ const std::string& VansAnimationNode::GetActiveGraphSetId() const
 
 const std::string& VansAnimationNode::GetIncomingGraphSetId() const
 {
-	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController
+	const VansAnimationController* controller = UsesRetargetSource()
 		? m_SourceController.get() : m_Controller.get();
 	static const std::string empty;
 	return controller ? controller->GetIncomingGraphSetId() : empty;
@@ -492,14 +533,14 @@ const std::string& VansAnimationNode::GetIncomingGraphSetId() const
 
 bool VansAnimationNode::IsGraphSetTransitioning() const
 {
-	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController
+	const VansAnimationController* controller = UsesRetargetSource()
 		? m_SourceController.get() : m_Controller.get();
 	return controller && controller->IsGraphSetTransitioning();
 }
 
 float VansAnimationNode::GetGraphSetTransitionProgress() const
 {
-	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController
+	const VansAnimationController* controller = UsesRetargetSource()
 		? m_SourceController.get() : m_Controller.get();
 	return controller ? controller->GetGraphSetTransitionProgress() : 0.0f;
 }
@@ -510,7 +551,7 @@ float VansAnimationNode::GetGraphSetTransitionProgress() const
 
 AnimationState VansAnimationNode::GetState() const
 {
-	if (m_RetargetEnabled && m_SourceController)
+	if (UsesRetargetSource())
 		return m_SourceController->GetPlaybackState();
 	if (m_Controller)
 		return m_Controller->GetPlaybackState();
@@ -519,7 +560,7 @@ AnimationState VansAnimationNode::GetState() const
 
 float VansAnimationNode::GetCurrentPlayTime() const
 {
-	if (m_RetargetEnabled && m_SourceController)
+	if (UsesRetargetSource())
 		return m_SourceController->GetCurrentPlayTime();
 	if (m_Controller)
 		return m_Controller->GetCurrentPlayTime();
@@ -528,7 +569,7 @@ float VansAnimationNode::GetCurrentPlayTime() const
 
 float VansAnimationNode::GetDuration() const
 {
-	if (m_RetargetEnabled && m_SourceController)
+	if (UsesRetargetSource())
 		return m_SourceController->GetCurrentDuration();
 	if (m_Controller)
 		return m_Controller->GetCurrentDuration();
@@ -537,7 +578,7 @@ float VansAnimationNode::GetDuration() const
 
 float VansAnimationNode::GetNormalizedTime() const
 {
-	if (m_RetargetEnabled && m_SourceController)
+	if (UsesRetargetSource())
 		return m_SourceController->GetNormalizedTime();
 	if (m_Controller)
 		return m_Controller->GetNormalizedTime();
@@ -546,7 +587,7 @@ float VansAnimationNode::GetNormalizedTime() const
 
 std::string VansAnimationNode::GetCurrentStateName() const
 {
-	if (m_RetargetEnabled && m_SourceController)
+	if (UsesRetargetSource())
 		return m_SourceController->GetCurrentStateName();
 	if (m_Controller)
 		return m_Controller->GetCurrentStateName();
@@ -555,7 +596,7 @@ std::string VansAnimationNode::GetCurrentStateName() const
 
 std::string VansAnimationNode::GetActiveStatePath() const
 {
-	if (m_RetargetEnabled && m_SourceController)
+	if (UsesRetargetSource())
 		return m_SourceController->GetActiveStatePath();
 	if (m_Controller)
 		return m_Controller->GetActiveStatePath();
@@ -564,7 +605,7 @@ std::string VansAnimationNode::GetActiveStatePath() const
 
 std::string VansAnimationNode::GetPrimaryClipName() const
 {
-	if (m_RetargetEnabled && m_SourceController)
+	if (UsesRetargetSource())
 		return m_SourceController->GetPrimaryClipName();
 	if (m_Controller)
 		return m_Controller->GetPrimaryClipName();
@@ -573,7 +614,7 @@ std::string VansAnimationNode::GetPrimaryClipName() const
 
 float VansAnimationNode::GetSpeed() const
 {
-	if (m_RetargetEnabled && m_SourceController)
+	if (UsesRetargetSource())
 		return m_SourceController->GetSpeed();
 	if (m_Controller)
 		return m_Controller->GetSpeed();
@@ -594,7 +635,7 @@ void VansAnimationNode::EnableRootMotion(bool enable)
 
 bool VansAnimationNode::IsRootMotionEnabled() const
 {
-	if (m_RetargetEnabled && m_SourceController)
+	if (UsesRetargetSource())
 		return m_SourceController->IsRootMotionEnabled();
 	if (m_Controller)
 		return m_Controller->IsRootMotionEnabled();
@@ -663,9 +704,19 @@ bool VansAnimationNode::ApplyRagdollPose(const Vans::VansRagdollPose& pose)
 		VansExternalPoseEvaluationMode::DirectFinalPose);
 }
 
-bool VansAnimationNode::SavePoseSnapshot(const std::string& name)
+bool VansAnimationNode::SaveActivePoseSnapshot(const std::string& name)
+{
+	// Preserve SavePoseSnapshot's target/physics contract for ragdoll consumers.
+	return UsesRetargetSource() ? m_SourceController->SavePoseSnapshot(name,m_SourceSkeleton) : SavePoseSnapshot(name);
+}
+
+bool VansAnimationNode::SavePoseSnapshot(const std::string& name, const std::string& layerId)
 {
 	if (!m_Controller || name.empty()) return false;
+	if (!layerId.empty())
+		return UsesRetargetSource()
+			? m_SourceController->SaveLayerPoseSnapshot(name, layerId, m_SourceSkeleton)
+			: m_Controller->SaveLayerPoseSnapshot(name, layerId, m_Skeleton);
 	// Gameplay scripts run before the scene's RenderPrep animation pass. Read
 	// the current physics pose here so a ragdoll exit cannot save last frame's
 	// rendered pose when its bodies moved during the latest physics step.
@@ -722,8 +773,8 @@ void VansAnimationNode::SetRootBone(const std::string& boneName)
 
 glm::vec3 VansAnimationNode::GetRootMotionDelta() const
 {
-	if (m_RetargetEnabled && m_SourceController)
-		return m_SourceController->GetRootMotionDelta();
+	if (UsesRetargetSource())
+		return glm::mat3(m_RetargetProcessor.GetSourceToTargetModelTransform())*m_SourceController->GetRootMotionDelta();
 	if (m_Controller)
 		return m_Controller->GetRootMotionDelta();
 	return glm::vec3(0.0f);
@@ -731,8 +782,8 @@ glm::vec3 VansAnimationNode::GetRootMotionDelta() const
 
 glm::quat VansAnimationNode::GetRootRotationDelta() const
 {
-	if (m_RetargetEnabled && m_SourceController)
-		return m_SourceController->GetRootRotationDelta();
+	if (UsesRetargetSource())
+		{const auto basis=m_RetargetProcessor.GetSourceToTargetModelRotation();return glm::normalize(basis*m_SourceController->GetRootRotationDelta()*glm::inverse(basis));}
 	if (m_Controller)
 		return m_Controller->GetRootRotationDelta();
 	return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
@@ -749,7 +800,7 @@ void VansAnimationNode::SetBoneLocalTransform(const std::string& boneName, const
 
 bool VansAnimationNode::HasRootMotionDelta() const
 {
-	if (m_RetargetEnabled && m_SourceController)
+	if (UsesRetargetSource())
 		return m_SourceController->HasRootMotionDelta();
 	return m_Controller && m_Controller->HasRootMotionDelta();
 }
@@ -865,7 +916,7 @@ void VansAnimationNode::ApplySampledNodeTransforms()
 		return;
 
 	const VansAnimationController* animationSource =
-		m_RetargetEnabled && m_SourceController ? m_SourceController.get() : m_Controller.get();
+		UsesRetargetSource() ? m_SourceController.get() : m_Controller.get();
 	const auto& sampledTransforms = animationSource->GetSampledNodeTransforms();
 	if (sampledTransforms.empty())
 		return;
@@ -911,11 +962,21 @@ void VansAnimationNode::ApplySampledNodeTransforms()
 void VansAnimationNode::PrepareAnimationFrame(
 	const VansAnimationFrameContext& context)
 {
+	m_TargetOverlayEventsPrepared=false;
+	m_TargetOverlayEventsPrepared=false;
+	if(!m_TargetSlotPlaybackId.empty() && m_Controller && !m_Controller->IsSlotActive(m_TargetSlotPlaybackId))
+	{
+		m_Controller->BeginDisplayedPoseHandoff(m_Skeleton,GetActiveGraphSetId(),m_SourceController->GetActiveGraphSetId());
+		m_TargetSlotPlaybackId.clear();m_TargetGraphSetActive=false;
+	}
 	const float deltaTime = context.deltaTime;
 	bool retargetSourceFramePrepared = false;
-	if (m_CharacterMotionFramePrepared)
+	const bool characterMotionFramePrepared=m_CharacterMotionFramePrepared;
+	const bool characterPoseDeferred=m_CharacterMotionPoseDeferred;
+	m_CharacterMotionPoseDeferred=false;
+	if (characterMotionFramePrepared && !characterPoseDeferred && m_CharacterMotionPreparedOnSource==UsesRetargetSource())
 	{
-		if (m_RetargetEnabled && m_SourceController && m_RetargetProcessor.IsValid())
+		if (UsesRetargetSource() && m_RetargetProcessor.IsValid())
 		{
 			retargetSourceFramePrepared = true;
 		}
@@ -928,22 +989,30 @@ void VansAnimationNode::PrepareAnimationFrame(
 		if (!retargetSourceFramePrepared)
 			return;
 	}
+	m_CharacterMotionFramePrepared=false;
 	if (!m_Controller)
 		return;
 
-	if (m_RetargetEnabled && m_SourceController && m_RetargetProcessor.IsValid())
+	if (UsesRetargetSource() && m_RetargetProcessor.IsValid())
 	{
 		if (m_HasTransformID)
 		{
 			const glm::mat4 ownerWorld = Vans::VansTransformStore::Read(m_TransformID).GetModelMatrix();
 			m_Controller->SetOwnerWorldTransform(ownerWorld);
-			m_SourceController->SetOwnerWorldTransform(ownerWorld);
+			m_SourceController->SetOwnerWorldTransform(ownerWorld*m_RetargetProcessor.GetSourceToTargetModelTransform());
 		}
 
 		if (!retargetSourceFramePrepared)
 		{
 			SyncRetargetParameters();
 			m_SourceController->Update(deltaTime, m_SourceSkeleton);
+		}
+		else
+		{
+			// CCT 只提前准备时钟与根输出；使用碰撞结算后的 owner 完成源 CPU 姿势。
+			// 源代理保持与普通 Update 相同的查询策略，目标世界查询仍由 Scene 批处理。
+			m_SourceController->GatherPreparedWorldQueries(m_SourceSkeleton);
+			if(m_SourceController->HasPreparedWorldQueries())m_SourceController->ResolvePreparedWorldQueries({},m_SourceSkeleton);
 		}
 		if (const MotionMatchingDebugData* sourceMM = m_SourceController->GetMotionMatchingDebugData())
 		{
@@ -1014,6 +1083,7 @@ void VansAnimationNode::PrepareAnimationFrame(
 					enabledRenderNodes);
 				m_RetargetPoseAuditLogged = true;
 			}
+			m_ForwardedTargetEventCount=0;m_TargetOverlayEventsPrepared=false;
 			if (!m_Controller->SubmitExternalModelPose(
 				targetModelTransforms,
 				m_Skeleton,
@@ -1026,6 +1096,7 @@ void VansAnimationNode::PrepareAnimationFrame(
 					<< ": target pose submission failed; using target fallback update");
 				m_Controller->PrepareFrame(deltaTime, m_Skeleton);
 			}
+			m_TargetOverlayEventsPrepared=true;ForwardTargetOverlayEvents();
 		}
 		else
 		{
@@ -1033,13 +1104,13 @@ void VansAnimationNode::PrepareAnimationFrame(
 			m_Controller->PrepareFrame(deltaTime, m_Skeleton);
 		}
 
-		if (context.AllowsOwnerMotion() && !retargetSourceFramePrepared &&
+		if (context.AllowsOwnerMotion() && !characterMotionFramePrepared &&
 			m_SourceController->IsRootMotionEnabled() &&
 			m_SourceController->ShouldApplyRootMotionToOwner() && m_HasTransformID)
 		{
 			ApplyRootMotionToTransform(
-				m_SourceController->GetRootMotionDelta(),
-				m_SourceController->GetRootRotationDelta());
+				GetRootMotionDelta(),
+				GetRootRotationDelta());
 		}
 
 		ApplySampledNodeTransforms();
@@ -1053,7 +1124,7 @@ void VansAnimationNode::PrepareAnimationFrame(
 	m_Controller->PrepareFrame(deltaTime, m_Skeleton);
 
 	// 2. 如果有 root motion，将 delta 应用到 Transform
-	if (context.AllowsOwnerMotion() && m_Controller->IsRootMotionEnabled() &&
+	if (context.AllowsOwnerMotion() && !characterMotionFramePrepared && m_Controller->IsRootMotionEnabled() &&
 		m_Controller->ShouldApplyRootMotionToOwner() && m_HasTransformID)
 	{
 		glm::vec3 deltaPos = m_Controller->GetRootMotionDelta();
@@ -1087,6 +1158,7 @@ void VansAnimationNode::GatherAnimationWorldQueries()
 		m_Controller->SetOwnerStableId(static_cast<std::uint64_t>(m_TransformID) + 1u);
 	}
 	m_Controller->GatherPreparedWorldQueries(m_Skeleton);
+	ForwardTargetOverlayEvents();
 }
 
 void VansAnimationNode::ResolveAnimationWorldQueries(
@@ -1094,6 +1166,7 @@ void VansAnimationNode::ResolveAnimationWorldQueries(
 {
 	if (m_Controller && m_Controller->HasPreparedWorldQueries())
 		m_Controller->ResolvePreparedWorldQueries(results, m_Skeleton);
+	ForwardTargetOverlayEvents();
 	ApplySampledNodeTransforms();
 }
 
@@ -1127,18 +1200,22 @@ void VansAnimationNode::PrepareCharacterMotionFrame(
 		const glm::mat4 ownerWorld =
 			Vans::VansTransformStore::Read(m_TransformID).GetModelMatrix();
 		m_Controller->SetOwnerWorldTransform(ownerWorld);
-		characterMotionController->SetOwnerWorldTransform(ownerWorld);
+		characterMotionController->SetOwnerWorldTransform(UsesRetargetSource()
+			? ownerWorld*m_RetargetProcessor.GetSourceToTargetModelTransform() : ownerWorld);
 	}
-	if (m_RetargetEnabled && m_SourceController)
+	if (UsesRetargetSource())
 	{
 		SyncRetargetParameters();
-		m_SourceController->PrepareFrame(deltaTime, m_SourceSkeleton);
+		m_CharacterMotionPoseDeferred=m_SourceController->PrepareIndependentCharacterMotion(deltaTime,m_SourceSkeleton);
+		if (!m_CharacterMotionPoseDeferred) m_SourceController->PrepareFrame(deltaTime, m_SourceSkeleton);
 	}
 	else
 	{
-		m_Controller->PrepareFrame(deltaTime, m_Skeleton);
+		m_CharacterMotionPoseDeferred=m_Controller->PrepareIndependentCharacterMotion(deltaTime,m_Skeleton);
+		if (!m_CharacterMotionPoseDeferred) m_Controller->PrepareFrame(deltaTime, m_Skeleton);
 	}
 	m_CharacterMotionFramePrepared = true;
+	m_CharacterMotionPreparedOnSource=UsesRetargetSource();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1156,15 +1233,15 @@ const VansAnimationFrameVector<VansAnimationEventSample>& VansAnimationNode::Get
 {
 	static const VansAnimationFrameVector<VansAnimationEventSample> empty(
 		std::pmr::new_delete_resource());
-	if (m_RetargetEnabled && m_SourceController)
+	if (UsesRetargetSource())
 		return m_SourceController->GetSampledEvents();
 	return m_Controller ? m_Controller->GetSampledEvents() : empty;
 }
 
-bool VansAnimationNode::ClaimSampledEventPublication()
+VansAnimationEventPublicationRange VansAnimationNode::ClaimSampledEventPublicationRange()
 {
-	auto* controller = m_RetargetEnabled && m_SourceController ? m_SourceController.get() : m_Controller.get();
-	return controller && controller->ClaimSampledEventPublication();
+	auto* controller = UsesRetargetSource() ? m_SourceController.get() : m_Controller.get();
+	return controller ? controller->ClaimSampledEventPublicationRange() : VansAnimationEventPublicationRange{};
 }
 
 // ════════════════════════════════════════════════════════════════

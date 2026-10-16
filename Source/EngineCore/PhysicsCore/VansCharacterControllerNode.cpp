@@ -575,16 +575,12 @@ namespace VansEngine
 		return true;
 	}
 
-    bool VansCharacterControllerNode::ResizeCapsule(float cylinderHeight,std::optional<bool> crouched)
+    bool VansCharacterControllerNode::CanResizeCapsule(float cylinderHeight) const
     {
         if (!m_Native->controller || !std::isfinite(cylinderHeight) || cylinderHeight <= 0.0f)
             return false;
         const float oldHeight = m_Properties.m_Height;
-        if (std::abs(cylinderHeight - oldHeight) <= 1.0e-5f)
-        {
-            if (crouched) m_Native->crouched=*crouched;
-            return true;
-        }
+        if (cylinderHeight<=oldHeight+1.e-5f) return true;
 
         const glm::vec3 up = glm::normalize(m_Properties.m_UpDirection);
         if (cylinderHeight > oldHeight)
@@ -613,6 +609,18 @@ namespace VansEngine
             }
         }
 
+        return true;
+    }
+
+    bool VansCharacterControllerNode::ResizeCapsule(float cylinderHeight,std::optional<bool> crouched)
+    {
+        if (!CanResizeCapsule(cylinderHeight)) return false;
+        const float oldHeight=m_Properties.m_Height;
+        if (std::abs(cylinderHeight-oldHeight)<=1.e-5f) {
+            if (crouched) m_Native->crouched=*crouched;
+            return true;
+        }
+        const auto up=glm::normalize(m_Properties.m_UpDirection);
         m_Native->controller->resize(cylinderHeight);
         m_Properties.m_Height = cylinderHeight;
         if (crouched) m_Native->crouched=*crouched;

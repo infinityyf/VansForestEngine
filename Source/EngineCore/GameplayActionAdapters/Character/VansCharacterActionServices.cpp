@@ -135,6 +135,8 @@ VansActionCommandResult VansAnimationActionService::Execute(
 	const float rate = rateValue
 		? static_cast<float>(ReadSerializedNumber(*rateValue, 1.0)) : 1.0f;
 	const std::string slot = ReadSerializedStringField(command.payload, "slot");
+	if(!slot.empty() && component && component->animationNode)
+		controller=component->animationNode->ResolveSlotPlaybackController(slot);
 	const bool loop = ReadSerializedBoolField(command.payload, "loop", false);
 	if (!controller || state.empty())
 	{

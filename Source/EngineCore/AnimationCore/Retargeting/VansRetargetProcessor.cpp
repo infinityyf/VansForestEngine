@@ -43,6 +43,29 @@ namespace
 		result[2] = glm::vec4(value[2], 0.0f);
 		return result;
 	}
+	int ReferenceBoneIndex(const Skeleton& skeleton, const VansCompiledAnimationRig* rig, const std::string& role)
+	{
+		const std::string semantic = role == "hand_l" ? "leftHand" : role == "hand_r" ? "rightHand"
+			: role == "foot_l" ? "leftFoot" : role == "foot_r" ? "rightFoot" : role;
+		if (rig)
+			if (const auto found=rig->semanticBoneIndices.find(semantic);found!=rig->semanticBoneIndices.end())
+				return found->second>=0 && found->second<static_cast<int>(skeleton.bones.size()) ? found->second : -1;
+		return skeleton.FindBoneIndex(role);
+	}
+	int FindMappedSourceBone(const Skeleton& skeleton, const std::string& targetName,
+		const VansRetargetRuntimeDesc& desc, const Skeleton* targetSkeleton = nullptr,
+		const VansCompiledAnimationRig* targetRig = nullptr)
+	{
+		const int targetIndex = targetSkeleton ? ReferenceBoneIndex(*targetSkeleton,targetRig,targetName) : -1;
+		if (targetSkeleton && targetIndex < 0) return -1;
+		if (desc.boneMappings.empty()) return skeleton.FindBoneIndex(targetSkeleton
+			? targetSkeleton->bones[static_cast<std::size_t>(targetIndex)].name : targetName);
+		const auto found = std::find_if(desc.boneMappings.begin(), desc.boneMappings.end(),
+			[&](const auto& mapping) { return targetSkeleton
+				? targetSkeleton->FindBoneIndex(mapping.targetBone) == targetIndex
+				: mapping.targetBone == targetName; });
+		return found == desc.boneMappings.end() ? -1 : skeleton.FindBoneIndex(found->sourceBone);
+	}
 
 }
 
@@ -65,7 +88,14 @@ bool VansRetargetProcessor::Build(
 	m_TargetBindModelTransforms.clear();
 	m_TargetModelSpaceCorrection = glm::mat4(1.0f);
 	m_RootAlignmentCorrection = glm::mat4(1.0f);
+	m_Valid = false;
+	const auto& outputRotation = desc.outputModelRotation;
+	if (!std::isfinite(outputRotation.w) || !std::isfinite(outputRotation.x)
+		|| !std::isfinite(outputRotation.y) || !std::isfinite(outputRotation.z)
+		|| std::abs(glm::length(outputRotation) - 1.0f) > 0.0001f) return false;
+	m_OutputModelRotation = glm::toMat4(outputRotation);
 	m_HasTargetModelSpaceCorrection = false;
+	m_PreserveTargetModelSpace = desc.targetModelSpaceAlignment == VansRetargetModelSpaceAlignment::TargetBindPose;
 	m_HasRootAlignmentCorrection = false;
 	m_Valid = false;
 	m_SourceLocalScratch.clear();
@@ -88,7 +118,8 @@ bool VansRetargetProcessor::Build(
 		&& desc.rootAlignment != VansRetargetRootAlignment::FeetToOwner)
 		return false;
 	if (desc.targetModelSpaceAlignment != VansRetargetModelSpaceAlignment::None
-		&& desc.targetModelSpaceAlignment != VansRetargetModelSpaceAlignment::SourceBindPose)
+		&& desc.targetModelSpaceAlignment != VansRetargetModelSpaceAlignment::SourceBindPose
+		&& desc.targetModelSpaceAlignment != VansRetargetModelSpaceAlignment::TargetBindPose)
 		return false;
 	m_SourceSkeleton = &sourceSkeleton;
 	m_TargetSkeleton = &targetSkeleton;
@@ -107,8 +138,8 @@ bool VansRetargetProcessor::Build(
 	}
 	else
 	{
-		const int sourcePelvis = sourceSkeleton.FindBoneIndex("pelvis");
-		const int targetPelvis = targetSkeleton.FindBoneIndex("pelvis");
+		const int sourcePelvis = FindMappedSourceBone(sourceSkeleton, "pelvis", desc, &targetSkeleton, &targetRig);
+		const int targetPelvis = ReferenceBoneIndex(targetSkeleton,&targetRig,"pelvis");
 		if (sourcePelvis >= 0 && targetPelvis >= 0)
 		{
 			const glm::vec3 sourcePelvisTranslation = glm::vec3(sourceSkeleton.bones[sourcePelvis].localTransform[3]);
@@ -136,7 +167,35 @@ bool VansRetargetProcessor::Build(
 	// 参考骨必须是已完成求解的姿态，禁止控制帧之间的顺序依赖或循环。
 	for (const auto& control : desc.controlBones)
 		if (controlBones.count(control.referenceBone)) return false;
-	for (size_t targetIndex = 0; targetIndex < targetSkeleton.bones.size(); ++targetIndex)
+	if (!desc.boneMappings.empty())
+	{
+		// 异名映射必须使用模型空间绑定参考，不能直接复用源局部旋转轴。
+		if (desc.targetModelSpaceAlignment == VansRetargetModelSpaceAlignment::None) return false;
+		std::unordered_set<int> targets;
+		for (const auto& mapping : desc.boneMappings)
+		{
+			BoneMapEntry entry;
+			entry.sourceIndex = sourceSkeleton.FindBoneIndex(mapping.sourceBone);
+			entry.targetIndex = targetSkeleton.FindBoneIndex(mapping.targetBone);
+			entry.copyTranslationDelta = mapping.copyTranslationDelta;
+			entry.rotationBlend = mapping.rotationBlend;
+			if (!mapping.rotationReferenceBone.empty())
+				entry.rotationReferenceIndex = sourceSkeleton.FindBoneIndex(mapping.rotationReferenceBone);
+			if (entry.sourceIndex < 0 || entry.targetIndex < 0 || !targets.insert(entry.targetIndex).second
+				|| !std::isfinite(entry.rotationBlend) || entry.rotationBlend < 0 || entry.rotationBlend > 1
+				|| (!mapping.rotationReferenceBone.empty() && entry.rotationReferenceIndex < 0)
+				|| (mapping.rotationReferenceBone.empty() && entry.rotationBlend != 1.0f)) return false;
+			if (entry.rotationReferenceIndex >= 0)
+			{
+				int ancestor = sourceSkeleton.bones[entry.sourceIndex].parentIndex;
+				while (ancestor >= 0 && ancestor != entry.rotationReferenceIndex)
+					ancestor = sourceSkeleton.bones[ancestor].parentIndex;
+				if (ancestor < 0) return false;
+			}
+			m_BoneMap.push_back(entry);
+		}
+	}
+	else for (size_t targetIndex = 0; targetIndex < targetSkeleton.bones.size(); ++targetIndex)
 	{
 		const BoneInfo& targetBone = targetSkeleton.bones[targetIndex];
 		const int sourceIndex = sourceSkeleton.FindBoneIndex(targetBone.name);
@@ -201,21 +260,22 @@ bool VansRetargetProcessor::Build(
 	}
 
 	if (m_Valid
-		&& desc.targetModelSpaceAlignment == VansRetargetModelSpaceAlignment::SourceBindPose)
+		&& desc.targetModelSpaceAlignment != VansRetargetModelSpaceAlignment::None)
 	{
 		glm::mat3 sourceBasis(1.0f);
 		glm::mat3 targetBasis(1.0f);
-		if (TryBuildHumanoidBasis(sourceSkeleton, m_SourceBindModelTransforms, sourceBasis) &&
-		    TryBuildHumanoidBasis(targetSkeleton, m_TargetBindModelTransforms, targetBasis))
+		if (TryBuildHumanoidBasis(sourceSkeleton, m_SourceBindModelTransforms, sourceBasis, &desc, &targetSkeleton, &targetRig) &&
+		    TryBuildHumanoidBasis(targetSkeleton, m_TargetBindModelTransforms, targetBasis, nullptr, nullptr, &targetRig))
 		{
 			m_TargetModelSpaceCorrection = Mat4FromMat3(sourceBasis * glm::inverse(targetBasis));
 			m_HasTargetModelSpaceCorrection = true;
 		}
+		else if (!desc.boneMappings.empty()) return m_Valid = false;
 	}
 	if (m_Valid && desc.rootAlignment == VansRetargetRootAlignment::FeetToOwner)
 	{
-		const int footL = targetSkeleton.FindBoneIndex("foot_l");
-		const int footR = targetSkeleton.FindBoneIndex("foot_r");
+		const int footL = ReferenceBoneIndex(targetSkeleton,&targetRig,"foot_l");
+		const int footR = ReferenceBoneIndex(targetSkeleton,&targetRig,"foot_r");
 		if (footL < 0 || footR < 0)
 		{
 			m_Valid = false;
@@ -225,7 +285,7 @@ bool VansRetargetProcessor::Build(
 		// feetToOwner 是目标骨架 Bind Pose 到实体原点的一次性校准。
 		// 不能按当前动画帧重新居中，否则会吞掉步态/Root Motion 的水平位移，
 		// 并与 Grounding 的世界空间 Plant Lock 形成可见的脚部滞后。
-		const glm::mat4 modelCorrection = m_HasTargetModelSpaceCorrection
+		const glm::mat4 modelCorrection = m_HasTargetModelSpaceCorrection && !m_PreserveTargetModelSpace
 			? m_TargetModelSpaceCorrection : glm::mat4(1.0f);
 		const glm::vec3 footLModel = glm::vec3(modelCorrection
 			* m_TargetBindModelTransforms[static_cast<std::size_t>(footL)]
@@ -248,6 +308,21 @@ bool VansRetargetProcessor::Build(
 		m_HasRootAlignmentCorrection = glm::length(bindOffset) > 1.0e-5f;
 	}
 	return m_Valid;
+}
+
+glm::quat VansRetargetProcessor::GetSourceToTargetModelRotation() const
+{
+	glm::quat rotation=glm::quat_cast(m_OutputModelRotation);
+	if(m_PreserveTargetModelSpace && m_HasTargetModelSpaceCorrection)
+		rotation=rotation*glm::inverse(glm::quat_cast(m_TargetModelSpaceCorrection));
+	return glm::normalize(rotation);
+}
+
+glm::mat4 VansRetargetProcessor::GetSourceToTargetModelTransform() const
+{
+	const auto rotation=glm::toMat4(GetSourceToTargetModelRotation());
+	const auto translation=m_HasRootAlignmentCorrection ? glm::vec3(m_OutputModelRotation*m_RootAlignmentCorrection[3]) : glm::vec3(0);
+	return glm::translate(glm::mat4(1),translation)*rotation*glm::scale(glm::mat4(1),glm::vec3(m_Stats.translationScale));
 }
 
 bool VansRetargetProcessor::Process(
@@ -467,8 +542,20 @@ bool VansRetargetProcessor::Process(
 			DecomposeTransform(m_TargetBindModelTransforms[entry.targetIndex],
 				targetBindModelTranslation, targetBindModelRotation, targetBindModelScale);
 
-			const glm::quat sourceDeltaRotation =
+			glm::quat sourceDeltaRotation =
 				sourceModelRotation * glm::inverse(sourceBindModelRotation);
+			if (entry.rotationReferenceIndex >= 0)
+			{
+				glm::vec3 ignoredTranslation, ignoredScale;
+				glm::quat referenceRotation, referenceBindRotation;
+				if (!DecomposeTransform(sourceModelTransforms[entry.rotationReferenceIndex],
+					ignoredTranslation, referenceRotation, ignoredScale)
+					|| !DecomposeTransform(m_SourceBindModelTransforms[entry.rotationReferenceIndex],
+						ignoredTranslation, referenceBindRotation, ignoredScale)) return false;
+				sourceDeltaRotation = glm::normalize(glm::slerp(
+					glm::normalize(referenceRotation * glm::inverse(referenceBindRotation)),
+					glm::normalize(sourceDeltaRotation), entry.rotationBlend));
+			}
 			const glm::quat targetSpaceDeltaRotation =
 				glm::inverse(targetToSourceRotation) * sourceDeltaRotation * targetToSourceRotation;
 			desiredModelRotations[entry.targetIndex] =
@@ -563,12 +650,13 @@ bool VansRetargetProcessor::Process(
 		{
 			for (glm::mat4& transform : outTargetModelTransforms)
 			{
-				if (m_HasTargetModelSpaceCorrection)
+				if (m_HasTargetModelSpaceCorrection && !m_PreserveTargetModelSpace)
 					transform = m_TargetModelSpaceCorrection * transform;
 				if (m_HasRootAlignmentCorrection)
 					transform = m_RootAlignmentCorrection * transform;
 			}
 		}
+		for (auto& transform : outTargetModelTransforms) transform = m_OutputModelRotation * transform;
 		return FinalizeVirtualBones(sourceModelTransforms, sourceSkeleton, targetSkeleton,
 			outTargetModelTransforms);
 	}
@@ -654,12 +742,13 @@ bool VansRetargetProcessor::Process(
 	{
 		for (glm::mat4& transform : outTargetModelTransforms)
 		{
-			if (m_HasTargetModelSpaceCorrection)
+			if (m_HasTargetModelSpaceCorrection && !m_PreserveTargetModelSpace)
 				transform = m_TargetModelSpaceCorrection * transform;
 			if (m_HasRootAlignmentCorrection)
 				transform = m_RootAlignmentCorrection * transform;
 		}
 	}
+	for (auto& transform : outTargetModelTransforms) transform = m_OutputModelRotation * transform;
 	return FinalizeVirtualBones(sourceModelTransforms, sourceSkeleton, targetSkeleton,
 		outTargetModelTransforms);
 }
@@ -751,14 +840,20 @@ std::vector<glm::mat4> VansRetargetProcessor::BuildBindModelTransforms(const Ske
 bool VansRetargetProcessor::TryBuildHumanoidBasis(
 	const Skeleton& skeleton,
 	const std::vector<glm::mat4>& modelTransforms,
-	glm::mat3& outBasis)
+	glm::mat3& outBasis,
+	const VansRetargetRuntimeDesc* mappings,
+	const Skeleton* mappingTarget,
+	const VansCompiledAnimationRig* referenceRig)
 {
-	const int pelvis = skeleton.FindBoneIndex("pelvis");
-	const int head = skeleton.FindBoneIndex("head");
-	const int handL = skeleton.FindBoneIndex("hand_l");
-	const int handR = skeleton.FindBoneIndex("hand_r");
-	const int footL = skeleton.FindBoneIndex("foot_l");
-	const int footR = skeleton.FindBoneIndex("foot_r");
+	const auto find = [&](const char* name) { return mappings
+		? FindMappedSourceBone(skeleton, name, *mappings, mappingTarget, referenceRig)
+		: ReferenceBoneIndex(skeleton, referenceRig, name); };
+	const int pelvis = find("pelvis");
+	const int head = find("head");
+	const int handL = find("hand_l");
+	const int handR = find("hand_r");
+	const int footL = find("foot_l");
+	const int footR = find("foot_r");
 
 	if (pelvis < 0 || head < 0 ||
 	    pelvis >= static_cast<int>(modelTransforms.size()) ||

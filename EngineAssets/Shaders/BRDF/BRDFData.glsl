@@ -247,8 +247,8 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout ve
 		}
 		prefilteredColor = mix(probeAndSky, brdf.indirectSpecular.rgb, ssrWeight);
 	}
-    // Split-sum: LUT already integrates Fresnel, so use F0 (not F) here
-    specular = prefilteredColor * (F * environmentBRDF.x + environmentBRDF.y) * brdf.ao;
+    // LUT 已积分 Fresnel，镜面项用 F0 重建，避免重复放大掠射角反射。
+    specular = prefilteredColor * (brdf.fresnel0 * environmentBRDF.x + environmentBRDF.y) * brdf.ao;
 }
 
 void DirectBRDF(BRDFData brdf, vec3 lightDirection, inout vec3 diffuse, inout vec3 specular)

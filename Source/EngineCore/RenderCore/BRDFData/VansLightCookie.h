@@ -1,15 +1,17 @@
 #pragma once
+#include "../../../../EngineAssets/Shaders/Lights/LightCapacity.h"
 #include <array>
 #include <string>
 #include <glm/glm.hpp>
 
 namespace VansGraphics
 {
-    // 与灯光帧索引一一对应，不改变已有光源的 GPU ABI。
-    inline constexpr unsigned VANS_LIGHT_COOKIE_COUNT = 161;
+    // 与灯光帧索引一一对应，容量与各灯型起始槽共用 CPU/Shader 定义。
+    inline constexpr unsigned VANS_LIGHT_COOKIE_COUNT = LIGHT_COOKIE_COUNT;
     inline constexpr unsigned VansLightCookieOffset(unsigned kind)
     {
-        return kind == 0 ? 0 : kind == 1 ? 1 : kind == 2 ? 65 : 129;
+        return kind == 0 ? 0 : kind == 1 ? LIGHT_COOKIE_POINT_OFFSET :
+            kind == 2 ? LIGHT_COOKIE_SPOT_OFFSET : LIGHT_COOKIE_RECT_OFFSET;
     }
 
     struct VansLightCookieSettings

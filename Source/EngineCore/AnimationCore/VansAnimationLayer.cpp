@@ -42,6 +42,24 @@ namespace VansGraphics
 			return result;
 		}
 
+
+        glm::vec3 Channels(const VansCompiledBoneMask& mask,size_t index)
+        {return mask.channelWeights.empty()?glm::vec3(1):mask.channelWeights[index];}
+        void MixLocalChannels(VansBoneTransform& mixed,const VansBoneTransform& base,
+            const VansBoneTransform& source,const VansBoneTransform& reference,
+            const VansAnimationLayerDefinition& definition,float weight,glm::vec3 channels)
+        {
+            if(definition.blendMode==VansLayerBlendMode::Override)
+            {
+                mixed.translation=glm::mix(base.translation,source.translation,weight*channels.x);
+                mixed.scale=glm::mix(base.scale,source.scale,weight*channels.z);
+            }
+            else
+            {
+                mixed.translation=ApplyRelativeAdditive(base,source,reference,weight*channels.x,definition.linearRotationBlend).translation;
+                mixed.scale=ApplyRelativeAdditive(base,source,reference,weight*channels.z,definition.linearRotationBlend).scale;
+            }
+        }
 		void ApplyLocalBoneMix(VansAnimationFrameVector<VansBoneTransform>& result,
 		                       const VansPosePayload& layer,
 		                       const VansAnimationLayerDefinition& definition,
@@ -51,9 +69,11 @@ namespace VansGraphics
 		{
 			for (size_t index = 0; index < result.size(); ++index)
 			{
-				float boneWeight = std::clamp(weight * mask.weights[index], 0.0f, 1.0f);
-				if (boneWeight <= (definition.linearRotationBlend ? kLinearPoseWeightEpsilon : kLayerEpsilon))
-					continue;
+				const auto original=result[index];
+                const auto channels=Channels(mask,index);
+                const float totalWeight=std::clamp(weight*mask.weights[index],0.0f,1.0f);
+                float boneWeight=totalWeight*channels.y;
+				if(totalWeight<=(definition.linearRotationBlend ? kLinearPoseWeightEpsilon : kLayerEpsilon))continue;
 				if (definition.linearRotationBlend && definition.blendMode==VansLayerBlendMode::Override && boneWeight>=1-kLinearPoseWeightEpsilon)
 					boneWeight=1;
 				if (definition.blendMode == VansLayerBlendMode::Override && definition.linearRotationBlend)
@@ -69,6 +89,7 @@ namespace VansGraphics
 				else
 					result[index] = ApplyRelativeAdditive(result[index], layer.localPose[index],
 					                                      reference[index], boneWeight,definition.linearRotationBlend);
+                if(channels!=glm::vec3(1))MixLocalChannels(result[index],original,layer.localPose[index],reference[index],definition,totalWeight,channels);
 			}
 		}
 
@@ -104,7 +125,10 @@ namespace VansGraphics
 			{
 				const std::size_t index = static_cast<std::size_t>(boneIndex);
 				const int parent = skeleton.bones[index].parentIndex;
-				float boneWeight = std::clamp(weight * mask.weights[index], 0.0f, 1.0f);
+				const auto original=result[index];
+                const auto channels=Channels(mask,index);
+                const float totalWeight=std::clamp(weight*mask.weights[index],0.0f,1.0f);
+                float boneWeight=totalWeight*channels.y;
 				if (definition.linearRotationBlend && boneWeight<=kLinearPoseWeightEpsilon) boneWeight=0;
 				if (definition.linearRotationBlend && definition.blendMode==VansLayerBlendMode::Override && boneWeight>=1-kLinearPoseWeightEpsilon)
 					boneWeight=1;
@@ -143,6 +167,7 @@ namespace VansGraphics
 				mixed.rotation = glm::normalize(
 					(parent < 0 ? glm::quat(1, 0, 0, 0) : glm::inverse(blendedRotation[parent]))
 					* meshRotation);
+				if(channels!=glm::vec3(1))MixLocalChannels(mixed,original,layer.localPose[index],reference[index],definition,totalWeight,channels);
 				result[index] = mixed;
 			}
 		}

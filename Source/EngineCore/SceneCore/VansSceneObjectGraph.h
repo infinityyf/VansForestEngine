@@ -32,4 +32,6 @@ bool RemapSceneObjectGraph(VansSerializedValue& entities,
     const VansSceneObjectIdentityMap& identities, std::string& error);
 bool ExtractSceneObjectSubtree(const VansSerializedValue& entities,
     const std::string& rootGuid, VansSerializedValue& subtree, std::string& error);
+bool ValidateSceneObjectReparent(const VansSerializedValue& entities,
+    const std::string& childGuid, const std::string& parentGuid, std::string& error);
 }

@@ -14,7 +14,8 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
 	IAssetEditorAPI& assetAPI=api;
 	IPcgEditorAPI& pcgAPI=api;
 	IRenderEditorAPI& renderAPI=api;
-	auto snapshot=pcgAPI.GetPcgSplineSnapshot();
+	const auto snapshotOwner=pcgAPI.GetPcgSplineSnapshot();
+	const auto& snapshot=*snapshotOwner;
     const auto report=[&](const PcgEditorOperationResult& result){m_Message=result.message;};
     const auto command=[&](PcgSplineCommand action) {
         PcgSplineCommandRequest request;request.command=action;request.splineId=snapshot.selectedSpline;

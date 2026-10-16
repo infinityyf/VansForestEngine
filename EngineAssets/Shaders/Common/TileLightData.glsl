@@ -15,7 +15,7 @@
 
 // --- 每 tile 最大索引槽数（固定步长分配，无需 atomic）---
 #define TILE_LIGHT_MAX_PT_PER_TILE   64  // 与 MAX_POINT_LIGHTS 对齐
-#define TILE_LIGHT_MAX_SP_PER_TILE   64  // 与 MAX_SPOT_LIGHTS  对齐
+#define TILE_LIGHT_MAX_SP_PER_TILE   64  // 单 tile 的重叠预算，独立于全场景聚光灯容量
 #define TILE_LIGHT_MAX_RECT_PER_TILE 16  // 与 MAX_RECT_LIGHTS=32 对齐，单 tile 罕见超过 16
 
 // --- TileLight Header：记录某 tile 内点光/聚光/面光的索引范围 ---

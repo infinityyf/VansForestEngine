@@ -81,13 +81,13 @@ void CalculateDirectLight_Grass(BRDFData b,float transmission,vec4 energy,float 
             GrassContactShadow(b.positionWS,L,distance,uSSS.punctualRayParams,uSSS.fadeParams.w),1u,int(i));
         float falloff=pow(1.0-distance/light.radius,2.0)*cone;
         if(light.iesProfileIndex>=0.0) falloff*=SampleIESProfile(int(light.iesProfileIndex),L,light.direction.xyz)*light.iesIntensityScale;
-        AddGrassLight(b,L,light.color.rgb*light.intensity*falloff*SampleSurfaceLightCookie(65+int(i),b.positionWS),shadow,transmission,energy,result);
+        AddGrassLight(b,L,light.color.rgb*light.intensity*falloff*SampleSurfaceLightCookie(LIGHT_COOKIE_SPOT_OFFSET +int(i),b.positionWS),shadow,transmission,energy,result);
     }
     for(uint k=0u;k<tile.rectCount;++k)
     {
         uint i=tileLightIndices[tile.rectOffset+k];
         RectLightData light=GetRectLight(int(i));
-        light.color_twoSided.rgb*=SampleSurfaceLightCookie(129+int(i),b.positionWS);
+        light.color_twoSided.rgb*=SampleSurfaceLightCookie(LIGHT_COOKIE_RECT_OFFSET +int(i),b.positionWS);
         vec3 d,s,back,unused;
         EvaluateRectLightLTC(light,b.normal,b.viewDirection,b.positionWS,b.roughness,
             b.albedo*(1.0-transmission),vec3(0.04),d,s);

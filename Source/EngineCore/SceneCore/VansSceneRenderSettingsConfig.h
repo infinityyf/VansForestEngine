@@ -210,8 +210,16 @@ struct VansScenePostProcessSettingsConfig
 	std::optional<float> tint;
 };
 
+struct VansSceneGITraceSettingsConfig
+{
+    float maxDistance = 100.0f;
+    float minVoxelSize = 0.0f;
+    float scatterMinVoxelSize = 0.0f;
+};
+
 struct VansSceneGIRegionSettingsConfig
 {
+	std::string mode = "uniform";
 	std::optional<bool> worldOnly;
     std::optional<bool> followView;
 	std::optional<uint32_t> stableId;
@@ -223,7 +231,7 @@ struct VansSceneGIRegionSettingsConfig
 	std::optional<float> probeSpacing;
 	std::optional<std::array<float, 3>> probeSpacingAxes;
 	std::optional<uint32_t> raysPerProbe;
-	std::optional<float> maxRayDistance;
+	VansSceneGITraceSettingsConfig trace;
 	std::optional<float> normalBias;
 	std::optional<float> volumeFadeDistance;
 	std::optional<float> priority;
@@ -231,7 +239,6 @@ struct VansSceneGIRegionSettingsConfig
 
 struct VansSceneGIProbePlacementConfig
 {
-	std::optional<bool> enabled;
 	std::optional<float> minProbeSpacing;
 	std::optional<float> maxProbeSpacing;
 	std::optional<float> parentProbeMaxSize;
@@ -251,7 +258,7 @@ struct VansSceneGIAmbientSkyCacheConfig
 {
 	std::optional<bool> enabled;
 	std::optional<float> gridSpacing;
-	std::optional<uint32_t> queriesPerFrame;
+	std::optional<uint32_t> cellUpdatesPerFrame;
 };
 
 struct VansSceneGISettingsConfig

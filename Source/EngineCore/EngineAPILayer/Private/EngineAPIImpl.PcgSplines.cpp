@@ -24,11 +24,25 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <tuple>
+#include "../../Util/VansProfiler.h"
 
 namespace Vans::EditorAPI
 {
 namespace
 {
+bool SameSplineStatus(const PcgSplineStatus& a,const PcgSplineStatus& b)
+{
+    return std::tie(a.available,a.editable,a.dirty,a.canUndo,a.canRedo,a.building,a.toolEnabled,
+        a.documentState,a.undoSequence,a.redoSequence,a.assetGuid,a.terrainGuid,a.selectedSpline,
+        a.selectedPoint,a.message,a.fieldTexelSize,a.sampleSpacing,a.curveTolerance,
+        a.heightConflictThreshold,a.minimumRiverTransitionWidth,a.activeTiles,a.rebuiltTiles)==
+        std::tie(b.available,b.editable,b.dirty,b.canUndo,b.canRedo,b.building,b.toolEnabled,
+        b.documentState,b.undoSequence,b.redoSequence,b.assetGuid,b.terrainGuid,b.selectedSpline,
+        b.selectedPoint,b.message,b.fieldTexelSize,b.sampleSpacing,b.curveTolerance,
+        b.heightConflictThreshold,b.minimumRiverTransitionWidth,b.activeTiles,b.rebuiltTiles);
+}
+
 PcgSplineItem ToPublic(const VansPcgSpline& source)
 {
     auto resolved=source;
@@ -52,6 +66,7 @@ PcgSplineItem ToPublic(const VansPcgSpline& source)
 	result.continuation=source.continuation;result.envelopeOffset=source.envelopeOffset;
 	result.envelopeLength=source.envelopeLength;
     result.normalFlowEnabled=source.normalFlowEnabled;
+    result.points.reserve(resolved.points.size());
     for (const auto& p:resolved.points)
     {
         PcgSplinePoint q;q.id=p.id;q.position=p.position;q.arrive=p.arrive;q.leave=p.leave;
@@ -133,8 +148,9 @@ std::string SceneSplineGuid(const VansSceneDocument* document)
 }
 }
 
-void EngineAPIImpl::TickPcgSplineAuthoring()
+void EngineAPIImpl::UpdatePcgSplineAuthoring()
 {
+    VANS_PROFILE_SCOPE("Editor::UpdatePcgSplineAuthoring",ProfileCategory::Editor);
     auto& manager=VansProjectManager::Get();
     auto* scene=static_cast<VansGraphics::VansScene*>(m_Scene);
     if (!m_PcgSplineAuthoring || !m_PcgSplineAuthoring->MatchesContext(
@@ -143,6 +159,8 @@ void EngineAPIImpl::TickPcgSplineAuthoring()
         m_PcgSplineAuthoring=std::make_unique<VansPcgSplineAuthoringSession>();
         m_PcgSplineAuthoring->ResetContext(manager.GetProjectRootPath(),m_SceneContentRevision);
         m_PcgSplinePreview=std::make_unique<VansGraphics::VansPcgSplinePreviewSession>();
+        m_PcgSplineSnapshot.reset();
+        m_PcgSplineSnapshotField.reset();
     }
     auto& state=*m_PcgSplineAuthoring;
     auto* authoringDocument=m_PcgSceneDocument;
@@ -206,12 +224,14 @@ PcgEditorOperationResult EngineAPIImpl::RequestPcgSplinePreview()
     auto& repository=VansProjectManager::Get().GetAssetObjectRepository();
     std::string error;
     if (!state.RequestPreview(repository,ResolvePcgSplineTerrainOverride(),error)) return {false,error};
-    TickPcgSplineAuthoring();return {true,{}};
+    UpdatePcgSplineAuthoring();return {true,{}};
 }
 
-PcgSplineSnapshot EngineAPIImpl::GetPcgSplineSnapshot()
+PcgSplineStatus EngineAPIImpl::GetPcgSplineStatus() const
 {
-    TickPcgSplineAuthoring();const auto& state=*m_PcgSplineAuthoring;PcgSplineSnapshot result;
+    PcgSplineStatus result;
+    if (!m_PcgSplineAuthoring) return result;
+    const auto& state=*m_PcgSplineAuthoring;
     result.assetGuid=state.Guid();result.toolEnabled=state.ToolEnabled();result.selectedSpline=state.SelectedSpline();
     result.selectedPoint=state.SelectedPoint();result.message=state.Message();
     result.building=state.NeedsBuild()||(m_PcgSplinePreview&&m_PcgSplinePreview->IsBuilding());
@@ -230,58 +250,93 @@ PcgSplineSnapshot EngineAPIImpl::GetPcgSplineSnapshot()
     result.minimumRiverTransitionWidth=MinimumPcgRiverTransitionWidth(working.fieldTexelSize);
     result.sampleSpacing=working.sampleSpacing;result.curveTolerance=working.curveTolerance;
     result.heightConflictThreshold=working.heightConflictThreshold;
-    for (const auto& spline:working.splines)
-    {
-        result.splines.push_back(ToPublic(spline));
-        if (!spline.enabled) continue;
-        VansPcgEvaluatedSpline evaluated;std::string error;
-        if (!VansPcgSplineEvaluator::Evaluate(spline,working.sampleSpacing,working.curveTolerance,evaluated,error)) continue;
-        for (std::size_t i=0;i<spline.points.size();++i)
-            result.splines.back().points[i].effectiveFlowSpeed=spline.points[i].speed*
-                VansPcgSplineEvaluator::EndpointFade(spline,evaluated.pointDistances[i],evaluated.length);
-        if (!state.ToolEnabled()) continue;
-        PcgSplineGuide guide;guide.id=spline.id;
-        const auto point=[](glm::vec3 p) {return std::array<float,3>{p.x,p.y,p.z};};
-        for (const auto& sample:evaluated.samples)
-        {
-            auto right=sample.right;right.y=std::tan(glm::radians(sample.bankAngleDegrees));
-            guide.center.push_back(point(sample.position));guide.left.push_back(point(sample.position-right*sample.leftWidth));
-            guide.right.push_back(point(sample.position+right*sample.rightWidth));
-        }
-        result.guides.push_back(std::move(guide));
-    }
     const auto* scene=static_cast<VansGraphics::VansScene*>(m_Scene);
     if (scene && scene->GetSplineFieldSnapshot())
     {
-        const auto& field=*scene->GetSplineFieldSnapshot();result.warnings=field.warnings;
-        for (const auto& p:field.uncoveredBankPoints) result.uncoveredBankPoints.push_back({p.x,p.y,p.z});
+        const auto& field=*scene->GetSplineFieldSnapshot();
         result.activeTiles=field.tiles.size();result.rebuiltTiles=field.rebuiltTileCount;
-        if (state.ToolEnabled())
-        {
-            PcgSplineGuide flow;flow.id="resolved-flow";
-            const auto stride=std::max(1u,static_cast<std::uint32_t>(std::ceil(6.f/field.texelSize)));
-            for (const auto& [key,tile]:field.tiles) if (tile->hasRiver)
-                for (std::uint32_t z=0;z<VANS_SPLINE_TILE_SIZE;++z)
-                    for (std::uint32_t x=0;x<VANS_SPLINE_TILE_SIZE;++x)
-                    {
-                        const auto gx=tile->x*VANS_SPLINE_TILE_SIZE+x,gz=tile->z*VANS_SPLINE_TILE_SIZE+z;
-                        if (gx%stride || gz%stride || flow.flowOrigins.size()>=2048) continue;
-                        const auto pixel=std::size_t(z+VANS_SPLINE_TILE_BORDER)*VANS_SPLINE_TILE_EXTENT+x+VANS_SPLINE_TILE_BORDER;
-                        if (tile->coverage[pixel].y<.1f) continue;
-                        const auto velocity=tile->velocities[pixel];
-                        flow.flowOrigins.push_back({(gx+.5f)*field.texelSize-field.worldSize*.5f,
-                            tile->heights[pixel].y+.1f,(gz+.5f)*field.texelSize-field.worldSize*.5f});
-                        flow.flowVectors.push_back({velocity.x,0,velocity.y});
-                    }
-            result.guides.push_back(std::move(flow));
-        }
     }
     return result;
 }
 
+std::shared_ptr<const PcgSplineSnapshot> EngineAPIImpl::GetPcgSplineSnapshot() const
+{
+    const auto status=GetPcgSplineStatus();
+    const auto* scene=static_cast<VansGraphics::VansScene*>(m_Scene);
+    const auto field=scene?scene->GetSplineFieldSnapshot():nullptr;
+    const auto workingState=m_PcgSplineAuthoring?m_PcgSplineAuthoring->WorkingStateId():0;
+    if (m_PcgSplineSnapshot && m_PcgSplineSnapshotWorkingState==workingState &&
+        m_PcgSplineSnapshotField.lock()==field && SameSplineStatus(*m_PcgSplineSnapshot,status))
+        return m_PcgSplineSnapshot;
+
+    VANS_PROFILE_SCOPE("Editor::BuildPcgSplineSnapshot",ProfileCategory::Editor);
+    auto snapshot=std::make_shared<PcgSplineSnapshot>();
+    static_cast<PcgSplineStatus&>(*snapshot)=status;
+    auto& result=*snapshot;
+    if (status.available)
+    {
+        const auto& state=*m_PcgSplineAuthoring;
+        const auto& working=state.WorkingAsset();
+        result.splines.reserve(working.splines.size());
+        for (const auto& spline:working.splines)
+        {
+            result.splines.push_back(ToPublic(spline));
+            if (!spline.enabled) continue;
+            VansPcgEvaluatedSpline evaluated;std::string error;
+            if (!VansPcgSplineEvaluator::Evaluate(spline,working.sampleSpacing,working.curveTolerance,evaluated,error)) continue;
+            for (std::size_t i=0;i<spline.points.size();++i)
+                result.splines.back().points[i].effectiveFlowSpeed=spline.points[i].speed*
+                    VansPcgSplineEvaluator::EndpointFade(spline,evaluated.pointDistances[i],evaluated.length);
+            if (!state.ToolEnabled()) continue;
+            PcgSplineGuide guide;guide.id=spline.id;
+            const auto point=[](glm::vec3 p) {return std::array<float,3>{p.x,p.y,p.z};};
+            for (const auto& sample:evaluated.samples)
+            {
+                auto right=sample.right;right.y=std::tan(glm::radians(sample.bankAngleDegrees));
+                guide.center.push_back(point(sample.position));guide.left.push_back(point(sample.position-right*sample.leftWidth));
+                guide.right.push_back(point(sample.position+right*sample.rightWidth));
+            }
+            result.guides.push_back(std::move(guide));
+        }
+        if (field)
+        {
+            result.warnings=field->warnings;
+            for (const auto& p:field->uncoveredBankPoints) result.uncoveredBankPoints.push_back({p.x,p.y,p.z});
+            if (state.ToolEnabled())
+            {
+                PcgSplineGuide flow;flow.id="resolved-flow";
+                constexpr std::size_t maximumFlowArrows=2048;
+                const auto stride=std::max(1u,static_cast<std::uint32_t>(std::ceil(6.f/field->texelSize)));
+                for (const auto& [key,tile]:field->tiles)
+                {
+                    if (flow.flowOrigins.size()>=maximumFlowArrows) break;
+                    if (!tile->hasRiver) continue;
+                    for (std::uint32_t z=0;z<VANS_SPLINE_TILE_SIZE && flow.flowOrigins.size()<maximumFlowArrows;++z)
+                        for (std::uint32_t x=0;x<VANS_SPLINE_TILE_SIZE && flow.flowOrigins.size()<maximumFlowArrows;++x)
+                        {
+                            const auto gx=tile->x*VANS_SPLINE_TILE_SIZE+x,gz=tile->z*VANS_SPLINE_TILE_SIZE+z;
+                            if (gx%stride || gz%stride) continue;
+                            const auto pixel=std::size_t(z+VANS_SPLINE_TILE_BORDER)*VANS_SPLINE_TILE_EXTENT+x+VANS_SPLINE_TILE_BORDER;
+                            if (tile->coverage[pixel].y<.1f) continue;
+                            const auto velocity=tile->velocities[pixel];
+                            flow.flowOrigins.push_back({(gx+.5f)*field->texelSize-field->worldSize*.5f,
+                                tile->heights[pixel].y+.1f,(gz+.5f)*field->texelSize-field->worldSize*.5f});
+                            flow.flowVectors.push_back({velocity.x,0,velocity.y});
+                        }
+                }
+                result.guides.push_back(std::move(flow));
+            }
+        }
+    }
+    m_PcgSplineSnapshotWorkingState=workingState;
+    m_PcgSplineSnapshotField=field;
+    m_PcgSplineSnapshot=std::move(snapshot);
+    return m_PcgSplineSnapshot;
+}
+
 PcgEditorOperationResult EngineAPIImpl::SelectPcgSpline(const std::string& spline,const std::string& point,bool enabled)
 {
-    TickPcgSplineAuthoring();auto& state=*m_PcgSplineAuthoring;
+    UpdatePcgSplineAuthoring();auto& state=*m_PcgSplineAuthoring;
     if (state.Dragging()) return {false,"Finish the current spline edit first."};
     if (enabled)
     {
@@ -303,7 +358,7 @@ PcgEditorOperationResult EngineAPIImpl::FinishPcgSplineEdit()
 
 PcgEditorOperationResult EngineAPIImpl::ApplyPcgSplineEdit(const PcgSplineEditRequest& request)
 {
-    TickPcgSplineAuthoring();auto& state=*m_PcgSplineAuthoring;
+    UpdatePcgSplineAuthoring();auto& state=*m_PcgSplineAuthoring;
     const auto openDocument=state.Document();
     if (!openDocument || m_PlayState!=EnginePlayState::Edit) return {false,"Open an editable spline asset."};
     auto& document=openDocument->sourceDocument;
@@ -345,7 +400,7 @@ PcgEditorOperationResult EngineAPIImpl::BindPcgSplineAsset(const std::string& te
     const auto edit=m_SceneAuthoringHost->SetSceneValue({DocumentPropertySpace::Scene,"/settings/pcgSplines"},
         MakeSerializedProjectAssetObjectReference(text,"pcgSpline"));
     if (!edit) return {false,edit.message};
-    TickPcgSplineAuthoring();return {true,"Spline asset bound. Save the scene to retain its binding."};
+    UpdatePcgSplineAuthoring();return {true,"Spline asset bound. Save the scene to retain its binding."};
 }
 
 PcgEditorOperationResult EngineAPIImpl::CreatePcgSplineAsset(const std::string& name)
@@ -374,7 +429,9 @@ PcgEditorOperationResult EngineAPIImpl::CreatePcgSplineAsset(const std::string& 
 
 PcgEditorOperationResult EngineAPIImpl::AppendPcgSplinePoint(const Ray& ray)
 {
-    const auto snapshot=GetPcgSplineSnapshot();
+    UpdatePcgSplineAuthoring();
+    const auto snapshotOwner=GetPcgSplineSnapshot();
+    const auto& snapshot=*snapshotOwner;
     auto& state=*m_PcgSplineAuthoring;
     if (!snapshot.editable || !state.ToolEnabled() || state.Dragging()) return {false,"Enable spline editing in Edit mode."};
     auto found=std::find_if(snapshot.splines.begin(),snapshot.splines.end(),[&](const auto& item){return item.id==snapshot.selectedSpline;});
@@ -401,7 +458,7 @@ PcgEditorOperationResult EngineAPIImpl::AppendPcgSplinePoint(const Ray& ray)
 
 PcgEditorOperationResult EngineAPIImpl::ExecutePcgSplineCommand(const PcgSplineCommandRequest& request)
 {
-    TickPcgSplineAuthoring();auto& state=*m_PcgSplineAuthoring;
+    UpdatePcgSplineAuthoring();auto& state=*m_PcgSplineAuthoring;
     const auto openDocument=state.Document();
     if (!openDocument || m_PlayState!=EnginePlayState::Edit || state.Dragging()) return {false,"Finish editing before this operation."};
     auto& document=openDocument->sourceDocument;

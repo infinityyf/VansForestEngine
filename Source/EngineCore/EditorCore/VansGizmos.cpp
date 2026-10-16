@@ -254,7 +254,7 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
             std::shared_ptr<const Vans::EditorAPI::GIProbeDebugSnapshot> giProbeDebug;
             if (giSettings.showProbeGizmos)
                 giProbeDebug = giAPI.GetGIProbeDebugSnapshot();
-            if (giSettings.showProbeGizmos && giSettings.placement.enabled && giProbeDebug && giProbeDebug->available)
+            if (giSettings.showProbeGizmos && selectedRegion.mode == Vans::EditorAPI::GIRegionPlacementMode::Adaptive && giProbeDebug && giProbeDebug->available)
             {
                 for (const auto& probe : giProbeDebug->probes)
                 {
@@ -265,7 +265,7 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
                     drawList->AddCircleFilled(screen, 3.0f, IM_COL32(255, 210, 80, 230), 8);
                 }
 			}
-			else if (giSettings.showProbeGizmos && !giSettings.placement.enabled &&
+			else if (giSettings.showProbeGizmos && selectedRegion.mode == Vans::EditorAPI::GIRegionPlacementMode::Uniform &&
 					 selectedRegion.gridDimensions.x > 0.0f && selectedRegion.gridDimensions.y > 0.0f && selectedRegion.gridDimensions.z > 0.0f &&
 					 selectedRegion.probeSpacing > 0.0f)
             {

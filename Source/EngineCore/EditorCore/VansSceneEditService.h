@@ -75,6 +75,9 @@ public:
     SceneEditResult AppendEntities(std::vector<VansSerializedValue> entities,
         SceneEditLifecycleHooks hooks = {});
     SceneEditResult Remove(const DocumentPropertyPath& path, SceneEditLifecycleHooks hooks = {});
+    SceneEditResult RemoveEntity(const std::string& entityGuid,
+        const std::vector<EditorAPI::RuntimeTransformSnapshot>& promotedChildren,
+        SceneEditLifecycleHooks hooks = {});
     SceneEditResult Undo();
     SceneEditResult Redo();
     void ClearHistory();

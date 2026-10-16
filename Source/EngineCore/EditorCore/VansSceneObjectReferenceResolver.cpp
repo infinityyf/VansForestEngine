@@ -60,10 +60,21 @@ const VansSerializedValue* FindSceneComponentByGuidOrType(
 
     for (const VansSerializedValue& component : components->arrayItems)
     {
-        if (!componentGuid.empty() && ReadSerializedStringField(component, "id") == componentGuid)
-            return &component;
-        if (!componentType.empty() && ReadSerializedStringField(component, "type") == componentType)
-            return &component;
+        if (!componentGuid.empty())
+        {
+            if (ReadSerializedStringField(component, "id") == componentGuid)
+                return componentType.empty() || ReadSerializedStringField(component, "type") == componentType
+                    ? &component : nullptr;
+        }
+        else if (!componentType.empty() && ReadSerializedStringField(component, "type") == componentType)
+        {
+            // An entity drop can select a component by type only when it is unambiguous.
+            const VansSerializedValue* match = &component;
+            for (const auto& other : components->arrayItems)
+                if (&other != match && ReadSerializedStringField(other, "type") == componentType)
+                    return nullptr;
+            return match;
+        }
     }
     return nullptr;
 }
@@ -76,7 +87,8 @@ SceneObjectReferenceResolution ResolveSceneObjectReference(
 {
     SceneObjectReferenceResolution result;
     result.handle = source;
-    const VansSerializedValue root = document.SerializedRootSnapshot();
+    const auto snapshot = document.CreateSnapshot();
+    const VansSerializedValue& root = snapshot.Root();
 
     const bool clearedReference =
         source.guid.empty() &&

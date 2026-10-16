@@ -1,5 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#include "../GI/GIRegionCapacity.h"
 #define VANS_SURFACE_COOKIES
 
 // TileLight：先引入 CameraData（提供 ScreenParams），再定义 TILE_LIGHT，再引入 TileLightData
@@ -67,33 +69,19 @@ layout(set = 1, binding = 19) uniform giProbeInfo
 {
     vec4 screenSize;
     vec4 regionInfo;
-    GIRegionParams regions[8];
+    GIRegionParams regions[GI_MAX_REGION_COUNT];
     vec4 deferredProbeDebug;
 };
-layout(set = 1, binding = 20) uniform sampler2D giVisibilityAtlas[8];
-layout(set = 1, binding = 21) uniform sampler2D giIrradianceAtlas[8];
+layout(set = 1, binding = 20) uniform sampler2D giVisibilityAtlas[GI_MAX_REGION_COUNT];
+layout(set = 1, binding = 21) uniform sampler2D giIrradianceAtlas[GI_MAX_REGION_COUNT];
 #include "../GI/GIProbeStateData.glsl"
-layout(set = 1, binding = 22, std430) readonly buffer DeferredGIProbeStateBuffer0 { GIProbeState states[]; } giProbeState0;
-layout(set = 1, binding = 23, std430) readonly buffer DeferredGIProbeStateBuffer1 { GIProbeState states[]; } giProbeState1;
-layout(set = 1, binding = 24, std430) readonly buffer DeferredGIProbeStateBuffer2 { GIProbeState states[]; } giProbeState2;
-layout(set = 1, binding = 25, std430) readonly buffer DeferredGIProbeStateBuffer3 { GIProbeState states[]; } giProbeState3;
-layout(set = 1, binding = 26, std430) readonly buffer DeferredGIProbeStateBuffer4 { GIProbeState states[]; } giProbeState4;
-layout(set = 1, binding = 27, std430) readonly buffer DeferredGIProbeStateBuffer5 { GIProbeState states[]; } giProbeState5;
-layout(set = 1, binding = 28, std430) readonly buffer DeferredGIProbeStateBuffer6 { GIProbeState states[]; } giProbeState6;
-layout(set = 1, binding = 29, std430) readonly buffer DeferredGIProbeStateBuffer7 { GIProbeState states[]; } giProbeState7;
+layout(set = 1, binding = 22, std430) readonly buffer DeferredGIProbeStateBuffer
+{
+    GIProbeState states[];
+} giProbeStates[GI_MAX_REGION_COUNT];
 GIProbeState LoadDeferredGIProbeState(uint regionIndex, uint probeLinearIndex)
 {
-    switch (regionIndex)
-    {
-    case 0u: return giProbeState0.states[probeLinearIndex];
-    case 1u: return giProbeState1.states[probeLinearIndex];
-    case 2u: return giProbeState2.states[probeLinearIndex];
-    case 3u: return giProbeState3.states[probeLinearIndex];
-    case 4u: return giProbeState4.states[probeLinearIndex];
-    case 5u: return giProbeState5.states[probeLinearIndex];
-    case 6u: return giProbeState6.states[probeLinearIndex];
-    default: return giProbeState7.states[probeLinearIndex];
-    }
+    return giProbeStates[nonuniformEXT(regionIndex)].states[probeLinearIndex];
 }
 #define GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex) LoadDeferredGIProbeState(regionIndex, probeLinearIndex)
 #define GI_LAYOUT_SET 1
@@ -107,49 +95,16 @@ layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outDiffuseExitantRadiance;
 
-vec4 SampleDeferredProbeIrradianceForRegion(uint regionIndex, vec3 worldPos, vec3 normal, float normalBiasScale)
+vec4 SampleDeferredProbeIrradianceForRegion(uint regionIndex, vec3 worldPos, GIReceiverNormals normal, float normalBiasScale)
 {
     GIRegionParams region = regions[regionIndex];
     ivec3 probeCounts = ivec3(region.gridDimensionsAndPriority.xyz);
     vec3 volumeMin = region.volumeMin.xyz;
     vec3 volumeSize = region.volumeSizeAndBias.xyz;
 
-    GIProbeLighting value;
-    switch (regionIndex)
-    {
-    case 0u:
-        value = GI_SampleProbeIrradianceAtlasVisible(0u, probeCounts,
-            giIrradianceAtlas[0], giVisibilityAtlas[0], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
-    case 1u:
-        value = GI_SampleProbeIrradianceAtlasVisible(1u, probeCounts,
-            giIrradianceAtlas[1], giVisibilityAtlas[1], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
-    case 2u:
-        value = GI_SampleProbeIrradianceAtlasVisible(2u, probeCounts,
-            giIrradianceAtlas[2], giVisibilityAtlas[2], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
-    case 3u:
-        value = GI_SampleProbeIrradianceAtlasVisible(3u, probeCounts,
-            giIrradianceAtlas[3], giVisibilityAtlas[3], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
-    case 4u:
-        value = GI_SampleProbeIrradianceAtlasVisible(4u, probeCounts,
-            giIrradianceAtlas[4], giVisibilityAtlas[4], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
-    case 5u:
-        value = GI_SampleProbeIrradianceAtlasVisible(5u, probeCounts,
-            giIrradianceAtlas[5], giVisibilityAtlas[5], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
-    case 6u:
-        value = GI_SampleProbeIrradianceAtlasVisible(6u, probeCounts,
-            giIrradianceAtlas[6], giVisibilityAtlas[6], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
-    default:
-        value = GI_SampleProbeIrradianceAtlasVisible(7u, probeCounts,
-            giIrradianceAtlas[7], giVisibilityAtlas[7], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
-    }
+    GIProbeLighting value = GI_SampleProbeIrradianceAtlasVisible(regionIndex, probeCounts,
+        giIrradianceAtlas[nonuniformEXT(regionIndex)], giVisibilityAtlas[nonuniformEXT(regionIndex)],
+        worldPos, normal, volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0);
     return vec4(value.irradiance, value.published);
 }
 
@@ -163,7 +118,7 @@ vec3 SampleGrassBackIrradiance(vec3 worldPos, vec3 frontNormal)
 {
     receiverRecordValid = false;
     // 薄片背面不沿法线偏入地下；只按区域边界在光照来源之间混合一次。
-    return GI_BlendRegionLighting(worldPos, -frontNormal, 0.0);
+    return GI_BlendRegionLighting(worldPos, GIReceiverNormals(-frontNormal, -frontNormal), 0.0);
 }
 
 float SampleScreenSpaceShadow(vec2 uv)
@@ -177,12 +132,12 @@ float DielectricF0FromIOR(float ior)
     return ratio * ratio;
 }
 
-vec3 SampleDeferredProbeIrradiance(vec3 worldPos, vec3 normal)
+vec3 SampleDeferredProbeIrradiance(vec3 worldPos, GIReceiverNormals normals)
 {
     vec4 position = texture(gbufferInput2, fragTexCoord);
-    GI_SetReceiverVisibility(ivec2(gl_FragCoord.xy), position, normal,
+    GI_SetReceiverVisibility(ivec2(gl_FragCoord.xy), position, normals.geometric,
         round(texture(gbufferInput1, fragTexCoord).z), max(length(dFdx(worldPos)), length(dFdy(worldPos))));
-    return GI_BlendRegionLighting(worldPos, normalize(normal), 1.0);
+    return GI_BlendRegionLighting(worldPos, normals, 1.0);
 }
 
 vec3 ComputeDeferredGINormal(vec3 worldPos, vec3 shadingNormal)
@@ -443,7 +398,7 @@ void main()
             // 背面不能复用面向相机的接收者可见度；沿用已有区域 GI/天空混合。
             bool frontReceiverValid = receiverRecordValid;
             receiverRecordValid = false;
-            clothBackIrradiance = GI_BlendRegionLighting(brdfData.positionWS, -normal, 0.0);
+            clothBackIrradiance = GI_BlendRegionLighting(brdfData.positionWS, GIReceiverNormals(-normal, -normal), 0.0);
             receiverRecordValid = frontReceiverValid;
         }
         AmbientBRDF_Cloth(brdfData, cloth, clothTangent, viewDirection, clothBackIrradiance,
@@ -587,7 +542,7 @@ void main()
     if (deferredProbeDebug.x > 0.5)
     {
         vec3 debugColor = SampleDeferredProbeIrradiance(position_world,
-            ComputeDeferredGINormal(position_world, normal)) * max(deferredProbeDebug.y, 0.001);
+            GIReceiverNormals(ComputeDeferredGINormal(position_world, normal), normal)) * max(deferredProbeDebug.y, 0.001);
         if (any(isnan(debugColor)) || any(isinf(debugColor))) debugColor = vec3(1.0, 0.0, 1.0);
         outColor = vec4(max(debugColor, vec3(0.0)), 1.0);
         return;

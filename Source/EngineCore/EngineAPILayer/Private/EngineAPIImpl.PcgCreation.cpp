@@ -19,7 +19,7 @@ void EngineAPIImpl::BindSceneAuthoring(Vans::IVansSceneAuthoringHost* host)
     m_SceneAuthoringHost=host;
     m_PcgSceneDocument=document;
     m_PcgSceneAuthoringState=document?document->CurrentStateId():0;
-    TickPcgSplineAuthoring();
+    if (changed) UpdatePcgSplineAuthoring();
     if (!changed || !document || m_PlayState!=EnginePlayState::Edit) return;
     const auto snapshot=document->CreateSnapshot();
     std::string guid;

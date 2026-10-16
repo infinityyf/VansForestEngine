@@ -38,6 +38,7 @@ enum class VansComponentTypeTrait : std::uint32_t
 	Particle = 1u << 2,
 	MultiMeshRoot = 1u << 3,
 	Animation = 1u << 4,
+	Navigation = 1u << 5,
 };
 
 struct VansComponentTypeDescriptor

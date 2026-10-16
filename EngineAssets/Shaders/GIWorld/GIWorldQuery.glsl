@@ -23,9 +23,11 @@ layout(set=GI_WORLD_SET,binding=4,std430) readonly buffer GIWorldVoxels { uvec2 
 layout(set=GI_WORLD_SET,binding=5,std430) readonly buffer GIWorldMaterials { vec4 gwMaterials[]; };
 layout(set=GI_WORLD_SET,binding=6,std430) readonly buffer GIWorldTerrainColors { vec4 gwTerrainColors[]; };
 
-struct GIWorldHit { float t; vec3 normal; vec4 material; float transmission; bool valid; bool backface; uint failure; vec4 scattering; };
+// checkedDistance 单独记录已检查的前缀；失败不能把尚未检查的远段冒充为空。
+// 它只存在于当前 Shader 查询，不改变任何持久 GPU 缓冲布局。
+struct GIWorldHit { float t; vec3 normal; vec4 material; float transmission; bool valid; bool backface; uint failure; vec4 scattering; float checkedDistance; };
 GIWorldHit GIWorldMiss(float t)
-{ GIWorldHit h;h.t=t;h.normal=vec3(0,1,0);h.material=vec4(0.5,0.5,0.5,1);h.transmission=1;h.valid=true;h.backface=false;h.failure=0u;h.scattering=vec4(0,0,0,-1);return h; }
+{ GIWorldHit h;h.t=t;h.normal=vec3(0,1,0);h.material=vec4(0.5,0.5,0.5,1);h.transmission=1;h.valid=true;h.backface=false;h.failure=0u;h.scattering=vec4(0,0,0,-1);h.checkedDistance=t;return h; }
 // 远级数百米射线的 float 间距大于固定 epsilon。必须实际跨过一个可表示的 t，
 // 否则负方向仍落在已离开的高度单元，会漏掉地表或反复消耗追踪步数。
 float GIWorldAdvance(float t)
@@ -77,6 +79,7 @@ GIWorldHit GIWorldTraceHeight(vec3 o,vec3 d,float minimum,float maximum)
     vec2 range=gwRanges[gwHeightLevels[gwHeight.z-1u].x];
     float t=minimum,end=maximum,halfSize=gwTerrain.x*0.5;
     if(!GIWorldSlab(o,d,vec3(-halfSize,range.x,-halfSize),vec3(halfSize,range.y,halfSize),t,end))return hit;
+    hit.checkedDistance=t;
     uint iterations=0u;
     while(t<end && iterations++<gwTable.z)
     {
@@ -92,7 +95,7 @@ GIWorldHit GIWorldTraceHeight(vec3 o,vec3 d,float minimum,float maximum)
             float nextT=GIWorldExit2D(o,d,lo,hi,t,end);
             vec2 y=o.y+d.y*vec2(t,nextT),bounds=gwRanges[info.x+cell.y*info.y+cell.x];
             if(min(y.x,y.y)>bounds.y || max(y.x,y.y)<bounds.x)
-            {t=GIWorldAdvance(nextT);advanced=true;break;}
+            {hit.checkedDistance=nextT;t=GIWorldAdvance(nextT);advanced=true;break;}
             if(level==0)
             {
                 float dt=nextT-t;
@@ -119,24 +122,27 @@ GIWorldHit GIWorldTraceHeight(vec3 o,vec3 d,float minimum,float maximum)
                     hit.t=t+clamp(roots[r],0,1)*dt;vec2 p=o.xz+d.xz*hit.t;hit.normal=GIWorldHeightNormal(p);
                     hit.backface=dot(hit.normal,d)>0;
                     uvec2 colorCell=uvec2(clamp((p/gwTerrain.x+0.5)*gwTerrain.w,vec2(0),vec2(gwTerrain.w)-1));
-                    hit.material=gwTerrainColors[colorCell.y*uint(gwTerrain.w)+colorCell.x];return hit;
+                    hit.material=gwTerrainColors[colorCell.y*uint(gwTerrain.w)+colorCell.x];hit.checkedDistance=hit.t;return hit;
                 }
-                t=GIWorldAdvance(nextT);advanced=true;break;
+                hit.checkedDistance=nextT;t=GIWorldAdvance(nextT);advanced=true;break;
             }
         }
         if(!advanced)break;
     }
-    hit.valid=t>=end;hit.failure=hit.valid?0u:GI_FEEDBACK_HEIGHT_BUDGET;return hit;
+    hit.valid=t>=end;hit.failure=hit.valid?0u:GI_FEEDBACK_HEIGHT_BUDGET;
+    if(hit.valid)hit.checkedDistance=maximum;
+    return hit;
 }
 uint GIWorldHash(ivec4 c)
 {uint h=uint(c.x)*73856093u^uint(c.y)*19349663u^uint(c.z)*83492791u^uint(c.w)*2654435761u;h^=h>>16u;h*=2246822519u;return h^(h>>13u);}
 // -1 已知空，-2 未发布，非负为砖块的体素地址。
-int GIWorldFindPage(ivec4 key)
+int GIWorldFindPage(ivec4 key,out uvec2 occupancy)
 {
+    occupancy=uvec2(0);
     uint slot=GIWorldHash(key)&(gwTable.x-1u);
     for(uint i=0u;i<gwTable.x;++i)
     {GIWorldPage p=gwPages[slot];if(p.data.x==0xffffffffu)return -1;
-     if(all(equal(p.key,key)))return p.data.y==0u?-2:int(p.data.x);slot=(slot+1u)&(gwTable.x-1u);}
+     if(all(equal(p.key,key))){occupancy=p.data.zw;return p.data.y==0u?-2:int(p.data.x);}slot=(slot+1u)&(gwTable.x-1u);}
     return -2;
 }
 vec3 GIWorldNormal(uint packed)
@@ -167,11 +173,12 @@ uint GIWorldRayLevel(vec3 o,vec3 d,float t,float end,uint minimumLevel,out float
 GIWorldHit GIWorldTraceVoxels(vec3 o,vec3 d,float minimum,float maximum,bool transmission,float minimumVoxelSize,float scatterOpticalDepth,uint stepBudget)
 {
     GIWorldHit hit=GIWorldMiss(maximum);
-    if((uint(gwGrid.w)&(1u<<(uint(gwGrid.z)-1u)))==0u){hit.valid=false;hit.failure=GI_FEEDBACK_VOXEL_COVERAGE;return hit;}
+    if((uint(gwGrid.w)&(1u<<(uint(gwGrid.z)-1u)))==0u){hit.valid=false;hit.failure=GI_FEEDBACK_VOXEL_COVERAGE;hit.checkedDistance=minimum;return hit;}
     if(gwTable.y==0u)return hit;
     float t=minimum,end=maximum;
     if(!GIWorldSlab(o,d,gwVoxelMin.xyz,gwVoxelMax.xyz,t,end))return hit;
-    // 远级探针只重建低频光照；其射线经过相机附近时也不必重新追踪最细格。
+    hit.checkedDistance=t;
+    // 调用者显式选择查询精度下限，与 Probe 数量和摆放模式无关。
     // 尺度向下取整到已有 mip，原距离策略仍可选更粗级；接收可见性传 0 保留原精度。
     uint minimumLevel=uint(clamp(floor(log2(max(minimumVoxelSize/gwGrid.x,1.0))),0.0,gwGrid.z-1.0));
     uint iteration=0u,rayLevel=minimumLevel;float levelEnd=t;
@@ -179,7 +186,7 @@ GIWorldHit GIWorldTraceVoxels(vec3 o,vec3 d,float minimum,float maximum,bool tra
     {
         if(t>=levelEnd)rayLevel=GIWorldRayLevel(o,d,t,end,minimumLevel,levelEnd);
         vec3 position=o+d*GIWorldAdvance(t);uint level=rayLevel;
-        float size=0;ivec3 cell,brick;int page=-2;
+        float size=0;ivec3 cell,brick;int page=-2;uvec2 occupancy;
         for(;level<uint(gwGrid.z);++level)
         {
             if((uint(gwGrid.w)&(1u<<level))==0u)continue;
@@ -190,17 +197,24 @@ GIWorldHit GIWorldTraceVoxels(vec3 o,vec3 d,float minimum,float maximum,bool tra
             for(int axis=0;axis<3;++axis)
                 if(d[axis]<0.0 && gridPosition[axis]==float(cell[axis]))--cell[axis];
             brick=ivec3(floor(vec3(cell)/8.0));
-            page=GIWorldFindPage(ivec4(brick,int(level)));
+            page=GIWorldFindPage(ivec4(brick,int(level)),occupancy);
             if(page!=-2)break;
         }
         if(page==-2){hit.valid=false;hit.failure=GI_FEEDBACK_VOXEL_PAGE;return hit;}
         vec3 lo,hi;uvec2 voxel=uvec2(0);
-        if(page<0){lo=vec3(brick)*(size*8);hi=lo+size*8;}
-        else{ivec3 c=cell-brick*8;voxel=gwVoxels[uint(page)+uint(c.x+8*(c.y+8*c.z))];lo=vec3(cell)*size;hi=lo+size;}
+        // 页表与体素同批发布。只跳过确认无表面、无消光的子块，仍在 LOD 边界截断。
+        if(page<0 || all(equal(occupancy,uvec2(0)))){lo=vec3(brick)*(size*8);hi=lo+size*8;}
+        else
+        {
+            ivec3 c=cell-brick*8,group=c/2;uint bit=uint(group.x+4*(group.y+4*group.z));
+            if((occupancy[bit/32u]&(1u<<(bit%32u)))==0u)
+            {lo=vec3(brick*8+group*2)*size;hi=lo+size*2;}
+            else{voxel=gwVoxels[uint(page)+uint(c.x+8*(c.y+8*c.z))];lo=vec3(cell)*size;hi=lo+size;}
+        }
         float nextT=levelEnd;for(int a=0;a<3;++a)if(abs(d[a])>1e-12)nextT=min(nextT,((d[a]>0?hi[a]:lo[a])-o[a])/d[a]);
         nextT=max(nextT,t);
         if((voxel.x&0x10000u)!=0u)
-        {hit.t=t;hit.normal=GIWorldNormal(voxel.y>>16u);hit.backface=dot(hit.normal,d)>0;hit.material=gwMaterials[voxel.y&65535u];return hit;}
+        {hit.t=t;hit.normal=GIWorldNormal(voxel.y>>16u);hit.backface=dot(hit.normal,d)>0;hit.material=gwMaterials[voxel.y&65535u];hit.checkedDistance=t;return hit;}
         if(transmission)
         {
             float sigma=max(unpackHalf2x16(voxel.x).x,0.0)*gwCenter.w;
@@ -218,9 +232,11 @@ GIWorldHit GIWorldTraceVoxels(vec3 o,vec3 d,float minimum,float maximum,bool tra
             }
             hit.transmission*=exp(-opticalDepth);
         }
-        t=GIWorldAdvance(nextT);
+        hit.checkedDistance=nextT;t=GIWorldAdvance(nextT);
     }
-    hit.valid=t>=end;hit.failure=hit.valid?0u:GI_FEEDBACK_VOXEL_BUDGET;return hit;
+    hit.valid=t>=end;hit.failure=hit.valid?0u:GI_FEEDBACK_VOXEL_BUDGET;
+    if(hit.valid)hit.checkedDistance=maximum;
+    return hit;
 }
 GIWorldHit GIWorldTraceVoxels(vec3 o,vec3 d,float minimum,float maximum,bool transmission,float minimumVoxelSize,float scatterOpticalDepth)
 { return GIWorldTraceVoxels(o,d,minimum,maximum,transmission,minimumVoxelSize,scatterOpticalDepth,gwTable.z); }
@@ -233,7 +249,15 @@ GIWorldHit GIWorldTrace(vec3 o,vec3 d,float minimum,float maximum,bool transmiss
     GIWorldHit terrain=GIWorldTraceHeight(o,d,minimum,maximum);
     GIWorldHit plants=GIWorldTraceVoxels(o,d,minimum,terrain.t,transmission,minimumVoxelSize,scatterOpticalDepth,voxelSteps);
     GIWorldHit hit=plants.t<terrain.t?plants:terrain;
-    hit.scattering=plants.scattering;hit.transmission=plants.transmission;hit.valid=terrain.valid&&plants.valid;hit.failure=terrain.failure|plants.failure;return hit;
+    // 只需要证明最近表面之前的路径。严格小于失败前缀终点，不跨过未知单元边界。
+    // 地形仍截断体素积分；相同距离保持地形优先，外层相同距离保留硬件表面。
+    bool terrainKnown=terrain.valid || hit.t<terrain.checkedDistance;
+    bool plantsKnown=plants.valid || hit.t<plants.checkedDistance;
+    hit.scattering=plants.scattering;hit.transmission=plants.transmission;
+    hit.valid=terrainKnown&&plantsKnown;
+    hit.failure=(terrainKnown?0u:terrain.failure)|(plantsKnown?0u:plants.failure);
+    hit.checkedDistance=hit.valid?hit.t:min(terrain.checkedDistance,plants.checkedDistance);
+    return hit;
 }
 GIWorldHit GIWorldTrace(vec3 o,vec3 d,float minimum,float maximum,bool transmission,float minimumVoxelSize,float scatterOpticalDepth)
 { return GIWorldTrace(o,d,minimum,maximum,transmission,minimumVoxelSize,scatterOpticalDepth,gwTable.z); }

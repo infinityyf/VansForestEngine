@@ -15,6 +15,8 @@ namespace VansGraphics
 	{
 	public:
 		~VansAnimationGpuBinding();
+		static bool ValidateSkinWeights(const std::vector<std::vector<VertexBoneData>>& perSubmeshBoneData,
+			std::string& error);
 
 		bool Initialize(
 			VkDevice device,

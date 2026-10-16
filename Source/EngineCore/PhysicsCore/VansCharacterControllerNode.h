@@ -135,6 +135,8 @@ namespace VansEngine
         // Resize the capsule cylinder while keeping its foot and Transform origin fixed.
         // Caller holds SimulationMutex; growing fails if the target shape is obstructed.
         bool ResizeCapsule(float cylinderHeight, std::optional<bool> crouched = std::nullopt);
+        // 只查询目标高度的空间；不修改胶囊、脚底、接触状态或 crouched 标志。
+        bool CanResizeCapsule(float cylinderHeight) const;
 
         // ── 状态查询 ──────────────────────────────────────────────────────
         glm::vec3 GetPosition() const;          // 返回胶囊中心坐标

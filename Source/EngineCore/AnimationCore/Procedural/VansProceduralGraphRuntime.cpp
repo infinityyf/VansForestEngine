@@ -105,6 +105,8 @@ namespace VansGraphics
 			bool directionIsWorldSpace = true;
 			VansAimConstraintState aimState;
 			int pivotBoneIndex = -1;
+			int geometryBoneIndex = -1;
+			bool targetIsWorldSpace = false;
 			float targetHalfLife = 0.0f;
 			VansLimbIKSettings limbSettings;
 			VansChainIKSettings chainSettings;
@@ -359,10 +361,16 @@ namespace VansGraphics
 
 		bool ResolveAimTarget(const CompiledRuntimeNode& node, VansAimConstraintTarget& target)
 		{
-			if (node.aimSettings.mode == VansAimConstraintMode::LookAtPoint)
+			if (node.aimSettings.mode == VansAimConstraintMode::LookAtPoint || node.aimSettings.mode == VansAimConstraintMode::WeaponRay)
 			{
 				VansProceduralGoal point;
 				if (!ResolveGoal(node.goal, point)) return false;
+				if(node.targetIsWorldSpace)
+				{
+					const float determinant=glm::determinant(input.ownerWorld);
+					if(!std::isfinite(determinant) || std::abs(determinant)<1.e-12f) return false;
+					point.positionModel=glm::vec3(glm::inverse(input.ownerWorld)*glm::vec4(point.positionModel,1));
+				}
 				target = {point.positionModel, point.positionWeight, point.valid};
 				return true;
 			}
@@ -516,7 +524,7 @@ namespace VansGraphics
 						const float alpha = HalfLifeAlpha(deltaTime, node.targetHalfLife);
 						node.smoothedTarget.valueModel = glm::mix(
 							node.smoothedTarget.valueModel, target.valueModel, alpha);
-						if (node.aimSettings.mode != VansAimConstraintMode::LookAtPoint &&
+						if (node.aimSettings.mode != VansAimConstraintMode::LookAtPoint && node.aimSettings.mode != VansAimConstraintMode::WeaponRay &&
 							glm::length(node.smoothedTarget.valueModel) <= kEpsilon)
 							node.smoothedTarget.valueModel = target.valueModel;
 						node.smoothedTarget.weight = target.weight;
@@ -524,12 +532,12 @@ namespace VansGraphics
 					if (node.smoothedTargetValid) solveTarget = node.smoothedTarget;
 					const VansProceduralSolverResult result = VansAimConstraintSolver::Solve(
 						workspace, *rig, rig->chains[static_cast<std::size_t>(node.chainIndices.front())],
-						solveTarget, deltaTime, node.aimState, node.aimSettings, node.pivotBoneIndex);
+						solveTarget, deltaTime, node.aimState, node.aimSettings, node.pivotBoneIndex, node.geometryBoneIndex);
 					auto& debugGoal = debugRecords[node.debugRecordOffset].goal;
 					debugGoal.valid = true;
 					debugGoal.positionWeight = solveTarget.weight;
 					debugGoal.positionModel = solveTarget.valueModel;
-					if (node.aimSettings.mode != VansAimConstraintMode::LookAtPoint)
+					if (node.aimSettings.mode != VansAimConstraintMode::LookAtPoint && node.aimSettings.mode != VansAimConstraintMode::WeaponRay)
 						debugGoal.positionModel = workspace.GetComponentPosition(rig->chains[
 							static_cast<std::size_t>(node.chainIndices.front())].boneIndices.back()) + glm::normalize(solveTarget.valueModel);
 					debugRecords[node.debugRecordOffset].result = result;
@@ -705,6 +713,19 @@ namespace VansGraphics
 				node.directionParameter = aim->m_DirectionParameter;
 				node.directionWeightParameter = aim->m_DirectionWeightParameter;
 				node.directionIsWorldSpace = aim->m_DirectionIsWorldSpace;
+				node.targetIsWorldSpace = aim->m_TargetIsWorldSpace;
+				if (aim->m_Settings.mode == VansAimConstraintMode::WeaponRay && error.empty())
+				{
+					node.geometryBoneIndex = rig.skeleton->FindBoneIndex(aim->m_GeometryBone);
+					if (node.geometryBoneIndex < 0 || rig.chains[chain].boneIndices.size() != 1)
+						error = "WeaponRay requires an existing geometry bone and a single-bone Aim chain";
+					else
+					{
+						int ancestor = node.geometryBoneIndex;
+						while (ancestor >= 0 && ancestor != rig.chains[chain].boneIndices.front()) ancestor = rig.skeleton->bones[ancestor].parentIndex;
+						if (ancestor < 0) error = "WeaponRay geometry bone must descend from the Aim pivot";
+					}
+				}
 				if (!aim->m_PivotBone.empty() && error.empty())
 				{
 					const int pivotBone = rig.skeleton->FindBoneIndex(aim->m_PivotBone);

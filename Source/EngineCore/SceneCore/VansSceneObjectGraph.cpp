@@ -8,6 +8,37 @@
 
 namespace Vans
 {
+bool ValidateSceneObjectReparent(const VansSerializedValue& entities,
+    const std::string& childGuid, const std::string& parentGuid, std::string& error)
+{
+    error.clear();
+    if (entities.kind != VansSerializedValue::Kind::Array)
+    { error = "Scene document has no entities array"; return false; }
+    std::unordered_map<std::string, std::string> parents;
+    for (const auto& entity : entities.arrayItems)
+    {
+        const auto id = ReadSerializedStringField(entity, "id");
+        const auto* value = FindObjectField(entity, "parent");
+        if (id.empty() || !parents.emplace(id, value ? ReadSceneParentEntityGuid(*value) : std::string{}).second)
+        { error = "Scene entity identity is missing or duplicated"; return false; }
+    }
+    if (childGuid.empty() || !parents.count(childGuid))
+    { error = "Child entity does not exist"; return false; }
+    std::unordered_set<std::string> visited;
+    for (auto cursor = parentGuid; !cursor.empty();)
+    {
+        if (cursor == childGuid)
+        { error = "Cannot parent an entity to itself or one of its descendants"; return false; }
+        if (!visited.insert(cursor).second)
+        { error = "Entity hierarchy contains a cycle"; return false; }
+        const auto parent = parents.find(cursor);
+        if (parent == parents.end())
+        { error = "Parent entity does not exist"; return false; }
+        cursor = parent->second;
+    }
+    return true;
+}
+
 namespace
 {
 std::string Map(const std::string& guid, const std::unordered_map<std::string, std::string>& map)

@@ -56,6 +56,8 @@ namespace Vans
 		float gravity = 16.0f;
 		// 有值时由输入加速度/摩擦积分速度；无值时使用目标速度半衰期模型。
 		std::optional<VansCharacterAccelerationModel> accelerationModel;
+		// Translation may use an authored heading independently of this frame's facing.
+		std::optional<float> rootMotionReferenceYaw;
 		bool valid = false;
 	};
 

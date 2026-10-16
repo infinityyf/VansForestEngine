@@ -37,6 +37,7 @@ namespace VansGraphics
 	{
 		VansAnimationGraphSetDefinition definition;
 		std::vector<VansAnimationGraphBindingSetup> bindings;
+		std::unique_ptr<VansAnimGraph> characterMotionGraph;
 	};
 
 	enum class VansGraphSetSwitchResult
@@ -275,11 +276,12 @@ namespace VansGraphics
 		glm::quat GetRootRotationDelta() const;
 		bool HasRootMotionDelta() const { return m_LastRootMotionValid; }
 		const VansAnimationFrameVector<VansAnimationEventSample>& GetSampledEvents() const { return m_SampledEvents; }
-		bool ClaimSampledEventPublication()
+		void AppendComposedEvents(const VansAnimationFrameVector<VansAnimationEventSample>& events,std::size_t begin);
+		VansAnimationEventPublicationRange ClaimSampledEventPublicationRange()
 		{
-			if (m_SampledEventsPublished) return false;
-			m_SampledEventsPublished = true;
-			return true;
+			const VansAnimationEventPublicationRange range{m_PublishedSampledEventCount,m_SampledEvents.size()};
+			m_PublishedSampledEventCount=range.end;
+			return range;
 		}
 		const VansAnimationFrameVector<VansAnimationCurveSample>& GetSampledCurves() const { return m_SampledCurves; }
 		const VansAnimationSyncState& GetSyncState() const { return m_SyncState; }
@@ -291,6 +293,8 @@ namespace VansGraphics
 		// ─── 核心更新（每帧调用）──────────────────────────────────────
 		void Update(float deltaTime, const Skeleton& skeleton);
 		void PrepareFrame(float deltaTime, const Skeleton& skeleton);
+		// Returns false when the active set uses the ordinary pose/root preparation path.
+		bool PrepareIndependentCharacterMotion(float deltaTime, const Skeleton& skeleton);
 		bool GatherPreparedWorldQueries(const Skeleton& skeleton);
 		bool ResolvePreparedWorldQueries(
 			const std::vector<VansWorldQueryResult>& results,
@@ -312,6 +316,7 @@ namespace VansGraphics
 			return view.IsValid() ? view : VansSkeletonPoseView{};
 		}
 		bool SavePoseSnapshot(const std::string& name, const Skeleton& skeleton);
+		bool SaveLayerPoseSnapshot(const std::string& name, const std::string& layerId, const Skeleton& skeleton);
 		const VansAnimationFrameVector<SampledNodeTransform>& GetSampledNodeTransforms() const { return m_SampledNodeTransforms; }
 		std::size_t GetLastFrameScratchAllocations() const { return m_FramePool.GetLastFrameUpstreamAllocations(); }
 		std::size_t GetLastFrameScratchAllocatedBytes() const { return m_FramePool.GetLastFrameUpstreamBytes(); }
@@ -337,7 +342,7 @@ namespace VansGraphics
 		bool SetTargetPostProcessGraph(std::unique_ptr<VansAnimGraph> graph,
 		                               std::string& error);
 		bool SetFinalCompositionGraph(std::unique_ptr<VansAnimGraph> graph,
-		                              std::string& error);
+		                              std::string& error, bool afterProcedural = false);
 		bool SetAnimationRig(VansCompiledAnimationRig rig,
 		                     VansGroundQueryProfileResolver queryProfileResolver,
 		                     std::string& error);
@@ -366,7 +371,11 @@ namespace VansGraphics
 		bool HasPoseCheckpointBone(const std::string& id, int bone) const;
 		bool HasTargetPostProcessGraph() const { return m_TargetPostProcessInstance != nullptr; }
 		bool HasFinalCompositionGraph() const { return m_FinalCompositionInstance != nullptr; }
+		bool SetExternalPoseLayerGraphSet(const std::string& id,std::string& error);
+		bool HasExternalPoseOverlay(const std::string& layerId) const;
+		bool ComposesExternalPoseLayers() const { return !m_ExternalPoseLayerGraphSetId.empty(); }
 		bool HasGraphSets() const { return !m_GraphSetRuntimes.empty(); }
+		bool HasGraphSet(const std::string& id) const { return m_GraphSetById.find(id)!=m_GraphSetById.end(); }
 		std::size_t GetLayerCount() const { return m_LayerRuntimes.size(); }
 		VansGraphSetSwitchResult SwitchGraphSet(const std::string& graphSetId);
 		// Restart graph instances bound to one overlay layer without changing the
@@ -376,6 +385,7 @@ namespace VansGraphics
 		const std::string& GetIncomingGraphSetId() const;
 		bool IsGraphSetTransitioning() const;
 		float GetGraphSetTransitionProgress() const;
+		void BeginDisplayedPoseHandoff(const Skeleton& skeleton,const std::string& from,const std::string& to);
 		bool SetSlots(std::vector<VansAnimationSlotDefinition> slots, std::string& error);
 		bool TransferRuntimeStateFrom(
 			const VansAnimationController& previous,
@@ -442,7 +452,7 @@ namespace VansGraphics
 		glm::quat m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 		bool      m_LastRootMotionValid = false;
 		VansAnimationFrameVector<VansAnimationEventSample> m_SampledEvents;
-		bool m_SampledEventsPublished = true;
+		std::size_t m_PublishedSampledEventCount = 0;
 		VansAnimationFrameVector<VansAnimationCurveSample> m_SampledCurves;
 		// 外部源可能在热重载时被替换，目标侧必须拥有曲线名称的存储。
 		std::vector<std::string> m_ExternalCurveNames;
@@ -487,6 +497,9 @@ namespace VansGraphics
 		{
 			VansAnimationGraphSetDefinition definition;
 			std::vector<GraphBindingRuntime> bindings;
+			std::unique_ptr<VansAnimGraph> characterMotionGraph;
+			std::unique_ptr<VansAnimGraphInstance> characterMotionInstance;
+			std::unordered_map<std::string, AnimatorParameter> characterMotionParameters;
 			std::vector<VansAnimationSyncState> evaluatedSync;
 			std::vector<VansPosePayload> cachedSourcePoses;
 			std::vector<bool> poseSourceUsed;
@@ -496,6 +509,7 @@ namespace VansGraphics
 		std::vector<LayerRuntime> m_LayerRuntimes;
 		std::vector<GraphSetRuntime> m_GraphSetRuntimes;
 		std::unordered_map<std::string, std::size_t> m_GraphSetById;
+		std::string m_ExternalPoseLayerGraphSetId;
 		std::size_t m_ActiveGraphSetIndex = static_cast<std::size_t>(-1);
 		std::size_t m_IncomingGraphSetIndex = static_cast<std::size_t>(-1);
 		VansGraphSetTransitionPolicy m_DefaultGraphSetTransition;
@@ -503,10 +517,14 @@ namespace VansGraphics
 		VansGraphSetTransitionPolicy m_CurrentGraphSetTransition;
 		float m_GraphSetTransitionElapsed = 0.0f;
 		std::string m_QueuedGraphSetId;
+		std::vector<VansBoneTransform> m_DisplayedHandoffPose;
+		float m_DisplayedHandoffElapsed=0.f;
+		VansGraphSetTransitionPolicy m_DisplayedHandoffPolicy;
 		std::unique_ptr<VansAnimGraph> m_TargetPostProcessGraph;
 		std::unique_ptr<VansAnimGraphInstance> m_TargetPostProcessInstance;
 		std::unique_ptr<VansAnimGraph> m_FinalCompositionGraph;
 		std::unique_ptr<VansAnimGraphInstance> m_FinalCompositionInstance;
+		bool m_FinalCompositionAfterProcedural = false;
 		VansAnimationSlotRuntime m_SlotRuntime;
 		std::unordered_map<std::string, VansSlotPoseInputs> m_SlotPayloads;
 		std::unique_ptr<VansMotionMatchingRuntime> m_MotionMatching;
@@ -543,7 +561,8 @@ namespace VansGraphics
 		                      VansMotionMatchingRuntime* motionMatching,
 		                      float deltaTime,
 		                      const Skeleton& skeleton,
-		                      VansPosePayload& outPayload);
+		                      VansPosePayload& outPayload,
+		                      const VansPosePayload* externalBase = nullptr);
 		const VansGraphSetTransitionPolicy& ResolveGraphSetTransitionPolicy(
 			const std::string& fromGraphSetId,
 			const std::string& toGraphSetId) const;
@@ -561,7 +580,9 @@ namespace VansGraphics
 		                               VansPosePayload& output);
 		bool EvaluateFinalComposition(float deltaTime, const Skeleton& skeleton,
 		                              const VansPosePayload& input,
-		                              VansPosePayload& output);
+		                              VansPosePayload& output, bool afterProcedural = false);
+		bool ComposeAfterProceduralLocalPose(float deltaTime, const Skeleton& skeleton,
+		                                    std::vector<glm::mat4>& localTransforms);
 		bool FinalizeLocalPose(float deltaTime, const Skeleton& skeleton,
 		                       VansPosePayload pose,
 		                       bool normalizeRoot,

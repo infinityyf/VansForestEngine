@@ -1,3 +1,5 @@
+#include "../GI/GIRegionCapacity.h"
+#include "../Lights/LightCapacity.h"
 #include "../SkyLighting/SkyLighting.glsl"
 
 #include "../GI/GIProbeStateData.glsl"
@@ -64,8 +66,8 @@ layout(set = 0, binding = 1, std430) readonly buffer LightsData
     uint shadowAtlasCount;
     vec4 softShadowParams;
     DirectionLightData directionLight;
-    PointLightData pointLights[64];
-    SpotLightData spotLights[64];
+    PointLightData pointLights[LIGHT_MAX_POINT_COUNT];
+    SpotLightData spotLights[LIGHT_MAX_SPOT_COUNT];
 };
 
 layout(set = 0, binding = 2, std430) readonly buffer MaterialData
@@ -77,12 +79,12 @@ layout(set = 0, binding = 50) uniform sampler2D globalPBRTextures[];
 
 layout(set = 1, binding = 1) uniform sampler2DArray cascadeShadowMap;
 layout(set = 1, binding = 3) uniform samplerCube skyDiffuseEnvironment;
-layout(set = 1, binding = 4) uniform sampler2D giIrradianceAtlas[8];
-layout(set = 1, binding = 5) uniform sampler2D giVisibilityAtlas[8];
+layout(set = 1, binding = 4) uniform sampler2D giIrradianceAtlas[GI_MAX_REGION_COUNT];
+layout(set = 1, binding = 5) uniform sampler2D giVisibilityAtlas[GI_MAX_REGION_COUNT];
 layout(set = 1, binding = 6, std430) readonly buffer ProbeStateBuffer
 {
     GIProbeState states[];
-} giProbeStates[8];
+} giProbeStates[GI_MAX_REGION_COUNT];
 
 #define GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex) giProbeStates[nonuniformEXT(regionIndex)].states[probeLinearIndex]
 #define GI_LAYOUT_SET 1
@@ -105,7 +107,7 @@ layout(push_constant) uniform CaptureDraw
     vec4 params;
 } drawData;
 
-vec4 SampleCaptureGIRegion(uint region, vec3 position, vec3 normal, float biasScale)
+vec4 SampleCaptureGIRegion(uint region, vec3 position, GIReceiverNormals normal, float biasScale)
 {
     GIProbeLighting sampleValue = GI_SampleProbeIrradianceAtlasVisible(region,
         ivec3(GI_LayoutRegionWord(region, 2u).xyz),
@@ -126,7 +128,7 @@ vec4 SampleCaptureGIRegion(uint region, vec3 position, vec3 normal, float biasSc
 #include "../GI/GIRegionBlend.glsl"
 
 vec3 SampleIndirectDiffuseRadiance(vec3 worldPosition, vec3 normal)
-{ return GI_BlendRegionLighting(worldPosition, normal, 1.0); }
+{ return GI_BlendRegionLighting(worldPosition, GIReceiverNormals(normal, normal), 1.0); }
 
 float DistributionGGX(vec3 N, vec3 H, float roughness)
 {
@@ -292,7 +294,7 @@ void main()
       vec3 indirect = surface.shading.albedo * ClothDiffuseReflectanceScale(NoV, cloth) *
           (vec3(1.0) - tau) * SampleIndirectDiffuseRadiance(worldPosition, N);
     if (Max3Cloth(tau) > 0.0)
-        indirect += tau * GI_BlendRegionLighting(worldPosition, -N, 0.0);
+        indirect += tau * GI_BlendRegionLighting(worldPosition, GIReceiverNormals(-N, -N), 0.0);
     outColor = vec4(max(direct + indirect * surface.ao, vec3(0.0)), 1.0);
 #else
     int materialIndex = int(round(drawData.params.w));

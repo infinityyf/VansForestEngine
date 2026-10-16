@@ -519,11 +519,12 @@ bool VansPrefabResolver::Instantiate(const VansPrefabAsset& asset, const VansSer
 }
 
 bool VansPrefabResolver::ResolveScene(const VansSerializedValue& authoring, const VansPrefabLookup& lookup,
-    VansSerializedValue& resolved, std::string& error)
+    VansSerializedValue& resolved, std::string& error, VansPrefabSceneIndex* index)
 {
     return Try([&]
     {
         VansSerializedValue scene = authoring;
+        VansPrefabSceneIndex nextIndex;
         VansSerializedValue* sceneEntities = FindObjectField(scene, "entities");
         Require(sceneEntities && sceneEntities->kind == VansSerializedValue::Kind::Array,
             "Scene requires an entities array");
@@ -532,6 +533,7 @@ bool VansPrefabResolver::ResolveScene(const VansSerializedValue& authoring, cons
             Require(prefabInstances->kind == VansSerializedValue::Kind::Array,
                 "prefabInstances must be an array");
             std::unordered_set<std::string> instanceIds;
+            std::size_t instanceIndex = 0;
             for (const VansSerializedValue& record : prefabInstances->arrayItems)
             {
                 ValidateSerializedInstance(record);
@@ -546,15 +548,23 @@ bool VansPrefabResolver::ResolveScene(const VansSerializedValue& authoring, cons
                 Require(Instantiate(*asset, record, objects, reason), reason);
                 Require(objects.kind == VansSerializedValue::Kind::Array,
                     "Instantiated prefab objects must be an array");
+                if (index)
+                {
+                    for (const auto& object : objects.arrayItems)
+                        Require(nextIndex.instanceByEntity.emplace(SerializedId(object), instanceIndex).second,
+                            "Prefab instances share an entity identity");
+                }
                 sceneEntities->arrayItems.insert(
                     sceneEntities->arrayItems.end(),
                     std::make_move_iterator(objects.arrayItems.begin()),
                     std::make_move_iterator(objects.arrayItems.end()));
+                ++instanceIndex;
             }
         }
         const auto diagnostics = VansSceneSchema::ValidateEntityGraph(ToJson(*sceneEntities));
         Require(diagnostics.empty(), diagnostics.empty() ? "" : diagnostics.front().message);
         resolved = std::move(scene);
+        if (index) *index = std::move(nextIndex);
     }, error);
 }
 
@@ -566,68 +576,122 @@ bool VansPrefabResolver::CaptureScene(const VansSerializedValue& resolved, const
         auto scene = ToJson(resolved);
         if (!scene.contains("prefabInstances") || scene.at("prefabInstances").empty())
         { authoring = resolved; return; }
-        Json remaining = scene.at("entities");
+        const auto& sourceEntities = scene.at("entities");
+        std::unordered_map<std::string, const Json*> objects;
+        std::unordered_map<std::string, std::vector<std::string>> children;
+        for (const auto& entity : sourceEntities)
+        {
+            Require(objects.emplace(Id(entity), &entity).second, "Duplicate scene entity identity");
+            const auto parent = DecodeSerializedValueJson(entity.at("parent"));
+            children[ReadSceneParentEntityGuid(parent)].push_back(Id(entity));
+        }
+        // A capture observes one immutable asset snapshot per GUID. No cache survives the transaction.
+        std::unordered_map<std::string, std::shared_ptr<const VansPrefabAsset>> assets;
+        VansPrefabLookup captureLookup = [&](const std::string& guid)
+        {
+            auto found = assets.find(guid);
+            if (found != assets.end()) return found->second;
+            Require(static_cast<bool>(lookup), "Prefab asset lookup unavailable");
+            auto asset = lookup(guid);
+            Require(asset != nullptr, "Prefab source unavailable while editing");
+            return assets.emplace(guid, std::move(asset)).first->second;
+        };
+        std::unordered_map<std::string, std::string> instanceRoots;
+        for (const auto& record : scene.at("prefabInstances"))
+        {
+            ValidateInstance(record);
+            const auto asset = captureLookup(record.at("asset"));
+            const auto root = InstanceObjectGuid(DecodeSerializedValueJson(record), asset->rootEntity, false);
+            Require(instanceRoots.emplace(root, record.at("instanceId").get<std::string>()).second,
+                "Duplicate prefab instance root identity");
+        }
+        std::unordered_set<std::string> claimed;
         Json records = Json::array();
         for (auto record : scene.at("prefabInstances"))
         {
             ValidateInstance(record);
-            Require(static_cast<bool>(lookup), "Prefab asset lookup unavailable");
-                const auto asset = lookup(record.at("asset"));
-            Require(asset != nullptr, "Prefab source unavailable while editing");
+            const auto asset = captureLookup(record.at("asset"));
             auto instance = DecodeSerializedValueJson(record);
             const auto known = LocalEntities(*asset, record);
             const auto map = CompleteIdentityMap(*asset, known, instance);
             const auto rootGuid = map.entities.at(asset->rootEntity);
-            if (!FindId(remaining, rootGuid)) continue; // 删除实例根就是删除该实例记录。
-            VansSerializedValue subtree; std::string reason;
-            Require(ExtractSceneObjectSubtree(DecodeSerializedValueJson(remaining), rootGuid, subtree, reason), reason);
-            auto captured = ToJson(subtree);
-            for (const auto& other : scene.at("prefabInstances"))
+            if (!objects.count(rootGuid)) continue; // Deleting an instance root removes its instance record.
+            Json captured = Json::array();
+            std::unordered_set<std::string> capturedIds;
+            std::vector<std::string> pending{rootGuid};
+            while (!pending.empty())
             {
-                if (other.at("instanceId") == record.at("instanceId")) continue;
-                const auto source = lookup(other.at("asset"));
-                Require(source != nullptr, "Prefab asset unavailable");
-                const auto otherRoot = InstanceObjectGuid(DecodeSerializedValueJson(other), source->rootEntity, false);
-                Require(!FindId(captured, otherRoot), "Nested prefab instances are not supported; unpack before reparenting");
+                auto id = std::move(pending.back()); pending.pop_back();
+                Require(capturedIds.insert(id).second, "Object hierarchy contains a cycle");
+                Require(id == rootGuid || !instanceRoots.count(id),
+                    "Nested prefab instances are not supported; unpack before reparenting");
+                Require(claimed.insert(id).second, "Prefab instances cannot share scene entities");
+                captured.push_back(*objects.at(id));
+                const auto& descendants = children[id];
+                pending.insert(pending.end(), descendants.rbegin(), descendants.rend());
             }
             for (const auto& pair : map.entities)
-                Require(!FindId(remaining, pair.second) || FindId(captured, pair.second),
+                Require(!objects.count(pair.second) || capturedIds.count(pair.second),
                     "Unpack the instance before moving an inherited object outside its root");
-            VansSceneObjectIdentityMap inverse;
-            for (const auto& pair : map.entities) inverse.entities.emplace(pair.second, pair.first);
-            for (const auto& pair : map.components) inverse.components.emplace(pair.second, pair.first);
-            for (const auto& entity : captured)
-            {
-                if (!inverse.entities.count(Id(entity)))
-                {
-                    const auto local = VansAssetGuid::New().ToString();
-                    inverse.entities.emplace(Id(entity), local); record["identityOverrides"]["entity/" + local] = Id(entity);
-                }
-                for (const auto& component : entity.at("components"))
-                    if (!inverse.components.count(Id(component)))
-                    {
-                        const auto local = VansAssetGuid::New().ToString();
-                        inverse.components.emplace(Id(component), local); record["identityOverrides"]["component/" + local] = Id(component);
-                    }
-                EraseId(remaining, Id(entity));
-            }
-            auto* root = FindId(captured, rootGuid);
-            record["placement"] = { { "parent", root->at("parent") },
-                { "position", Transform(*root).at("position") }, { "rotation", Transform(*root).at("rotation") } };
-            root->at("parent") = nullptr;
-            Transform(*root)["position"] = { 0.0, 0.0, 0.0 };
-            Transform(*root)["rotation"] = { 0.0, 0.0, 0.0, 1.0 };
-            auto local = DecodeSerializedValueJson(captured);
-            Require(RemapSceneObjectGraph(local, inverse, reason), reason);
-            record["overrides"] = DiffEntities(ToJson(asset->entities), ToJson(local));
+            std::string reason;
+            VansSerializedValue capturedInstance;
+            Require(CaptureInstance(*asset, instance, DecodeSerializedValueJson(captured), capturedInstance, reason), reason);
+            record = ToJson(capturedInstance);
             records.push_back(std::move(record));
         }
+        Json remaining = Json::array();
+        for (const auto& entity : sourceEntities)
+            if (!claimed.count(Id(entity))) remaining.push_back(entity);
         scene["entities"] = std::move(remaining);
         scene["prefabInstances"] = std::move(records);
         auto candidate = DecodeSerializedValueJson(scene);
         VansSerializedValue checked; std::string reason;
-        Require(ResolveScene(candidate, lookup, checked, reason), reason);
+        Require(ResolveScene(candidate, captureLookup, checked, reason), reason);
         authoring = std::move(candidate);
+    }, error);
+}
+
+bool VansPrefabResolver::CaptureInstance(const VansPrefabAsset& asset, const VansSerializedValue& instance,
+    const VansSerializedValue& entities, VansSerializedValue& capturedInstance, std::string& error)
+{
+    return Try([&]
+    {
+        auto record = ToJson(instance);
+        ValidateInstance(record);
+        const auto known = LocalEntities(asset, record);
+        const auto map = CompleteIdentityMap(asset, known, instance);
+        const auto rootGuid = map.entities.at(asset.rootEntity);
+        VansSerializedValue subtree;
+        std::string reason;
+        Require(ExtractSceneObjectSubtree(entities, rootGuid, subtree, reason), reason);
+        auto captured = ToJson(subtree);
+        VansSceneObjectIdentityMap inverse;
+        for (const auto& pair : map.entities) inverse.entities.emplace(pair.second, pair.first);
+        for (const auto& pair : map.components) inverse.components.emplace(pair.second, pair.first);
+        for (const auto& entity : captured)
+        {
+            if (!inverse.entities.count(Id(entity)))
+            {
+                const auto local = VansAssetGuid::New().ToString();
+                inverse.entities.emplace(Id(entity), local); record["identityOverrides"]["entity/" + local] = Id(entity);
+            }
+            for (const auto& component : entity.at("components"))
+                if (!inverse.components.count(Id(component)))
+                {
+                    const auto local = VansAssetGuid::New().ToString();
+                    inverse.components.emplace(Id(component), local); record["identityOverrides"]["component/" + local] = Id(component);
+                }
+        }
+        auto* root = FindId(captured, rootGuid);
+        record["placement"] = { { "parent", root->at("parent") },
+            { "position", Transform(*root).at("position") }, { "rotation", Transform(*root).at("rotation") } };
+        root->at("parent") = nullptr;
+        Transform(*root)["position"] = { 0.0, 0.0, 0.0 };
+        Transform(*root)["rotation"] = { 0.0, 0.0, 0.0, 1.0 };
+        auto local = DecodeSerializedValueJson(captured);
+        Require(RemapSceneObjectGraph(local, inverse, reason), reason);
+        record["overrides"] = DiffEntities(ToJson(asset.entities), ToJson(local));
+        capturedInstance = DecodeSerializedValueJson(record);
     }, error);
 }
 

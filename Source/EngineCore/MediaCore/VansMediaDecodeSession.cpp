@@ -489,9 +489,9 @@ VansMediaDecodeStatus VansMediaDecodeSession::DecodeVideoFrame(
             m_State->m_Frame->best_effort_timestamp) * m_State->m_TimeBase;
     }
     av_frame_unref(m_State->m_Frame);
-    if (convertedRows <= 0)
+    if (convertedRows != m_State->m_Height)
     {
-        error = "Video pixel conversion failed";
+        error = "Video pixel conversion did not produce a complete frame";
         return VansMediaDecodeStatus::Failed;
     }
     return VansMediaDecodeStatus::FrameReady;

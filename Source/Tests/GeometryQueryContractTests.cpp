@@ -31,6 +31,25 @@ bool TestTriangleGeometryQueryContract()
 {
     try
     {
+        // 场景和 GI 的值变化检测必须逐分量比较，不能仅比较 x。
+        const auto checkComponents=[](auto value)
+        {
+            Check(value==value,"identical vector equality");
+            for(int axis=0;axis<value.length();++axis)
+            {
+                auto changed=value;changed[axis]+=1;
+                Check(!(changed==value),"vector equality ignored a changed component");
+            }
+        };
+        checkComponents(glm::vec2(1));checkComponents(glm::vec3(1));checkComponents(glm::vec4(1));
+        checkComponents(glm::ivec2(1));checkComponents(glm::ivec3(1));checkComponents(glm::ivec4(1));
+        checkComponents(glm::uvec2(1));checkComponents(glm::uvec3(1));checkComponents(glm::uvec4(1));
+        const glm::mat4 identity(1);
+        for(int column=0;column<4;++column)for(int row=0;row<4;++row)
+        {
+            auto changed=identity;changed[column][row]+=1;
+            Check(!(changed==identity),"matrix equality ignored a changed component");
+        }
         VansTriangleGeometryQuery query;
         VansGeometryHit hit;
         Check(!query.Raycast({}, {0, 1, 0}, 10, hit), "empty ray query");

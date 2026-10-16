@@ -705,14 +705,24 @@ void DecodeInitVelocity(const ParticleJsonValue& root, VansInitVelocityModule& m
 
 ParticleJsonValue EncodeInitSize(const VansInitSizeModule& module)
 {
-    return {{"module", "InitSize"}, {"size", EncodeFloatCurve(module.m_Size)}};
+    return {{"module", "InitSize"}, {"size", EncodeFloatCurve(module.m_Size)},
+        {"collectionAgeScale", EncodeFloatCurve(module.m_CollectionAgeScale)}};
 }
 
 void DecodeInitSize(const ParticleJsonValue& root, VansInitSizeModule& module)
 {
-    if (!root.contains("size")) return;
-    DecodeFloatCurve(root["size"], module.m_Size);
+    if (root.contains("size")) DecodeFloatCurve(root["size"], module.m_Size);
     ValidateNonNegativeFloatCurve(module.m_Size, "InitSize.size", 0.0f);
+    if (root.contains("collectionAgeScale")) DecodeFloatCurve(root["collectionAgeScale"], module.m_CollectionAgeScale);
+    ValidateNonNegativeFloatCurve(module.m_CollectionAgeScale, "InitSize.collectionAgeScale", 0.0f);
+}
+
+std::vector<VansParticleFieldRule> InitSizeFields()
+{
+    auto fields = VansParticleEmitterJsonCodec::FloatCurveFields("/size");
+    const auto ageFields = VansParticleEmitterJsonCodec::FloatCurveFields("/collectionAgeScale", 3600);
+    fields.insert(fields.end(), ageFields.begin(), ageFields.end());
+    return fields;
 }
 
 ParticleJsonValue EncodeInitColor(const VansInitColorModule& module)
@@ -985,7 +995,7 @@ const auto& ModuleCatalog()
             {ChoiceRule("/mode", {"Cone", "Random", "Box"}), RangeRule("/angle", 0.0, 180.0, 0.25),
                 RangeRule("/speed", 0.0, 10000.0), RangeRule("/minVelocity/*",-10000,10000),RangeRule("/maxVelocity/*",-10000,10000)}),
         MakeModuleEntry<VansInitSizeModule, EncodeInitSize, DecodeInitSize>(
-            "InitSize", VansParticleModulePhase::Initialize, VansParticleEmitterJsonCodec::FloatCurveFields("/size")),
+            "InitSize", VansParticleModulePhase::Initialize, InitSizeFields()),
         MakeModuleEntry<VansInitColorModule, EncodeInitColor, DecodeInitColor>(
             "InitColor", VansParticleModulePhase::Initialize, VansParticleEmitterJsonCodec::FloatCurveFields("/alphaScales/*")),
         MakeModuleEntry<VansInitRotationModule, EncodeInitRotation, DecodeInitRotation>(

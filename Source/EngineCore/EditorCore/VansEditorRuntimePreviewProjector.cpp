@@ -2,8 +2,12 @@
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../MaterialCore/VansClothMaterialParameters.h"
+#include "../MaterialCore/VansTreeLeafMaterialParameters.h"
 #include "../SceneCore/VansSceneAuthoringEntityProjection.h"
 #include "../SceneCore/VansSceneRuntimeProjection.h"
+#include "../SceneCore/VansSceneDocument.h"
+#include "../SceneCore/VansSceneParentReference.h"
+#include "../EngineAPILayer/Public/ISceneInteractionEditorAPI.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <../../GLM/glm.hpp>
@@ -11,7 +15,9 @@
 #include <../../GLM/gtx/quaternion.hpp>
 
 #include <cstdint>
+#include <algorithm>
 #include <limits>
+#include <optional>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -312,6 +318,93 @@ EditorAPI::RuntimeEntityPreviewChange BuildRuntimeEntityPreviewChange(
 		: EditorAPI::RuntimeEntityPreviewChange{};
 }
 
+EditorAPI::RuntimeEntityPreviewChange BuildRuntimeEntityHierarchyPreviewChange(const VansSerializedValue& entity)
+{
+    const auto preview = BuildRuntimeEntityPreviewChange(entity);
+    EditorAPI::RuntimeEntityPreviewChange change;
+    change.hasTransform = preview.hasTransform;
+    change.transform = preview.transform;
+    EditorAPI::RuntimeEntityParentEdit parent;
+    parent.entityGuid = ReadSerializedStringField(entity, "id");
+    parent.transformPolicy = EditorAPI::RuntimeReparentTransformPolicy::KeepWorld;
+    const auto* value = FindObjectField(entity, "parent");
+    if (value && !value->IsNull())
+    {
+        VansSceneParentReference reference;
+        std::string error;
+        if (!TryReadSceneParentReference(*value, reference, error)) return {};
+        parent.parent.kind = reference.kind == VansSceneParentKind::Entity ? EditorAPI::RuntimeParentKind::Entity :
+            reference.kind == VansSceneParentKind::Bone ? EditorAPI::RuntimeParentKind::Bone : EditorAPI::RuntimeParentKind::Socket;
+        parent.parent.entityGuid = reference.entityGuid.ToString();
+        if (reference.IsAnchor())
+        {
+            parent.parent.animationComponentGuid = reference.animationComponentGuid.ToString();
+            parent.parent.anchorGuid = reference.anchorGuid.ToString();
+            parent.parent.poseCheckpoint = reference.poseCheckpoint;
+        }
+    }
+    change.parentEdits.push_back(std::move(parent));
+    return change;
+}
+
+bool RequiresRuntimeEntityRebuild(const VansSerializedValue& before, const VansSerializedValue& after)
+{
+    // Incremental writes do not reset omitted fields to construction defaults.
+    const auto removedField = [](const auto& self, const VansSerializedValue& oldValue,
+        const VansSerializedValue& newValue) -> bool
+    {
+        if (oldValue.kind == VansSerializedValue::Kind::Object)
+            for (const auto& [key, value] : oldValue.objectFields)
+            {
+                const auto* next = FindObjectField(newValue, key);
+                if (!next || self(self, value, *next)) return true;
+            }
+        if (oldValue.kind == VansSerializedValue::Kind::Array)
+        {
+            if (newValue.kind != VansSerializedValue::Kind::Array || oldValue.arrayItems.size() > newValue.arrayItems.size()) return true;
+            for (std::size_t i = 0; i < oldValue.arrayItems.size(); ++i)
+                if (self(self, oldValue.arrayItems[i], newValue.arrayItems[i])) return true;
+        }
+        return false;
+    };
+    if (removedField(removedField, before, after)) return true;
+    VansSceneAuthoringEntityProjection oldProjection, newProjection;
+    if (!VansSceneRuntimeProjection::ProjectAuthoringEntity(before, oldProjection) ||
+        !VansSceneRuntimeProjection::ProjectAuthoringEntity(after, newProjection) ||
+        oldProjection.entityGuid != newProjection.entityGuid ||
+        oldProjection.components.size() != newProjection.components.size()) return true;
+    for (std::size_t i = 0; i < oldProjection.components.size(); ++i)
+        if (!SerializedValuesEqual(oldProjection.components[i].unprojectedData, newProjection.components[i].unprojectedData))
+            return true;
+    // Clearing an override needs reconstruction; the incremental material API only assigns slots.
+    for (const auto& oldOverride : oldProjection.materialOverrides)
+        if (std::none_of(newProjection.materialOverrides.begin(), newProjection.materialOverrides.end(),
+            [&](const auto& value) { return value.slot == oldOverride.slot; })) return true;
+    auto oldFields = before, newFields = after;
+    for (const char* field : {"name", "active", "components"})
+    {
+        EraseSerializedObjectField(oldFields, field);
+        EraseSerializedObjectField(newFields, field);
+    }
+    return !SerializedValuesEqual(oldFields, newFields);
+}
+
+bool RestoreRuntimeChildHierarchy(EditorAPI::ISceneInteractionEditorAPI& api,
+    const VansSceneDocument& document, const std::string& parentGuid)
+{
+    const auto snapshot = document.CreateSnapshot();
+    const auto* entities = FindObjectField(snapshot.Root(), "entities");
+    if (!entities || entities->kind != VansSerializedValue::Kind::Array) return false;
+    for (const auto& entity : entities->arrayItems)
+    {
+        const auto* parent = FindObjectField(entity, "parent");
+        if (!parent || ReadSceneParentEntityGuid(*parent) != parentGuid) continue;
+        const auto change = BuildRuntimeEntityHierarchyPreviewChange(entity);
+        if (change.Empty() || !api.ApplyRuntimeEntityPreviewChange(change)) return false;
+    }
+    return true;
+}
+
 EditorAPI::RuntimeEntityPreviewChange BuildRuntimeEntityPreviewChangeFromSceneRoot(
     const VansSerializedValue& sceneRoot,
     const std::string& entityGuid)
@@ -331,6 +424,24 @@ EditorAPI::RuntimeMaterialPreviewChange BuildRuntimeMaterialPreviewChange(
     EditorAPI::RuntimeMaterialPreviewChange change;
     change.assetPath = assetPath.string();
     const std::vector<std::string> tokens = SplitSerializedPointer(changedPointer);
+    const auto materialType = ReadSerializedStringField(assetRoot, "materialType");
+    const auto* authorParameters = FindObjectField(assetRoot, "parameters");
+    const auto* authorLeaf = authorParameters ? FindObjectField(*authorParameters, "leaf") : nullptr;
+    std::optional<VansSerializedValue> leafParameters;
+    if (materialType == "tree" || materialType == "pbr")
+    {
+        VansTreeLeafMaterialParameters parsed;
+        std::string error;
+        if (authorLeaf && !ReadTreeLeafMaterialParameters(*authorLeaf, parsed, error)) return change;
+        leafParameters = WriteTreeLeafMaterialParameters(parsed);
+    }
+    const auto appendLeaf = [&](const std::string& onlyName = {})
+    {
+        if (!leafParameters) return;
+        for (const auto& [name, value] : leafParameters->objectFields)
+            if (onlyName.empty() || onlyName == name)
+                AppendMaterialPreviewParameter(change, "leaf/" + name, value);
+    };
     if (ReadSerializedStringField(assetRoot, "materialType") == "cloth")
     {
         const auto* sourceParameters = FindObjectField(assetRoot, "parameters");
@@ -367,91 +478,51 @@ EditorAPI::RuntimeMaterialPreviewChange BuildRuntimeMaterialPreviewChange(
         }
         return change;
     }
-    if (tokens.size() >= 3 && tokens[0] == "asset")
+    const std::string group = tokens.size() >= 2 && tokens[0] == "asset" ? tokens[1] : std::string{};
+    const bool complete = group != "parameters" && group != "customParameters" &&
+        group != "textures" && group != "customTextures";
+    const std::string field = !complete && tokens.size() >= 3 ? tokens[2] : std::string{};
+    // Inspector publishes the edited top-level group. Keep that scope so a
+    // parameter edit never submits unchanged textures to the render thread.
+    if (complete || group == "parameters")
     {
-        if (tokens[1] == "parameters")
+        if (field == "leaf" && leafParameters)
         {
-            if (const VansSerializedValue* parameters = FindObjectField(assetRoot, "parameters"))
-            {
-                if (const VansSerializedValue* parameter = FindObjectField(*parameters, tokens[2]))
-                {
-                    AppendMaterialPreviewParameter(change, tokens[2], *parameter);
-                    return change;
-                }
-            }
+            appendLeaf(tokens.size() >= 4 ? tokens[3] : std::string{});
         }
-        if (tokens[1] == "customParameters")
+        else
         {
-            if (const VansSerializedValue* customParameters = FindObjectField(assetRoot, "customParameters"))
-            {
-                if (const VansSerializedValue* parameter = FindObjectField(*customParameters, tokens[2]))
-                {
-                    AppendMaterialPreviewParameter(
-                        change,
-                        "customParameters/" + tokens[2],
-                        *parameter);
-                    return change;
-                }
-            }
-        }
-        if (tokens[1] == "textures")
-        {
-            if (const VansSerializedValue* textures = FindObjectField(assetRoot, "textures"))
-            {
-                if (textures->kind == VansSerializedValue::Kind::Object && tokens.size() >= 3)
-                {
-                    AppendTextureObjectPreviewEdits(change, *textures, tokens[2]);
-                    return change;
-                }
-                if (textures->kind == VansSerializedValue::Kind::Array)
-                {
-                    AppendTransparentTextureArrayPreviewEdits(change, *textures, tokens);
-                    return change;
-                }
-            }
-        }
-        if (tokens[1] == "customTextures")
-        {
-            if (const VansSerializedValue* customTextures = FindObjectField(assetRoot, "customTextures"))
-            {
-                if (tokens.size() >= 3)
-                {
-                    AppendTextureObjectPreviewEdits(change, *customTextures, tokens[2]);
-                    return change;
-                }
-            }
+            const VansSerializedValue* parameters = FindObjectField(assetRoot, "parameters");
+            if (!parameters && assetRoot.kind == VansSerializedValue::Kind::Object)
+                parameters = &assetRoot;
+            if (parameters && parameters->kind == VansSerializedValue::Kind::Object)
+                for (const auto& [name, value] : parameters->objectFields)
+                    if ((field.empty() || field == name) && (name != "leaf" || !leafParameters))
+                        AppendMaterialPreviewParameter(change, name, value);
+            // Group/full restoration resets an omitted leaf block to load defaults.
+            if (field.empty()) appendLeaf();
         }
     }
-
-    const VansSerializedValue* parameters = FindObjectField(assetRoot, "parameters");
-    if (!parameters && assetRoot.kind == VansSerializedValue::Kind::Object)
-        parameters = &assetRoot;
-
-    if (parameters && parameters->kind == VansSerializedValue::Kind::Object)
-        for (const auto& [name, value] : parameters->objectFields)
-            AppendMaterialPreviewParameter(change, name, value);
-
-    if (const VansSerializedValue* customParameters = FindObjectField(assetRoot, "customParameters"))
+    if (complete || group == "customParameters")
     {
-        if (customParameters->kind == VansSerializedValue::Kind::Object)
+        if (const auto* customParameters = FindObjectField(assetRoot, "customParameters"))
+            if (customParameters->kind == VansSerializedValue::Kind::Object)
+                for (const auto& [name, value] : customParameters->objectFields)
+                    if (field.empty() || field == name)
+                        AppendMaterialPreviewParameter(change, "customParameters/" + name, value);
+    }
+    if (complete || group == "textures")
+    {
+        if (const auto* textures = FindObjectField(assetRoot, "textures"))
         {
-            for (const auto& [name, value] : customParameters->objectFields)
-            {
-                AppendMaterialPreviewParameter(
-                    change,
-                    "customParameters/" + name,
-                    value);
-            }
+            AppendTextureObjectPreviewEdits(change, *textures, field);
+            AppendTransparentTextureArrayPreviewEdits(change, *textures, tokens);
         }
     }
-    if (const VansSerializedValue* textures = FindObjectField(assetRoot, "textures"))
+    if (complete || group == "customTextures")
     {
-        AppendTextureObjectPreviewEdits(change, *textures);
-        AppendTransparentTextureArrayPreviewEdits(change, *textures, {});
-    }
-    if (const VansSerializedValue* customTextures = FindObjectField(assetRoot, "customTextures"))
-    {
-        AppendTextureObjectPreviewEdits(change, *customTextures);
+        if (const auto* customTextures = FindObjectField(assetRoot, "customTextures"))
+            AppendTextureObjectPreviewEdits(change, *customTextures, field);
     }
     return change;
 }

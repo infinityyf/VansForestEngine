@@ -2,6 +2,7 @@
 #define GI_WORLD_ENABLED 1
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_nonuniform_qualifier : require
+#include "../GI/GIRegionCapacity.h"
 
 #include "../Common/Common.glsl"
 #include "../GI/GIProbeStateData.glsl"
@@ -26,12 +27,12 @@ layout(set = 1, binding = 4) uniform samplerCube environmentMap;
 layout(set = 1, binding = 8) uniform sampler2D shadowMap;
 layout(set = 1, binding = 9) uniform sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT];
 layout(set = 1, binding = 10, std430) buffer pbrDataBuffer { f16vec4 albedoRoughness[]; } pbrInfo;
-layout(set = 1, binding = 11) uniform sampler2D giVisibilityAtlas[8];
-layout(set = 1, binding = 12) uniform sampler2D giIrradianceAtlas[8];
+layout(set = 1, binding = 11) uniform sampler2D giVisibilityAtlas[GI_MAX_REGION_COUNT];
+layout(set = 1, binding = 12) uniform sampler2D giIrradianceAtlas[GI_MAX_REGION_COUNT];
 layout(set = 1, binding = 13, std430) readonly buffer ProbeStateBuffer
 {
     GIProbeState states[];
-} giProbeStates[8];
+} giProbeStates[GI_MAX_REGION_COUNT];
 
 #define GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex) giProbeStates[nonuniformEXT(regionIndex)].states[probeLinearIndex]
 #define GI_LAYOUT_SET 1
@@ -39,15 +40,7 @@ layout(set = 1, binding = 13, std430) readonly buffer ProbeStateBuffer
 #include "../GI/GIProbeLayoutData.glsl"
 #include "../GI/GIProbeCommon.glsl"
 
-layout(push_constant) uniform PushConstants
-{
-    vec4 gridParams;
-    vec4 dispatchParams;
-    vec4 frameParams;
-    vec4 regionParams;
-    vec4 lightingParams;
-    vec4 temporalParams;
-} pushConstants;
+#include "../GI/GIProbeDispatch.glsl"
 
 
 
@@ -57,12 +50,12 @@ void main()
     uint rays=giProbeWork.header.y,activeIndex=rayLinear/rays;
     if(activeIndex>=giProbeWork.header.x)return;
     uint localRay=rayLinear%rays;
-    uvec4 work=giProbeWork.entries[activeIndex];
-    ivec3 counts=ivec3(pushConstants.dispatchParams.xyz);
+    uvec4 work=giProbeWork.entries[activeIndex].scheduling;
+    ivec3 counts=ivec3(giDispatch.dispatchParams.xyz);
     ivec3 coord=GI_WorkProbeCoordinate(work.x,counts);
-    vec3 volumeSize=vec3(counts)*pushConstants.gridParams.xyz;
-    vec3 volumeMin=pushConstants.regionParams.xyz-volumeSize*0.5;
-    vec3 origin=GI_LayoutProbePosition(giProbeWork.header.z,work.x,counts,volumeMin,pushConstants.gridParams.xyz)+
+    vec3 volumeSize=vec3(counts)*giDispatch.gridParams.xyz;
+    vec3 volumeMin=giDispatch.regionParams.xyz-volumeSize*0.5;
+    vec3 origin=GI_LayoutProbePosition(giProbeWork.header.z,work.x,counts,volumeMin,giDispatch.gridParams.xyz)+
         giProbeStates[nonuniformEXT(giProbeWork.header.z)].states[work.x].relocationAndConfidence.xyz;
     GIProbeRayDirectionContext context=GI_BuildProbeRayDirectionContext(coord,counts,rays,work.z);
     bool fixedRay;vec3 direction=GI_ProbeRayDirectionPrepared(context,localRay,fixedRay);
@@ -74,15 +67,12 @@ void main()
         pbrInfo.albedoRoughness[rayLinear]=f16vec4(0);
         hitEmission.emission[rayLinear]=f16vec4(0);
     }
-    float limit=previous>=0?min(previous,pushConstants.gridParams.w):pushConstants.gridParams.w;
-    float spacing=giProbeWork.header.w!=0u?GI_LayoutPosition(giProbeWork.header.z,work.x).w:
-        min(pushConstants.gridParams.x,min(pushConstants.gridParams.y,pushConstants.gridParams.z));
-    // 与探针采样尺度匹配，近/中/远 4/16/64 m 对应至少 .25/1/4 m 体素。
-    // 仍共用原步数上限；地形高度求交与屏幕接收可见性不降低精度。
+    float limit=previous>=0?min(previous,giDispatch.traceParams.x):giDispatch.traceParams.x;
+    // 体素精度来自区域查询配置，不随 Probe 密度或自适应叶尺寸变化。
     uint scatterSeed=GI_HashCombine(GI_HashCombine(work.x,giProbeWork.header.z),GI_HashCombine(localRay,work.z));
     bool scatterSelected=!fixedRay && (localRay-GI_FixedRayCount(rays))%GI_WORLD_SCATTER_GROUPS==work.z%GI_WORLD_SCATTER_GROUPS;
     float scatterDepth=scatterSelected?GIWorldScatterOpticalDepth(GI_Hash01(scatterSeed)):-1.0;
-    GIWorldHit hit=GIWorldTrace(origin,direction,0.0001,limit,!fixedRay,spacing/16.0,scatterDepth);
+    GIWorldHit hit=GIWorldTrace(origin,direction,0.0001,limit,!fixedRay,giDispatch.traceParams.y,scatterDepth);
     gwScatterEvents[GIWorldScatterAddress(giProbeWork.header.z,rayLinear)]=hit.scattering;
     if(!hit.valid){hitPositionInfoBuffer.hitDistance[rayLinear]=GI_TraceFailureDistance(hit.failure);rayRadiance.radiance[rayLinear]=f16vec4(0);return;}
     if(hit.t<limit)

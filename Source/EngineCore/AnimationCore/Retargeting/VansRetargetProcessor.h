@@ -24,6 +24,8 @@ namespace VansGraphics
 		bool debugDraw = false;
 		std::vector<VansRetargetLimbChainDesc> limbChains;
 		std::vector<VansRetargetControlBoneDesc> controlBones;
+		std::vector<VansRetargetBoneMappingDesc> boneMappings;
+		glm::quat outputModelRotation{1.0f, 0.0f, 0.0f, 0.0f};
 	};
 
 	struct VansRetargetBuildStats
@@ -45,6 +47,9 @@ namespace VansGraphics
 		           const VansRetargetRuntimeDesc& desc = {});
 		bool IsValid() const { return m_Valid; }
 		const VansRetargetBuildStats& GetStats() const { return m_Stats; }
+		// 源程序化目标和根运动共用已编译的单位／模型轴变换；不包含肢体形变。
+		glm::mat4 GetSourceToTargetModelTransform() const;
+		glm::quat GetSourceToTargetModelRotation() const;
 
 		bool Process(const std::vector<glm::mat4>& sourceModelTransforms,
 		             const Skeleton& sourceSkeleton,
@@ -57,6 +62,8 @@ namespace VansGraphics
 			int sourceIndex = -1;
 			int targetIndex = -1;
 			bool copyTranslationDelta = false;
+			int rotationReferenceIndex = -1;
+			float rotationBlend = 1.0f;
 		};
 
 		struct CompiledLimbChain
@@ -86,7 +93,9 @@ namespace VansGraphics
 		const Skeleton* m_TargetSkeleton = nullptr;
 		glm::mat4 m_TargetModelSpaceCorrection = glm::mat4(1.0f);
 		glm::mat4 m_RootAlignmentCorrection = glm::mat4(1.0f);
+		glm::mat4 m_OutputModelRotation = glm::mat4(1.0f);
 		bool m_HasTargetModelSpaceCorrection = false;
+		bool m_PreserveTargetModelSpace = false;
 		bool m_HasRootAlignmentCorrection = false;
 		bool m_Valid = false;
 		mutable std::vector<glm::mat4> m_SourceLocalScratch;
@@ -110,7 +119,10 @@ namespace VansGraphics
 		static bool TryBuildHumanoidBasis(
 			const Skeleton& skeleton,
 			const std::vector<glm::mat4>& modelTransforms,
-			glm::mat3& outBasis);
+			glm::mat3& outBasis,
+			const VansRetargetRuntimeDesc* mappings = nullptr,
+			const Skeleton* mappingTarget = nullptr,
+			const VansCompiledAnimationRig* referenceRig = nullptr);
 		bool FinalizeVirtualBones(const std::vector<glm::mat4>& sourceModelTransforms,
 			const Skeleton& sourceSkeleton, const Skeleton& targetSkeleton,
 			std::vector<glm::mat4>& targetModelTransforms) const;

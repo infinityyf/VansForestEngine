@@ -120,29 +120,6 @@ namespace VansGraphics
 				static_cast<float>(Vans::ReadSerializedNumber(raw.arrayItems[2], fallback.z)));
 		}
 
-		float ReadObjectFloatField(const Vans::VansSerializedValue& object, const char* key, float fallback)
-		{
-			const Vans::VansSerializedValue* found = Vans::FindObjectField(object, key);
-			if (!found)
-				return fallback;
-			const Vans::VansSerializedValue& raw = UnwrapMaterialValue(*found);
-			return static_cast<float>(Vans::ReadSerializedNumber(raw, fallback));
-		}
-
-		glm::vec3 ReadObjectVec3Field(const Vans::VansSerializedValue& object, const char* key, const glm::vec3& fallback)
-		{
-			const Vans::VansSerializedValue* found = Vans::FindObjectField(object, key);
-			if (!found)
-				return fallback;
-			const Vans::VansSerializedValue& raw = UnwrapMaterialValue(*found);
-			if (raw.kind != Vans::VansSerializedValue::Kind::Array || raw.arrayItems.size() < 3)
-				return fallback;
-			return glm::vec3(
-				static_cast<float>(Vans::ReadSerializedNumber(raw.arrayItems[0], fallback.x)),
-				static_cast<float>(Vans::ReadSerializedNumber(raw.arrayItems[1], fallback.y)),
-				static_cast<float>(Vans::ReadSerializedNumber(raw.arrayItems[2], fallback.z)));
-		}
-
 	}
 
 	VansMaterialType VansSceneMaterialBuilder::ParseMaterialType(
@@ -531,18 +508,11 @@ bool VansSceneMaterialBuilder::PopulateMaterial(
             bindAlphaTestShader(VansPass::PUNCTUAL_SHADOW, "PunctualShadowAlphaTest");
         }
         if (const Vans::VansSerializedValue* leaf = FindDirectMaterialField(sceneMaterial, "leaf");
-            leaf && leaf->kind == Vans::VansSerializedValue::Kind::Object)
+            leaf)
         {
-            const glm::vec3 leafColor = glm::max(
-                ReadObjectVec3Field(*leaf, "subsurfaceColor", glm::vec3(0.70f, 1.00f, 0.32f)),
-                glm::vec3(0.0f));
-            const float transmission = std::clamp(ReadObjectFloatField(*leaf, "transmission", 0.75f), 0.0f, 1.0f);
-            const float wrap = std::clamp(ReadObjectFloatField(*leaf, "wrap", 0.5f), 0.0f, 0.9f);
-            const float scatterRoughness = std::clamp(ReadObjectFloatField(*leaf, "scatterRoughness", 0.6f), 0.05f, 1.0f);
-            const float specularScale = std::max(ReadObjectFloatField(*leaf, "specularScale", 0.45f), 0.0f);
-            const float alphaClip = std::clamp(ReadObjectFloatField(*leaf, "alphaClip", 0.5f), 0.0f, 1.0f);
-            pbr->m_TreeLeafParams.subsurfaceColorAndStrength = glm::vec4(leafColor, transmission);
-            pbr->m_TreeLeafParams.scattering = glm::vec4(wrap, scatterRoughness, specularScale, alphaClip);
+            Vans::VansTreeLeafMaterialParameters parameters;
+            if (!Vans::ReadTreeLeafMaterialParameters(*leaf, parameters, error)) return false;
+            pbr->m_TreeLeafParams = VansTreeLeafParamsGPU(parameters);
         }
         break;
     }

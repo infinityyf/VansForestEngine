@@ -70,13 +70,13 @@ namespace VansGraphics
 		VansCameraDataGPU m_CameraDataBeforePendingFrame{};
 		bool m_CameraFramePendingSubmission = false;
 		bool m_GIReceiverVisibilityFrameRecorded = false;
-		bool m_SSGIFrameRecorded = false;
 		bool m_AmbientSkyCacheFrameRecorded = false;
 		bool m_NearMediaFrameRecorded = false;
 		bool m_CloudFrameRecorded = false;
 		bool m_AtmosphereFrameRecorded = false;
 		glm::mat4 m_UnjitteredCameraProjection{ 1.0f };
 		VansTemporalJitter m_CameraTemporalJitter{};
+        VansGILightingContentChanges m_GILightingContentChanges;
         std::vector<VkDescriptorImageInfo> m_LightCookieDescriptors;
         std::vector<VkDescriptorSet> m_LightCookieDescriptorSets;
         std::unordered_set<std::string> m_InvalidLightCookies;
@@ -539,6 +539,9 @@ namespace VansGraphics
 
 	public:
 		VansRayTracing& GetRayTracingContext() { return rayTracingContext; }
+        VansGIFrameWork GetGIFrameWork() const { return m_GIFrameWorkPublication->Read(); }
+        VansGIMemorySnapshot GetGIMemorySnapshot() const { return m_GIMemoryPublication->Read(); }
+        std::shared_ptr<VansGIMemoryPublication> GetGIMemoryPublication() const { return m_GIMemoryPublication; }
 		uint32_t GetAmbientSkyCacheDebugMode() const { return m_AmbientSkyCacheDebugMode; }
 		void SetAmbientSkyCacheDebugMode(uint32_t mode) { m_AmbientSkyCacheDebugMode = std::min(mode, 3u); }
 
@@ -580,7 +583,8 @@ namespace VansGraphics
 		void UploadPostProcessProfileIfDirty();
 		void ProcessPendingGISettings();
 		// 调用方保证位于渲染安全点；结构修改须先等待在途 GPU 工作完成。
-		bool ApplyGISettingsAtSafePoint(const VansGISettings& settings, bool forceRebuild = false);
+		bool ApplyGISettingsAtSafePoint(const VansGISettings& settings,
+            const std::shared_ptr<const VansGIVoxelMaterialInputs>& materials, bool forceRebuild = false);
 
 	private:
 
@@ -644,7 +648,6 @@ namespace VansGraphics
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 		void UpdateSSGIProbeCache(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
-        void PrepareGIReceiverVisibility(uint32_t width, uint32_t height);
         void UpdateGIReceiverVisibility(VansVKCommandBuffer& command, const glm::vec2& jitterDelta);
 
 
@@ -720,7 +723,6 @@ namespace VansGraphics
 		void PrepareTileLightData();
 
 
-		void PrepareGlobalIllumiationData();
 
 		// 后处理 Compute Pass RT 与 Shader 准备
 		void PreparePostProcessRenderData();
@@ -771,6 +773,7 @@ namespace VansGraphics
 			VkSemaphore imageAcquiredSemaphore = VK_NULL_HANDLE;
 			bool gpuWorkPending = false;
 			std::uint64_t profilerFrameIndex = UINT64_MAX;
+            VansGIConsumerFrameWork giConsumerWork;
 			bool submittedWithAsyncCompute = false;
 			VansFrameSubmitOrchestrator submitGraph;
 			VansDeferredDeleteQueue deferredDeletes;
@@ -793,6 +796,7 @@ namespace VansGraphics
 		bool BeginFrameContextRingFrame();
 		bool SubmitProjectRenderPrelude();
 		bool WaitForFrameContextRingSlot(VansFrameContextRingSlot& slot);
+        void RetireGIConsumerWork(VansFrameContextRingSlot& slot);
 		void RecordSubmittedFrameDepth();
 		void BindFrameSyncResources(VansFrameContextRingSlot& slot);
 		VansVKCommandBuffer& CurrentGraphicsCommandBuffer();
@@ -890,7 +894,10 @@ namespace VansGraphics
 		bool m_HasCompiledRenderGraphTopology = false;
 		mutable std::string m_CurrentRenderGraphDebugSummary;
 		mutable uint64_t m_CurrentRenderGraphDebugSummaryRevision = 0;
-		VansRayTracing rayTracingContext;
+        std::shared_ptr<VansGIMemoryPublication> m_GIMemoryPublication = std::make_shared<VansGIMemoryPublication>();
+        std::shared_ptr<VansGIFrameWorkPublication> m_GIFrameWorkPublication = std::make_shared<VansGIFrameWorkPublication>();
+        VansGIConsumerFrameWork m_RecordedGIConsumerWork;
+        VansRayTracing rayTracingContext{m_GIMemoryPublication, m_GIFrameWorkPublication};
 		uint32_t m_AmbientSkyCacheDebugMode = 0u;
 		
 		VansVKCommandBuffer m_ImmediateGraphicsCommandBuffer;

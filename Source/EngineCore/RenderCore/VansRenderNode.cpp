@@ -890,22 +890,22 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 		return;
 
 	VansTexture* gtaoResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_GTAO_RESULT);
-	VansTexture* ssgiFilterResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT);
+	VansTexture* ssgiFilterResult = materialManager.GetRuntimeRenderTexture(VansVKSSGI::TextureFilterResult);
 	VansTexture* ssrAaResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT);
 	VansTexture* screenSpaceShadow = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT);
 	VansTexture* screenSpaceShadowHZB = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
 	VansTexture* rectLightEmissive = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
-	VansTexture* ambientSkyCacheX = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_X);
-	VansTexture* ambientSkyCacheY = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Y);
-	VansTexture* ambientSkyCacheZ = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Z);
+	VansTexture* ambientSkyCacheX = materialManager.GetRuntimeRenderTexture(VansVKAmbientSkyCache::TextureX);
+	VansTexture* ambientSkyCacheY = materialManager.GetRuntimeRenderTexture(VansVKAmbientSkyCache::TextureY);
+	VansTexture* ambientSkyCacheZ = materialManager.GetRuntimeRenderTexture(VansVKAmbientSkyCache::TextureZ);
 	VansVKDevice* runtimeDevice = m_Scene->GetRuntimeResourceDevice();
 
 	if (gtaoResult == nullptr || ssgiFilterResult == nullptr || ssrAaResult == nullptr ||
 		screenSpaceShadow == nullptr || screenSpaceShadowHZB == nullptr || rectLightEmissive == nullptr ||
 		ambientSkyCacheX == nullptr || ambientSkyCacheY == nullptr || ambientSkyCacheZ == nullptr ||
 		runtimeDevice == nullptr ||
-		materialManager.m_SSGICBBuffer.GetNativeBuffer() == VK_NULL_HANDLE ||
-		materialManager.m_AmbientSkyCacheInfoCBBuffer[activeSlot].GetNativeBuffer() == VK_NULL_HANDLE ||
+		materialManager.m_SSGI.params.GetNativeBuffer() == VK_NULL_HANDLE ||
+		materialManager.m_AmbientSkyCache.info[activeSlot].GetNativeBuffer() == VK_NULL_HANDLE ||
 		!m_Scene->GetIESProfileManager()->IsGPUResourcesCreated())
 	{
 		// 不清除 dirty 标记，下帧重试（运行时纹理尚未就绪）
@@ -916,11 +916,11 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 	std::vector<VkDescriptorImageInfo> giIrradianceInfos;
 	std::vector<VkDescriptorImageInfo> giVisibilityInfos;
 	std::vector<VkDescriptorBufferInfo> giProbeStateInfos;
-	giIrradianceInfos.reserve(VANS_SSGI_MAX_GI_REGIONS);
-	giVisibilityInfos.reserve(VANS_SSGI_MAX_GI_REGIONS);
-	giProbeStateInfos.reserve(VANS_SSGI_MAX_GI_REGIONS);
+	giIrradianceInfos.reserve(kGIMaximumRegionCount);
+	giVisibilityInfos.reserve(kGIMaximumRegionCount);
+	giProbeStateInfos.reserve(kGIMaximumRegionCount);
 	auto& rayTracing = runtimeDevice->GetRayTracingContext();
-	const uint32_t availableGIRegions = std::min(rayTracing.GetGIRegionCount(), VANS_SSGI_MAX_GI_REGIONS);
+	const uint32_t availableGIRegions = std::min(rayTracing.GetGIRegionCount(), kGIMaximumRegionCount);
 	for (uint32_t regionIndex = 0u; regionIndex < availableGIRegions; ++regionIndex)
 	{
 		VansTexture* irradianceAtlas = rayTracing.GetGIRegionIrradianceAtlas(regionIndex);
@@ -947,7 +947,7 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 		m_DescriptorsetsDirty = true;
 		return;
 	}
-	while (giIrradianceInfos.size() < VANS_SSGI_MAX_GI_REGIONS)
+	while (giIrradianceInfos.size() < kGIMaximumRegionCount)
 	{
 		giIrradianceInfos.push_back(giIrradianceInfos.front());
 		giVisibilityInfos.push_back(giVisibilityInfos.front());
@@ -999,12 +999,12 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_AMBIENT_SKY_CACHE_Z, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { ambientSkyCacheZ->GetImage().GetSampler(), ambientSkyCacheZ->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_AMBIENT_SKY_CACHE_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		{ { materialManager.m_AmbientSkyCacheInfoCBBuffer[frameSlot].GetNativeBuffer(), 0,
-			materialManager.m_AmbientSkyCacheInfoCBBuffer[frameSlot].GetBufferSize() } });
+		{ { materialManager.m_AmbientSkyCache.info[frameSlot].GetNativeBuffer(), 0,
+			materialManager.m_AmbientSkyCache.info[frameSlot].GetBufferSize() } });
 	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_SCREEN_SPACE_SHADOW_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 		{ { materialManager.m_ScreenSpaceShadowParamsCBBuffer.GetNativeBuffer(), 0, materialManager.m_ScreenSpaceShadowParamsCBBuffer.GetBufferSize() } });
 	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_GI_INFO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		{ { materialManager.m_SSGICBBuffer.GetNativeBuffer(), 0, materialManager.m_SSGICBBuffer.GetBufferSize() } });
+		{ { materialManager.m_SSGI.params.GetNativeBuffer(), 0, materialManager.m_SSGI.params.GetBufferSize() } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_GI_VISIBILITY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		giVisibilityInfos);
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_GI_IRRADIANCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1015,14 +1015,8 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
     const auto& layoutBuffer = rayTracing.GetGIProbeLayoutBuffer();
     descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex], 33u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{layoutBuffer.GetNativeBuffer(), 0, layoutBuffer.GetBufferSize()}});
-	for (size_t regionSlot = 0; regionSlot < giProbeStateInfos.size(); ++regionSlot)
-	{
-		descMgr->WriteBufferDescriptor(
-			frameBufferInputDescriptorSets[setIndex],
-			DEFERRED_BINDING_GI_PROBE_STATE + static_cast<uint32_t>(regionSlot),
-			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{ giProbeStateInfos[regionSlot] });
-	}
+    descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex],
+        DEFERRED_BINDING_GI_PROBE_STATE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, giProbeStateInfos);
         for (uint32_t channel = 0; channel < 3; ++channel)
         {
             VansVKImage& image = !hasDecalTarget ? rp->GetEmptyDecal()

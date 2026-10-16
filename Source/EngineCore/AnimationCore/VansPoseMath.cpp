@@ -1,4 +1,5 @@
 #include "VansPoseMath.h"
+#include "VansBoneMask.h"
 
 #include <../../GLM/gtc/matrix_transform.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
@@ -108,10 +109,29 @@ namespace VansGraphics::VansPoseMath
 		}
 	}
 
+	bool ApplyMaskedLocalDeltaPose(const VansAnimationFrameVector<VansBoneTransform>& base,
+		const VansAnimationFrameVector<VansBoneTransform>& delta,const VansCompiledBoneMask& mask,
+		float weight,VansAnimationFrameVector<VansBoneTransform>& output)
+	{
+		if(base.size()!=delta.size() || mask.weights.size()!=base.size() || mask.channelWeights.size()!=base.size()
+			|| !std::isfinite(weight) || weight<0 || weight>1)return false;
+		output=base;
+		for(std::size_t bone=0;bone<base.size();++bone)
+		{
+			const auto channels=mask.channelWeights[bone];const float boneWeight=weight*mask.weights[bone];
+			if(!std::isfinite(boneWeight) || boneWeight<0 || boneWeight>1 || !IsFinite(channels)
+				|| glm::any(glm::lessThan(channels,glm::vec3(0))) || glm::any(glm::greaterThan(channels,glm::vec3(1))))return false;
+			output[bone].translation=base[bone].translation+delta[bone].translation*(boneWeight*channels.x);
+			output[bone].rotation=glm::normalize(ShortestArcSlerp(glm::quat(1,0,0,0),delta[bone].rotation,boneWeight*channels.y)*base[bone].rotation);
+			output[bone].scale=base[bone].scale*glm::mix(glm::vec3(1),delta[bone].scale,boneWeight*channels.z);
+		}
+		return true;
+	}
+
 	bool MakeAdditiveDeltaPose(VansAnimationFrameVector<VansBoneTransform>& pose,
 		const VansAnimationFrameVector<VansBoneTransform>& reference, const Skeleton& skeleton, VansAdditivePoseMode mode)
 	{
-		if(mode!=VansAdditivePoseMode::LocalSpherical && mode!=VansAdditivePoseMode::LocalLinear && mode!=VansAdditivePoseMode::MeshRotationLinear)return false;
+		if(mode!=VansAdditivePoseMode::LocalSpherical && mode!=VansAdditivePoseMode::LocalLinear && mode!=VansAdditivePoseMode::MeshRotationLinear && mode!=VansAdditivePoseMode::LocalSphericalLeft)return false;
 		if (pose.size()!=reference.size() || pose.size()!=skeleton.bones.size() || !skeleton.ValidateTopology()) return false;
 		const bool mesh=mode==VansAdditivePoseMode::MeshRotationLinear;
 		VansAnimationFrameVector<glm::quat> targetRotation(pose.size()), referenceRotation(pose.size());
@@ -132,9 +152,20 @@ namespace VansGraphics::VansPoseMath
 		const VansAnimationFrameVector<VansBoneTransform>& additive, float weight,
 		const Skeleton& skeleton, VansAnimationFrameVector<VansBoneTransform>& result, VansAdditivePoseMode mode)
 	{
-		if(!std::isfinite(weight) || (mode!=VansAdditivePoseMode::LocalSpherical && mode!=VansAdditivePoseMode::LocalLinear && mode!=VansAdditivePoseMode::MeshRotationLinear))return false;
+		if(!std::isfinite(weight) || (mode!=VansAdditivePoseMode::LocalSpherical && mode!=VansAdditivePoseMode::LocalLinear && mode!=VansAdditivePoseMode::MeshRotationLinear && mode!=VansAdditivePoseMode::LocalSphericalLeft))return false;
 		if (base.size()!=additive.size() || base.size()!=skeleton.bones.size() || !skeleton.ValidateTopology()) return false;
 		if (mode==VansAdditivePoseMode::LocalSpherical) {ApplyAdditivePose(base,additive,weight,result);return true;}
+		if (mode==VansAdditivePoseMode::LocalSphericalLeft)
+		{
+			result=base;
+			for (std::size_t bone=0;bone<base.size();++bone)
+			{
+				result[bone].rotation=glm::normalize(ShortestArcSlerp(glm::quat(1,0,0,0),additive[bone].rotation,weight)*base[bone].rotation);
+				result[bone].translation=base[bone].translation+additive[bone].translation*weight;
+				result[bone].scale=base[bone].scale*glm::mix(glm::vec3(1),additive[bone].scale,weight);
+			}
+			return true;
+		}
 		const bool mesh=mode==VansAdditivePoseMode::MeshRotationLinear;
 		weight=std::clamp(weight,0.0f,1.0f);
 		VansAnimationFrameVector<glm::quat> baseRotation(base.size()), finalRotation(base.size());

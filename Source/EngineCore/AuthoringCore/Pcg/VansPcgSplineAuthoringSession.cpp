@@ -42,6 +42,7 @@ bool VansPcgSplineAuthoringSession::BindAsset(
 	m_ToolEnabled = false;
 	m_Message.clear();
 	m_Working = {};
+	++m_WorkingStateId;
 	m_Terrain.reset();
 
 	VansAssetGuid assetGuid;
@@ -76,6 +77,7 @@ bool VansPcgSplineAuthoringSession::SynchronizeDocument(
 		return false;
 
 	m_ObservedDocumentState = m_Document->sourceDocument.CurrentStateId();
+	++m_WorkingStateId;
 	if (!VansPcgSplineAssetCodec::Decode(
 			m_Document->sourceDocument.SerializedRootSnapshot(), m_Working, m_Message))
 		return false;
@@ -90,12 +92,15 @@ bool VansPcgSplineAuthoringSession::RequestPreview(
 	std::shared_ptr<const VansTerrainAsset> terrainOverride,
 	std::string& error)
 {
-	if (!m_Dragging && m_Document &&
-		!VansPcgSplineAssetCodec::Decode(
-			m_Document->sourceDocument.SerializedRootSnapshot(), m_Working, m_Message))
+	if (!m_Dragging && m_Document)
 	{
-		error = m_Message;
-		return false;
+		++m_WorkingStateId;
+		if (!VansPcgSplineAssetCodec::Decode(
+			m_Document->sourceDocument.SerializedRootSnapshot(), m_Working, m_Message))
+		{
+			error = m_Message;
+			return false;
+		}
 	}
 	m_Terrain = repository.ResolveLatest<VansTerrainAsset>(m_Working.terrain);
 	if (terrainOverride) m_Terrain = std::move(terrainOverride);
@@ -191,6 +196,7 @@ bool VansPcgSplineAuthoringSession::PublishAsset(
 		m_Dragging = false;
 	}
 	m_Working = std::move(asset);
+	++m_WorkingStateId;
 	error.clear();
 	return true;
 }

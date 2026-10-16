@@ -91,7 +91,7 @@ void main()
         if(light.iesProfileIndex>=0.0) attenuation*=SampleIESProfile(int(light.iesProfileIndex),L,light.direction.xyz)*max(light.iesIntensityScale,0.0);
         float shadow=SampleSpotShadowMapBRDF(positionWS,N,L,punctualShadowMap,int(i));
         if(shadow<=0.0||attenuation<=0.0) continue;
-        direct+=EvaluateHairScattering(hair,L)*light.color.rgb*light.intensity*attenuation*shadow*SampleSurfaceLightCookie(65+int(i),positionWS);
+        direct+=EvaluateHairScattering(hair,L)*light.color.rgb*light.intensity*attenuation*shadow*SampleSurfaceLightCookie(LIGHT_COOKIE_SPOT_OFFSET +int(i),positionWS);
     }
     for(uint i=0u;i<GetRectLightCount();++i)
     {
@@ -111,7 +111,7 @@ void main()
             if(weight<=0.0) continue;
             float shadow=SampleRectShadowMapBRDF(positionWS,N,L,punctualShadowMap,int(i));
             if(shadow<=0.0) continue;
-            direct+=EvaluateHairScattering(hair,L)*light.color_twoSided.rgb*light.up_intensity.w*weight*shadow*SampleSurfaceLightCookie(129+int(i),positionWS);
+            direct+=EvaluateHairScattering(hair,L)*light.color_twoSided.rgb*light.up_intensity.w*weight*shadow*SampleSurfaceLightCookie(LIGHT_COOKIE_RECT_OFFSET +int(i),positionWS);
         }
     }
     float ao=hairParams.occlusion.x>0.0?mix(1.0,texture(hairAO,fragUV).r,hairParams.occlusion.x):1.0;

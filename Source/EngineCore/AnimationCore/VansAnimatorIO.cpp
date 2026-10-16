@@ -575,6 +575,11 @@ namespace
 		root["magic"] = VANIMATOR_MAGIC;
 		root["name"] = data.name;
 		root["animationRigGuid"] = data.animationRigGuid;
+		if(!data.normalizeRootPose)root["normalizeRootPose"]=false;
+		if(data.finalCompositionAfterProcedural)root["finalCompositionAfterProcedural"]=true;
+		if(data.composeBeforeRetarget)root["composeBeforeRetarget"]=true;
+		if(data.externalPoseTargetAllowsGraphSets)root["externalPoseTargetAllowsGraphSets"]=true;
+		if(!data.externalPoseLayerGraphSetId.empty())root["externalPoseLayerGraphSetId"]=data.externalPoseLayerGraphSetId;
 
 		json parameterArray = json::array();
 		std::vector<const AnimatorParameter*> sortedParameters;
@@ -631,6 +636,8 @@ namespace
 					{ "graphId", binding.graphId }, { "enabled", binding.enabled } });
 			graphSetArray.push_back({ { "id", graphSet.id }, { "name", graphSet.name },
 				{ "bindings", std::move(bindings) } });
+			if (!graphSet.characterMotionGraphId.empty())
+				graphSetArray.back()["characterMotionGraphId"] = graphSet.characterMotionGraphId;
 		}
 		root["graphSets"] = std::move(graphSetArray);
 		root["defaultGraphSetId"] = data.defaultGraphSetId;
@@ -679,7 +686,7 @@ namespace
 			return false;
 		}
 		std::string unknown;
-		if (!HasOnlyFields(root, { "magic", "name", "animationRigGuid", "parameters", "clips", "graphs", "layers", "graphSets", "defaultGraphSetId", "graphSetTransitions", "slots", "editor" }, unknown))
+		if (!HasOnlyFields(root, { "magic", "name", "animationRigGuid", "normalizeRootPose", "finalCompositionAfterProcedural", "composeBeforeRetarget", "externalPoseTargetAllowsGraphSets", "externalPoseLayerGraphSetId", "parameters", "clips", "graphs", "layers", "graphSets", "defaultGraphSetId", "graphSetTransitions", "slots", "editor" }, unknown))
 		{
 			VANS_LOG_ERROR("[VansAnimatorIO] Unknown root field '" << unknown << "' in canonical animator: " << filePath);
 			return false;
@@ -826,6 +833,16 @@ static bool DeserializeAnimatorRoot(
 	{
 			parsed.name = root["name"].get<std::string>();
 		parsed.animationRigGuid = root["animationRigGuid"].get<std::string>();
+		if(root.contains("normalizeRootPose") && !root["normalizeRootPose"].is_boolean())return false;
+		parsed.normalizeRootPose=root.value("normalizeRootPose",true);
+		if(root.contains("finalCompositionAfterProcedural") && !root["finalCompositionAfterProcedural"].is_boolean())return false;
+		parsed.finalCompositionAfterProcedural=root.value("finalCompositionAfterProcedural",false);
+		if(root.contains("composeBeforeRetarget") && !root["composeBeforeRetarget"].is_boolean())return false;
+		parsed.composeBeforeRetarget=root.value("composeBeforeRetarget",false);
+		if(root.contains("externalPoseTargetAllowsGraphSets") && !root["externalPoseTargetAllowsGraphSets"].is_boolean())return false;
+		parsed.externalPoseTargetAllowsGraphSets=root.value("externalPoseTargetAllowsGraphSets",false);
+		if(root.contains("externalPoseLayerGraphSetId") && !root["externalPoseLayerGraphSetId"].is_string())return false;
+		parsed.externalPoseLayerGraphSetId=root.value("externalPoseLayerGraphSetId",std::string{});
 		for (const json& source : root["parameters"])
 		{
 			std::string unknown;
@@ -929,7 +946,7 @@ static bool DeserializeAnimatorRoot(
 		for (const json& source : root["graphSets"])
 		{
 			std::string unknown;
-			if (!HasOnlyFields(source, { "id", "name", "bindings" }, unknown)
+			if (!HasOnlyFields(source, { "id", "name", "bindings", "characterMotionGraphId" }, unknown)
 				|| !source.contains("id") || !source["id"].is_string()
 				|| !source.contains("name") || !source["name"].is_string()
 				|| !source.contains("bindings") || !source["bindings"].is_array())
@@ -940,6 +957,8 @@ static bool DeserializeAnimatorRoot(
 			VansAnimationGraphSetDefinition graphSet;
 			graphSet.id = source["id"].get<std::string>();
 			graphSet.name = source["name"].get<std::string>();
+			if (source.contains("characterMotionGraphId") && !source["characterMotionGraphId"].is_string()) return false;
+			graphSet.characterMotionGraphId = source.value("characterMotionGraphId", std::string{});
 			for (const json& bindingSource : source["bindings"])
 			{
 				if (!HasOnlyFields(bindingSource, { "layerId", "graphId", "enabled" }, unknown)

@@ -54,6 +54,8 @@ namespace VansGraphics
 			desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment;
 			desc.limbChains = profile.limbChains;
 			desc.controlBones = profile.controlBones;
+			desc.boneMappings = profile.boneMappings;
+			desc.outputModelRotation = profile.outputModelRotation;
 		}
 
 		template <typename T>
@@ -180,8 +182,7 @@ namespace VansGraphics
 
 			std::string compileError;
 			VansAnimatorRuntimeCompileOptions options;
-			options.enableTargetPostProcess = false;
-			options.enableFinalComposition = false;
+			options.mode = VansAnimatorRuntimeCompileMode::RetargetSource;
 			options.enableRootMotion = enableRootMotion;
 			options.extractGraphRootMotion = extractGraphRootMotion;
 			options.normalizeRootPose = normalizeRootPose;

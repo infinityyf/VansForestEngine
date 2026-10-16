@@ -51,6 +51,7 @@ namespace Vans
 	class VansSceneDocument;
 	struct VansPcgBatchUpdate;
 	struct VansTerrainAsset;
+	struct VansPcgSplineFieldSnapshot;
 }
 
 namespace Vans::EditorAPI
@@ -73,7 +74,9 @@ namespace Vans::EditorAPI
 
 		std::vector<AssetEntry> QueryAssets(AssetTypeFilter filter) const override;
 		PcgEditorSnapshot GetPcgEditorSnapshot() const override;
-		PcgSplineSnapshot GetPcgSplineSnapshot() override;
+		void UpdatePcgSplineAuthoring() override;
+		PcgSplineStatus GetPcgSplineStatus() const override;
+		std::shared_ptr<const PcgSplineSnapshot> GetPcgSplineSnapshot() const override;
 		PcgEditorOperationResult CreatePcgSplineAsset(const std::string& name) override;
 		PcgEditorOperationResult BindPcgSplineAsset(const std::string& guid) override;
 		PcgEditorOperationResult SelectPcgSpline(const std::string& spline,const std::string& point,bool toolEnabled) override;
@@ -192,6 +195,9 @@ namespace Vans::EditorAPI
 		ReflectionProbeSettingsSnapshot GetReflectionProbeSettings() const override;
 		bool ApplyReflectionProbeSettings(const ReflectionProbeSettingsSnapshot& settings) override;
 		GIInspectorSettingsSnapshot GetGISettings() const override;
+		VansGraphics::GIFrameCostSnapshot GetGIFrameCost() const override;
+		VansGraphics::VansGIFrameWork GetGIFrameWork() const override;
+		VansGraphics::VansGIMemorySnapshot GetGIMemorySnapshot() const override;
 		bool ApplyGISettings(const GIInspectorSettingsSnapshot& settings) override;
 		void SaveGIConfiguration() override;
 		void SetGIProbeVisualization(bool showPositions, bool showVolume, std::uint32_t stride) override;
@@ -413,7 +419,9 @@ namespace Vans::EditorAPI
 		struct PcgAuthoringState;
 		std::unique_ptr<Vans::VansPcgSplineAuthoringSession> m_PcgSplineAuthoring;
 		std::unique_ptr<VansGraphics::VansPcgSplinePreviewSession> m_PcgSplinePreview;
-		void TickPcgSplineAuthoring();
+		mutable std::shared_ptr<const PcgSplineSnapshot> m_PcgSplineSnapshot;
+		mutable std::weak_ptr<const Vans::VansPcgSplineFieldSnapshot> m_PcgSplineSnapshotField;
+		mutable std::uint64_t m_PcgSplineSnapshotWorkingState = 0;
 		std::shared_ptr<const Vans::VansTerrainAsset> ResolvePcgSplineTerrainOverride() const;
 		PcgEditorOperationResult RequestPcgSplinePreview();
 		PcgEditorOperationResult FinishPcgSplineEdit();

@@ -28,7 +28,7 @@ void VansPcgWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api)
     if (!VansEditorWindow::IsWindowOpen(VansEditorWindowId::Pcg))
     {
 		if (pcgAPI.GetPcgBrushSnapshot().enabled) report(pcgAPI.SelectPcgBrushTarget({},false));
-		if (pcgAPI.GetPcgSplineSnapshot().toolEnabled) report(pcgAPI.SelectPcgSpline({},{},false));
+		if (pcgAPI.GetPcgSplineStatus().toolEnabled) report(pcgAPI.SelectPcgSpline({},{},false));
         return;
     }
     ImGui::SetNextWindowSize(ImVec2(960,720),ImGuiCond_FirstUseEver);

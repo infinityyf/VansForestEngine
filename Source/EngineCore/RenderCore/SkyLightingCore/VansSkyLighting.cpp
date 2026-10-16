@@ -30,11 +30,11 @@ namespace VansGraphics
 		m_Diffuse = std::make_unique<VansTexture>();
 		if (!m_Diffuse->InitTextureWithoutData(
 			commandBuffer, 512, 512, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, true, false, true)) throw std::runtime_error("Sky irradiance allocation failed");
+			VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE, false, true)) throw std::runtime_error("Sky irradiance allocation failed");
 		m_Specular = std::make_unique<VansTexture>();
 		if (!m_Specular->InitTextureWithoutData(
 			commandBuffer, 512, 512, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, true, true, true)) throw std::runtime_error("Sky specular allocation failed");
+			VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE, true, true)) throw std::runtime_error("Sky specular allocation failed");
 		// 静态天空源在初始化时生成未缩放的辐射、辐照度、镜面和 SH 表示。
 		// 消费端只选择所需表示；强度按帧上传，标量修改不重做卷积。
 		constexpr std::uint32_t environmentResolution = 512u;

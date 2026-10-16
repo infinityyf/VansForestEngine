@@ -117,6 +117,7 @@ namespace VansGraphics
 		bool stagedPlayback = false;
 		bool preparePlayback = false;
 		bool extractRootMotion = true;
+		bool characterMotionRootOnly = false;
 		const Skeleton*                                            skeleton   = nullptr;
 		std::unordered_map<std::string, AnimatorParameter>*        parameters = nullptr;
 		const std::unordered_map<std::string, VansAnimationClip>*  clips      = nullptr;
@@ -249,6 +250,11 @@ namespace VansGraphics
 		// 非空时按参数指定的秒数采样；不推进时钟，也不产生穿越事件或根运动。
 		std::string m_SampleTimeParameter;
 		float m_SampleTime = -1.0f;
+		// 外部播放时钟可显式发布穿越事件和根区间；普通静态采样保持零输出。
+		bool m_SampleTimeOutputs = false;
+		std::string m_SampleEpochParameter;
+		bool m_SampleFromZeroOnEpoch=false;
+		bool m_RootMotionReferenceSpace=false;
 		float m_StartPosition = 0.0f; // 只决定初始化位置，不裁剪播放区间。
 		bool HasExplicitSampleTime() const { return m_SampleTime >= 0 || !m_SampleTimeParameter.empty(); }
 		float m_AdditiveReferenceTime = -1.0f;
@@ -497,6 +503,8 @@ namespace VansGraphics
 		std::string m_ParamName;        // 驱动 weight 的参数名（Float 类型）
 		float       m_FixedWeight = 1.0f;
 		bool        m_UseParam    = false;
+		bool m_UseBoneMask = false;
+		VansBoneMaskAsset m_BoneMask;
 	};
 
 	// ─── SpeedScaleNode ─────────────────────────────────────────
@@ -509,6 +517,9 @@ namespace VansGraphics
 	public:
 		AnimGraphInertializationNode();
 		float m_TeleportDistance = 3.0f;
+		std::string m_TriggerParameter;
+		std::string m_DurationParameter;
+		float m_Duration = .2f;
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
 	};
@@ -610,6 +621,24 @@ namespace VansGraphics
 		std::string m_SnapshotName;
 	};
 
+	// 持有此前显示姿势，按修订号捕获，适用于覆盖过渡、增量尾段和指定骨阻尼。
+	class AnimGraphPoseHistoryBlendNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphPoseHistoryBlendNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
+		std::string m_RevisionParameter, m_AlphaParameter, m_ModeParameter, m_MaskIndexParameter, m_ActiveParameter;
+		std::string m_OutputWeightParameter;
+		// Optional external display snapshot captured in this controller's skeleton space.
+		std::string m_HistorySnapshotName, m_HistorySnapshotParameter;
+		std::vector<VansBoneMaskAsset> m_Masks;
+		bool m_UnionMaskCoverage=false, m_AlignRootChildren=false;
+		bool m_RetainCurrentMaskWeights=false;
+		float m_DampingSeconds=0.f;
+		VansBoneMaskAsset m_DampingMask;
+	};
+
 	class AnimGraphLayeredBlendPerBoneNode : public VansAnimGraphNode
 	{
 	public:
@@ -695,6 +724,8 @@ namespace VansGraphics
 		std::string m_DirectionWeightParameter;
 		bool m_DirectionIsWorldSpace = true;
 		std::string m_PivotBone;
+		std::string m_GeometryBone;
+		bool m_TargetIsWorldSpace = false;
 		VansAimConstraintSettings m_Settings;
 		float m_TargetHalfLife = 0.08f;
 	};
@@ -771,6 +802,7 @@ namespace VansGraphics
 
 		// 生成只包含 Output 可达节点的确定性拓扑执行计划。
 		bool BuildExecutionPlan(std::vector<int>& outPlan, std::string& outError) const;
+		bool ValidateCharacterMotionGraph(std::string& error) const;
 		// Typed definition copy used when one authored graph needs an independent
 		// runtime owner. This deliberately bypasses the persistence codec.
 		std::unique_ptr<VansAnimGraph> Clone() const;
@@ -808,6 +840,8 @@ namespace VansGraphics
 		float currentTime = 0.0f;
 		bool looping = true;
 		bool startPositionPending = false;
+		bool externalSampleInitialized = false;
+		int externalEpoch = 0;
 	};
 
 	struct VansAnimGraphTransitionRuntimeState
@@ -874,6 +908,19 @@ namespace VansGraphics
 		float previousTime = 0, currentTime = 0;
 	};
 
+	struct VansAnimGraphPoseHistoryState
+	{
+		std::uint64_t skeletonSignature=0;
+		int revision=0;
+		bool initialized=false;
+		std::vector<VansBoneTransform> cached, previous, origin, damped;
+		std::vector<glm::vec3> cachedCoverage, previousCoverage;
+		glm::mat4 cachedWorld{1}, previousWorld{1};
+		std::unordered_map<int,glm::quat> targetWorldRotations;
+		std::vector<VansCompiledBoneMask> masks;
+		VansCompiledBoneMask dampingMask;
+	};
+
 	struct VansAnimGraphRuntimeStateSnapshot
 	{
 		std::unordered_map<int, VansAnimGraphClipRuntimeState> clipStates;
@@ -882,6 +929,7 @@ namespace VansGraphics
 		std::unordered_map<int, VansAnimGraphBlendAlphaState> blendAlphaStates;
 		std::unordered_map<int, VansAnimGraphEnumBlendState> enumBlendStates;
 		std::unordered_map<int, VansInertializationState> inertializationStates;
+		std::unordered_map<int, VansAnimGraphPoseHistoryState> poseHistoryStates;
 		std::unordered_map<int, bool> activeNodes;
 		std::unordered_set<int> initializedNodes;
 		std::unordered_set<int> updatedNodes;
@@ -953,6 +1001,8 @@ namespace VansGraphics
 		const VansLayeredBlendRuntimeState& ResolveLayeredBlendRuntime(
 			int nodeId, const VansBoneMaskAsset& mask, const Skeleton& skeleton);
 		friend class AnimGraphLayeredBlendPerBoneNode;
+		friend class AnimGraphPoseHistoryBlendNode;
+		friend class AnimGraphAdditiveBlendNode;
 		friend class AnimGraphBlendSpace2DNode;
 		friend class AnimGraphBlendNode;
 		friend class AnimGraphBlendListByEnumNode;
@@ -993,6 +1043,7 @@ namespace VansGraphics
 		std::unordered_map<int, float> m_ActiveTimeScales;
 		std::unordered_map<int, bool> m_HasActiveTimeScale;
 		std::unordered_map<int, VansLayeredBlendRuntimeState> m_LayeredBlendRuntimes;
+		std::unordered_map<int, VansAnimGraphPoseHistoryState> m_PoseHistoryStates;
 	};
 
 }  // namespace VansGraphics

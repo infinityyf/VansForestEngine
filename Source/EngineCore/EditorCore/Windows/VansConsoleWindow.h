@@ -1,6 +1,7 @@
 #pragma once
 #include "VansBaseWindowComponent.h"
 #include "VansConsole.h"
+#include <vector>
 
 namespace VansGraphics
 {
@@ -20,8 +21,12 @@ namespace VansGraphics
 
         // Auto-scroll
         bool m_AutoScroll = true;
-
-        // Input buffer for optional command entry
-        char m_InputBuf[256] = {};
+        std::vector<std::size_t> m_FilteredEntries;
+        std::vector<float> m_RowOffsets;
+        std::uint64_t m_LayoutRevision = 0;
+        int m_LayoutFilter = -1;
+        const void* m_LayoutFont = nullptr;
+        float m_LayoutFontSize = 0, m_LayoutSpacingX = 0, m_LayoutSpacingY = 0;
+        float m_ContentWidth = 0;
     };
 }

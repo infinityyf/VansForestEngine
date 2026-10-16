@@ -4,6 +4,7 @@
 #include "../../RenderCore/VansCameraControlArbiter.h"
 #include "../../ParticleCore/Authoring/VansParticleAuthoringSchema.h"
 #include "EngineAPIImpl.h"
+#include "../../Util/VansProfiler.h"
 #include "VansRenderTexturePreviewSession.h"
 #include "VansEditorPreviewRegistry.h"
 #include "../../AssetCore/VansDerivedArtifactLayout.h"
@@ -3957,6 +3958,8 @@ namespace Vans::EditorAPI
 			m_PcgSceneRecipeGuid.clear();
 			m_PcgSplineAuthoring.reset();
 			m_PcgSplinePreview.reset();
+			m_PcgSplineSnapshot.reset();
+			m_PcgSplineSnapshotField.reset();
 			m_TerrainAuthoringSession.reset();
 			m_TerrainStrokeActive = false;
 			m_UndoStack.clear();
@@ -6211,9 +6214,9 @@ namespace Vans::EditorAPI
 					previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 169, "GTAO Denoised (Deferred Input)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSR_RESULT))
 					previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 141, "SSR Resolve Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
-				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSGI_RESULT))
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansVKSSGI::TextureResult))
 					previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 142, "SSGI Reconstruct (Raw)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE, true));
-				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSGI_FILTER_RESULT))
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansVKSSGI::TextureFilterResult))
 					previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 167, "SSGI Filtered (Deferred)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE, true));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT))
 					previews.push_back(BuildImagePreview(*m_EditorPreviewRegistry, device, 144, "Screen Space Shadow", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
@@ -7358,6 +7361,25 @@ namespace Vans::EditorAPI
 		return true;
 	}
 
+	VansGraphics::GIFrameCostSnapshot EngineAPIImpl::GetGIFrameCost() const
+	{
+		const auto& profiler = Vans::VansProfiler::Get();
+		return VansGraphics::BuildGIFrameCostSnapshot(
+			profiler.GetTimeline(), profiler.IsCaptureEnabled() && !profiler.IsPaused());
+	}
+
+	VansGraphics::VansGIFrameWork EngineAPIImpl::GetGIFrameWork() const
+	{
+		auto* device = dynamic_cast<VansGraphics::VansVKDevice*>(static_cast<VansGraphics::VansGraphicsDevice*>(m_Device));
+		return device ? device->GetGIFrameWork() : VansGraphics::VansGIFrameWork{};
+	}
+
+	VansGraphics::VansGIMemorySnapshot EngineAPIImpl::GetGIMemorySnapshot() const
+	{
+		auto* device = dynamic_cast<VansGraphics::VansVKDevice*>(static_cast<VansGraphics::VansGraphicsDevice*>(m_Device));
+		return device ? device->GetGIMemorySnapshot() : VansGraphics::VansGIMemorySnapshot{};
+	}
+
 	GIInspectorSettingsSnapshot EngineAPIImpl::GetGISettings() const
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
@@ -7365,17 +7387,11 @@ namespace Vans::EditorAPI
 			return {};
 
 		const VansGraphics::VansGISettings& gi = scene->GetGISettings();
-		auto estimateMemoryMB = [&gi](const VansGraphics::GIResolvedRegion& region) {
-			const auto rayCapacity = VansGraphics::GIProbeRayCapacity(region.probeCount, region.raysPerProbe, gi.placement);
-			const std::uint64_t atlasAndStateBytes = 512ull + 512ull + 2048ull + 48ull + 8ull;
-			const std::uint64_t activeRayWorkingBytes = rayCapacity * (8ull + 8ull + 8ull + 8ull + 4ull);
-			return static_cast<float>(
-				static_cast<double>(region.probeCount * atlasAndStateBytes + activeRayWorkingBytes) / (1024.0 * 1024.0));
-		};
 
 		GIInspectorSettingsSnapshot settings;
 		settings.available = true;
-		settings.placement.enabled = gi.placement.enabled;
+		settings.maximumRegionCount = VansGraphics::kGIMaximumRegionCount;
+		settings.maximumAmbientSkyCellUpdatesPerFrame = VansGraphics::GIAmbientSkyCacheSettings::MaxCellUpdatesPerFrame;
 		settings.placement.minProbeSpacing = gi.placement.minProbeSpacing;
 		settings.placement.maxProbeSpacing = gi.placement.maxProbeSpacing;
 		settings.placement.parentProbeMaxSize = gi.placement.parentProbeMaxSize;
@@ -7384,7 +7400,7 @@ namespace Vans::EditorAPI
 		settings.placement.maxRaysPerFrame = gi.placement.maxRaysPerFrame;
 		settings.world = {gi.world.enabled, gi.world.voxelSize, gi.world.coverageDistance, gi.world.extinctionScale,
 			gi.world.levelCount, gi.world.maxBricks, gi.world.bricksPerFrame, gi.world.maxTraceSteps};
-		settings.ambientSkyCache = {gi.ambientSkyCache.enabled, gi.ambientSkyCache.gridSpacing, gi.ambientSkyCache.queriesPerFrame};
+		settings.ambientSkyCache = {gi.ambientSkyCache.enabled, gi.ambientSkyCache.gridSpacing, gi.ambientSkyCache.cellUpdatesPerFrame};
 
 		settings.maxIndirectRadiance = gi.maxIndirectRadiance;
 		settings.maxProbeRadiance = gi.maxProbeRadiance;
@@ -7401,7 +7417,6 @@ namespace Vans::EditorAPI
 		settings.selectedRegionIndex = gi.selectedRegionIndex;
 		settings.totalProbeCount = 0;
 		settings.totalRayCacheEntries = 0;
-		settings.totalEstimatedMemoryMB = 0.0f;
 		settings.regions.reserve(gi.regions.size());
 		for (const VansGraphics::GIProbeRegionDesc& regionDesc : gi.regions)
 		{
@@ -7410,6 +7425,7 @@ namespace Vans::EditorAPI
 			regionSnapshot.stableId = region.stableId;
 			regionSnapshot.name = region.name;
 			regionSnapshot.enabled = region.enabled;
+            regionSnapshot.mode = IsAdaptiveGIRegion(region) ? GIRegionPlacementMode::Adaptive : GIRegionPlacementMode::Uniform;
 			regionSnapshot.worldOnly = region.worldOnly;
             regionSnapshot.followView = region.scrolling;
 			regionSnapshot.regionCenter = ToEditorVec3(region.center);
@@ -7423,7 +7439,7 @@ namespace Vans::EditorAPI
 			regionSnapshot.probeSpacing = region.probeSpacing;
 			regionSnapshot.overrideGridDimensions = regionDesc.overrideGridDimensions;
 			regionSnapshot.normalBias = region.normalBias;
-			regionSnapshot.maxRayDistance = region.maxRayDistance;
+			regionSnapshot.trace = { region.trace.maxDistance, region.trace.minVoxelSize, region.trace.scatterMinVoxelSize };
 			regionSnapshot.volumeFadeDistance = region.volumeFadeDistance;
 			regionSnapshot.priority = region.priority;
 			regionSnapshot.raysPerProbe = region.raysPerProbe;
@@ -7431,12 +7447,10 @@ namespace Vans::EditorAPI
 				region.probeCount,
 				std::numeric_limits<std::uint32_t>::max()));
 			regionSnapshot.rayCacheEntries = VansGraphics::GIProbeRayCapacity(region.probeCount, region.raysPerProbe, gi.placement);
-			regionSnapshot.estimatedMemoryMB = estimateMemoryMB(region);
 			if (region.enabled && (!region.worldOnly || gi.world.enabled))
 			{
 				settings.totalProbeCount += regionSnapshot.totalProbeCount;
 				settings.totalRayCacheEntries += regionSnapshot.rayCacheEntries;
-				settings.totalEstimatedMemoryMB += regionSnapshot.estimatedMemoryMB;
 			}
 			settings.regions.push_back(regionSnapshot);
 		}
@@ -7449,8 +7463,10 @@ namespace Vans::EditorAPI
 		if (!scene || !settings.available)
 			return false;
 
-		VansGraphics::VansGISettings gi = scene->GetGISettings();
-		gi.placement.enabled = settings.placement.enabled;
+		for (const auto& region : settings.regions)
+            if ((region.mode != GIRegionPlacementMode::Uniform && region.mode != GIRegionPlacementMode::Adaptive) ||
+                (region.mode == GIRegionPlacementMode::Adaptive && region.followView)) return false;
+        VansGraphics::VansGISettings gi = scene->GetGISettings();
 		gi.placement.minProbeSpacing = settings.placement.minProbeSpacing;
 		gi.placement.maxProbeSpacing = settings.placement.maxProbeSpacing;
 		gi.placement.parentProbeMaxSize = settings.placement.parentProbeMaxSize;
@@ -7461,7 +7477,7 @@ namespace Vans::EditorAPI
 			settings.world.levelCount, settings.world.maxBricks, settings.world.bricksPerFrame, settings.world.maxTraceSteps};
 		gi.ambientSkyCache.enabled = settings.ambientSkyCache.enabled;
 		gi.ambientSkyCache.gridSpacing = settings.ambientSkyCache.gridSpacing;
-		gi.ambientSkyCache.queriesPerFrame = settings.ambientSkyCache.queriesPerFrame;
+		gi.ambientSkyCache.cellUpdatesPerFrame = settings.ambientSkyCache.cellUpdatesPerFrame;
 		auto clampDimension = [](float value, std::uint32_t fallback) {
 			if (!std::isfinite(value) || value < 1.0f)
 				return fallback;
@@ -7477,6 +7493,7 @@ namespace Vans::EditorAPI
 			region.stableId = snapshot.stableId != 0 ? snapshot.stableId : fallback.stableId;
 			region.name = snapshot.name.empty() ? fallback.name : snapshot.name;
 			region.enabled = snapshot.enabled;
+            region.mode = snapshot.mode == GIRegionPlacementMode::Adaptive ? VansGraphics::GIProbeRegionMode::Adaptive : VansGraphics::GIProbeRegionMode::RegularGrid;
 			region.worldOnly = snapshot.worldOnly;
             region.followView = snapshot.followView;
 			region.center = glm::vec3(snapshot.regionCenter.x, snapshot.regionCenter.y, snapshot.regionCenter.z);
@@ -7491,7 +7508,7 @@ namespace Vans::EditorAPI
 				clampDimension(snapshot.gridDimensions.z, fallback.gridDimensions.z));
 			region.overrideGridDimensions = snapshot.overrideGridDimensions;
 			region.raysPerProbe = std::clamp(snapshot.raysPerProbe, 1u, 4096u);
-			region.maxRayDistance = std::max(snapshot.maxRayDistance, 0.001f);
+			region.trace = { snapshot.trace.maxDistance, snapshot.trace.minVoxelSize, snapshot.trace.scatterMinVoxelSize };
 			region.normalBias = std::max(snapshot.normalBias, 0.0f);
 			region.volumeFadeDistance = std::max(snapshot.volumeFadeDistance, 0.0f);
 			region.priority = snapshot.priority;
@@ -7527,7 +7544,7 @@ namespace Vans::EditorAPI
 		gi.probeOnlyDeferredExposure = std::max(settings.probeOnlyDeferredExposure, 0.001f);
 		VansGraphics::NormalizeGISettings(gi);
 		const VansGraphics::GIResolvedRegion primaryRegion =
-			VansGraphics::ResolveGIRegion(VansGraphics::GetPrimaryGIRegionDesc(gi));
+			VansGraphics::ResolveGIRegion(VansGraphics::GetSelectedGIRegionDesc(gi));
 		gi.gizmoStride = std::clamp(settings.gizmoStride, 1u,
 			std::max({ 1u, primaryRegion.gridDimensions.x, primaryRegion.gridDimensions.y, primaryRegion.gridDimensions.z }));
 		const bool applyResources = scene->IsSceneReady() && m_Device != nullptr;
@@ -7537,17 +7554,21 @@ namespace Vans::EditorAPI
 			class ApplyGITransaction final : public VansGraphics::IVansRenderThreadTransaction
 			{
 			public:
-				explicit ApplyGITransaction(VansGraphics::VansGISettings settings) : m_Settings(std::move(settings)) {}
+				explicit ApplyGITransaction(VansGraphics::VansGISettings settings,
+                    std::shared_ptr<const VansGraphics::VansGIVoxelMaterialInputs> materials)
+                    : m_Settings(std::move(settings)),m_Materials(std::move(materials)) {}
 				bool Execute(VansGraphics::VansGraphicsDevice& backend) override
 				{
 					VANS_ASSERT_RENDER_THREAD();
 					auto* device = dynamic_cast<VansGraphics::VansVKDevice*>(&backend);
-					return device && backend.WaitForIdle() && device->ApplyGISettingsAtSafePoint(m_Settings);
+					return device && backend.WaitForIdle() && device->ApplyGISettingsAtSafePoint(m_Settings,m_Materials);
 				}
 			private:
 				VansGraphics::VansGISettings m_Settings;
+				std::shared_ptr<const VansGraphics::VansGIVoxelMaterialInputs> m_Materials;
 			};
-			if (!m_RenderSystem->ExecuteRenderThreadTransaction(std::make_unique<ApplyGITransaction>(gi)))
+			if (!m_RenderSystem->ExecuteRenderThreadTransaction(std::make_unique<ApplyGITransaction>(gi,
+                scene->GetMaterialManager()->GetGIVoxelMaterialInputs())))
 			{
 				VANS_LOG_ERROR("[GI] Runtime settings were not applied; previous settings retained.");
 				return false;
@@ -7576,11 +7597,16 @@ namespace Vans::EditorAPI
 			auto value = Vans::VansSerializedValue::Object({
 				{ "stableId", Vans::VansSerializedValue::Int(region.stableId) },
 				{ "name", Vans::VansSerializedValue::String(region.name) },
+                { "mode", Vans::VansSerializedValue::String(region.mode == VansGraphics::GIProbeRegionMode::Adaptive ? "adaptive" : "uniform") },
 				{ "enabled", Vans::VansSerializedValue::Bool(region.enabled) },
 				{ "center", Vec3SerializedValue(region.center) },
 				{ "probeSpacing", Vans::VansSerializedValue::Float(region.probeSpacing) },
 				{ "raysPerProbe", Vans::VansSerializedValue::Int(region.raysPerProbe) },
-				{ "maxRayDistance", Vans::VansSerializedValue::Float(region.maxRayDistance) },
+				{ "trace", Vans::VansSerializedValue::Object({
+                    { "maxDistance", Vans::VansSerializedValue::Float(region.trace.maxDistance) },
+                    { "minVoxelSize", Vans::VansSerializedValue::Float(region.trace.minVoxelSize) },
+                    { "scatterMinVoxelSize", Vans::VansSerializedValue::Float(region.trace.scatterMinVoxelSize) }
+                }) },
 				{ "normalBias", Vans::VansSerializedValue::Float(region.normalBias) },
 				{ "worldOnly", Vans::VansSerializedValue::Bool(region.worldOnly) },
                 { "followView", Vans::VansSerializedValue::Bool(region.followView) },
@@ -7599,7 +7625,6 @@ namespace Vans::EditorAPI
 			"/settings/globalIllumination",
 			Vans::VansSerializedValue::Object({
 			{ "placement", Vans::VansSerializedValue::Object({
-				{ "enabled", Vans::VansSerializedValue::Bool(placement.enabled) },
 				{ "minProbeSpacing", Vans::VansSerializedValue::Float(placement.minProbeSpacing) },
 				{ "maxProbeSpacing", Vans::VansSerializedValue::Float(placement.maxProbeSpacing) },
 				{ "parentProbeMaxSize", Vans::VansSerializedValue::Float(placement.parentProbeMaxSize) },
@@ -7624,7 +7649,7 @@ namespace Vans::EditorAPI
 			{ "ambientSkyCache", Vans::VansSerializedValue::Object({
 				{ "enabled", Vans::VansSerializedValue::Bool(gi.ambientSkyCache.enabled) },
 				{ "gridSpacing", Vans::VansSerializedValue::Float(gi.ambientSkyCache.gridSpacing) },
-				{ "queriesPerFrame", Vans::VansSerializedValue::Int(gi.ambientSkyCache.queriesPerFrame) }
+				{ "cellUpdatesPerFrame", Vans::VansSerializedValue::Int(gi.ambientSkyCache.cellUpdatesPerFrame) }
 			}) },
 			{ "irradianceHysteresis", Vans::VansSerializedValue::Float(gi.irradianceHysteresis) },
 			{ "distanceHysteresis", Vans::VansSerializedValue::Float(gi.distanceHysteresis) },
@@ -7653,7 +7678,7 @@ namespace Vans::EditorAPI
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 		auto* device = dynamic_cast<VansGraphics::VansVKDevice*>(static_cast<VansGraphics::VansGraphicsDevice*>(m_Device));
 		if (!scene || !scene->IsSceneReady() || !device || !scene->GetGISettings().showProbeGizmos ||
-			!scene->GetGISettings().placement.enabled)
+			VansGraphics::GetSelectedGIRegionDesc(scene->GetGISettings()).mode != VansGraphics::GIProbeRegionMode::Adaptive)
 		{
 			m_GIProbeDebugLayout.reset();
 			m_GIProbeDebugSnapshot.reset();
@@ -7667,7 +7692,7 @@ namespace Vans::EditorAPI
 			return {};
 		}
 		const auto& settings = scene->GetGISettings();
-		const auto regionId = VansGraphics::GetPrimaryGIRegionDesc(settings).stableId;
+		const auto regionId = VansGraphics::GetSelectedGIRegionDesc(settings).stableId;
 		const auto stride = std::max(settings.gizmoStride, 1u);
 		if (m_GIProbeDebugLayout == layout && m_GIProbeDebugSnapshot &&
 			m_GIProbeDebugSnapshot->regionStableId == regionId && m_GIProbeDebugSnapshot->stride == stride)
@@ -7785,7 +7810,7 @@ namespace Vans::EditorAPI
 		{
 			if (VansGraphics::VansTexture* cacheRadiance =
 				materialManager->GetRuntimeRenderTexture(
-					VansGraphics::VansMaterialManager::RT_SSGI_PROBE_CACHE_RADIANCE))
+					VansGraphics::VansVKSSGI::TextureProbeCacheRadiance))
 			{
 				previews.push_back(BuildImagePreview(
 					*m_EditorPreviewRegistry,
@@ -7797,7 +7822,7 @@ namespace Vans::EditorAPI
 			}
 			if (VansGraphics::VansTexture* cacheSurface =
 				materialManager->GetRuntimeRenderTexture(
-					VansGraphics::VansMaterialManager::RT_SSGI_PROBE_CACHE_SURFACE))
+					VansGraphics::VansVKSSGI::TextureProbeCacheSurface))
 			{
 				previews.push_back(BuildImagePreview(
 					*m_EditorPreviewRegistry,
@@ -11239,9 +11264,9 @@ namespace Vans::EditorAPI
 		};
 		if (change->height && scene->GetSplineAssetGuid().IsValid())
 		{
-			TickPcgSplineAuthoring();
+			UpdatePcgSplineAuthoring();
 			m_PcgSplineAuthoring->NotifyTerrainHeightChanged();
-			TickPcgSplineAuthoring();
+			UpdatePcgSplineAuthoring();
 		}
 		else if (change->height)
 			appendUpload(VansGraphics::VansRenderTerrainTexture::Height,

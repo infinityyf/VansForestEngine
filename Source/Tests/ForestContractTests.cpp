@@ -15,6 +15,7 @@
 #include "../EngineCore/AssetCore/VansBuiltInAssetCatalog.h"
 #include "../EngineCore/AssetCore/VansDerivedArtifactLayout.h"
 #include "../EngineCore/AssetCore/VansMaterialAuthoringAsset.h"
+#include "../EngineCore/MaterialCore/VansTreeLeafMaterialParameters.h"
 #include "../EngineCore/AssetCore/VansShaderAuthoringAsset.h"
 #include "../EngineCore/AssetCore/VansSkinProfile.h"
 #include "../EngineCore/AssetCore/VansSkeletalMeshImportSettings.h"
@@ -907,6 +908,8 @@ bool TestProfilerOutOfOrderCompletionContract()
         profiler.BeginFrame();
         const uint64_t index = profiler.GetActiveFrameIndex();
         profiler.MarkCurrentFrameHasRender();
+        // Release 空帧可能落在同一计时刻度；顺序用例必须提供有效的正时长样本。
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         profiler.EndFrame();
         Vans::VansCpuProfiler::Get().BindCurrentThreadToFrame(index);
         Vans::VansCpuProfiler::Get().EndRenderFrame(index);
@@ -928,6 +931,7 @@ bool TestProfilerOutOfOrderCompletionContract()
     const uint64_t second = cpuFrame();
     gpuFrame(second);
     const uint64_t third = cpuFrame();
+    const double secondCpuDurationUs = profiler.GetTimeline().frameDurationUs;
     const bool waiting = profiler.GetStableCapture().GetNextFrameIndex() == first;
     gpuFrame(first);
     const uint64_t fourth = cpuFrame();
@@ -945,7 +949,8 @@ bool TestProfilerOutOfOrderCompletionContract()
         std::cerr << "Profiler out-of-order completion contract failed: first=" << first
             << " second=" << second << " waiting=" << waiting << " recovered=" << recovered
             << " next=" << capture.GetNextFrameIndex() << " windows=" << capture.GetStableWindows()
-            << " missing=" << capture.GetMissingFrames() << " restarts=" << capture.GetRestartCount() << '\n';
+            << " missing=" << capture.GetMissingFrames() << " restarts=" << capture.GetRestartCount()
+            << " secondCpuDurationUs=" << secondCpuDurationUs << '\n';
         return false;
     }
     std::cout << "Profiler out-of-order completion contract PASS: late CPU/GPU assembly retained before UI publication\n";
@@ -4811,7 +4816,13 @@ bool TestRuntimeComponentKeyCanonicalizationContract()
 		Vans::VansComponentTypeCatalog::HasTrait(
 			"MultiMeshRoot", Vans::VansComponentTypeTrait::MultiMeshRoot) &&
 		Vans::VansComponentTypeCatalog::HasTrait(
-			"Animation", Vans::VansComponentTypeTrait::Animation),
+			"Animation", Vans::VansComponentTypeTrait::Animation) &&
+		Vans::VansComponentTypeCatalog::HasTrait(
+			"NavigationSource", Vans::VansComponentTypeTrait::Navigation) &&
+		Vans::VansComponentTypeCatalog::HasTrait(
+			"NavigationObstacle", Vans::VansComponentTypeTrait::Navigation) &&
+		!Vans::VansComponentTypeCatalog::HasTrait(
+			"Transform", Vans::VansComponentTypeTrait::Navigation),
 		"Component type catalog did not retain Scene projection classification traits"))
 		return false;
 	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("Transform") == "transform",
@@ -13530,6 +13541,12 @@ bool TestPhysicsCapsuleQueryContract(bool includeRuntimeBinding=false)
         bound.AcquireGameplayMovementBlock();
         if(!runLua(R"lua(
             binding_cct=assert(vans.find_object('AccelerationBinding'):get_cct_comp())
+            local original=assert(binding_cct:get_position())
+            assert(binding_cct:can_resize_capsule(.5))
+            assert(not binding_cct:can_resize_capsule(-1))
+            local unchanged=assert(binding_cct:get_position())
+            assert(original.x==unchanged.x and original.y==unchanged.y and original.z==unchanged.z)
+            assert(math.abs(binding_cct:get_capsule_state().half_height-.9)<.00001)
             assert(binding_cct:set_gameplay_movement_blocked(true))
             assert(binding_cct:set_gameplay_movement_blocked(true))
             assert(binding_cct:set_gameplay_movement_blocked(false))
@@ -23726,9 +23743,9 @@ bool TestGIProbeUpdateScheduleContract()
 	orderedSettings.regions[2].stableId = 33u;
 	orderedSettings.selectedRegionIndex = 2u;
 	const std::vector<const GIProbeRegionDesc*> orderedRegions = BuildActiveGIRegionOrder(orderedSettings);
-	if (!Expect(orderedRegions.size() == 3u && orderedRegions[0]->stableId == 33u &&
-		orderedRegions[1]->stableId == 11u && orderedRegions[2]->stableId == 22u,
-		"GI region order does not place the selected region first for matching atlas and SSGI bindings"))
+	if (!Expect(orderedRegions.size() == 3u && orderedRegions[0]->stableId == 11u &&
+		orderedRegions[1]->stableId == 22u && orderedRegions[2]->stableId == 33u,
+		"GI diagnostic selection changed author order and atlas/SSGI binding identity"))
 		return false;
 	orderedSettings.regions[2].enabled = false;
 	const std::vector<const GIProbeRegionDesc*> disabledSelectedRegions = BuildActiveGIRegionOrder(orderedSettings);
@@ -23747,12 +23764,12 @@ bool TestGIProbeUpdateScheduleContract()
 	sceneRegion.gridDimensions = glm::uvec3(56u, 28u, 42u);
 	sceneRegion.probeSpacing = 1.0f;
 	sceneRegion.overrideGridDimensions = true;
-	sceneRegion.maxRayDistance = 19.0f;
+	sceneRegion.trace.maxDistance = 19.0f;
 	sceneRegion.normalBias = 0.37f;
 	sceneRegion.volumeFadeDistance = 2.5f;
 	sceneRegion.priority = 4.0f;
 	sceneSettings.regions.push_back(sceneRegion);
-	const SSGIParamsGPU sceneParams = BuildSSGIParamsFromGISettings(
+	const VansSSGIParameters sceneParams = BuildSSGIParameters(
 		sceneSettings, 1920u, 1080u);
 	if (!Expect(sceneParams.regionInfo.x == 1.0f &&
 		sceneParams.screenSize == glm::vec4(1920.0f, 1080.0f, 1.0f / 1920.0f, 1.0f / 1080.0f) &&
@@ -27177,7 +27194,40 @@ bool TestClothAuthoringPreviewContract()
     SetSerializedObjectField(pbrRoot, "textures", VansSerializedValue::Object({{"basecolor", reference}}));
     const auto pbr = BuildRuntimeMaterialPreviewChange(path, pbrRoot);
     if (!Expect(pbr.textures.size() == 1 && pbr.textures[0].slot == "basecolor" &&
-        pbr.parameters.size() == 4, "Cloth preview repair changed the existing PBR projection")) return false;
+        pbr.parameters.size() == 10 && std::count_if(pbr.parameters.begin(), pbr.parameters.end(),
+            [](const auto& edit) { return edit.parameterPath.rfind("leaf/", 0) == 0; }) == 6,
+        "Full PBR preview must preserve its four ordinary values and restore six leaf defaults")) return false;
+    auto groupedRoot = pbrRoot;
+    SetSerializedObjectField(groupedRoot, "customParameters", VansSerializedValue::Object({
+        {"strength", VansSerializedValue::Float(.4f)}}));
+    SetSerializedObjectField(groupedRoot, "customTextures", VansSerializedValue::Object({{"detail", reference}}));
+    // The real Inspector sends a top-level group, including when a nested leaf
+    // scalar changes. Replaying that group must not refresh unrelated bindings.
+    for (const char* materialType : {"pbr", "tree"})
+    {
+        SetSerializedObjectField(groupedRoot, "materialType", VansSerializedValue::String(materialType));
+        const auto parameters = BuildRuntimeMaterialPreviewChange(path, groupedRoot, "/asset/parameters");
+        const auto customParameters = BuildRuntimeMaterialPreviewChange(path, groupedRoot, "/asset/customParameters");
+        const auto textures = BuildRuntimeMaterialPreviewChange(path, groupedRoot, "/asset/textures");
+        const auto customTextures = BuildRuntimeMaterialPreviewChange(path, groupedRoot, "/asset/customTextures");
+        const auto full = BuildRuntimeMaterialPreviewChange(path, groupedRoot);
+        const auto missing = BuildRuntimeMaterialPreviewChange(path, groupedRoot, "/asset/parameters/missing");
+        if (!Expect(parameters.textures.empty() && parameters.parameters.size() == 10 &&
+            customParameters.textures.empty() && customParameters.parameters.size() == 1 &&
+            customParameters.parameters[0].parameterPath == "customParameters/strength" &&
+            textures.parameters.empty() && textures.textures.size() == 1 && textures.textures[0].slot == "basecolor" &&
+            customTextures.parameters.empty() && customTextures.textures.size() == 1 && customTextures.textures[0].slot == "detail" &&
+            full.parameters.size() == 11 && full.textures.size() == 2 && missing.Empty(),
+            "Inspector material group preview escaped its edited group or lost full restoration")) return false;
+    }
+    auto customRoot=pbrRoot;
+    SetSerializedObjectField(customRoot,"materialType",VansSerializedValue::String("customshader"));
+    SetSerializedObjectField(customRoot,"parameters",VansSerializedValue::Object({{"leaf",VansSerializedValue::Array({
+        VansSerializedValue::Float(.2f),VansSerializedValue::Float(.4f),VansSerializedValue::Float(.6f)})}}));
+    const auto customLeaf=BuildRuntimeMaterialPreviewChange(path,customRoot,"/asset/parameters/leaf");
+    if(!Expect(customLeaf.parameters.size()==1 && customLeaf.parameters[0].parameterPath=="leaf" &&
+        std::get<Vans::EditorAPI::Vec3>(customLeaf.parameters[0].value).y==.4f,
+        "Native leaf preview policy intercepted an unrelated custom-shader parameter")) return false;
     auto typeEdit = emptyDisplay;
     SetSerializedObjectField(typeEdit, "materialType", VansSerializedValue::String("pbr"));
     SetSerializedObjectField(typeEdit, "parameters", *FindObjectField(pbrRoot, "parameters"));
@@ -27316,6 +27366,39 @@ bool TestAuthoringCodecContract()
 		return false;
 
 	Vans::VansSerializedValue currentMaterialReferences = materialRoot;
+    // Native leaf authoring has one consumed path, shared by loading and Inspector preview.
+    Vans::VansTreeLeafMaterialParameters leafValues;
+    leafValues.alphaClip = .75f;
+    auto leafMaterial = materialRoot;
+    Vans::SetSerializedObjectField(leafMaterial, "materialType", Vans::VansSerializedValue::String("tree"));
+    auto* leafParameters = Vans::FindObjectField(leafMaterial, "parameters");
+    Vans::SetSerializedObjectField(*leafParameters, "leaf", Vans::WriteTreeLeafMaterialParameters(leafValues));
+    if (!Expect(Vans::ReadMaterialAuthoringAsset(leafMaterial, materialAsset, error),
+        "Canonical leaf authoring rejected")) return false;
+    auto leafRoundTrip = Vans::WriteMaterialAuthoringAssetRoot(materialAsset);
+    auto leafPreview = Vans::BuildRuntimeMaterialPreviewChange("Leaf.mat", leafRoundTrip, "/asset/parameters/leaf/alphaClip");
+    if (!Expect(leafPreview.parameters.size() == 1 && leafPreview.parameters[0].parameterPath == "leaf/alphaClip" &&
+        std::get<float>(leafPreview.parameters[0].value) == .75f,
+        "Leaf codec round trip did not reach the existing runtime preview")) return false;
+    const auto leafGroupPreview = Vans::BuildRuntimeMaterialPreviewChange("Leaf.mat", leafRoundTrip, "/asset/parameters");
+    const auto groupCutoff = std::find_if(leafGroupPreview.parameters.begin(), leafGroupPreview.parameters.end(),
+        [](const auto& edit) { return edit.parameterPath == "leaf/alphaClip"; });
+    if (!Expect(leafGroupPreview.textures.empty() && groupCutoff != leafGroupPreview.parameters.end() &&
+        std::get<float>(groupCutoff->value) == .75f,
+        "Inspector leaf group replay submitted textures or lost the edited cutoff")) return false;
+    auto ignoredLeafMaterial = materialRoot;
+    Vans::SetSerializedObjectField(ignoredLeafMaterial, "leaf", Vans::WriteTreeLeafMaterialParameters(leafValues));
+    if (!Expect(!Vans::ReadMaterialAuthoringAsset(ignoredLeafMaterial, materialAsset, error),
+        "Material codec silently accepted unconsumed root leaf parameters")) return false;
+    auto* leafBlock = Vans::FindObjectField(*leafParameters, "leaf");
+    Vans::SetSerializedObjectField(*leafBlock, "alphaClip", Vans::VansSerializedValue::String("invalid"));
+    if (!Expect(!Vans::ReadMaterialAuthoringAsset(leafMaterial, materialAsset, error),
+        "Invalid leaf cutoff escaped the authoring boundary")) return false;
+    Vans::SetSerializedObjectField(*leafParameters, "leaf", Vans::WriteTreeLeafMaterialParameters(leafValues));
+    leafBlock = Vans::FindObjectField(*leafParameters, "leaf");
+    Vans::SetSerializedObjectField(*leafBlock, "unused", Vans::VansSerializedValue::Float(1));
+    if (!Expect(!Vans::ReadMaterialAuthoringAsset(leafMaterial, materialAsset, error),
+        "Unknown leaf field escaped the shared domain policy")) return false;
 	const Vans::VansSerializedValue shaderReference = Vans::VansSerializedValue::Object({
 		{ "guid", Vans::VansSerializedValue::String(
 			"40000000-0000-4000-8000-000000000001") }
@@ -30576,6 +30659,8 @@ bool TestReflectionProbePagesGpuContract();
 bool TestReflectionProbePublicationGpuContract();
 bool TestReflectionProbeResourcesGpuContract();
 bool TestGIProbeResourcesGpuContract();
+bool TestGIWorldForestSourceGpuContract(const char* fixturePath, const char* outputPath);
+bool TestVideoUploadGpuContract();
 bool TestGIWorldContract();
 bool TestReflectionProbeCacheContract();
 bool TestReflectionProbeCacheGpuContract();
@@ -30625,12 +30710,13 @@ bool TestLightCookieContract()
         const auto p = c.worldToLight * glm::vec4(3,4,5,1);
         if (glm::length(glm::vec3(p)) > 1e-5f) return false;
     }
-    const auto& spot = frame.cookies.data[65];
+    const unsigned spotOffset = VansLightCookieOffset(2);
+    const auto& spot = frame.cookies.data[spotOffset];
     const auto edge = spot.worldToLight * glm::vec4(3 + std::tan(glm::radians(30.0f))*5,4,0,1);
     if (std::abs(edge.x / (-edge.z * spot.projection.x) - 0.5f) > 1e-5f) return false;
     // 同一帧对象重复构建时，关闭必须清掉旧结果。
     lights.Cookie(2,0).enabled = false; lights.BuildCookieFrame(frame);
-    if (frame.cookies.data[65].options.x != 0 || !frame.cookies.textures[65].empty()) return false;
+    if (frame.cookies.data[spotOffset].options.x != 0 || !frame.cookies.textures[spotOffset].empty()) return false;
     // 删除采用 swap-pop；Cookie 必须跟随被交换的灯而不是旧槽位。
     lights.Cookie(1,1).textureGuid = "second";
     if (!lights.RemovePointLight(0) || lights.Cookie(1,0).textureGuid != "second") return false;
@@ -30638,10 +30724,20 @@ bool TestLightCookieContract()
     for (int i = 0; i < 80; ++i) lights.AddPointLight(VansPointLight{});
     lights.Cookie(1,80).enabled = true;
     if (lights.Cookie(2,0).enabled) return false;
+    // 扩容后的末盏聚光灯必须进入帧数据，Cookie 不能覆盖紧邻的矩形灯。
+    for (unsigned i = 1; i < VANS_MAX_SPOT_LIGHTS; ++i) lights.AddSpotLight(VansSpotLight{});
+    auto& lastSpotCookie = lights.Cookie(2,VANS_MAX_SPOT_LIGHTS - 1);
+    lastSpotCookie.enabled = true; lastSpotCookie.textureGuid = "last-spot";
+    frame = lights.BuildRenderLightFrameData();
+    if (frame.spotLights.size() != VANS_MAX_SPOT_LIGHTS || frame.spotLights.size() < 95) return false;
+    const unsigned lastSpotSlot = spotOffset + VANS_MAX_SPOT_LIGHTS - 1;
+    if (frame.cookies.textures[lastSpotSlot] != "last-spot" ||
+        frame.cookies.textures[VansLightCookieOffset(3)] != "test-cookie") return false;
     lights.ClearLights();
     lights.AddDirectionalLight(VansDirectionalLight{}); lights.AddPointLight(VansPointLight{});
     if (lights.Cookie(0,0).enabled || lights.Cookie(1,0).enabled) return false;
-    std::cout << "LIGHT_COOKIE_CONTRACT_PASS defaults=4 transforms=4 spotEdge=1 disable=1 remove=1 clear=1 ABI=unchanged\n";
+    std::cout << "LIGHT_COOKIE_CONTRACT_PASS defaults=4 transforms=4 spotEdge=1 disable=1 remove=1 clear=1 spotCapacity="
+              << VANS_MAX_SPOT_LIGHTS << " lastSpotAndRect=1\n";
     return true;
 }
 
@@ -30857,6 +30953,10 @@ int main(int argc, char** argv)
 		return TestGIWorldContract() ? 0 : 201;
 	if (argc == 2 && std::string(argv[1]) == "--gi-probe-resources-gpu")
 		return TestGIProbeResourcesGpuContract() ? 0 : 197;
+	if (argc == 4 && std::string(argv[1]) == "--gi-forest-source-gpu")
+		return TestGIWorldForestSourceGpuContract(argv[2], argv[3]) ? 0 : 197;
+	if (argc == 2 && std::string(argv[1]) == "--video-upload-gpu")
+		return TestVideoUploadGpuContract() ? 0 : 197;
 	if (argc == 2 && std::string(argv[1]) == "--reflection-probe-resources-gpu")
 		return TestReflectionProbeResourcesGpuContract() ? 0 : 196;
 	if (argc == 2 && std::string(argv[1]) == "--reflection-probe-cache")
@@ -31163,6 +31263,39 @@ int main(int argc, char** argv)
 		return TestAnimationSocketAttachmentAuthoringContract() ? 0 : 154;
 	if (argc == 2 && std::string(argv[1]) == "--procedural-animation")
 		return RunProceduralAnimationContractTests() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--retarget-bake")
+		return RunExplicitRetargetMappingAndBakeContract() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--leon-survival")
+		return RunLeonSurvivalProjectContract() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--weapon-ray")
+		return RunWeaponRayAlignmentContract() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--retarget-controller-routing")
+		return RunRetargetControllerRoutingContract() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--independent-character-motion")
+		return RunIndependentCharacterMotionContract() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--masked-local-delta")
+		return RunMaskedLocalDeltaContract() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--pose-history-blend")
+		return RunPoseHistoryBlendContract() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--leon-source-graph")
+		return RunLeonSourceGraphComparison() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--leon-ue-oracle")
+		return RunLeonUEPoseComparison() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--leon-ue-source")
+		return RunLeonUESourcePoseComparison() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--leon-controller")
+	{
+		auto workspace=fs::current_path();
+		for(int i=0;i<6 && !fs::is_directory(workspace/"DemoHallProject");++i)workspace=workspace.parent_path();
+		const auto project=workspace/"DemoHallProject";
+		lua_State* lua=luaL_newstate();if(!lua)return 129;luaL_openlibs(lua);
+		lua_getglobal(lua,"package");const auto search=(project/"Scripts/?.lua").generic_string();
+		lua_pushstring(lua,search.c_str());lua_setfield(lua,-2,"path");lua_pop(lua,1);
+		const auto file=project/"Tools/LeonSurvival/test_controller.lua";
+		lua_getglobal(lua,"debug");lua_getfield(lua,-1,"traceback");lua_remove(lua,-2);
+		const bool ok=luaL_loadfile(lua,file.string().c_str())==LUA_OK && lua_pcall(lua,0,0,1)==LUA_OK;
+		if(!ok)std::cerr<<lua_tostring(lua,-1)<<'\n';lua_close(lua);return ok?0:129;
+	}
 	if (argc == 2 && std::string(argv[1]) == "--procedural-limb-ik")
 		return RunProceduralLimbIKContractTests() ? 0 : 129;
 	if (argc == 2 && std::string(argv[1]) == "--component-bone-transform")

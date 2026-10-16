@@ -366,6 +366,20 @@ void VansAnimGraphEditorWindow::DrawLeftPanel()
 	ImGui::Separator();
 	if (EditStringProperty("Name", m_EditState->name))
 		m_EditState->isDirty = true;
+	if(m_AssetData && ImGui::Checkbox("Restore Import Root Pose",&m_AssetData->normalizeRootPose))
+		m_EditState->isDirty=true;
+	if(m_AssetData && ImGui::Checkbox("External Pose Target Allows Graph Sets",&m_AssetData->externalPoseTargetAllowsGraphSets))m_EditState->isDirty=true;
+	if(m_AssetData && ImGui::BeginCombo("External Pose Overlay Graph Set",m_AssetData->externalPoseLayerGraphSetId.empty()?"None":m_AssetData->externalPoseLayerGraphSetId.c_str()))
+	{
+		if(ImGui::Selectable("None",m_AssetData->externalPoseLayerGraphSetId.empty())){m_AssetData->externalPoseLayerGraphSetId.clear();m_EditState->isDirty=true;}
+		for(const auto& set:m_AssetData->graphSets)if(ImGui::Selectable(set.name.c_str(),m_AssetData->externalPoseLayerGraphSetId==set.id))
+		{m_AssetData->externalPoseLayerGraphSetId=set.id;m_EditState->isDirty=true;}
+		ImGui::EndCombo();
+	}
+	if(m_AssetData && ImGui::Checkbox("Compose After Procedural Solve",&m_AssetData->finalCompositionAfterProcedural))
+		m_EditState->isDirty=true;
+	if(m_AssetData && ImGui::Checkbox("Compose Before Retarget",&m_AssetData->composeBeforeRetarget))
+		m_EditState->isDirty=true;
 	ImGui::Spacing();
 	DrawLayersPanel();
 	ImGui::Spacing();
@@ -753,7 +767,10 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 				[&](const auto& value) { return value.id == id; }); });
 		graphSet.name = "Graph Set";
 		if (auto source = selectedGraphSet(); source != m_AssetData->graphSets.end())
+		{
 			graphSet.bindings = source->bindings;
+			graphSet.characterMotionGraphId = source->characterMotionGraphId;
+		}
 		else
 			for (const auto& layer : m_AssetData->layers)
 				graphSet.bindings.push_back({ layer.id, {}, false });
@@ -776,6 +793,7 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 		if (ImGui::SmallButton("Delete Graph Set"))
 		{
 			const std::string removedId = activeSet->id;
+			if(m_AssetData->externalPoseLayerGraphSetId==removedId)m_AssetData->externalPoseLayerGraphSetId.clear();
 			m_AssetData->graphSets.erase(activeSet);
 			m_AssetData->graphSetTransitionRules.erase(
 				std::remove_if(m_AssetData->graphSetTransitionRules.begin(),
@@ -790,6 +808,20 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 		}
 		if (m_AssetData->graphSets.size() <= 1) ImGui::EndDisabled();
 		if (EditStringProperty("Graph Set Name", activeSet->name)) m_EditState->isDirty = true;
+		const auto* motionGraph=m_AssetData->FindGraph(activeSet->characterMotionGraphId);
+		if (ImGui::BeginCombo("Character Motion Graph",motionGraph?activeSet->characterMotionGraphId.c_str():"None"))
+		{
+			if (ImGui::Selectable("None",activeSet->characterMotionGraphId.empty()))
+			{ activeSet->characterMotionGraphId.clear(); m_EditState->isDirty=true; }
+			for (const auto& graph : m_AssetData->graphs)
+			{
+				if (graph.role!=AnimatorGraphAsset::Role::Pose) continue;
+				if (ImGui::Selectable(graph.name.c_str(),activeSet->characterMotionGraphId==graph.id))
+				{ activeSet->characterMotionGraphId=graph.id; activateGraph(graph.id); m_EditState->isDirty=true; }
+			}
+			ImGui::EndCombo();
+		}
+		if (motionGraph && ImGui::SmallButton("Edit Character Motion Graph")) activateGraph(activeSet->characterMotionGraphId);
 		ImGui::SeparatorText("Default Transition");
 		if (editTransitionPolicy("default", m_AssetData->defaultGraphSetTransition))
 			m_EditState->isDirty = true;
@@ -1034,6 +1066,7 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 					return std::none_of(m_AssetData->graphSets.begin(), m_AssetData->graphSets.end(),
 						[&](const VansAnimationGraphSetDefinition& graphSet)
 						{
+							if (graphSet.characterMotionGraphId==graph.id) return true;
 							return std::any_of(graphSet.bindings.begin(), graphSet.bindings.end(),
 								[&](const auto& binding) { return binding.enabled && binding.graphId == graph.id; });
 						});
@@ -1631,6 +1664,7 @@ void VansAnimGraphEditorWindow::DrawGraphEditorCanvas()
 		if (!targetPostProcess && ImGui::MenuItem("Pose Snapshot")) addNode(VansAnimGraphNodeType::PoseSnapshot);
 		if (ImGui::MenuItem("Additive Blend")) addNode(VansAnimGraphNodeType::AdditiveBlend);
 		if (!targetPostProcess && ImGui::MenuItem("Inertialization")) addNode(VansAnimGraphNodeType::Inertialization);
+		if (!targetPostProcess && ImGui::MenuItem("Pose History Blend")) addNode(VansAnimGraphNodeType::PoseHistoryBlend);
 		if (!targetPostProcess && ImGui::MenuItem("Speed Scale")) addNode(VansAnimGraphNodeType::SpeedScale);
 		if (!targetPostProcess && ImGui::MenuItem("State Machine")) addNode(VansAnimGraphNodeType::StateMachine);
 		if (!targetPostProcess && ImGui::MenuItem("Motion Matching")) addNode(VansAnimGraphNodeType::MotionMatching);
@@ -1672,6 +1706,7 @@ static ImU32 GetNodeHeaderColor(VansAnimGraphNodeType type)
 	case VansAnimGraphNodeType::PoseSnapshot: return IM_COL32(110, 170, 180, 255);
 	case VansAnimGraphNodeType::AdditiveBlend: return IM_COL32(100, 180, 180, 255);  // ?
 	case VansAnimGraphNodeType::Inertialization: return IM_COL32(100, 160, 180, 255);
+	case VansAnimGraphNodeType::PoseHistoryBlend: return IM_COL32(100, 160, 180, 255);
 	case VansAnimGraphNodeType::SpeedScale:    return IM_COL32(180, 140, 100, 255);  // ?
 	case VansAnimGraphNodeType::StateMachine:  return IM_COL32(180, 180, 180, 255);  // ?
 	case VansAnimGraphNodeType::MotionMatching:return IM_COL32(90,  190, 150, 255);
@@ -1938,13 +1973,17 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (ImGui::Checkbox("Loop", &n->m_Loop)) m_EditState->isDirty = true;
 		if (EditStringProperty("Sample Time Parameter (seconds)", n->m_SampleTimeParameter)) m_EditState->isDirty = true;
 		if (ImGui::DragFloat("Sample Time (-1 = playback)", &n->m_SampleTime,.001f,-1,1000)) m_EditState->isDirty = true;
+		if (ImGui::Checkbox("External Time Motion / Events", &n->m_SampleTimeOutputs)) m_EditState->isDirty = true;
+		if(EditStringProperty("Sample Epoch Parameter",n->m_SampleEpochParameter))m_EditState->isDirty=true;
+		if(ImGui::Checkbox("Traverse From Zero On Epoch",&n->m_SampleFromZeroOnEpoch))m_EditState->isDirty=true;
+		if(ImGui::Checkbox("Root Translation In Reference Frame",&n->m_RootMotionReferenceSpace))m_EditState->isDirty=true;
 		if (ImGui::DragFloat("Start Position (seconds)", &n->m_StartPosition,.001f,0,1000)) m_EditState->isDirty = true;
 		if (EditStringProperty("Loop Parameter (bool)", n->m_LoopParameter)) m_EditState->isDirty = true;
 		if (ImGui::DragFloat("Additive Reference Time (-1 = off)", &n->m_AdditiveReferenceTime,.01f,-1,1000)) m_EditState->isDirty=true;
 		if (EditStringProperty("Additive Reference Clip (empty = self)", n->m_AdditiveReferenceClip)) m_EditState->isDirty=true;
 		{
 			int mode=static_cast<int>(n->m_AdditiveMode);
-			if(ImGui::Combo("Additive Mode",&mode,"Local: spherical, post multiply\0Local: linear, pre multiply\0Mesh rotation: linear\0"))
+			if(ImGui::Combo("Additive Mode",&mode,"Local: spherical, post multiply\0Local: linear, pre multiply\0Mesh rotation: linear\0Local: spherical, pre multiply\0"))
 			{n->m_AdditiveMode=static_cast<VansGraphics::VansAdditivePoseMode>(mode);m_EditState->isDirty=true;}
 		}
 		break;
@@ -2176,16 +2215,54 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		auto* n = static_cast<AnimGraphAdditiveBlendNode*>(node);
 		{
 			int mode=static_cast<int>(n->m_AdditiveMode);
-			if(ImGui::Combo("Additive Mode",&mode,"Local: spherical, post multiply\0Local: linear, pre multiply\0Mesh rotation: linear\0"))
+			if(ImGui::Combo("Additive Mode",&mode,"Local: spherical, post multiply\0Local: linear, pre multiply\0Mesh rotation: linear\0Local: spherical, pre multiply\0"))
 			{n->m_AdditiveMode=static_cast<VansGraphics::VansAdditivePoseMode>(mode);m_EditState->isDirty=true;}
 		}
 		if (EditStringProperty("Parameter", n->m_ParamName)) m_EditState->isDirty = true;
 		if (ImGui::SliderFloat("Weight", &n->m_FixedWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
 		if (ImGui::Checkbox("Use Parameter", &n->m_UseParam)) m_EditState->isDirty = true;
+		if(n->m_AdditiveMode==VansGraphics::VansAdditivePoseMode::LocalSphericalLeft)
+		{
+			if(ImGui::Checkbox("Use TRS Bone Mask",&n->m_UseAdditiveBoneMask))
+			{
+				if(n->m_UseAdditiveBoneMask && n->m_AdditiveBoneMask.id.empty()){n->m_AdditiveBoneMask.id="additive-mask";n->m_AdditiveBoneMask.name="Additive Mask";n->m_AdditiveBoneMask.defaultWeight=1;}
+				m_EditState->isDirty=true;
+			}
+			if(n->m_UseAdditiveBoneMask)
+			{
+				if(EditStringProperty("Mask ID",n->m_AdditiveBoneMask.id))m_EditState->isDirty=true;
+				if(EditStringProperty("Mask Name",n->m_AdditiveBoneMask.name))m_EditState->isDirty=true;
+				if(ImGui::SliderFloat("Mask Default Weight",&n->m_AdditiveBoneMask.defaultWeight,0,1))m_EditState->isDirty=true;
+				ImGui::Text("Explicit weights: %zu, TRS channels: %zu",n->m_AdditiveBoneMask.explicitWeights.size(),n->m_AdditiveBoneMask.explicitChannelWeights.size());
+			}
+		}
+		break;
+	}
+	case VansAnimGraphNodeType::PoseHistoryBlend:
+	{
+		if(EditStringProperty("Revision Parameter",node->m_HistoryRevisionParameter))m_EditState->isDirty=true;
+		if(EditStringProperty("Alpha Parameter",node->m_HistoryAlphaParameter))m_EditState->isDirty=true;
+		if(EditStringProperty("Mode Parameter (0 snapshot, 1 offset, 2 bypass)",node->m_HistoryModeParameter))m_EditState->isDirty=true;
+		if(EditStringProperty("Mask Index Parameter",node->m_HistoryMaskIndexParameter))m_EditState->isDirty=true;
+		if(EditStringProperty("Active Parameter",node->m_HistoryActiveParameter))m_EditState->isDirty=true;
+		if(EditStringProperty("Output Weight Parameter",node->m_HistoryOutputWeightParameter))m_EditState->isDirty=true;
+		if(EditStringProperty("History Snapshot Name",node->m_HistorySnapshotName))m_EditState->isDirty=true;
+		if(EditStringProperty("History Snapshot Capture Parameter",node->m_HistorySnapshotParameter))m_EditState->isDirty=true;
+		if(ImGui::Checkbox("Retain Current Mask Weights",&node->m_HistoryRetainCurrentMaskWeights))m_EditState->isDirty=true;
+		if(ImGui::Checkbox("Union Mask Coverage",&node->m_HistoryUnionCoverage))m_EditState->isDirty=true;
+		if(ImGui::Checkbox("Align Root Children To World",&node->m_HistoryAlignRootChildren))m_EditState->isDirty=true;
+		if(ImGui::DragFloat("Damping Seconds",&node->m_HistoryDampingSeconds,.001f,0,10))m_EditState->isDirty=true;
+		ImGui::Text("Masks: %zu (empty = full pose)",node->m_HistoryMasks.size());
+		if(ImGui::Button("Add History Mask")){Vans::EditorAPI::VansBoneMaskDocumentDTO mask;mask.id="history-mask-"+std::to_string(node->m_HistoryMasks.size());mask.name="History Mask";mask.defaultWeight=1;node->m_HistoryMasks.push_back(std::move(mask));m_EditState->isDirty=true;}
+		for(std::size_t i=0;i<node->m_HistoryMasks.size();++i){ImGui::PushID(static_cast<int>(i));auto& mask=node->m_HistoryMasks[i];if(EditStringProperty("Mask ID",mask.id))m_EditState->isDirty=true;if(EditStringProperty("Mask Name",mask.name))m_EditState->isDirty=true;if(ImGui::SliderFloat("Default Weight",&mask.defaultWeight,0,1))m_EditState->isDirty=true;ImGui::Text("Bone weights: %zu, channels: %zu",mask.explicitWeights.size(),mask.explicitChannelWeights.size());ImGui::PopID();}
+		if(node->m_HistoryDampingSeconds>0){auto& mask=node->m_HistoryDampingMask;if(mask.id.empty()){mask.id="history-damping";mask.name="Damping Mask";mask.defaultWeight=1;}if(EditStringProperty("Damping Mask ID",mask.id))m_EditState->isDirty=true;if(EditStringProperty("Damping Mask Name",mask.name))m_EditState->isDirty=true;if(ImGui::SliderFloat("Damping Default Weight",&mask.defaultWeight,0,1))m_EditState->isDirty=true;}
 		break;
 	}
 	case VansAnimGraphNodeType::Inertialization:
 		if (ImGui::DragFloat("Teleport Distance (m)", &node->m_TeleportDistance, 0.01f, 0.0f, 1000.0f)) m_EditState->isDirty = true;
+		if(EditStringProperty("Inertial Trigger",node->m_TriggerParameter))m_EditState->isDirty=true;
+		if(EditStringProperty("Duration Parameter",node->m_DurationParameter))m_EditState->isDirty=true;
+		if(ImGui::DragFloat("Inertial Duration",&node->m_Duration,.01f,0,10))m_EditState->isDirty=true;
 		break;
 	case VansAnimGraphNodeType::SpeedScale:
 	{
@@ -2556,14 +2633,15 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		auto* n = static_cast<AnimGraphAimConstraintNode*>(node);
 		if (EditStringProperty("Rig Chain ID", n->m_ChainId)) m_EditState->isDirty = true;
 		int mode = static_cast<int>(n->m_AimSettings.mode);
-		if (ImGui::Combo("Aim Mode", &mode, "Look At Point\0Look At Direction\0Pitch Offset\0"))
+		if (ImGui::Combo("Aim Mode", &mode, "Look At Point\0Look At Direction\0Pitch Offset\0Weapon Ray\0"))
 		{
 			n->m_AimSettings.mode = static_cast<Vans::EditorAPI::AnimationAimConstraintMode>(mode);
 			m_EditState->isDirty = true;
 		}
-		if (mode == 0)
+		if (mode == 0 || mode == 3)
 		{
 			if (editGoal("Aim Target", n->m_Target)) m_EditState->isDirty = true;
+			if (ImGui::Checkbox("World Space Point",&n->m_TargetIsWorldSpace)) m_EditState->isDirty = true;
 		}
 		else
 		{
@@ -2572,6 +2650,12 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 			if (ImGui::Checkbox("World Space Direction", &n->m_DirectionIsWorldSpace)) m_EditState->isDirty = true;
 		}
 		if (mode == 2 && EditStringProperty("Pivot Bone (optional)", n->m_PivotBone)) m_EditState->isDirty = true;
+		if (mode == 3)
+		{
+			if (EditStringProperty("Weapon Geometry Bone", n->m_GeometryBone)) m_EditState->isDirty = true;
+			if (ImGui::DragFloat3("Muzzle Local", &n->m_AimSettings.muzzleLocal.x, 0.01f)) m_EditState->isDirty = true;
+			if (ImGui::DragFloat3("Barrel Local", &n->m_AimSettings.barrelLocal.x, 0.01f)) m_EditState->isDirty = true;
+		}
 		if (ImGui::DragFloat2("Yaw Min / Max", &n->m_AimSettings.minYawDegrees, 0.5f, -180.0f, 180.0f)) m_EditState->isDirty = true;
 		if (ImGui::DragFloat2("Pitch Min / Max", &n->m_AimSettings.minPitchDegrees, 0.5f, -180.0f, 180.0f)) m_EditState->isDirty = true;
 		if (ImGui::DragFloat("Max Angular Speed", &n->m_AimSettings.maxAngularSpeedDegrees, 1.0f, 0.0f)) m_EditState->isDirty = true;

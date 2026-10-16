@@ -5,7 +5,7 @@
 
 namespace VansGraphics
 {
-	enum class VansAimConstraintMode { LookAtPoint, LookAtDirection, PitchOffset };
+	enum class VansAimConstraintMode { LookAtPoint, LookAtDirection, PitchOffset, WeaponRay };
 
 	struct VansAimConstraintTarget
 	{
@@ -28,6 +28,9 @@ namespace VansGraphics
 		glm::vec2 pitchLimitDegrees{ -45.0f, 60.0f };
 		float maxAngularSpeedDegrees = 540.0f;
 		float weight = 1.0f;
+		// 武器骨局部空间的枪口和枪管轴；WeaponRay 只旋转单骨枢轴及其完整子树。
+		glm::vec3 muzzleLocal{ 0.0f };
+		glm::vec3 barrelLocal{ 0.0f, 0.0f, 1.0f };
 	};
 
 	class VansAimConstraintSolver
@@ -41,6 +44,7 @@ namespace VansGraphics
 			float deltaTime,
 			VansAimConstraintState& state,
 			const VansAimConstraintSettings& settings = {},
-			int pivotBoneIndex = -1);
+			int pivotBoneIndex = -1,
+			int geometryBoneIndex = -1);
 	};
 }

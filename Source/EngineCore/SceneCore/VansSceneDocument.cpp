@@ -10,6 +10,7 @@
 
 #include <utility>
 #include <stdexcept>
+#include <unordered_set>
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 
 namespace Vans
@@ -193,13 +194,15 @@ void VansSceneDocument::RestoreAuthoringRoot(VansSerializedValue root, SceneStat
 
 bool VansSceneDocument::RebuildResolvedViewFromAuthoring(
     VansSerializedValue authoringRoot,
-    std::string& error)
+    std::string& error,
+    std::shared_ptr<const VansSerializedValue> propertyView)
 {
     error.clear();
     auto nextRoot = std::make_shared<const VansSerializedValue>(std::move(authoringRoot));
-    std::shared_ptr<const VansSerializedValue> nextResolvedRoot;
+    std::shared_ptr<const VansSerializedValue> nextResolvedRoot = std::move(propertyView);
+    auto nextIndex = m_PrefabIndex;
     const VansSerializedValue* instances = FindObjectField(*nextRoot, "prefabInstances");
-    if (instances &&
+    if (!nextResolvedRoot && instances &&
         !(instances->kind == VansSerializedValue::Kind::Array && instances->arrayItems.empty()))
     {
         if (!m_PrefabLookup)
@@ -208,15 +211,18 @@ bool VansSceneDocument::RebuildResolvedViewFromAuthoring(
             return false;
         }
         VansSerializedValue resolved;
-        if (!VansPrefabResolver::ResolveScene(*nextRoot, m_PrefabLookup, resolved, error))
+        auto index = std::make_shared<VansPrefabSceneIndex>();
+        if (!VansPrefabResolver::ResolveScene(*nextRoot, m_PrefabLookup, resolved, error, index.get()))
             return false;
         nextResolvedRoot = std::make_shared<const VansSerializedValue>(std::move(resolved));
+        nextIndex = std::move(index);
     }
 
     SceneDiagnostics nextDiagnostics = VansSceneSchema::ValidateSceneJson(
         EncodeSerializedValueJson<SceneJson>(nextResolvedRoot ? *nextResolvedRoot : *nextRoot));
     m_Root = std::move(nextRoot);
     m_ResolvedRoot = std::move(nextResolvedRoot);
+    m_PrefabIndex = m_ResolvedRoot ? std::move(nextIndex) : nullptr;
     m_Diagnostics = std::move(nextDiagnostics);
     return true;
 }
@@ -226,36 +232,98 @@ SceneStateId VansSceneDocument::AllocateStateId()
     return m_NextStateId++;
 }
 
-SceneStateId VansSceneDocument::ApplyEditedSerializedRoot(VansSerializedValue root)
+bool VansSceneDocument::CapturePropertyEdit(const VansSerializedValue& edited, VansSerializedValue& authoring) const
+{
+    if (!m_ResolvedRoot || !m_PrefabIndex) return false;
+    const auto* beforeInstances = FindObjectField(*m_Root, "prefabInstances");
+    const auto* instances = FindObjectField(edited, "prefabInstances");
+    const auto* previous = FindObjectField(*m_ResolvedRoot, "entities");
+    const auto* next = FindObjectField(edited, "entities");
+    if (!beforeInstances || !instances || !SerializedValuesEqual(*beforeInstances, *instances) ||
+        !previous || !next || next->kind != VansSerializedValue::Kind::Array ||
+        previous->arrayItems.size() != next->arrayItems.size()) return false;
+
+    std::unordered_set<std::size_t> changedInstances;
+    for (std::size_t i = 0; i < next->arrayItems.size(); ++i)
+    {
+        const auto& oldEntity = previous->arrayItems[i];
+        const auto& entity = next->arrayItems[i];
+        const auto id = ReadSerializedStringField(entity, "id");
+        const auto* oldParent = FindObjectField(oldEntity, "parent");
+        const auto* parent = FindObjectField(entity, "parent");
+        // Structural changes still go through full graph capture and instance-boundary validation.
+        if (id != ReadSerializedStringField(oldEntity, "id") || !oldParent || !parent ||
+            !SerializedValuesEqual(*oldParent, *parent)) return false;
+        const auto owner = m_PrefabIndex->instanceByEntity.find(id);
+        if (owner != m_PrefabIndex->instanceByEntity.end() && !SerializedValuesEqual(oldEntity, entity))
+            changedInstances.insert(owner->second);
+    }
+    authoring = edited;
+    auto* locals = FindObjectField(authoring, "entities");
+    locals->arrayItems.clear();
+    std::unordered_map<std::size_t, VansSerializedValue> changedObjects;
+    for (const auto index : changedInstances)
+        changedObjects.emplace(index, VansSerializedValue::Array({}));
+    for (const auto& entity : next->arrayItems)
+    {
+        const auto owner = m_PrefabIndex->instanceByEntity.find(ReadSerializedStringField(entity, "id"));
+        if (owner == m_PrefabIndex->instanceByEntity.end()) locals->arrayItems.push_back(entity);
+        else if (const auto changed = changedObjects.find(owner->second); changed != changedObjects.end())
+            changed->second.arrayItems.push_back(entity);
+    }
+    auto* records = FindObjectField(authoring, "prefabInstances");
+    for (const auto& [index, objects] : changedObjects)
+    {
+        auto& record = records->arrayItems.at(index);
+        const auto asset = m_PrefabLookup(ReadSerializedStringField(record, "asset"));
+        if (!asset) throw std::runtime_error("Prefab source unavailable while editing");
+        VansSerializedValue captured;
+        std::string error;
+        if (!VansPrefabResolver::CaptureInstance(*asset, record, objects, captured, error))
+            throw std::runtime_error(error);
+        VansSerializedValue checked;
+        if (!VansPrefabResolver::Instantiate(*asset, captured, checked, error))
+            throw std::runtime_error(error);
+        record = std::move(captured);
+    }
+    return true;
+}
+
+void VansSceneDocument::PublishEditedRoot(VansSerializedValue root)
 {
     std::string error;
-    VansSerializedValue authoring = std::move(root);
-    if (FindObjectField(authoring, "prefabInstances"))
+    VansSerializedValue authoring;
+    std::shared_ptr<const VansSerializedValue> propertyView;
+    if (CapturePropertyEdit(root, authoring))
     {
-        VansSerializedValue captured;
-        if (!VansPrefabResolver::CaptureScene(authoring, m_PrefabLookup, captured, error))
-            throw std::runtime_error(error);
-        authoring = std::move(captured);
+        SetSerializedObjectField(root, "prefabInstances", *FindObjectField(authoring, "prefabInstances"));
+        propertyView = std::make_shared<const VansSerializedValue>(std::move(root));
     }
-    if (!RebuildResolvedViewFromAuthoring(std::move(authoring), error))
+    else
+    {
+        authoring = std::move(root);
+        if (FindObjectField(authoring, "prefabInstances"))
+        {
+            VansSerializedValue captured;
+            if (!VansPrefabResolver::CaptureScene(authoring, m_PrefabLookup, captured, error))
+                throw std::runtime_error(error);
+            authoring = std::move(captured);
+        }
+    }
+    if (!RebuildResolvedViewFromAuthoring(std::move(authoring), error, std::move(propertyView)))
         throw std::runtime_error(error);
+}
+
+SceneStateId VansSceneDocument::ApplyEditedSerializedRoot(VansSerializedValue root)
+{
+    PublishEditedRoot(std::move(root));
     m_CurrentStateId = AllocateStateId();
     return m_CurrentStateId;
 }
 
 void VansSceneDocument::RestoreEditedSerializedRoot(VansSerializedValue root, SceneStateId stateId)
 {
-    std::string error;
-    VansSerializedValue authoring = std::move(root);
-    if (FindObjectField(authoring, "prefabInstances"))
-    {
-        VansSerializedValue captured;
-        if (!VansPrefabResolver::CaptureScene(authoring, m_PrefabLookup, captured, error))
-            throw std::runtime_error(error);
-        authoring = std::move(captured);
-    }
-    if (!RebuildResolvedViewFromAuthoring(std::move(authoring), error))
-        throw std::runtime_error(error);
+    PublishEditedRoot(std::move(root));
     m_CurrentStateId = stateId;
     if (m_CurrentStateId >= m_NextStateId)
         m_NextStateId = m_CurrentStateId + 1;

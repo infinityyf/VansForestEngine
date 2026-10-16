@@ -23,12 +23,15 @@ namespace VansGraphics
             if (bytes) std::memcpy(data.data() + offset, source, bytes);
             return offset;
         };
-        data[0] = {layout ? 1u : 0u, uint32_t(regions.size()), 4u, 0u};
+        uint32_t adaptiveMask = 0u;
+        if (layout) for (uint32_t i = 0; i < regions.size(); ++i)
+            if (IsAdaptiveGIRegion(regions[i])) adaptiveMask |= 1u << i;
+        data[0] = {adaptiveMask, uint32_t(regions.size()), 4u, 0u};
         for (uint32_t i = 0; i < regions.size(); ++i)
         {
             const auto& source = regions[i];
             GIProbeLayoutRegion region;
-            if (layout && !source.scrolling) region = layout->Regions()[i];
+            if (layout && IsAdaptiveGIRegion(source)) region = layout->Regions()[i];
             else
             {
                 region.volumeMinAndRootSpacing = glm::vec4(source.volumeMin, source.probeSpacing);
@@ -38,7 +41,7 @@ namespace VansGraphics
             }
             region.volumeSizeAndBias.w = source.normalBias;
             append(&region, sizeof(region));
-            const glm::vec4 trace(source.maxRayDistance, source.volumeFadeDistance, source.priority, source.worldOnly ? 1.0f : 0.0f);
+            const glm::vec4 trace(source.trace.maxDistance, source.volumeFadeDistance, source.priority, source.worldOnly ? 1.0f : 0.0f);
             append(&trace, sizeof(trace));
         }
         if (layout)
@@ -363,7 +366,7 @@ namespace VansGraphics
                     destination.volumeMinAndRootSpacing = glm::vec4(source.volumeMin, float(rootSpacing));
                     destination.volumeSizeAndBias = glm::vec4(source.volumeSize, source.normalBias);
                     destination.metadata = {maxDepth, source.stableId, 0, 0};
-                    if (!source.enabled) continue;
+                    if (!source.enabled || !IsAdaptiveGIRegion(source)) continue;
                     for (int axis = 0; axis < 3; ++axis)
                         if (float(double(source.volumeMin[axis]) + settings.minProbeSpacing) <= source.volumeMin[axis])
                             throw std::runtime_error("GI minimum spacing is below float precision at the region origin");
@@ -480,7 +483,9 @@ namespace VansGraphics
         error.clear();
         try
         {
-            if (!settings.enabled) throw std::runtime_error("Automatic GI layout generation is disabled");
+            if (std::none_of(descriptions.begin(), descriptions.end(), [](const auto& region) {
+                return IsAdaptiveGIRegion(region);
+            })) throw std::runtime_error("GI layout requires an adaptive region");
             Builder builder(descriptions, settings, geometry, constraints);
             builder.BuildRoots(); builder.Refine();
             VansGIProbeLayout result;

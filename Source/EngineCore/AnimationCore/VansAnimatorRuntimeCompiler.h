@@ -5,12 +5,14 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace VansGraphics
 {
 	enum class VansAnimatorRuntimeCompileMode
 	{
 		FullGraph,
+		RetargetSource,
 		ExternalPoseTarget
 	};
 
@@ -21,7 +23,8 @@ namespace VansGraphics
 		bool enableFinalComposition = true;
 		bool enableRootMotion = false;
 		bool extractGraphRootMotion = true;
-		bool normalizeRootPose = true;
+		// Explicit Scene setting overrides the Animator's authored root frame.
+		std::optional<bool> normalizeRootPose;
 		bool enableDebugMetrics = false;
 		// Scene retarget targets may explicitly select a target-skeleton Rig while
 		// the Animator keeps its default Rig for direct/source evaluation.

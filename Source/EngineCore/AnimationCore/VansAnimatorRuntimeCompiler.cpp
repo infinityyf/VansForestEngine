@@ -48,7 +48,8 @@ namespace VansGraphics
 			return nullptr;
 		}
 		std::unordered_map<std::string, VansAnimationClip> clips;
-		const bool compileFullGraph = options.mode == VansAnimatorRuntimeCompileMode::FullGraph;
+		const bool compileFullGraph = options.mode != VansAnimatorRuntimeCompileMode::ExternalPoseTarget || asset.externalPoseTargetAllowsGraphSets;
+		const bool composeSource=options.mode!=VansAnimatorRuntimeCompileMode::RetargetSource || asset.composeBeforeRetarget;
 		if (compileFullGraph)
 		{
 			if (!clipResolver)
@@ -115,6 +116,8 @@ namespace VansGraphics
 			{
 				VansAnimationGraphSetSetup graphSet;
 				graphSet.definition = definition;
+				if (!definition.characterMotionGraphId.empty())
+					graphSet.characterMotionGraph = asset.FindGraph(definition.characterMotionGraphId)->Clone();
 				graphSet.bindings.reserve(definition.bindings.size());
 				for (const VansAnimationGraphBindingDefinition& bindingDefinition : definition.bindings)
 				{
@@ -149,7 +152,7 @@ namespace VansGraphics
 				return nullptr;
 		}
 
-		if (options.enableTargetPostProcess)
+		if (options.enableTargetPostProcess && composeSource)
 		{
 			if (const VansAnimGraph* sourcePostProcess = asset.FindTargetPostProcessGraph())
 			{
@@ -163,7 +166,7 @@ namespace VansGraphics
 					return nullptr;
 			}
 		}
-		if (options.enableFinalComposition)
+		if (options.enableFinalComposition && composeSource)
 		if (const VansAnimGraph* sourceComposition = asset.FindFinalCompositionGraph())
 		{
 			auto graph = sourceComposition->Clone();
@@ -172,12 +175,13 @@ namespace VansGraphics
 				error = "Failed to instantiate Final Composition Graph";
 				return nullptr;
 			}
-			if (!controller->SetFinalCompositionGraph(std::move(graph), error))
+			if (!controller->SetFinalCompositionGraph(std::move(graph), error, asset.finalCompositionAfterProcedural))
 				return nullptr;
 		}
 		controller->EnableRootMotion(options.enableRootMotion);
+		if(!asset.externalPoseLayerGraphSetId.empty() && !controller->SetExternalPoseLayerGraphSet(asset.externalPoseLayerGraphSetId,error))return nullptr;
 		controller->SetGraphRootMotionExtraction(options.extractGraphRootMotion);
-		controller->SetNormalizeRootPose(options.normalizeRootPose);
+		controller->SetNormalizeRootPose(options.normalizeRootPose.value_or(asset.normalizeRootPose));
 		controller->EnableDebugMetrics(options.enableDebugMetrics);
 		controller->Update(0.0f, compiledSkeleton);
 		return controller;

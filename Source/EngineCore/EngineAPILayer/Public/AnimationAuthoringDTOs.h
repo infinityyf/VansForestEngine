@@ -3,6 +3,7 @@
 #include "../../AnimationCore/VansAnimGraphNodeType.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -63,6 +64,7 @@ namespace Vans::EditorAPI
 		float defaultWeight = 0.0f;
 		std::vector<VansBoneMaskRuleDTO> branchRules;
 		std::unordered_map<std::string, float> explicitWeights;
+		std::unordered_map<std::string, std::array<float,3>> explicitChannelWeights;
 		std::vector<std::string> editorExpandedBones;
 	};
 
@@ -156,7 +158,7 @@ namespace Vans::EditorAPI
 		float fixedRotationWeight = 0.0f;
 	};
 
-	enum class AnimationAimConstraintMode { LookAtPoint, LookAtDirection, PitchOffset };
+	enum class AnimationAimConstraintMode { LookAtPoint, LookAtDirection, PitchOffset, WeaponRay };
 	struct AnimationAimConstraintSettingsDTO
 	{
 		AnimationAimConstraintMode mode = AnimationAimConstraintMode::LookAtPoint;
@@ -166,6 +168,8 @@ namespace Vans::EditorAPI
 		float maxPitchDegrees = 60.0f;
 		float maxAngularSpeedDegrees = 540.0f;
 		float weight = 1.0f;
+		AnimationVector3DTO muzzleLocal;
+		AnimationVector3DTO barrelLocal{0,0,1};
 	};
 
 	struct AnimationGroundingQuerySettingsDTO
@@ -273,6 +277,10 @@ namespace Vans::EditorAPI
 		float m_Speed = 1.0f;
 		std::string m_SampleTimeParameter;
 		float m_SampleTime = -1.0f;
+		bool m_SampleTimeOutputs = false;
+		std::string m_SampleEpochParameter;
+		bool m_SampleFromZeroOnEpoch=false;
+		bool m_RootMotionReferenceSpace=false;
 		float m_StartPosition = 0.0f;
 		std::string m_LoopParameter;
 		float m_AdditiveReferenceTime = -1.0f;
@@ -323,6 +331,9 @@ namespace Vans::EditorAPI
 		float m_FixedWeight = 1.0f;
 		float m_FixedSpeed = 1.0f;
 		float m_TeleportDistance = 3.0f;
+		std::string m_TriggerParameter;
+		std::string m_DurationParameter;
+		float m_Duration = .2f;
 		std::vector<AnimatorStateDTO> m_States;
 		std::vector<AnimatorTransitionDTO> m_Transitions;
 		std::string m_DefaultStateName;
@@ -333,6 +344,16 @@ namespace Vans::EditorAPI
 		std::string m_SlotId;
 		std::string m_CacheName;
 		VansBoneMaskDocumentDTO m_LayerMask;
+		bool m_UseAdditiveBoneMask = false;
+		VansBoneMaskDocumentDTO m_AdditiveBoneMask;
+		std::string m_HistoryRevisionParameter, m_HistoryAlphaParameter, m_HistoryModeParameter, m_HistoryMaskIndexParameter, m_HistoryActiveParameter;
+		std::string m_HistoryOutputWeightParameter;
+		std::string m_HistorySnapshotName, m_HistorySnapshotParameter;
+		std::vector<VansBoneMaskDocumentDTO> m_HistoryMasks;
+		bool m_HistoryUnionCoverage=false, m_HistoryAlignRootChildren=false;
+		bool m_HistoryRetainCurrentMaskWeights=false;
+		float m_HistoryDampingSeconds=0.f;
+		VansBoneMaskDocumentDTO m_HistoryDampingMask;
 		VansLayerBlendMode m_LayerBlendMode = VansLayerBlendMode::Override;
 		VansRotationBlendSpace m_LayerRotationSpace = VansRotationBlendSpace::Mesh;
 		std::string m_LayerWeightParameter;
@@ -350,6 +371,8 @@ namespace Vans::EditorAPI
 		std::string m_DirectionWeightParameter;
 		bool m_DirectionIsWorldSpace = true;
 		std::string m_PivotBone;
+		std::string m_GeometryBone;
+		bool m_TargetIsWorldSpace = false;
 		std::string m_ChainId;
 		std::vector<std::string> m_ChainIds;
 		std::string m_RotationProfileId;
@@ -462,6 +485,7 @@ namespace Vans::EditorAPI
 		std::string id;
 		std::string name;
 		std::vector<AnimationGraphBindingDTO> bindings;
+		std::string characterMotionGraphId;
 	};
 
 	struct GraphSetTransitionPolicyDTO
@@ -503,6 +527,11 @@ namespace Vans::EditorAPI
 	{
 		std::string name;
 		std::string animationRigGuid;
+		bool normalizeRootPose = true;
+		bool finalCompositionAfterProcedural = false;
+		bool composeBeforeRetarget = false;
+		bool externalPoseTargetAllowsGraphSets = false;
+		std::string externalPoseLayerGraphSetId;
 		std::vector<AnimatorParameterDTO> parameters;
 		std::vector<AnimatorClipRefDTO> clipRefs;
 		std::vector<AnimatorGraphDTO> graphs;
@@ -591,6 +620,7 @@ namespace Vans::EditorAPI
 		case VansGraphics::VansAnimGraphNodeType::SaveCachedPose: return "SaveCachedPose";
 		case VansGraphics::VansAnimGraphNodeType::UseCachedPose: return "UseCachedPose";
 		case VansGraphics::VansAnimGraphNodeType::PoseSnapshot: return "PoseSnapshot";
+		case VansGraphics::VansAnimGraphNodeType::PoseHistoryBlend: return "PoseHistoryBlend";
 		case VansGraphics::VansAnimGraphNodeType::LayeredBlendPerBone: return "LayeredBlendPerBone";
 		}
 		return "Unknown";
@@ -650,6 +680,9 @@ namespace Vans::EditorAPI
 			return pins;
 		}
 		case VansGraphics::VansAnimGraphNodeType::AdditiveBlend: return { input(0, "Base"), input(1, "Additive"), output(0, "Pose") };
+		case VansGraphics::VansAnimGraphNodeType::PoseHistoryBlend:
+			if(!m_HistoryOutputWeightParameter.empty())return {input(0,"Pose"),input(1,"Live Base Pose"),output(0,"Pose")};
+			return {input(0,"Pose"),output(0,"Pose")};
 		case VansGraphics::VansAnimGraphNodeType::Inertialization:
 		case VansGraphics::VansAnimGraphNodeType::ModifyCurve:
 		case VansGraphics::VansAnimGraphNodeType::ComponentBoneScale:

@@ -142,11 +142,7 @@ namespace VansGraphics
 		}
 		if (!outSkeleton.ValidateTopology(&error))
 			return false;
-		if (outSkeleton.bones.size() + asset.virtualBones.size() > MAX_BONES)
-		{
-			error = "Animation Rig virtual bones exceed the runtime bone limit";
-			return false;
-		}
+		// CPU 源代理与重定向需要完整骨架；GPU palette 容量由蒙皮绑定边界检查。
 		std::vector<glm::mat4> bindLocal;
 		bindLocal.reserve(outSkeleton.bones.size());
 		for (const BoneInfo& bone : outSkeleton.bones)

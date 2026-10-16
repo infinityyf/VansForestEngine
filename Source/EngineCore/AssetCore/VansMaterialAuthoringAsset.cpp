@@ -1,6 +1,7 @@
 #include "VansMaterialAuthoringAsset.h"
 #include "../MaterialCore/VansHairMaterialParameters.h"
 #include "../MaterialCore/VansClothMaterialParameters.h"
+#include "../MaterialCore/VansTreeLeafMaterialParameters.h"
 
 #include "Serialization/VansSerializedValueAccess.h"
 #include "VansAssetReference.h"
@@ -183,6 +184,24 @@ bool ReadMaterialAuthoringAsset(
             return false;
     }
 
+    if (parsed.materialType == "tree" || parsed.materialType == "pbr")
+    {
+        if (FindObjectField(root, "leaf"))
+        {
+            error = "Material leaf parameters must be authored at parameters.leaf";
+            return false;
+        }
+        if (const auto* leaf = FindObjectField(parsed.parameters, "leaf"))
+        {
+            VansTreeLeafMaterialParameters values;
+            if (!ReadTreeLeafMaterialParameters(*leaf, values, error))
+            {
+                error = "Material parameters.leaf: " + error;
+                return false;
+            }
+            SetSerializedObjectField(parsed.parameters, "leaf", WriteTreeLeafMaterialParameters(values));
+        }
+    }
     if (parsed.materialType == "hair")
     {
         VansHairMaterialParameters hair;

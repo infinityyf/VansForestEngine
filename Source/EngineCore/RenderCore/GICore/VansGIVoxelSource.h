@@ -10,15 +10,16 @@ namespace VansGraphics
     class VansMesh;
     class VansPBRMaterial;
     // 来源适配器只提交模型、材质和实例；不拥有体素资源，也不依赖构建/查询实现。
-    // 指针仅在场景安全重建点的同步捕获期间有效，捕获后世界场持有自己的快照。
+    // 指针只在渲染线程提交来源时借用；捕获保留底层 GPU 资源，后台只解析完成的独立读回。
     struct GIVoxelSourcePart
     {
         VansMesh* mesh = nullptr;
         VansPBRMaterial* material = nullptr;
         int submesh = -1;
-        bool porous = false;
+        // 与原生植被绘制的 Leaves 部件一致；同材质的树干不使用叶片裁剪。
+        bool leaf = false;
         bool operator==(const GIVoxelSourcePart& other) const
-        { return mesh==other.mesh && material==other.material && submesh==other.submesh && porous==other.porous; }
+        { return mesh==other.mesh && material==other.material && submesh==other.submesh && leaf==other.leaf; }
     };
     enum class GIVoxelSourceAvailability : uint8_t
     {

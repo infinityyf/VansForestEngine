@@ -9,8 +9,12 @@
 #include <vector>
 #include <string>
 
+namespace VansGraphics { struct VansCompiledBoneMask; }
 namespace VansGraphics::VansPoseMath
 {
+	bool ApplyMaskedLocalDeltaPose(const VansAnimationFrameVector<VansBoneTransform>& base,
+		const VansAnimationFrameVector<VansBoneTransform>& delta, const VansCompiledBoneMask& mask,
+		float weight, VansAnimationFrameVector<VansBoneTransform>& output);
 	bool MakeAdditiveDeltaPose(VansAnimationFrameVector<VansBoneTransform>& pose,
 		const VansAnimationFrameVector<VansBoneTransform>& reference, const Skeleton& skeleton, VansAdditivePoseMode mode);
 	bool ApplyAdditiveDeltaPose(const VansAnimationFrameVector<VansBoneTransform>& base,

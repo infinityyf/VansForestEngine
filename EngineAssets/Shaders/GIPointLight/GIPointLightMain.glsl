@@ -1,3 +1,4 @@
+#include "../GI/GIRegionCapacity.h"
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_nonuniform_qualifier : require
 
@@ -14,22 +15,24 @@
 #include "../GIWorld/GIWorldScatterData.glsl"
 #endif
 #include "../Lights/LightsData.glsl"
+#include "GIDirectLighting.glsl"
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
-layout(set = 1, binding = 0, std430) buffer hitPositionBuffer { float hitDistance[]; } hitPositionInfoBuffer;
-layout(set = 1, binding = 1, std430) buffer hitNormalBuffer { f16vec4 hitNormal[]; } hitNormalInfoBuffer;
+layout(set = 1, binding = 0, std430) readonly buffer hitPositionBuffer { float hitDistance[]; } hitPositionInfoBuffer;
+layout(set = 1, binding = 1, std430) readonly buffer hitNormalBuffer { f16vec4 hitNormal[]; } hitNormalInfoBuffer;
 layout(set = 1, binding = 2, std430) buffer rayRadianceBuffer { f16vec4 radiance[]; } rayRadiance;
 layout(set = 1, binding = 3, std430) readonly buffer hitEmissionBuffer { f16vec4 emission[]; } hitEmission;
 layout(set = 1, binding = 4) uniform samplerCube environmentMap;
 layout(set = 1, binding = 8) uniform sampler2D shadowMap;
 layout(set = 1, binding = 9) uniform sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT];
-layout(set = 1, binding = 10, std430) buffer pbrDataBuffer { f16vec4 albedoRoughness[]; } pbrInfo;
-layout(set = 1, binding = 11) uniform sampler2D giVisibilityAtlas[8];
-layout(set = 1, binding = 12) uniform sampler2D giIrradianceAtlas[8];
+layout(set = 1, binding = 10, std430) readonly buffer pbrDataBuffer { f16vec4 albedoRoughness[]; } pbrInfo;
+layout(set = 1, binding = 11) uniform sampler2D giVisibilityAtlas[GI_MAX_REGION_COUNT];
+layout(set = 1, binding = 12) uniform sampler2D giIrradianceAtlas[GI_MAX_REGION_COUNT];
+layout(set = 1, binding = 16) uniform sampler2DArray rectLightEmissive;
 layout(set = 1, binding = 13, std430) readonly buffer ProbeStateBuffer
 {
     GIProbeState states[];
-} giProbeStates[8];
+} giProbeStates[GI_MAX_REGION_COUNT];
 
 #define GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex) giProbeStates[nonuniformEXT(regionIndex)].states[probeLinearIndex]
 #define GI_LAYOUT_SET 1
@@ -38,7 +41,7 @@ layout(set = 1, binding = 13, std430) readonly buffer ProbeStateBuffer
 #include "../GI/GIProbeCommon.glsl"
 
 #ifdef GI_WORLD_ENABLED
-vec4 GI_SampleWorldBounceRegion(uint region, vec3 p, vec3 n, float biasScale)
+vec4 GI_SampleWorldBounceRegion(uint region, vec3 p, GIReceiverNormals n, float biasScale)
 {
     vec4 size = GI_LayoutRegionSize(region);
     GIProbeLighting value = GI_SampleProbeIrradianceAtlasVisible(region,
@@ -59,20 +62,12 @@ vec4 GI_SampleWorldBounceRegion(uint region, vec3 p, vec3 n, float biasScale)
 #include "../GI/GIRegionBlend.glsl"
 #endif
 
-layout(push_constant) uniform PushConstants
-{
-    vec4 gridParams;
-    vec4 dispatchParams;
-    vec4 frameParams;
-    vec4 regionParams;
-    vec4 lightingParams;
-    vec4 temporalParams;
-} pushConstants;
+#include "../GI/GIProbeDispatch.glsl"
 
 
 void main()
 {
-    ivec3 probeCounts = ivec3(pushConstants.dispatchParams.xyz);
+    ivec3 probeCounts = ivec3(giDispatch.dispatchParams.xyz);
     uint raysPerUpdate = giProbeWork.header.y;
     uint rayLinear = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x;
     uint activeLinear = rayLinear / raysPerUpdate;
@@ -86,15 +81,15 @@ void main()
     // 几何射线不执行材质照明或 DDGI 二次查询。
     if (localRay < GI_FixedRayCount(raysPerUpdate))
     { rayRadiance.radiance[resultIndex] = f16vec4(0.0); return; }
-    uvec4 work = giProbeWork.entries[activeLinear];
+    uvec4 work = giProbeWork.entries[activeLinear].scheduling;
     ivec3 probeIndex = GI_WorkProbeCoordinate(work.x, probeCounts);
-    vec3 volumeSize = vec3(probeCounts) * pushConstants.gridParams.xyz;
-    vec3 volumeMin = pushConstants.regionParams.xyz - volumeSize * 0.5;
+    vec3 volumeSize = vec3(probeCounts) * giDispatch.gridParams.xyz;
+    vec3 volumeMin = giDispatch.regionParams.xyz - volumeSize * 0.5;
     GIProbeRayDirectionContext context = GI_BuildProbeRayDirectionContext(probeIndex, probeCounts, raysPerUpdate, work.z);
     bool fixedRay;
     vec3 rayDirection = GI_ProbeRayDirectionPrepared(context, localRay, fixedRay);
     float hitT = hitPositionInfoBuffer.hitDistance[resultIndex];
-    vec3 origin = GI_LayoutProbePosition(giProbeWork.header.z, work.x, probeCounts, volumeMin, pushConstants.gridParams.xyz) +
+    vec3 origin = GI_LayoutProbePosition(giProbeWork.header.z, work.x, probeCounts, volumeMin, giDispatch.gridParams.xyz) +
         giProbeStates[nonuniformEXT(giProbeWork.header.z)].states[work.x].relocationAndConfidence.xyz;
     vec4 hitPos = vec4(origin + rayDirection * max(hitT, 0.0), hitT < 0.0 ? 0.0 : 1.0);
     // 动态射线保留原有背面翻转法线后的材质照明，几何固定射线才跳过照明。
@@ -111,36 +106,42 @@ void main()
             vec3 directDiffuse = vec3(0.0);
             // Hit geometry is transient: direct lighting must be evaluated for
             // this ray, not recovered from a prior frame's unrelated surface.
-            CalculateDirectDiffuse(hitPos.xyz, hitNormal, shadowMap, punctualShadowMap,
+            // 动态球面射线的等效角足迹投射到命中距离，避免离屏纹理随相机改变。
+            float footprintMeters = hitT * sqrt(4.0 * PI / float(max(raysPerUpdate - GI_FixedRayCount(raysPerUpdate), 1u)));
+            uint primaryFailure=CalculateDirectDiffuse(hitPos.xyz, hitNormal, footprintMeters, rectLightEmissive, shadowMap, punctualShadowMap,
                 albedoRoughness, directDiffuse);
+#ifdef GI_WORLD_ENABLED
+            if(primaryFailure!=0u)
+            {
+                rayRadiance.radiance[resultIndex]=f16vec4(0,0,0,GI_LightingFailureValidity(primaryFailure));
+                return;
+            }
+#endif
             vec3 indirectDiffuse = vec3(0.0);
 #ifdef GI_WORLD_ENABLED
             // 户外各级使用当前已发布图集；硬件室内区域不参与世界反弹。
-            indirectDiffuse = GI_BlendRegionLighting(hitPos.xyz, hitNormal, 1.0);
+            indirectDiffuse = GI_BlendRegionLighting(hitPos.xyz, GIReceiverNormals(hitNormal, hitNormal), 1.0);
 #else
             uint bounceRegion = giProbeWork.header.w != 0u ? GI_LayoutSelectRegion(hitPos.xyz) : giProbeWork.header.z;
             if (bounceRegion != GI_INVALID_ADDRESS)
             {
-                vec3 bounceMin = volumeMin, bounceSize = volumeSize;
-                float bias = pushConstants.regionParams.w;
-                if (giProbeWork.header.w != 0u)
-                {
-                    bounceMin = GI_LayoutRegionMin(bounceRegion).xyz;
-                    bounceSize = GI_LayoutRegionSize(bounceRegion).xyz;
-                    bias = GI_LayoutRegionSize(bounceRegion).w;
-                }
-                indirectDiffuse = GI_SampleProbeIrradianceAtlasVisible(bounceRegion, probeCounts,
+                // 混合布局可能选择另一均匀区域；数量和范围必须都来自被采样区域。
+                vec3 bounceMin = GI_LayoutRegionMin(bounceRegion).xyz;
+                vec4 bounceSizeAndBias = GI_LayoutRegionSize(bounceRegion);
+                ivec3 bounceCounts = ivec3(GI_LayoutRegionWord(bounceRegion, 2u).xyz);
+                indirectDiffuse = GI_SampleProbeIrradianceAtlasVisible(bounceRegion, bounceCounts,
                     giIrradianceAtlas[nonuniformEXT(bounceRegion)], giVisibilityAtlas[nonuniformEXT(bounceRegion)],
-                    hitPos.xyz, hitNormal, bounceMin, bounceSize, bias, 0.0).irradiance; // 反弹采光不再次乘接收区域 fade。
+                    hitPos.xyz, GIReceiverNormals(hitNormal, hitNormal), bounceMin, bounceSizeAndBias.xyz, bounceSizeAndBias.w, 0.0).irradiance; // 反弹采光不再次乘接收区域 fade。
             }
 #endif
 			newRadiance = emittedRadiance + directDiffuse + min(indirectDiffuse * clamp(albedoRoughness.rgb, 0.0, 1.0),
-                vec3(pushConstants.lightingParams.x));
+                vec3(giDispatch.lightingParams.x));
         }
 
 		// A single extreme emissive/sky/direct sample must never contaminate a
 		// probe tile for its entire temporal history.
 #ifdef GI_WORLD_ENABLED
+        vec3 primary=GIWorldCompositeRadiance(newRadiance,worldTransmission,vec3(0),giDispatch.lightingParams.y);
         vec3 scatteredRadiance=vec3(0);
         vec4 scatter=gwScatterEvents[GIWorldScatterAddress(giProbeWork.header.z,resultIndex)];
         if(scatter.w>=0.0 && any(greaterThan(scatter.rgb,vec3(0))))
@@ -155,7 +156,7 @@ void main()
             if(sampleSun)
             {
                 incomingDirection=normalize(uDirectionLight.direction.xyz);
-                incomingRadiance=sun*(.25*INV_PI); // 归一化各向同性相函数 1/(4*pi)。
+                incomingRadiance=sun*SampleLightCookie(0,position,GIWorldScatterFootprint(giDispatch.traceParams.z))*(.25*INV_PI); // 归一化各向同性相函数 1/(4*pi)。
             }
             else
             {
@@ -167,22 +168,22 @@ void main()
                 incomingRadiance=SampleSkyRadiance(environmentMap,incomingDirection);
             }
             float distance=GIWorldEnvironmentDistance(position);
-            float spacing=giProbeWork.header.w!=0u?GI_LayoutPosition(giProbeWork.header.z,work.x).w:
-                min(pushConstants.gridParams.x,min(pushConstants.gridParams.y,pushConstants.gridParams.z));
-            GIWorldHit incoming=GIWorldTrace(position,incomingDirection,.0001,distance,true,GIWorldScatterFootprint(spacing),-1.0,GIWorldScatterStepBudget());
+            GIWorldHit incoming=GIWorldTrace(position,incomingDirection,.0001,distance,true,GIWorldScatterFootprint(giDispatch.traceParams.z),-1.0,GIWorldScatterStepBudget());
             if(!incoming.valid)
             {
-                hitPositionInfoBuffer.hitDistance[resultIndex]=GI_TraceFailureDistance(incoming.failure);
-                rayRadiance.radiance[resultIndex]=f16vec4(0);return;
+                rayRadiance.radiance[resultIndex]=f16vec4(primary,GI_LightingFailureValidity(incoming.failure<<GI_FEEDBACK_SCATTER_SHIFT));return;
             }
             float visibility=incoming.t<distance?0.0:incoming.transmission;
             if(sampleSun)visibility=min(visibility,SampleGICascadeShadow(position,incomingDirection,shadowMap));
             // 八组动态射线轮转，概率补偿保持均值；单条动态射线最多一次入射查询。
-            scatteredRadiance=GIWorldSparseScatterRadiance(scatter.rgb,incomingRadiance,visibility,sourceProbability,pushConstants.lightingParams.y);
+            scatteredRadiance=GIWorldSparseScatterRadiance(scatter.rgb,incomingRadiance,visibility,sourceProbability,giDispatch.lightingParams.y);
         }
-        newRadiance=GIWorldCompositeRadiance(newRadiance,worldTransmission,scatteredRadiance,pushConstants.lightingParams.y);
+        // 保持原来逐射线总辐射的上限；分量在图集积分后合成，避免未知散射冻结主光照。
+        gwScatterEvents[GIWorldScatterAddress(giProbeWork.header.z,resultIndex)]=
+            vec4(min(scatteredRadiance,max(vec3(65504.0)-primary,vec3(0))),0);
+        newRadiance=primary;
 #else
-        newRadiance = min(max(newRadiance, vec3(0.0)), vec3(pushConstants.lightingParams.y));
+        newRadiance = min(max(newRadiance, vec3(0.0)), vec3(giDispatch.lightingParams.y));
 #endif
 		rayRadiance.radiance[resultIndex] = f16vec4(newRadiance, 1.0);
 }

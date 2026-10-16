@@ -32,6 +32,13 @@ namespace VansGraphics
 		std::uint64_t sourceLayerId = 0;
 	};
 
+	// 后置组合可在本帧前段事件已发布后追加事件，消费者只发布尚未认领的区间。
+	struct VansAnimationEventPublicationRange
+	{
+		std::size_t begin = 0;
+		std::size_t end = 0;
+	};
+
 	struct VansAnimationCurveSample
 	{
 		std::uint64_t id = 0;

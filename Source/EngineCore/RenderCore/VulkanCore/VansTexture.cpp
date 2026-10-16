@@ -44,7 +44,7 @@ namespace VansGraphics
 
 		bool RetainCookedRgba8Mip0(
 			const Vans::VansCookedTextureData& cooked,
-			VansRgba8Image& image)
+            Vans::VansColorEncoding encoding, VansRgba8Image& image)
 		{
 			image = {};
 			if (cooked.format != Vans::VansCookedTextureFormat::RGBA8 || cooked.mips.empty())
@@ -59,6 +59,7 @@ namespace VansGraphics
 				return false;
 			}
 
+			image.encoding = encoding;
 			image.width = static_cast<int>(mip.width);
 			image.height = static_cast<int>(mip.height);
 			image.pixels.assign(
@@ -272,46 +273,58 @@ namespace VansGraphics
 		std::vector<uint8_t> resizedPixels;
 	};
 
-	static RGBA8LayerUploadView PrepareRGBA8LayerUpload(
-		const uint8_t* sourcePixels,
-		int sourceWidth,
-		int sourceHeight,
-		int targetWidth,
-		int targetHeight)
-	{
-		RGBA8LayerUploadView upload{};
-		upload.pixels = sourcePixels;
-		upload.width = sourceWidth;
-		upload.height = sourceHeight;
+    static RGBA8LayerUploadView PrepareRGBA8LayerUpload(
+        const uint8_t* sourcePixels, int sourceWidth, int sourceHeight,
+        int targetWidth, int targetHeight, Vans::VansColorEncoding sourceEncoding,
+        Vans::VansColorEncoding targetEncoding, VkFilter filter)
+    {
+        RGBA8LayerUploadView upload{};
+        upload.pixels = sourcePixels;
+        upload.width = targetWidth;
+        upload.height = targetHeight;
+        if (sourceWidth == targetWidth && sourceHeight == targetHeight && sourceEncoding == targetEncoding)
+            return upload;
 
-		if (sourceWidth == targetWidth && sourceHeight == targetHeight)
-		{
-			return upload;
-		}
-
-		upload.resizedPixels.resize(size_t(targetWidth) * targetHeight * 4);
-		const float scaleX = float(sourceWidth) / float(targetWidth);
-		const float scaleY = float(sourceHeight) / float(targetHeight);
-		for (int y = 0; y < targetHeight; ++y)
-		{
-			for (int x = 0; x < targetWidth; ++x)
-			{
-				const int srcX = std::min(static_cast<int>(x * scaleX), sourceWidth - 1);
-				const int srcY = std::min(static_cast<int>(y * scaleY), sourceHeight - 1);
-				const uint8_t* src = sourcePixels + (size_t(srcY) * sourceWidth + srcX) * 4;
-				uint8_t* dst = upload.resizedPixels.data() + (size_t(y) * targetWidth + x) * 4;
-				dst[0] = src[0];
-				dst[1] = src[1];
-				dst[2] = src[2];
-				dst[3] = src[3];
-			}
-		}
-
-		upload.pixels = upload.resizedPixels.data();
-		upload.width = targetWidth;
-		upload.height = targetHeight;
-		return upload;
-	}
+        upload.resizedPixels.resize(size_t(targetWidth) * targetHeight * 4);
+        const float scaleX = float(sourceWidth) / float(targetWidth);
+        const float scaleY = float(sourceHeight) / float(targetHeight);
+        const auto sample = [&](int x, int y, size_t channel)
+        {
+            x = std::clamp(x, 0, sourceWidth - 1);
+            y = std::clamp(y, 0, sourceHeight - 1);
+            return Vans::DecodeColor8(sourcePixels[(size_t(y) * sourceWidth + x) * 4 + channel],
+                channel == 3 ? Vans::VansColorEncoding::Linear : sourceEncoding);
+        };
+        for (int y = 0; y < targetHeight; ++y) for (int x = 0; x < targetWidth; ++x)
+        {
+            auto* target = upload.resizedPixels.data() + (size_t(y) * targetWidth + x) * 4;
+            if (filter == VK_FILTER_NEAREST)
+            {
+                // 线性数据 LUT 保留其明确选择的最近邻策略与原有采样位置。
+                const int sx = std::min(int(x * scaleX), sourceWidth - 1);
+                const int sy = std::min(int(y * scaleY), sourceHeight - 1);
+                if (sourceEncoding == targetEncoding)
+                    std::memcpy(target, sourcePixels + (size_t(sy) * sourceWidth + sx) * 4, 4);
+                else for (size_t c = 0; c < 4; ++c)
+                    target[c] = Vans::EncodeColor8(sample(sx, sy, c), c == 3 ? Vans::VansColorEncoding::Linear : targetEncoding);
+                continue;
+            }
+            // 与 GPU blit 的像素中心和边界夹取一致；先解码 RGB，过滤后再编码。
+            const float sx = (float(x) + .5f) * scaleX - .5f;
+            const float sy = (float(y) + .5f) * scaleY - .5f;
+            const int x0 = int(std::floor(sx)), y0 = int(std::floor(sy));
+            const float tx = sx - float(x0), ty = sy - float(y0);
+            for (size_t c = 0; c < 4; ++c)
+            {
+                const float top = sample(x0,y0,c)*(1-tx) + sample(x0+1,y0,c)*tx;
+                const float bottom = sample(x0,y0+1,c)*(1-tx) + sample(x0+1,y0+1,c)*tx;
+                target[c] = Vans::EncodeColor8(top*(1-ty) + bottom*ty,
+                    c == 3 ? Vans::VansColorEncoding::Linear : targetEncoding);
+            }
+        }
+        upload.pixels = upload.resizedPixels.data();
+        return upload;
+    }
 
 	// =====================================================================
 	// VansTexture 实现
@@ -649,7 +662,7 @@ namespace VansGraphics
 			layerIndex,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			VK_ACCESS_SHADER_READ_BIT,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 	}
 
 	void VansTexture::GenerateMipmapsForLayer(
@@ -722,7 +735,7 @@ namespace VansGraphics
 			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 			command_buffer.PipelineBarrier(
 				VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 				{}, {}, { barrier });
 
 			mipW = dstW;
@@ -737,7 +750,7 @@ namespace VansGraphics
 		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		command_buffer.PipelineBarrier(
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 			{}, {}, { barrier });
 		m_Image.SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	}
@@ -763,7 +776,7 @@ namespace VansGraphics
 		toShaderRead.subresourceRange = { m_Image.GetImageAspect(), 0, 1u, static_cast<uint32_t>(layerIndex), 1u };
 		command_buffer.PipelineBarrier(
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 			{}, {}, { toShaderRead });
 		m_Image.SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	}
@@ -978,6 +991,7 @@ namespace VansGraphics
 			}
 			const std::size_t pixelBytes =
 				static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u;
+			m_RetainedRgba8Image.encoding = loadDesc.isSRGB ? Vans::VansColorEncoding::SRGB : Vans::VansColorEncoding::Linear;
 			m_RetainedRgba8Image.width = width;
 			m_RetainedRgba8Image.height = height;
 			m_RetainedRgba8Image.pixels.assign(
@@ -1045,7 +1059,8 @@ namespace VansGraphics
 			return false;
 		}
 		if (loadDesc.retainRgba8Pixels &&
-			!RetainCookedRgba8Mip0(cooked, m_RetainedRgba8Image))
+			!RetainCookedRgba8Mip0(cooked,
+                loadDesc.isSRGB ? Vans::VansColorEncoding::SRGB : Vans::VansColorEncoding::Linear, m_RetainedRgba8Image))
 		{
 			VANS_LOG_WARN("[VansTexture] Cooked texture cannot retain RGBA8 mip 0: "
 				<< loadDesc.cookedPath);
@@ -1137,7 +1152,8 @@ namespace VansGraphics
 			return false;
 		}
 		if (loadDesc.retainRgba8Pixels &&
-			!RetainCookedRgba8Mip0(cooked, m_RetainedRgba8Image))
+			!RetainCookedRgba8Mip0(cooked,
+                loadDesc.isSRGB ? Vans::VansColorEncoding::SRGB : Vans::VansColorEncoding::Linear, m_RetainedRgba8Image))
 		{
 			return false;
 		}
@@ -1322,7 +1338,7 @@ namespace VansGraphics
 	void VansTexture::LoadFromMemory(VansVKCommandBuffer& command_buffer,
 		const void* data, size_t dataSize,
 		int width, int height, VkFormat format,
-		VkSamplerAddressMode addressMode)
+		VkSamplerAddressMode addressMode, VkImageUsageFlags additionalUsage)
 	{
 		m_TextureWidth = width;
 		m_TextureHeight = height;
@@ -1334,7 +1350,7 @@ namespace VansGraphics
 		uploadRequest.height = height;
 		uploadRequest.plan.format = format;
 		uploadRequest.plan.mipLevels = 1;
-		uploadRequest.plan.imageUsage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		uploadRequest.plan.imageUsage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | additionalUsage;
 		uploadRequest.addressMode = addressMode;
 		if (!UploadTexture(command_buffer, uploadRequest))
 		{
@@ -1343,8 +1359,8 @@ namespace VansGraphics
 	}
 
 	void VansTexture::InitTextureArray(VansVKCommandBuffer& command_buffer,
-		int width, int height, int layerCount, int numComponents,
-		bool generateMip, TexturePrecision texture_precision, VkSamplerAddressMode addressMode)
+		int width, int height, int layerCount, VkFormat format,
+		bool generateMip, VkSamplerAddressMode addressMode)
 	{
 		m_TextureWidth = width;
 		m_TextureHeight = height;
@@ -1354,7 +1370,6 @@ namespace VansGraphics
 		VkDevice device = vkDevice->GetLogicDevice();
 		VkQueue queue = vkDevice->GetGraphicsQueue();
 
-		VkFormat format = ChooseFormat(numComponents, texture_precision);
 		int mipLevels = CalculateMipLevels(width, height, generateMip);
 
 		// 创建 2D 贴图数组：VK_IMAGE_TYPE_2D + layer_num > 1 → VK_IMAGE_VIEW_TYPE_2D_ARRAY
@@ -1390,76 +1405,31 @@ namespace VansGraphics
 		}
 	}
 
-	bool VansTexture::LoadTextureLayer(VansVKCommandBuffer& command_buffer,
-		const std::string& texturePath, int layerIndex, bool isSRGB, VkSamplerAddressMode addressMode)
-	{
-		VANS_LOG("LoadTextureLayer [" << layerIndex << "]: " << texturePath);
-
-		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-
-		// 读取文件，强制 4 通道 RGBA8
-		int fileW = 0, fileH = 0, numComponents = 0, bytesPerChannel = 0;
-		void* pixelData = ReadTextureFile(texturePath, LOW_PRES_8, bytesPerChannel, fileW, fileH, numComponents, 4);
-		if (!pixelData || fileW <= 0 || fileH <= 0)
-		{
-			VANS_LOG_ERROR("LoadTextureLayer: 无法读取图片: " << texturePath);
-			return false;
-		}
-
-		RGBA8LayerUploadView upload = PrepareRGBA8LayerUpload(
-			static_cast<const uint8_t*>(pixelData),
-			fileW, fileH,
-			m_TextureWidth, m_TextureHeight);
-
-		size_t dataSize = size_t(upload.width) * upload.height * 4;
-		VkExtent3D extent = { (uint32_t)upload.width, (uint32_t)upload.height, 1 };
-		VkOffset3D zeroOffset = { 0, 0, 0 };
-		if (!vkDevice->SetDeviceImageData(m_Image, command_buffer,
-			const_cast<uint8_t*>(upload.pixels), 0, (int)dataSize, zeroOffset, extent, 0, layerIndex,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
-		{
-			RecordTextureUploadFailure();
-			VANS_LOG_ERROR("LoadTextureLayer: GPU upload failed for layer " << layerIndex << ": " << texturePath);
-			stbi_image_free(pixelData);
-			return false;
-		}
-
-		// SetDeviceImageData 将 mip 0 of layerIndex 置于 TRANSFER_DST_OPTIMAL。
-		// 若分配了多级 mip（generateMip=true），则用 BlitImageRegions 逐级下采样生成完整 mip 链；
-		// 单 mip 时直接转换回 SHADER_READ_ONLY_OPTIMAL 即可。
-		{
-			VkQueue queue = vkDevice->GetGraphicsQueue();
-			VkDevice device = vkDevice->GetLogicDevice();
-
-			if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
-			{
-				RecordTextureUploadFailure();
-				VANS_LOG_ERROR("LoadTextureLayer: mip/final layout command buffer begin failed for layer " << layerIndex << ": " << texturePath);
-				stbi_image_free(pixelData);
-				return false;
-			}
-			FinalizeUploadedLayer(command_buffer, upload.width, upload.height, layerIndex);
-			if (!SubmitAndWait(command_buffer, queue, device))
-			{
-				RecordTextureUploadFailure();
-				VANS_LOG_ERROR("LoadTextureLayer: mip/final layout submit failed for layer " << layerIndex << ": " << texturePath);
-				stbi_image_free(pixelData);
-				return false;
-			}
-		}
-
-		stbi_image_free(pixelData);
-		return true;
-	}
+    bool VansTexture::LoadTextureLayer(VansVKCommandBuffer& command_buffer,
+        const std::string& texturePath, int layerIndex, bool isSRGB)
+    {
+        int width=0, height=0, channels=0, bytesPerChannel=0;
+        void* pixels=ReadTextureFile(texturePath, LOW_PRES_8, bytesPerChannel, width, height, channels, 4);
+        if (!pixels) return false;
+        const bool uploaded=UpdateArrayLayerFromPixels(command_buffer,
+            static_cast<const uint8_t*>(pixels), width, height, layerIndex,
+            isSRGB ? Vans::VansColorEncoding::SRGB : Vans::VansColorEncoding::Linear, VK_FILTER_NEAREST);
+        stbi_image_free(pixels);
+        return uploaded;
+    }
 
 	// ===========================================================================
 	// UpdateArrayLayerFromPixels — 每帧将视频帧 CPU 像素写入贴图数组指定层
 	// 与 LoadTextureLayer 相同流程，但直接接收像素指针而无需读取文件。
 	// ===========================================================================
 	bool VansTexture::UpdateArrayLayerFromPixels(VansVKCommandBuffer& command_buffer,
-		const uint8_t* pixels, int srcW, int srcH, int layerIndex)
+		const uint8_t* pixels, int srcW, int srcH, int layerIndex,
+        Vans::VansColorEncoding sourceEncoding, VkFilter filter)
 	{
-		if (!pixels || srcW <= 0 || srcH <= 0 || layerIndex < 0 || layerIndex >= m_TextureSlice)
+		if (!pixels || srcW <= 0 || srcH <= 0 || layerIndex < 0 || layerIndex >= m_TextureSlice ||
+            (filter != VK_FILTER_NEAREST && filter != VK_FILTER_LINEAR) ||
+            (m_Image.GetImageCreateInfo().format != VK_FORMAT_R8G8B8A8_UNORM &&
+             m_Image.GetImageCreateInfo().format != VK_FORMAT_R8G8B8A8_SRGB))
 		{
 			VANS_LOG_ERROR("[VansTexture] UpdateArrayLayerFromPixels: 参数无效 layer=" << layerIndex);
 			return false;
@@ -1471,7 +1441,8 @@ namespace VansGraphics
 		RGBA8LayerUploadView upload{};
 		{
 			VANS_PROFILE_SCOPE("RectLightEmissive::ResizeCPU", Vans::ProfileCategory::Video);
-			upload = PrepareRGBA8LayerUpload(pixels, srcW, srcH, m_TextureWidth, m_TextureHeight);
+			upload = PrepareRGBA8LayerUpload(pixels, srcW, srcH, m_TextureWidth, m_TextureHeight,
+                sourceEncoding, m_Image.GetImageCreateInfo().format == VK_FORMAT_R8G8B8A8_SRGB ? Vans::VansColorEncoding::SRGB : Vans::VansColorEncoding::Linear, filter);
 		}
 
 		size_t dataSize = size_t(upload.width) * upload.height * 4;
@@ -1512,12 +1483,16 @@ namespace VansGraphics
 
 	// ===========================================================================
 	// RecordArrayLayerUploadFromPixels — 录制贴图数组层更新，合并进当前帧提交
-	// 与 UpdateArrayLayerFromPixels 保持相同的最近邻缩放与 mip 链生成效果。
+	// 与立即上传共用颜色转换、过滤和 mip 链生成。
 	// ===========================================================================
 	bool VansTexture::RecordArrayLayerUploadFromPixels(VansVKCommandBuffer& command_buffer,
-		const uint8_t* pixels, int srcW, int srcH, int layerIndex)
+		const uint8_t* pixels, int srcW, int srcH, int layerIndex,
+        Vans::VansColorEncoding sourceEncoding, VkFilter filter)
 	{
-		if (!pixels || srcW <= 0 || srcH <= 0 || layerIndex < 0 || layerIndex >= m_TextureSlice)
+		if (!pixels || srcW <= 0 || srcH <= 0 || layerIndex < 0 || layerIndex >= m_TextureSlice ||
+            (filter != VK_FILTER_NEAREST && filter != VK_FILTER_LINEAR) ||
+            (m_Image.GetImageCreateInfo().format != VK_FORMAT_R8G8B8A8_UNORM &&
+             m_Image.GetImageCreateInfo().format != VK_FORMAT_R8G8B8A8_SRGB))
 		{
 			VANS_LOG_ERROR("[VansTexture] RecordArrayLayerUploadFromPixels: 参数无效 layer=" << layerIndex);
 			return false;
@@ -1526,10 +1501,10 @@ namespace VansGraphics
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		if (!vkDevice) return false;
 
-		// 若分辨率与数组贴图不一致，保持旧路径的最近邻缩放效果。
+		// 颜色与线性数据由调用方显式声明，不根据上传时机选择不同的过滤结果。
 		RGBA8LayerUploadView upload = PrepareRGBA8LayerUpload(
-			pixels, srcW, srcH,
-			m_TextureWidth, m_TextureHeight);
+			pixels, srcW, srcH, m_TextureWidth, m_TextureHeight,
+            sourceEncoding, m_Image.GetImageCreateInfo().format == VK_FORMAT_R8G8B8A8_SRGB ? Vans::VansColorEncoding::SRGB : Vans::VansColorEncoding::Linear, filter);
 
 		size_t dataSize = size_t(upload.width) * upload.height * 4;
 		VkExtent3D extent = { (uint32_t)upload.width, (uint32_t)upload.height, 1 };
@@ -1565,6 +1540,9 @@ namespace VansGraphics
 		}
 
 		VansVKImage& sourceImage = sourceTexture->GetImage();
+        if ((sourceImage.GetImageCreateInfo().usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0 ||
+            (m_Image.GetImageCreateInfo().usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0)
+            return false;
 		const int sourceW = sourceTexture->GetWidth();
 		const int sourceH = sourceTexture->GetHeight();
 		const VkImageLayout sourceOriginalLayout = sourceImage.GetImageLayout();
@@ -1595,12 +1573,13 @@ namespace VansGraphics
 			targetToTransfer.subresourceRange = { m_Image.GetImageAspect(), 0, 1u, static_cast<uint32_t>(layerIndex), 1u };
 
 			command_buffer.PipelineBarrier(
-				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 				VK_PIPELINE_STAGE_TRANSFER_BIT,
 				{}, {}, { sourceToTransfer, targetToTransfer });
 		}
 
-		if (sourceW == m_TextureWidth && sourceH == m_TextureHeight)
+		if (sourceW == m_TextureWidth && sourceH == m_TextureHeight &&
+            sourceImage.GetImageCreateInfo().format == m_Image.GetImageCreateInfo().format)
 		{
 			VANS_PROFILE_SCOPE("RectLightVideo::GpuCopy.CopyImage", Vans::ProfileCategory::Video);
 			VkImageCopy copyRegion{};
@@ -1641,7 +1620,7 @@ namespace VansGraphics
 
 			command_buffer.PipelineBarrier(
 				VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 				{}, {}, { sourceToOriginal });
 			sourceImage.SetTrackedImageLayout(sourceOriginalLayout);
 		}
@@ -1650,10 +1629,14 @@ namespace VansGraphics
 		return true;
 	}
 
-	bool VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, bool isCube, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode, uint32_t mipLevelLimit)
+	bool VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, VkImageViewType viewType, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode, uint32_t mipLevelLimit)
 	{
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-		if (!vkDevice || width <= 0 || height <= 0 || slice <= 0)
+		const bool is3D = viewType == VK_IMAGE_VIEW_TYPE_3D;
+		const bool isCube = viewType == VK_IMAGE_VIEW_TYPE_CUBE;
+		if (!vkDevice || width <= 0 || height <= 0 || slice <= 0 ||
+			(!is3D && !isCube && viewType != VK_IMAGE_VIEW_TYPE_2D) ||
+			(!is3D && slice != 1) || (isCube && width != height))
 		{
 			RecordTextureUploadFailure();
 			return false;
@@ -1665,8 +1648,7 @@ namespace VansGraphics
 		VkDevice device = vkDevice->GetLogicDevice();
 		VkQueue queue = vkDevice->GetGraphicsQueue();
 
-		bool is3D = slice > 1;
-		int mipLevels = CalculateMipLevels(width, height, generateMip);
+		int mipLevels = CalculateMipLevels(is3D ? (std::max)(width, slice) : width, height, generateMip);
         if (mipLevelLimit != 0)
             mipLevels = static_cast<int>((std::min)(static_cast<uint32_t>(mipLevels), mipLevelLimit));
 
@@ -1797,7 +1779,7 @@ namespace VansGraphics
 
 		VANS_LOG("Load 3D Texture Slices: " << slicePathFormat << ", size=" << width << "x" << height << "x" << sliceCount);
 		InitTextureWithoutData(command_buffer, width, height, sliceCount,
-			ChooseFormat(importChannel, LOW_PRES_8), false, false, false, addressMode);
+			ChooseFormat(importChannel, LOW_PRES_8), VK_IMAGE_VIEW_TYPE_3D, false, false, addressMode);
 
 		auto uploadSlice = [&](const stbi_uc* pixels, int sliceIndex) -> bool
 		{

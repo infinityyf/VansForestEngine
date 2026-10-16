@@ -1,10 +1,12 @@
-﻿#include "VansSceneEditService.h"
+#include "VansSceneEditService.h"
 #include "../AuthoringCore/VansAssetDocumentRegistry.h"
 
 #include "VansSceneObjectReferenceResolver.h"
+#include "VansEditorRuntimePreviewProjector.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../SceneCore/VansSceneDocument.h"
 #include "../SceneCore/VansSceneParentReference.h"
+#include "../SceneCore/VansSceneObjectGraph.h"
 
 #include <cstddef>
 #include <algorithm>
@@ -28,7 +30,8 @@ public:
     virtual ~VansSceneEditCommand() = default;
 
 private:
-    VansSerializedValue authoringBefore, authoringAfter;
+    std::shared_ptr<const VansSerializedValue> authoringBefore, authoringAfter;
+    SceneEditResult propertyPreview;
     SceneStateId authoringBeforeState = 0, authoringAfterState = 0;
     bool usesPrefabHistory = false;
 protected:
@@ -109,22 +112,22 @@ private:
         m_Before = d.SerializedRootSnapshot(); m_BeforeState = d.CurrentStateId();
         m_AfterState = d.ApplyEditedSerializedRoot(m_After);
         if (m_Hooks.afterExecute && !m_Hooks.afterExecute())
-        { d.RestoreEditedSerializedRoot(m_Before, m_BeforeState); m_Hooks.afterExecute(); return {false, "Prefab preview failed"}; }
-        return {true, {}};
+        { d.RestoreEditedSerializedRoot(m_Before, m_BeforeState); if (m_Hooks.afterUndo) m_Hooks.afterUndo(); return {false, "Scene preview failed"}; }
+        SceneEditResult result{true, {}}; result.runtimeChangeApplied = static_cast<bool>(m_Hooks.afterExecute); return result;
     }
     SceneEditResult Undo(VansSceneDocument& d) override
     {
         d.RestoreEditedSerializedRoot(m_Before, m_BeforeState);
         if (m_Hooks.afterUndo && !m_Hooks.afterUndo())
-        { d.RestoreEditedSerializedRoot(m_After, m_AfterState); return {false, "Prefab undo preview failed"}; }
-        return {true, {}};
+        { d.RestoreEditedSerializedRoot(m_After, m_AfterState); if (m_Hooks.afterRedo) m_Hooks.afterRedo(); return {false, "Scene undo preview failed"}; }
+        SceneEditResult result{true, {}}; result.runtimeChangeApplied = static_cast<bool>(m_Hooks.afterUndo); return result;
     }
     SceneEditResult Redo(VansSceneDocument& d) override
     {
         d.RestoreEditedSerializedRoot(m_After, m_AfterState);
         if (m_Hooks.afterRedo && !m_Hooks.afterRedo())
-        { d.RestoreEditedSerializedRoot(m_Before, m_BeforeState); return {false, "Prefab redo preview failed"}; }
-        return {true, {}};
+        { d.RestoreEditedSerializedRoot(m_Before, m_BeforeState); if (m_Hooks.afterUndo) m_Hooks.afterUndo(); return {false, "Scene redo preview failed"}; }
+        SceneEditResult result{true, {}}; result.runtimeChangeApplied = static_cast<bool>(m_Hooks.afterRedo); return result;
     }
     VansSerializedValue m_Before, m_After;
     SceneStateId m_BeforeState = 0, m_AfterState = 0;
@@ -167,6 +170,8 @@ private:
 
     std::string m_PropertyPointer;
     VansSerializedValue m_OldValue;
+    bool m_ArrayElement = false;
+    std::string m_ChangedEntityGuid;
     SceneEditLifecycleHooks m_Hooks;
     SceneStateId m_BeforeState = 0;
     SceneStateId m_AfterState = 0;
@@ -292,6 +297,24 @@ SceneEditResult RuntimePreviewEditResult(
     return result;
 }
 
+SceneEditResult RuntimePropertyPreviewResult(const VansSceneDocument& document,
+    const VansSerializedValue& candidate, const std::string& entityGuid)
+{
+    auto result = RuntimePreviewEditResult(entityGuid);
+    const auto snapshot = document.CreateSnapshot();
+    const auto find = [&](const VansSerializedValue& root) -> const VansSerializedValue*
+    {
+        const auto* entities = FindObjectField(root, "entities");
+        if (entities) for (const auto& entity : entities->arrayItems)
+            if (ReadSerializedStringField(entity, "id") == entityGuid) return &entity;
+        return nullptr;
+    };
+    const auto* before = find(snapshot.Root());
+    const auto* after = find(candidate);
+    result.runtimePreviewSupported = before && after && !RequiresRuntimeEntityRebuild(*before, *after);
+    return result;
+}
+
 SceneEditResult RuntimeParentPreviewEditResult(
     std::string entityGuid,
     const std::optional<VansSceneParentReference>& parent,
@@ -386,23 +409,6 @@ bool TryBuildEntityHierarchy(
     return true;
 }
 
-bool IsDescendantOf(
-    const std::unordered_map<std::string, EntityHierarchyRecord>& entities,
-    const std::string& candidateChild,
-    const std::string& candidateAncestor)
-{
-    std::string cursor = candidateChild;
-    for (;;)
-    {
-        const auto found = entities.find(cursor);
-        if (found == entities.end() || found->second.parent.empty())
-            return false;
-        if (found->second.parent == candidateAncestor)
-            return true;
-        cursor = found->second.parent;
-    }
-}
-
 VansSerializedValue TransformVec3(float x, float y, float z)
 {
     return VansSerializedValue::Array({
@@ -451,11 +457,9 @@ SceneEditResult ApplyEntityParent(
         return { false, "Child entity does not exist" };
     if (!newParentEntityGuid.empty() && entitiesById.find(newParentEntityGuid) == entitiesById.end())
         return { false, "Parent entity does not exist" };
-    if (!newParentEntityGuid.empty() &&
-        IsDescendantOf(entitiesById, newParentEntityGuid, childEntityGuid))
-    {
-        return { false, "Cannot parent an entity to one of its descendants" };
-    }
+    const auto* graph = FindObjectField(root, "entities");
+    if (!ValidateSceneObjectReparent(*graph, childEntityGuid, newParentEntityGuid, error))
+        return {false, error};
     VansSerializedValue* entities = FindObjectField(root, "entities");
     VansSerializedValue& childEntity = entities->arrayItems[child->second.index];
 	const VansSerializedValue* currentParent = FindObjectField(childEntity, "parent");
@@ -564,8 +568,9 @@ SceneEditResult VansSetScenePropertyCommand::Execute(VansSceneDocument& document
     if (auto result = WriteAt(candidate, m_PropertyPointer, m_NewValue); !result)
         return result;
     const std::string changedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
+    auto preview = RuntimePropertyPreviewResult(document, candidate, changedEntityGuid);
     m_AfterState = document.ApplyEditedSerializedRoot(std::move(candidate));
-    return RuntimePreviewEditResult(changedEntityGuid);
+    return preview;
 }
 
 SceneEditResult VansSetScenePropertyCommand::Undo(VansSceneDocument& document)
@@ -577,8 +582,9 @@ SceneEditResult VansSetScenePropertyCommand::Undo(VansSceneDocument& document)
     if (result)
     {
         const std::string changedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
+        auto preview = RuntimePropertyPreviewResult(document, candidate, changedEntityGuid);
         document.RestoreEditedSerializedRoot(std::move(candidate), m_BeforeState);
-        return RuntimePreviewEditResult(changedEntityGuid);
+        return preview;
     }
     return result;
 }
@@ -590,8 +596,9 @@ SceneEditResult VansSetScenePropertyCommand::Redo(VansSceneDocument& document)
     if (result)
     {
         const std::string changedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
+        auto preview = RuntimePropertyPreviewResult(document, candidate, changedEntityGuid);
         document.RestoreEditedSerializedRoot(std::move(candidate), m_AfterState);
-        return RuntimePreviewEditResult(changedEntityGuid);
+        return preview;
     }
     return result;
 }
@@ -617,35 +624,68 @@ SceneEditResult VansRemoveScenePropertyCommand::Execute(VansSceneDocument& docum
     if (!TryRead(candidate, m_PropertyPointer, oldValue))
         return { false, "Scene property does not exist" };
     m_OldValue = std::move(oldValue);
+    const auto parentPointer = m_PropertyPointer.substr(0, m_PropertyPointer.rfind('/'));
+    const auto* parent = FindSerializedPointer(candidate, parentPointer);
+    m_ArrayElement = parent && parent->kind == VansSerializedValue::Kind::Array;
+    m_ChangedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
+    const auto tokens = SplitSerializedPointer(m_PropertyPointer);
+    if (tokens.size() == 2 && tokens[0] == "entities")
+        for (const auto& entity : parent->arrayItems)
+            if (const auto* link = FindObjectField(entity, "parent");
+                link && ReadSceneParentEntityGuid(*link) == m_ChangedEntityGuid)
+                return {false, "Removing a parent requires an entity removal transaction with child world transforms"};
     m_BeforeState = document.m_CurrentStateId;
     if (auto result = RemoveAt(candidate, m_PropertyPointer); !result)
         return result;
-    const std::string changedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
+    auto preview = RuntimePropertyPreviewResult(document, candidate, m_ChangedEntityGuid);
+    const auto before = document.CreateSnapshot();
     m_AfterState = document.ApplyEditedSerializedRoot(std::move(candidate));
     if (m_Hooks.afterExecute)
     {
-        SceneEditResult result = RuntimePreviewEditResult(changedEntityGuid);
-        result.runtimeChangeApplied = m_Hooks.afterExecute();
-        return result;
+        preview.runtimeChangeApplied = m_Hooks.afterExecute();
+        if (!preview.runtimeChangeApplied)
+        {
+            document.RestoreAuthoringRoot(*before.authoringRoot, m_BeforeState);
+            if (m_Hooks.afterUndo) m_Hooks.afterUndo();
+            return {false, "Runtime scene removal failed"};
+        }
     }
-    return RuntimePreviewEditResult(changedEntityGuid);
+    return preview;
 }
 
 SceneEditResult VansRemoveScenePropertyCommand::Undo(VansSceneDocument& document)
 {
     VansSerializedValue candidate = document.SerializedRootSnapshot();
-    SceneEditResult result = WriteAt(candidate, m_PropertyPointer, m_OldValue);
+    SceneEditResult result{true, {}};
+    if (m_ArrayElement)
+    {
+        const auto slash = m_PropertyPointer.rfind('/');
+        auto* parent = FindSerializedPointer(candidate, m_PropertyPointer.substr(0, slash));
+        std::size_t index = 0;
+        if (!parent || parent->kind != VansSerializedValue::Kind::Array ||
+            !TryParseSerializedArrayIndex(m_PropertyPointer.substr(slash + 1), index) ||
+            index > parent->arrayItems.size())
+            return {false, "Removed array position is no longer valid"};
+        parent->arrayItems.insert(parent->arrayItems.begin() + index, m_OldValue);
+    }
+    else
+        result = WriteAt(candidate, m_PropertyPointer, m_OldValue);
     if (result)
     {
-        const std::string changedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
+        auto preview = RuntimePropertyPreviewResult(document, candidate, m_ChangedEntityGuid);
+        const auto before = document.CreateSnapshot();
         document.RestoreEditedSerializedRoot(std::move(candidate), m_BeforeState);
         if (m_Hooks.afterUndo)
         {
-            SceneEditResult hookResult = RuntimePreviewEditResult(changedEntityGuid);
-            hookResult.runtimeChangeApplied = m_Hooks.afterUndo();
-            return hookResult;
+            preview.runtimeChangeApplied = m_Hooks.afterUndo();
+            if (!preview.runtimeChangeApplied)
+            {
+                document.RestoreAuthoringRoot(*before.authoringRoot, m_AfterState);
+                if (m_Hooks.afterRedo) m_Hooks.afterRedo();
+                return {false, "Runtime scene removal undo failed"};
+            }
         }
-        return RuntimePreviewEditResult(changedEntityGuid);
+        return preview;
     }
     return result;
 }
@@ -656,15 +696,20 @@ SceneEditResult VansRemoveScenePropertyCommand::Redo(VansSceneDocument& document
     SceneEditResult result = RemoveAt(candidate, m_PropertyPointer);
     if (result)
     {
-        const std::string changedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
+        auto preview = RuntimePropertyPreviewResult(document, candidate, m_ChangedEntityGuid);
+        const auto before = document.CreateSnapshot();
         document.RestoreEditedSerializedRoot(std::move(candidate), m_AfterState);
         if (m_Hooks.afterRedo)
         {
-            SceneEditResult hookResult = RuntimePreviewEditResult(changedEntityGuid);
-            hookResult.runtimeChangeApplied = m_Hooks.afterRedo();
-            return hookResult;
+            preview.runtimeChangeApplied = m_Hooks.afterRedo();
+            if (!preview.runtimeChangeApplied)
+            {
+                document.RestoreAuthoringRoot(*before.authoringRoot, m_BeforeState);
+                if (m_Hooks.afterUndo) m_Hooks.afterUndo();
+                return {false, "Runtime scene removal redo failed"};
+            }
         }
-        return RuntimePreviewEditResult(changedEntityGuid);
+        return preview;
     }
     return result;
 }
@@ -866,16 +911,22 @@ SceneEditResult VansSceneEditService::Execute(std::unique_ptr<VansSceneEditComma
     const VansSceneAuthoringCommit& commit)
 {
     if (!command) return {false,"Scene edit command is null"};
-    const auto authoringBefore=m_Document.AuthoringRootSnapshot();
+    const auto authoringBefore=m_Document.CreateSnapshot().authoringRoot;
     const auto stateBefore=m_Document.CurrentStateId();
     try
     {
         auto result=command->Execute(m_Document);
         if(!result) return result;
-        const auto authoringAfter=m_Document.AuthoringRootSnapshot();
-        if(!command->managesPrefabHistory && (FindObjectField(authoringBefore,"prefabInstances") || FindObjectField(authoringAfter,"prefabInstances")))
+        const auto authoringAfter=m_Document.CreateSnapshot().authoringRoot;
+        const auto* beforeInstances = FindObjectField(*authoringBefore, "prefabInstances");
+        const auto* afterInstances = FindObjectField(*authoringAfter, "prefabInstances");
+        const bool instanceChanges = (beforeInstances == nullptr) != (afterInstances == nullptr) ||
+            (beforeInstances && afterInstances && !SerializedValuesEqual(*beforeInstances, *afterInstances));
+        if(!command->managesPrefabHistory && instanceChanges)
         {
             command->usesPrefabHistory=true;
+            if (result.runtimePreviewSupported && !result.runtimeParentPreviewSupported)
+                command->propertyPreview = result;
             command->authoringBefore=authoringBefore; command->authoringAfter=authoringAfter;
             command->authoringBeforeState=stateBefore; command->authoringAfterState=m_Document.CurrentStateId();
         }
@@ -884,7 +935,7 @@ SceneEditResult VansSceneEditService::Execute(std::unique_ptr<VansSceneEditComma
         std::string error;
         if(commit && !commit(error))
         {
-            m_Document.RestoreAuthoringRoot(authoringBefore,stateBefore);
+            m_Document.RestoreAuthoringRoot(*authoringBefore,stateBefore);
             return {false,error.empty()?"Scene authoring commit failed":std::move(error)};
         }
         m_Undo.push_back({std::move(command),VansAuthoringHistory::IssueEditSequence()});
@@ -893,7 +944,7 @@ SceneEditResult VansSceneEditService::Execute(std::unique_ptr<VansSceneEditComma
     }
     catch(const std::exception& error)
     {
-        if(m_Document.CurrentStateId()!=stateBefore) m_Document.RestoreAuthoringRoot(authoringBefore,stateBefore);
+        if(m_Document.CurrentStateId()!=stateBefore) m_Document.RestoreAuthoringRoot(*authoringBefore,stateBefore);
         return {false,error.what()};
     }
 }
@@ -929,6 +980,34 @@ SceneEditResult VansSceneEditService::CommitValues(std::vector<VansSceneAuthorin
 SceneEditResult VansSceneEditService::Set(const std::string& propertyPointer, VansSerializedValue value)
 {
     return Execute(std::make_unique<VansSetScenePropertyCommand>(propertyPointer, std::move(value)));
+}
+
+SceneEditResult VansSceneEditService::RemoveEntity(const std::string& entityGuid,
+    const std::vector<EditorAPI::RuntimeTransformSnapshot>& promotedChildren, SceneEditLifecycleHooks hooks)
+{
+    auto candidate = m_Document.SerializedRootSnapshot();
+    auto* entities = FindObjectField(candidate, "entities");
+    if (!entities || entities->kind != VansSerializedValue::Kind::Array)
+        return {false, "Scene document has no entities array"};
+    const auto removed = std::find_if(entities->arrayItems.begin(), entities->arrayItems.end(),
+        [&](const auto& entity) { return ReadSerializedStringField(entity, "id") == entityGuid; });
+    if (removed == entities->arrayItems.end()) return {false, "Scene entity does not exist"};
+    for (auto& entity : entities->arrayItems)
+    {
+        const auto* parent = FindObjectField(entity, "parent");
+        if (!parent || ReadSceneParentEntityGuid(*parent) != entityGuid) continue;
+        const auto childGuid = ReadSerializedStringField(entity, "id");
+        const auto world = std::find_if(promotedChildren.begin(), promotedChildren.end(),
+            [&](const auto& transform) { return transform.entityGuid == childGuid; });
+        if (world == promotedChildren.end() || !world->available || world->space != EditorAPI::RuntimeTransformSpace::World)
+            return {false, "Child world transform is unavailable; parent was not removed"};
+        auto local = *world;
+        local.space = EditorAPI::RuntimeTransformSpace::Local;
+        if (auto result = ApplyEntityTransform(candidate, childGuid, local); !result) return result;
+        SetSerializedObjectField(entity, "parent", VansSerializedValue::Null());
+    }
+    entities->arrayItems.erase(removed);
+    return ReplaceRoot(std::move(candidate), std::move(hooks));
 }
 
 SceneEditResult VansSceneEditService::Set(const DocumentPropertyPath& path, VansSerializedValue value)
@@ -1078,9 +1157,14 @@ SceneEditResult VansSceneEditService::Undo()
     {
         if (entry.command->usesPrefabHistory)
         {
-			m_Document.RestoreAuthoringRoot(entry.command->authoringBefore, entry.command->authoringBeforeState);
-            if (m_PrefabPreviewRefresh && !m_PrefabPreviewRefresh())
-			{ m_Document.RestoreAuthoringRoot(entry.command->authoringAfter, entry.command->authoringAfterState); m_PrefabPreviewRefresh(); result = {false, "Prefab undo preview failed"}; }
+			m_Document.RestoreAuthoringRoot(*entry.command->authoringBefore, entry.command->authoringBeforeState);
+            if (entry.command->propertyPreview.runtimePreviewSupported)
+            {
+                result = entry.command->propertyPreview;
+                result.runtimeChangeApplied = false;
+            }
+            else if (m_PrefabPreviewRefresh && !m_PrefabPreviewRefresh())
+			{ m_Document.RestoreAuthoringRoot(*entry.command->authoringAfter, entry.command->authoringAfterState); m_PrefabPreviewRefresh(); result = {false, "Prefab undo preview failed"}; }
             else { result.success = true; result.runtimeChangeApplied = static_cast<bool>(m_PrefabPreviewRefresh); }
         }
 		else result = entry.command->Undo(m_Document);
@@ -1109,9 +1193,14 @@ SceneEditResult VansSceneEditService::Redo()
     {
         if (entry.command->usesPrefabHistory)
         {
-			m_Document.RestoreAuthoringRoot(entry.command->authoringAfter, entry.command->authoringAfterState);
-            if (m_PrefabPreviewRefresh && !m_PrefabPreviewRefresh())
-			{ m_Document.RestoreAuthoringRoot(entry.command->authoringBefore, entry.command->authoringBeforeState); m_PrefabPreviewRefresh(); result = {false, "Prefab redo preview failed"}; }
+			m_Document.RestoreAuthoringRoot(*entry.command->authoringAfter, entry.command->authoringAfterState);
+            if (entry.command->propertyPreview.runtimePreviewSupported)
+            {
+                result = entry.command->propertyPreview;
+                result.runtimeChangeApplied = false;
+            }
+            else if (m_PrefabPreviewRefresh && !m_PrefabPreviewRefresh())
+			{ m_Document.RestoreAuthoringRoot(*entry.command->authoringBefore, entry.command->authoringBeforeState); m_PrefabPreviewRefresh(); result = {false, "Prefab redo preview failed"}; }
             else { result.success = true; result.runtimeChangeApplied = static_cast<bool>(m_PrefabPreviewRefresh); }
         }
 		else result = entry.command->Redo(m_Document);

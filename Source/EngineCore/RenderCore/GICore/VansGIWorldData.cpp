@@ -280,44 +280,64 @@ namespace VansGraphics
         { if(level.voxelSize*maxScale>worldVoxelSize)break;selected=&level; }
         return *selected;
     }
-    bool BakeGIWorldTemplate(const std::vector<GIWorldTriangle>& triangles,float size,uint32_t maxCells,GIWorldTemplate& output,std::string& error)
+    bool BakeGIWorldTemplate(const std::vector<GIWorldMesh>& meshes,float size,uint32_t maxCells,GIWorldTemplate& output,std::string& error)
     {
         error.clear(); GIWorldTemplate result;result.voxelSize=size;
         if(!std::isfinite(size)||size<=0){error="Invalid voxel size";return false;}
         result.minimum=glm::vec3(std::numeric_limits<float>::max());result.maximum=-result.minimum;
         uint64_t visits=0;
-        std::map<GIWorldCell,float> dominant;
-        for(const auto& t:triangles)
+        struct Accumulation { float dominant=0,extinction=0; };
+        std::map<GIWorldCell,Accumulation> accumulation;
+        for(const auto& mesh:meshes)
         {
-            auto lo=glm::min(t.positions[0],glm::min(t.positions[1],t.positions[2]));auto hi=glm::max(t.positions[0],glm::max(t.positions[1],t.positions[2]));
-            if(glm::any(glm::isnan(lo))||glm::any(glm::isinf(lo))||glm::any(glm::isnan(hi))||glm::any(glm::isinf(hi))) {error="Non-finite voxel triangle";return false;}
-            result.minimum=glm::min(result.minimum,lo);result.maximum=glm::max(result.maximum,hi);
-            glm::ivec3 a(glm::floor(lo/size)),b(glm::floor(hi/size));
-            const auto n=glm::cross(t.positions[1]-t.positions[0],t.positions[2]-t.positions[0]);if(glm::dot(n,n)<1e-20f)continue;
-            for(int z=a.z;z<=b.z;++z)for(int y=a.y;y<=b.y;++y)for(int x=a.x;x<=b.x;++x)
+            if(mesh.indices.size()%3 || mesh.positions.size()!=mesh.uvs.size())
+            {error="Invalid indexed voxel geometry";return false;}
+            for(size_t index=0;index<mesh.indices.size();index+=3)
             {
-                if(++visits>100000000ull){error="Voxel template build exceeds work budget";return false;}
-                glm::vec3 center=(glm::vec3(x,y,z)+0.5f)*size;if(!Overlap(t.positions,center,size*0.50001f))continue;
-                const auto w=Barycentric(center,t.positions);const auto uv=t.uvs[0]*w.x+t.uvs[1]*w.y+t.uvs[2]*w.z;
-                if(t.alpha && t.alpha(uv)<t.alphaCutoff)continue;
-                const GIWorldCell key{x,y,z,0};auto& v=result.cells[key];
-                const uint32_t surface=(t.material&65535u)|(GIWorldEncodeNormal(n)<<16u);
-                const float contribution=0.35f*ClippedArea(t.positions,center-glm::vec3(size*.5f),center+glm::vec3(size*.5f))/(size*size*size);
-                if(t.porous && !(v.optical&0x10000u))
+                struct {std::array<glm::vec3,3> positions;std::array<glm::vec2,3> uvs;} t;
+                for(size_t corner=0;corner<3;++corner)
                 {
-                    const float old=glm::unpackHalf1x16(uint16_t(v.optical));
-                    v.optical=glm::packHalf1x16(std::min(old+contribution,64.f/size));
-                    if(PreferSurface(contribution,surface,dominant[key],v.surface)){v.surface=surface;dominant[key]=contribution;}
+                    const auto vertex=mesh.indices[index+corner];
+                    if(vertex>=mesh.positions.size()){error="Voxel geometry index is out of range";return false;}
+                    t.positions[corner]=mesh.positions[vertex];t.uvs[corner]=mesh.uvs[vertex];
                 }
-                else if(!t.porous)
+                auto lo=glm::min(t.positions[0],glm::min(t.positions[1],t.positions[2]));auto hi=glm::max(t.positions[0],glm::max(t.positions[1],t.positions[2]));
+                if(glm::any(glm::isnan(lo))||glm::any(glm::isinf(lo))||glm::any(glm::isnan(hi))||glm::any(glm::isinf(hi))) {error="Non-finite voxel triangle";return false;}
+                result.minimum=glm::min(result.minimum,lo);result.maximum=glm::max(result.maximum,hi);
+                glm::ivec3 a(glm::floor(lo/size)),b(glm::floor(hi/size));
+                const auto n=glm::cross(t.positions[1]-t.positions[0],t.positions[2]-t.positions[0]);if(glm::dot(n,n)<1e-20f)continue;
+                for(int z=a.z;z<=b.z;++z)for(int y=a.y;y<=b.y;++y)for(int x=a.x;x<=b.x;++x)
                 {
-                    // 叶片不得覆盖已经命中的木质材质；同类材料按贡献确定，避免提交顺序影响。
-                    if(!(v.optical&0x10000u) || PreferSurface(contribution,surface,dominant[key],v.surface))
-                    {v.surface=surface;dominant[key]=contribution;}
-                    v.optical=0x10000u;
+                    if(++visits>100000000ull){error="Voxel template build exceeds work budget";return false;}
+                    glm::vec3 center=(glm::vec3(x,y,z)+0.5f)*size;if(!Overlap(t.positions,center,size*0.50001f))continue;
+                    const auto w=Barycentric(center,t.positions);const auto uv=t.uvs[0]*w.x+t.uvs[1]*w.y+t.uvs[2]*w.z;
+                    if(mesh.alpha && mesh.alpha(uv)<mesh.alphaCutoff)continue;
+                    const GIWorldCell key{x,y,z,0};auto& v=result.cells[key];
+                    const uint32_t surface=(mesh.material&65535u)|(GIWorldEncodeNormal(n)<<16u);
+                    const float contribution=0.35f*ClippedArea(t.positions,center-glm::vec3(size*.5f),center+glm::vec3(size*.5f))/(size*size*size);
+                    if(mesh.porous && !(v.optical&0x10000u))
+                    {
+                        auto& sum=accumulation[key];
+                        sum.extinction=std::min(sum.extinction+contribution,64.f/size);
+                        if(PreferSurface(contribution,surface,sum.dominant,v.surface)){v.surface=surface;sum.dominant=contribution;}
+                    }
+                    else if(!mesh.porous)
+                    {
+                        // 叶片不得覆盖已经命中的木质材质；同类材料按贡献确定，避免提交顺序影响。
+                        auto& sum=accumulation[key];
+                        if(!(v.optical&0x10000u) || PreferSurface(contribution,surface,sum.dominant,v.surface))
+                        {v.surface=surface;sum.dominant=contribution;}
+                        v.optical=0x10000u;
+                    }
+                    if(result.cells.size()>maxCells){error="Voxel template exceeds cell budget";return false;}
                 }
-                if(result.cells.size()>maxCells){error="Voxel template exceeds cell budget";return false;}
             }
+        }
+        // 细分叶面的小贡献先汇总，逐三角形转 half 会让总量停在较低的舍入平台。
+        for(const auto& item:accumulation)
+        {
+            auto& voxel=result.cells.at(item.first);
+            if(!(voxel.optical&0x10000u))voxel.optical=glm::packHalf1x16(item.second.extinction);
         }
         IndexTemplateLevel(result);
         // 各级缓存总数也计入资产预算。粗 mip 保存光学量，不把混合父格填成实心。
@@ -623,7 +643,15 @@ namespace VansGraphics
             }
         }
         for(size_t cell=0;cell<build.brick.voxels.size();++cell)
-            build.brick.voxels[cell].optical|=glm::packHalf1x16(std::min(build.extinction[cell],65504.f));
+        {
+            auto& voxel=build.brick.voxels[cell];
+            voxel.optical|=glm::packHalf1x16(std::min(build.extinction[cell],65504.f));
+            if((voxel.optical&0x1ffffu)!=0u)
+            {
+                const uint32_t group=uint32_t((cell%8)/2+4*((cell/8%8)/2)+16*(cell/64/2));
+                build.brick.occupancy[group/32]|=1u<<(group%32);
+            }
+        }
         brick=build.brick;m_Build.reset();++m_Next;return true;
     }
 }

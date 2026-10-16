@@ -34,6 +34,8 @@ namespace VansGraphics
 		float defaultWeight = 0.0f;
 		std::vector<VansBoneMaskBranchRule> branchRules;
 		std::unordered_map<std::string, float> explicitWeights;
+		// Independent local translation, rotation and scale multipliers.
+		std::unordered_map<std::string, glm::vec3> explicitChannelWeights;
 		std::vector<std::string> editorExpandedBones;
 	};
 
@@ -49,6 +51,7 @@ namespace VansGraphics
 		std::string assetId;
 		std::uint64_t skeletonSignature = 0;
 		std::vector<float> weights;
+		std::vector<glm::vec3> channelWeights;
 		std::vector<std::uint32_t> activeBones;
 		std::vector<VansBoneMaskDiagnostic> diagnostics;
 		float rootWeight = 0.0f;
@@ -60,6 +63,7 @@ namespace VansGraphics
 	class VansBoneMaskCompiler
 	{
 	public:
+		static bool ValidateDefinition(const VansBoneMaskAsset& asset, std::string& error);
 		static VansCompiledBoneMask Compile(const VansBoneMaskAsset& asset,
 		                                    const Skeleton& skeleton);
 	};

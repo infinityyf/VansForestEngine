@@ -57,7 +57,7 @@ void VansGraphics::VansProfilerWindow::DrawProfilerContents()
 #if VANS_PROFILER_ENABLED
     VANS_PROFILE_SCOPE("Editor::ProfilerWindow", Vans::ProfileCategory::Editor);
 
-    ImGui::Begin("Profiler", nullptr, ImGuiWindowFlags_NoScrollbar);
+    const bool contentVisible = ImGui::Begin("Profiler", nullptr, ImGuiWindowFlags_NoScrollbar);
 
     const Vans::ProfileFrame& frame = Vans::VansProfiler::Get().GetTimeline();
     m_PauseCapture = Vans::VansProfiler::Get().IsPaused();
@@ -74,6 +74,12 @@ void VansGraphics::VansProfilerWindow::DrawProfilerContents()
         }
     }
 
+    // 后台标签仍记录 FPS/FrameTime 历史，只跳过图表的内容准备和绘制。
+    if (!contentVisible)
+    {
+        ImGui::End();
+        return;
+    }
     DrawTimelineToolbar(frame);
 
     if (ImGui::BeginTabBar("ProfilerTabs"))

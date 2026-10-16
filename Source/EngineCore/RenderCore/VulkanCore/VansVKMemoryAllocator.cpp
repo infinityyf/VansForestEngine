@@ -316,6 +316,14 @@ namespace VansGraphics
 		return info.pMappedData;
 	}
 
+	VkDeviceSize VansVKMemoryAllocator::GetAllocationSize(VmaAllocation allocation) const
+	{
+		if (!m_Allocator || !allocation) return 0;
+		VmaAllocationInfo info{};
+		vmaGetAllocationInfo(m_Allocator, allocation, &info);
+		return info.size;
+	}
+
 	VansGpuMemorySnapshot VansVKMemoryAllocator::QueryMemorySnapshot() const
 	{
 		VansGpuMemorySnapshot snapshot{};

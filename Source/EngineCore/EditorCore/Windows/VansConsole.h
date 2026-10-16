@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
-#include <vector>
+#include <deque>
+#include <cstdint>
 #include <mutex>
 #include <ctime>
 #include <sstream>
@@ -95,12 +96,14 @@ public:
 
     // ---------- reading (called from UI thread) --------------------------
 
-    const std::vector<VansConsoleEntry>& GetEntries() const { return m_Entries; }
+    const std::deque<VansConsoleEntry>& GetEntries() const { return m_Entries; }
+    std::uint64_t Revision() const { return m_Revision; }
 
     void Clear()
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
         m_Entries.clear();
+        ++m_Revision;
     }
 
     bool ScrollToBottom = true;
@@ -136,13 +139,16 @@ private:
 
         // Keep a reasonable cap
         if (m_Entries.size() > MaxEntries)
-            m_Entries.erase(m_Entries.begin(), m_Entries.begin() + (m_Entries.size() - MaxEntries));
+            m_Entries.pop_front();
+
+        ++m_Revision;
 
         ScrollToBottom = true;
     }
 
     mutable std::mutex          m_Mutex;
-    std::vector<VansConsoleEntry> m_Entries;
+    std::deque<VansConsoleEntry> m_Entries;
+    std::uint64_t m_Revision = 0;
     Vans::VansScopedEventConnections m_LogConnections;
     static constexpr size_t     MaxEntries = 2048;
 };
